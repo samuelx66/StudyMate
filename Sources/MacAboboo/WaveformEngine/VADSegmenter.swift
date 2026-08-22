@@ -1,7 +1,7 @@
 import Foundation
 import Accelerate
 
-/// 智能语音断句检测器（基于短时能量与静音波谷检测，确保在句子自然停顿处断句）
+/// 智能语音断句检测器（基于 Silero VAD 与声学防吞音缓冲）
 public final class VADSegmenter {
     public static let shared = VADSegmenter()
     
@@ -49,197 +49,30 @@ public final class VADSegmenter {
             return []
         }
         
-        let peaks = waveform.peaks
-        let sampleRate = waveform.sampleRate
-        let totalSamples = peaks.count
-        let totalDuration = waveform.duration
+        let sileroConfig = SileroVADEngine.Config(
+            threshold: max(0.25, min(0.75, 0.55 - config.silenceThresholdRatio)),
+            negThreshold: max(0.15, min(0.55, 0.35 - config.silenceThresholdRatio)),
+            minSpeechDuration: max(0.2, config.minSentenceDuration * 0.4),
+            minSilenceDuration: config.minSilenceDuration,
+            maxSentenceDuration: config.maxSentenceDuration,
+            onsetPadding: config.paddingDuration,
+            offsetHangover: max(0.15, config.paddingDuration * 2.0)
+        )
+        let raw = SileroVADEngine.shared.detectSegments(from: waveform, config: sileroConfig)
+        guard !raw.isEmpty else { return [] }
         
-        guard totalSamples > 0 else { return [] }
-        
-        // 1. 平滑短时能量包络（基于滑动累加器的高性能 O(N) 移动平均滤波）
-        let halfWindow = max(1, Int(sampleRate * 0.06))
-        var smoothed = [Float](repeating: 0, count: totalSamples)
-        var runningSum: Float = 0
-        let initialEnd = min(totalSamples - 1, halfWindow)
-        for s in 0...initialEnd {
-            runningSum += peaks[s]
-        }
-        
-        for i in 0..<totalSamples {
-            let addIdx = i + halfWindow
-            let removeIdx = i - halfWindow - 1
-            if addIdx < totalSamples && addIdx > initialEnd {
-                runningSum += peaks[addIdx]
-            }
-            if removeIdx >= 0 {
-                runningSum -= peaks[removeIdx]
-            }
-            let validStart = max(0, i - halfWindow)
-            let validEnd = min(totalSamples - 1, i + halfWindow)
-            let count = validEnd - validStart + 1
-            smoothed[i] = runningSum / Float(max(1, count))
-        }
-        
-        // 2. 动态计算静音能量阈值
-        var minVal: Float = 1.0
-        var maxVal: Float = 0.0
-        for p in smoothed {
-            if p < minVal { minVal = p }
-            if p > maxVal { maxVal = p }
-        }
-        
-        let dynamicRange = max(0.01, maxVal - minVal)
-        let silenceThreshold = minVal + dynamicRange * config.silenceThresholdRatio
-        
-        // 3. 寻找静音区间 (Silence Intervals)
-        struct SilenceInterval {
-            let startSample: Int
-            let endSample: Int
-            let minEnergySample: Int
-        }
-        
-        var silenceIntervals = [SilenceInterval]()
-        var inSilence = false
-        var silenceStart = 0
-        var lowestVal = Float.greatestFiniteMagnitude
-        var lowestIdx = 0
-        
-        let minSilenceSamples = max(1, Int(config.minSilenceDuration * sampleRate))
-        
-        for i in 0..<totalSamples {
-            let energy = smoothed[i]
-            let isQuiet = energy <= silenceThreshold
-            
-            if isQuiet {
-                if !inSilence {
-                    inSilence = true
-                    silenceStart = i
-                    lowestVal = energy
-                    lowestIdx = i
-                } else if energy < lowestVal {
-                    lowestVal = energy
-                    lowestIdx = i
-                }
-            } else {
-                if inSilence {
-                    inSilence = false
-                    let length = i - silenceStart
-                    if length >= minSilenceSamples {
-                        silenceIntervals.append(SilenceInterval(
-                            startSample: silenceStart,
-                            endSample: i,
-                            minEnergySample: lowestIdx
-                        ))
-                    }
-                }
-            }
-        }
-        
-        // 尾部静音处理
-        if inSilence && (totalSamples - silenceStart) >= minSilenceSamples {
-            silenceIntervals.append(SilenceInterval(
-                startSample: silenceStart,
-                endSample: totalSamples,
-                minEnergySample: lowestIdx
+        var seamless = [SentenceSegment]()
+        for (i, seg) in raw.enumerated() {
+            let start = (i == 0) ? 0.0 : raw[i - 1].endTime
+            let end = (i == raw.count - 1) ? waveform.duration : seg.endTime
+            seamless.append(SentenceSegment(
+                id: seg.id,
+                index: i + 1,
+                startTime: start,
+                endTime: max(start + 0.1, end),
+                text: "Sentence #\(i + 1)"
             ))
         }
-        
-        // 4. 根据静音波谷生成初始切分点
-        var cutPoints = [Double]()
-        cutPoints.append(0.0)
-        
-        var lastCutTime = 0.0
-        let minSentenceSecs = config.minSentenceDuration
-        
-        for interval in silenceIntervals {
-            let silenceValleyTime = Double(interval.minEnergySample) / sampleRate
-            
-            // 距离上一个切分点满足单句最短时长要求
-            if (silenceValleyTime - lastCutTime) >= minSentenceSecs {
-                // 如果当前距离音频结束过近 (< 0.5s)，则合并到末尾
-                if (totalDuration - silenceValleyTime) >= 0.5 {
-                    cutPoints.append(silenceValleyTime)
-                    lastCutTime = silenceValleyTime
-                }
-            }
-        }
-        
-        if cutPoints.last != totalDuration {
-            cutPoints.append(totalDuration)
-        }
-        
-        // 5. 对过长的句子（> maxSentenceDuration）进行二次细分（寻找句子中间最明显的能量凹陷）
-        var refinedCutPoints = [Double]()
-        for i in 0..<(cutPoints.count - 1) {
-            let segStart = cutPoints[i]
-            let segEnd = cutPoints[i + 1]
-            refinedCutPoints.append(segStart)
-            
-            let segLen = segEnd - segStart
-            if segLen > config.maxSentenceDuration {
-                let parts = Int(ceil(segLen / config.maxSentenceDuration))
-                let idealPartDuration = segLen / Double(parts)
-                
-                var currentPartStart = segStart
-                for p in 1..<parts {
-                    let searchCenter = segStart + Double(p) * idealPartDuration
-                    let searchStartSample = Int(max(currentPartStart + minSentenceSecs, searchCenter - 1.5) * sampleRate)
-                    let searchEndSample = Int(min(segEnd - minSentenceSecs, searchCenter + 1.5) * sampleRate)
-                    
-                    if searchEndSample > searchStartSample && searchStartSample < totalSamples {
-                        var bestSample = searchStartSample
-                        var bestVal: Float = smoothed[searchStartSample]
-                        for s in searchStartSample..<min(searchEndSample, totalSamples) {
-                            if smoothed[s] < bestVal {
-                                bestVal = smoothed[s]
-                                bestSample = s
-                            }
-                        }
-                        let subCut = Double(bestSample) / sampleRate
-                        refinedCutPoints.append(subCut)
-                        currentPartStart = subCut
-                    }
-                }
-            }
-        }
-        refinedCutPoints.append(totalDuration)
-        refinedCutPoints = Array(Set(refinedCutPoints)).sorted()
-        
-        // 6. 构造最终断句列表
-        var segments = [SentenceSegment]()
-        for i in 0..<(refinedCutPoints.count - 1) {
-            let start = refinedCutPoints[i]
-            let end = refinedCutPoints[i + 1]
-            
-            if end - start >= 0.2 {
-                let seg = SentenceSegment(
-                    index: segments.count + 1,
-                    startTime: start,
-                    endTime: end,
-                    text: "Sentence \(segments.count + 1)"
-                )
-                segments.append(seg)
-            }
-        }
-        
-        // 容底保护：如果音频极其嘈杂没有任何静音，生成合理分段
-        if segments.isEmpty {
-            let fallbackStep = min(6.0, max(3.0, totalDuration / 6.0))
-            var cur = 0.0
-            var count = 1
-            while cur < totalDuration {
-                let nxt = min(totalDuration, cur + fallbackStep)
-                segments.append(SentenceSegment(
-                    index: count,
-                    startTime: cur,
-                    endTime: nxt,
-                    text: "Sentence \(count)"
-                ))
-                cur = nxt
-                count += 1
-            }
-        }
-        
-        return segments
+        return seamless
     }
 }

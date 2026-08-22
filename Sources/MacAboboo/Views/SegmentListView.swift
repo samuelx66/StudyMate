@@ -77,21 +77,27 @@ public struct SegmentListView: View {
                 .menuStyle(.borderlessButton)
                 .focusable(false)
                 
-                // 智能 VAD 断句菜单
+                // 智能 VAD 断句与 AI 识别菜单
                 Menu {
-                    Button(lang.text("标准断句（约 0.35 秒停顿）", "Standard (~0.35s pauses)")) {
-                        engine.performSmartSegmentation(config: .normal)
+                    Button(lang.text("✨ AI 识词断句并生成台词 (双引擎模式)", "✨ AI Transcript & Segments (Dual Engine)")) {
+                        engine.performDualEngineAISegmentation()
                     }
-                    Button(lang.text("精细短句（约 0.25 秒停顿）", "Short sentences (~0.25s pauses)")) {
-                        engine.performSmartSegmentation(config: .sensitive)
+                    
+                    Divider()
+                    
+                    Button(lang.text("⚡️ Silero VAD 标准抗噪断句 (~0.32s 停顿)", "⚡️ Silero VAD Standard (~0.32s)")) {
+                        engine.performSmartSegmentation(config: SileroVADEngine.Config.standard)
                     }
-                    Button(lang.text("长句断句（约 0.55 秒停顿）", "Long sentences (~0.55s pauses)")) {
-                        engine.performSmartSegmentation(config: .relaxed)
+                    Button(lang.text("⚡️ Silero VAD 精细短句 (~0.22s 停顿)", "⚡️ Silero VAD Sensitive (~0.22s)")) {
+                        engine.performSmartSegmentation(config: SileroVADEngine.Config.sensitive)
+                    }
+                    Button(lang.text("⚡️ Silero VAD 完整长句 (~0.50s 停顿)", "⚡️ Silero VAD Relaxed (~0.50s)")) {
+                        engine.performSmartSegmentation(config: SileroVADEngine.Config.relaxed)
                     }
                 } label: {
                     Image(systemName: "wand.and.stars")
                         .foregroundColor(.secondary)
-                        .help(lang.text("智能语音断句", "Smart voice segmentation"))
+                        .help(lang.text("智能 AI 语音断句 (Silero VAD / Whisper 模式)", "Smart AI Voice Segmentation"))
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
@@ -111,6 +117,21 @@ public struct SegmentListView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
+            
+            // AI 语音识别进度指示条
+            if engine.isAITranscribing {
+                HStack(spacing: 8) {
+                    ProgressView(value: engine.aiTranscriptionProgress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: .infinity)
+                    Text(engine.aiTranscriptionStatusText)
+                        .font(.caption2.bold())
+                        .foregroundColor(.blue)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.1))
+            }
             
             // 搜索过滤栏
             HStack {

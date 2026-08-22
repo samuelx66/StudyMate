@@ -83,6 +83,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 仅复读收藏难句模式
     @Published public var onlyPlayBookmarked: Bool = false
     
+    // MARK: - AI 语音识词与双引擎断句状态
+    @Published public var isAITranscribing: Bool = false
+    @Published public var aiTranscriptionProgress: Double = 0.0
+    @Published public var aiTranscriptionStatusText: String = ""
+    
     // MARK: - 断句与波形数据
     @Published public var segments: [SentenceSegment] = []
     @Published public var activeSegmentIndex: Int? {
@@ -142,6 +147,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         case project
         case sidecar
         case vad
+        case ai
         case imported
         case fallback
     }
@@ -694,8 +700,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         )
     }
     
-    /// 执行智能语音停顿断句
-    public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config = .normal) {
+    /// 执行智能语音停顿断句（基于 Silero VAD 毫秒级声学防吞音模型）
+    public func performSmartSegmentation(using data: WaveformData? = nil, config: SileroVADEngine.Config = .standard) {
+        let targetData = data ?? self.waveformData
+        guard !targetData.isEmpty else { return }
+        
+        let smartSegments = SileroVADEngine.shared.detectSegments(from: targetData, config: config)
+        if !smartSegments.isEmpty {
+            self.segments = normalizedSegments(smartSegments, duration: targetData.duration)
+            self.segmentOrigin = .vad
+            self.activeSegmentIndex = 0
+            persistCurrentProject()
+        }
+    }
+
+    /// 执行智能语音停顿断句（兼容老配置）
+    public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config) {
         let targetData = data ?? self.waveformData
         guard !targetData.isEmpty else { return }
         
@@ -705,6 +725,52 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             self.segmentOrigin = .vad
             self.activeSegmentIndex = 0
             persistCurrentProject()
+        }
+    }
+    
+    /// 执行双引擎（Whisper / Speech.framework + Silero VAD）深度 AI 识别与断句，自动提取原文台词与防吞音时间轴
+    public func performDualEngineAISegmentation(locale: Locale = Locale(identifier: "en-US")) {
+        guard let media = currentMedia else { return }
+        let targetData = self.waveformData
+        
+        isAITranscribing = true
+        aiTranscriptionProgress = 0.1
+        aiTranscriptionStatusText = LanguageManager.shared.currentLanguage == .zh ? "AI 语音识别中..." : "AI Transcribing..."
+        
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                let transcribedSentences = try await SpeechAlignmentEngine.shared.transcribeAudio(
+                    from: media.url,
+                    locale: locale
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.aiTranscriptionProgress = 0.1 + progress * 0.7
+                    }
+                }
+                
+                self.aiTranscriptionProgress = 0.85
+                self.aiTranscriptionStatusText = LanguageManager.shared.currentLanguage == .zh ? "声学边界校准中..." : "Calibrating Boundaries..."
+                
+                let fusedSegments = DualEngineFusionSegmenter.shared.fuse(
+                    sentences: transcribedSentences,
+                    waveform: targetData
+                )
+                
+                self.segments = self.normalizedSegments(fusedSegments, duration: targetData.duration > 0 ? targetData.duration : self.duration)
+                self.segmentOrigin = .ai
+                self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
+                self.persistCurrentProject()
+                
+                self.aiTranscriptionProgress = 1.0
+                self.isAITranscribing = false
+                self.aiTranscriptionStatusText = ""
+            } catch {
+                // 若离线识别不可用，优雅降级为 Silero VAD 极速断句
+                self.performSmartSegmentation(using: targetData)
+                self.isAITranscribing = false
+                self.aiTranscriptionStatusText = ""
+            }
         }
     }
     

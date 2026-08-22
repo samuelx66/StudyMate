@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F78132D34A7B46B69CD6C6EB"
+               BlueprintIdentifier = "D8F36906B79046319C031A07"
                BuildableName = "MacAboboo.app"
                BlueprintName = "MacAboboo"
                ReferencedContainer = "container:MacAboboo.xcodeproj">
@@ -44,7 +44,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F78132D34A7B46B69CD6C6EB"
+            BlueprintIdentifier = "D8F36906B79046319C031A07"
             BuildableName = "MacAboboo.app"
             BlueprintName = "MacAboboo"
             ReferencedContainer = "container:MacAboboo.xcodeproj">
@@ -61,7 +61,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F78132D34A7B46B69CD6C6EB"
+            BlueprintIdentifier = "D8F36906B79046319C031A07"
             BuildableName = "MacAboboo.app"
             BlueprintName = "MacAboboo"
             ReferencedContainer = "container:MacAboboo.xcodeproj">
