@@ -1,0 +1,386 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		583475757B1A41BE981060E4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F69724A3351D48DC84B8BFF6 /* Assets.xcassets */; };
+		4728E0312CBB4701AE4006D3 /* PlaybackEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BFFE1D915947B597E99C03 /* PlaybackEngine.swift */; };
+		D616C6F4A9764AC8B54F98D4 /* AVFoundationPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7609DAE72C904B04BFAC14E1 /* AVFoundationPlayerBackend.swift */; };
+		D988133EDB124821A4E7D8F3 /* MPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = D57531AEAD484770B68F160D /* MPVPlayerBackend.swift */; };
+		74737AB334934DC6896B7DA3 /* MediaPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF98A0284CF437A8050C05C /* MediaPlayerBackend.swift */; };
+		40B2B77E3F6E48CC8A541594 /* MPVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78E5A551ED54A7B8EC1C854 /* MPVClient.swift */; };
+		083BC2841AF146C1BA5534A4 /* DecoderEngineMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07826D7C4AAF43698694DB19 /* DecoderEngineMode.swift */; };
+		92B6C61D71C64A898A8B6EBF /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18281889EC84A60A843F62C /* WaveformData.swift */; };
+		378A6CBCDD824FD4BDF02727 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55573D9867E84A87A0E8EF06 /* MediaItem.swift */; };
+		EF4403B3F0A346DA8F158601 /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85584AB14DB5432194210F8E /* SentenceSegment.swift */; };
+		6B7EAD32991F4716BCEA8E9D /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFD8005EDEAD41078289E96F /* WaveformExtractor.swift */; };
+		D21761A6DF354990A0217CDD /* VADSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10067C1F1ECA4D6A91EEDD50 /* VADSegmenter.swift */; };
+		DBC123CFD9384704804E9A2E /* SubtitleExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 454B1617F7EB4FE09F7B110C /* SubtitleExporter.swift */; };
+		C3ACC8ADE78B40DDA30E3D2C /* TextAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C26730EDBCC4B1C9FC9391F /* TextAlignmentEngine.swift */; };
+		92D589175FA24D8E84C797D2 /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62D2AE6C20C2433DA4B12740 /* SubtitleParser.swift */; };
+		C3C1C6A296304341AB5A371D /* SegmentationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22EB85AAB29480EADCE1E28 /* SegmentationStore.swift */; };
+		C479F9FCB4E7439282F5BF8E /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0B7183F5B54A898F3D91EC /* ProjectFileManager.swift */; };
+		0818CE61BF444432AA507312 /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5438B3E68AED4171B053B4D9 /* SubtitleImportSheet.swift */; };
+		74509350D5714FB9B4F8D5F5 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3364ACA0AC94A02ACB73FA7 /* SegmentListView.swift */; };
+		C65125D806504C5AA8620140 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6103C17CDB9463DA8835086 /* VideoPlayerView.swift */; };
+		FD543FF81E12468699DD1C55 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01B8B24E7B654D49ADB2844A /* WaveformComponents.swift */; };
+		8D80579ABB634988B93353FD /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 776B1A43699541E189FF6CD5 /* BoundaryMarkerHandle.swift */; };
+		AA3BEA7E349449E6AF297E29 /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26DF365EAE3D4059B6CAE669 /* SecondaryWaveformView.swift */; };
+		DB0FBE54C1E54245AB84362E /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C186489627B24DC89F86AE0B /* PrimaryWaveformView.swift */; };
+		724ACD2C6E6046709099E1A8 /* PlaybackControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC3AE53C92D34E74AE7830A5 /* PlaybackControlView.swift */; };
+		F7953B51516943D4802935A3 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 263860746A224B7F8D634DC8 /* MainContentView.swift */; };
+		6D20CC2B421044308D1E766B /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C4436758014AA28F4980CE /* SubtitleEditView.swift */; };
+		DD36DE78704E45029515ABAE /* IntensiveSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = F902FFCFB29C480E89B49045 /* IntensiveSettingsPopover.swift */; };
+		F36699C395B8411484A387F0 /* DraggableWaveformOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0897F10659AB44589CF0BC33 /* DraggableWaveformOverlay.swift */; };
+		BECAAB3547444244AD1E6A08 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88066618417B45F096FAF55E /* LanguageManager.swift */; };
+		3F190A9C89BB4BAA90CB1285 /* MacAbobooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD04628364DA47DDB97AD787 /* MacAbobooApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		FE33DC224E224D95B152C6A4 /* MacAboboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacAboboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F69724A3351D48DC84B8BFF6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Sources/MacAboboo/Resources/Assets.xcassets"; sourceTree = "<group>"; };
+		C5BFFE1D915947B597E99C03 /* PlaybackEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/PlaybackEngine.swift"; sourceTree = "<group>"; };
+		7609DAE72C904B04BFAC14E1 /* AVFoundationPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/AVFoundationPlayerBackend.swift"; sourceTree = "<group>"; };
+		D57531AEAD484770B68F160D /* MPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVPlayerBackend.swift"; sourceTree = "<group>"; };
+		9DF98A0284CF437A8050C05C /* MediaPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MediaPlayerBackend.swift"; sourceTree = "<group>"; };
+		C78E5A551ED54A7B8EC1C854 /* MPVClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVClient.swift"; sourceTree = "<group>"; };
+		07826D7C4AAF43698694DB19 /* DecoderEngineMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/DecoderEngineMode.swift"; sourceTree = "<group>"; };
+		A18281889EC84A60A843F62C /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/WaveformData.swift"; sourceTree = "<group>"; };
+		55573D9867E84A87A0E8EF06 /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/MediaItem.swift"; sourceTree = "<group>"; };
+		85584AB14DB5432194210F8E /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
+		DFD8005EDEAD41078289E96F /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
+		10067C1F1ECA4D6A91EEDD50 /* VADSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/VADSegmenter.swift"; sourceTree = "<group>"; };
+		454B1617F7EB4FE09F7B110C /* SubtitleExporter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleExporter.swift"; sourceTree = "<group>"; };
+		3C26730EDBCC4B1C9FC9391F /* TextAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/TextAlignmentEngine.swift"; sourceTree = "<group>"; };
+		62D2AE6C20C2433DA4B12740 /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
+		E22EB85AAB29480EADCE1E28 /* SegmentationStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SegmentationStore.swift"; sourceTree = "<group>"; };
+		EE0B7183F5B54A898F3D91EC /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
+		5438B3E68AED4171B053B4D9 /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
+		C3364ACA0AC94A02ACB73FA7 /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SegmentListView.swift"; sourceTree = "<group>"; };
+		F6103C17CDB9463DA8835086 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
+		01B8B24E7B654D49ADB2844A /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
+		776B1A43699541E189FF6CD5 /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
+		26DF365EAE3D4059B6CAE669 /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
+		C186489627B24DC89F86AE0B /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
+		AC3AE53C92D34E74AE7830A5 /* PlaybackControlView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackControlView.swift"; sourceTree = "<group>"; };
+		263860746A224B7F8D634DC8 /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MainContentView.swift"; sourceTree = "<group>"; };
+		E7C4436758014AA28F4980CE /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
+		F902FFCFB29C480E89B49045 /* IntensiveSettingsPopover.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/IntensiveSettingsPopover.swift"; sourceTree = "<group>"; };
+		0897F10659AB44589CF0BC33 /* DraggableWaveformOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/DraggableWaveformOverlay.swift"; sourceTree = "<group>"; };
+		88066618417B45F096FAF55E /* LanguageManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Localization/LanguageManager.swift"; sourceTree = "<group>"; };
+		FD04628364DA47DDB97AD787 /* MacAbobooApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAbobooApp/MacAbobooApp.swift"; sourceTree = "<group>"; };
+		E6A922D45EC44B7CA586E584 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "Sources/MacAbobooApp/Info.plist"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		ADAE8CFE8A704F20B000E44C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0F00E31F8A1E489488838FE3 = {
+			isa = PBXGroup;
+			children = (
+				54CE74FA1B7E4CBEB6233E83 /* Sources */,
+				E36A697102604BF4BC747EA5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		54CE74FA1B7E4CBEB6233E83 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C5BFFE1D915947B597E99C03 /* PlaybackEngine.swift */,
+				7609DAE72C904B04BFAC14E1 /* AVFoundationPlayerBackend.swift */,
+				D57531AEAD484770B68F160D /* MPVPlayerBackend.swift */,
+				9DF98A0284CF437A8050C05C /* MediaPlayerBackend.swift */,
+				C78E5A551ED54A7B8EC1C854 /* MPVClient.swift */,
+				07826D7C4AAF43698694DB19 /* DecoderEngineMode.swift */,
+				A18281889EC84A60A843F62C /* WaveformData.swift */,
+				55573D9867E84A87A0E8EF06 /* MediaItem.swift */,
+				85584AB14DB5432194210F8E /* SentenceSegment.swift */,
+				DFD8005EDEAD41078289E96F /* WaveformExtractor.swift */,
+				10067C1F1ECA4D6A91EEDD50 /* VADSegmenter.swift */,
+				454B1617F7EB4FE09F7B110C /* SubtitleExporter.swift */,
+				3C26730EDBCC4B1C9FC9391F /* TextAlignmentEngine.swift */,
+				62D2AE6C20C2433DA4B12740 /* SubtitleParser.swift */,
+				E22EB85AAB29480EADCE1E28 /* SegmentationStore.swift */,
+				EE0B7183F5B54A898F3D91EC /* ProjectFileManager.swift */,
+				5438B3E68AED4171B053B4D9 /* SubtitleImportSheet.swift */,
+				C3364ACA0AC94A02ACB73FA7 /* SegmentListView.swift */,
+				F6103C17CDB9463DA8835086 /* VideoPlayerView.swift */,
+				01B8B24E7B654D49ADB2844A /* WaveformComponents.swift */,
+				776B1A43699541E189FF6CD5 /* BoundaryMarkerHandle.swift */,
+				26DF365EAE3D4059B6CAE669 /* SecondaryWaveformView.swift */,
+				C186489627B24DC89F86AE0B /* PrimaryWaveformView.swift */,
+				AC3AE53C92D34E74AE7830A5 /* PlaybackControlView.swift */,
+				263860746A224B7F8D634DC8 /* MainContentView.swift */,
+				E7C4436758014AA28F4980CE /* SubtitleEditView.swift */,
+				F902FFCFB29C480E89B49045 /* IntensiveSettingsPopover.swift */,
+				0897F10659AB44589CF0BC33 /* DraggableWaveformOverlay.swift */,
+				88066618417B45F096FAF55E /* LanguageManager.swift */,
+				FD04628364DA47DDB97AD787 /* MacAbobooApp.swift */,
+				E6A922D45EC44B7CA586E584 /* Info.plist */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		E36A697102604BF4BC747EA5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FE33DC224E224D95B152C6A4 /* MacAboboo.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F78132D34A7B46B69CD6C6EB /* MacAboboo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD14962F3C71415FA5120C45 /* Build configuration list for PBXNativeTarget "MacAboboo" */;
+			buildPhases = (
+				502798EBED454FF1A23DCDA4 /* Sources */,
+				ADAE8CFE8A704F20B000E44C /* Frameworks */,
+				4E4C9765CC7D4B04BA5A336C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacAboboo;
+			productName = MacAboboo;
+			productReference = FE33DC224E224D95B152C6A4 /* MacAboboo.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D58954227AA0486AA3D18DAB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					F78132D34A7B46B69CD6C6EB = {
+						CreatedOnToolsVersion = 15.0;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 67A1B6DCE1974C2CB355FAB2 /* Build configuration list for PBXProject "MacAboboo" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = zh_CN;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				zh_CN,
+			);
+			mainGroup = 0F00E31F8A1E489488838FE3;
+			productRefGroup = E36A697102604BF4BC747EA5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F78132D34A7B46B69CD6C6EB /* MacAboboo */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4E4C9765CC7D4B04BA5A336C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				583475757B1A41BE981060E4 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		502798EBED454FF1A23DCDA4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4728E0312CBB4701AE4006D3 /* PlaybackEngine.swift in Sources */,
+				D616C6F4A9764AC8B54F98D4 /* AVFoundationPlayerBackend.swift in Sources */,
+				D988133EDB124821A4E7D8F3 /* MPVPlayerBackend.swift in Sources */,
+				74737AB334934DC6896B7DA3 /* MediaPlayerBackend.swift in Sources */,
+				40B2B77E3F6E48CC8A541594 /* MPVClient.swift in Sources */,
+				083BC2841AF146C1BA5534A4 /* DecoderEngineMode.swift in Sources */,
+				92B6C61D71C64A898A8B6EBF /* WaveformData.swift in Sources */,
+				378A6CBCDD824FD4BDF02727 /* MediaItem.swift in Sources */,
+				EF4403B3F0A346DA8F158601 /* SentenceSegment.swift in Sources */,
+				6B7EAD32991F4716BCEA8E9D /* WaveformExtractor.swift in Sources */,
+				D21761A6DF354990A0217CDD /* VADSegmenter.swift in Sources */,
+				DBC123CFD9384704804E9A2E /* SubtitleExporter.swift in Sources */,
+				C3ACC8ADE78B40DDA30E3D2C /* TextAlignmentEngine.swift in Sources */,
+				92D589175FA24D8E84C797D2 /* SubtitleParser.swift in Sources */,
+				C3C1C6A296304341AB5A371D /* SegmentationStore.swift in Sources */,
+				C479F9FCB4E7439282F5BF8E /* ProjectFileManager.swift in Sources */,
+				0818CE61BF444432AA507312 /* SubtitleImportSheet.swift in Sources */,
+				74509350D5714FB9B4F8D5F5 /* SegmentListView.swift in Sources */,
+				C65125D806504C5AA8620140 /* VideoPlayerView.swift in Sources */,
+				FD543FF81E12468699DD1C55 /* WaveformComponents.swift in Sources */,
+				8D80579ABB634988B93353FD /* BoundaryMarkerHandle.swift in Sources */,
+				AA3BEA7E349449E6AF297E29 /* SecondaryWaveformView.swift in Sources */,
+				DB0FBE54C1E54245AB84362E /* PrimaryWaveformView.swift in Sources */,
+				724ACD2C6E6046709099E1A8 /* PlaybackControlView.swift in Sources */,
+				F7953B51516943D4802935A3 /* MainContentView.swift in Sources */,
+				6D20CC2B421044308D1E766B /* SubtitleEditView.swift in Sources */,
+				DD36DE78704E45029515ABAE /* IntensiveSettingsPopover.swift in Sources */,
+				F36699C395B8411484A387F0 /* DraggableWaveformOverlay.swift in Sources */,
+				BECAAB3547444244AD1E6A08 /* LanguageManager.swift in Sources */,
+				3F190A9C89BB4BAA90CB1285 /* MacAbobooApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5B8ED04403F14338B160446D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+					"GL_SILENCE_DEPRECATION=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				ENABLE_DEBUG_DYLIB = YES;
+				ENABLE_PREVIEWS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG GL_SILENCE_DEPRECATION";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B64EF9169734482A99F7F416 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GL_SILENCE_DEPRECATION=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "GL_SILENCE_DEPRECATION";
+				SWIFT_COMPILATION_MODE = "wholemodule";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		DF321D11F1E342929890C499 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_DEBUG_DYLIB = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D24AD65557EB446EBFD7A6B0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		67A1B6DCE1974C2CB355FAB2 /* Build configuration list for PBXProject "MacAboboo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5B8ED04403F14338B160446D /* Debug */,
+				B64EF9169734482A99F7F416 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD14962F3C71415FA5120C45 /* Build configuration list for PBXNativeTarget "MacAboboo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DF321D11F1E342929890C499 /* Debug */,
+				D24AD65557EB446EBFD7A6B0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = D58954227AA0486AA3D18DAB /* Project object */;
+}
