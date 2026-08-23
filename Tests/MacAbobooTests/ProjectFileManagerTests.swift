@@ -2,6 +2,33 @@ import XCTest
 @testable import MacAbobooKit
 
 final class ProjectFileManagerTests: XCTestCase {
+    func testDeleteProjectRemovesMetadataAndWaveformRecords() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-ProjectDeletionTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let manager = ProjectFileManager(baseDirectory: testDirectory)
+        let mediaURL = testDirectory.appendingPathComponent("lesson.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Lesson",
+            duration: 3,
+            lastPosition: 1,
+            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 3)],
+            waveformData: WaveformData(peaks: [0.1, 0.5], duration: 3, sampleRate: 100),
+            persistWaveform: true
+        )
+        manager.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manager.projectFileURL(for: mediaURL).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manager.waveformFileURL(for: mediaURL).path))
+
+        try manager.deleteProject(for: mediaURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manager.projectFileURL(for: mediaURL).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manager.waveformFileURL(for: mediaURL).path))
+    }
+
     func testSaveAndLoadIndividualProjectFile() {
         let testDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacAboboo-ProjectTests-\(UUID().uuidString)", isDirectory: true)

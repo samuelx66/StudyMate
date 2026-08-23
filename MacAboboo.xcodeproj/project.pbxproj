@@ -46,6 +46,9 @@
 		CDF1E5BEB01045B99D6A4AE6 /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */; };
 		DDD28B638DF74232A0D5EC33 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B2E89AB474410BAB4762BB /* SegmentListView.swift */; };
 		A10B0B001000000000000004 /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000004 /* SentenceLibraryView.swift */; };
+		A10B0B001000000000000005 /* SentenceLibraryPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000005 /* SentenceLibraryPlayer.swift */; };
+		A10B0B001000000000000006 /* PlaybackHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000006 /* PlaybackHistoryStore.swift */; };
+		A10B0B001000000000000007 /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000007 /* PlaybackListView.swift */; };
 		D9BEADAEB2EB419AA686028E /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3512BBB79174F009B131A31 /* VideoPlayerView.swift */; };
 		1F63E55E2EA844F4B821EEB3 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C231399E83F44E54989452D6 /* WaveformComponents.swift */; };
 		7D936D2BF1B9419BA30B681C /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */; };
@@ -108,6 +111,9 @@
 		56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
 		C7B2E89AB474410BAB4762BB /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SegmentListView.swift"; sourceTree = "<group>"; };
 		A10B0B002000000000000004 /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000005 /* SentenceLibraryPlayer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/SentenceLibraryPlayer.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000006 /* PlaybackHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/PlaybackHistoryStore.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000007 /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
 		C3512BBB79174F009B131A31 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
 		C231399E83F44E54989452D6 /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
 		DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
@@ -173,6 +179,7 @@
 				A6E2CDD9BB774DF1B0EC69CF /* SpeakerKit-LICENSE.txt */,
 				6518509669DF44B5BCED03D2 /* SpeakerKitModels */,
 				05CDB0FEE5C14C7787334F1C /* PlaybackEngine.swift */,
+				A10B0B002000000000000005 /* SentenceLibraryPlayer.swift */,
 				481A4FF011CA4826A7D2B8AB /* AVFoundationPlayerBackend.swift */,
 				01C771A2123C42459A8FFE9A /* MPVPlayerBackend.swift */,
 				0F77F00F5CFD4A009C904525 /* MediaPlayerBackend.swift */,
@@ -204,9 +211,11 @@
 				CC5B24A08FFB4F53AB12A67E /* ProjectFileManager.swift */,
 				A10B0B002000000000000002 /* SentenceLibraryStore.swift */,
 				A10B0B002000000000000003 /* SentenceLibraryManager.swift */,
+				A10B0B002000000000000006 /* PlaybackHistoryStore.swift */,
 				56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */,
 				C7B2E89AB474410BAB4762BB /* SegmentListView.swift */,
 				A10B0B002000000000000004 /* SentenceLibraryView.swift */,
+				A10B0B002000000000000007 /* PlaybackListView.swift */,
 				C3512BBB79174F009B131A31 /* VideoPlayerView.swift */,
 				C231399E83F44E54989452D6 /* WaveformComponents.swift */,
 				DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */,
@@ -349,9 +358,12 @@
 				BFD86F3A874247E9AFA62891 /* ProjectFileManager.swift in Sources */,
 				A10B0B001000000000000002 /* SentenceLibraryStore.swift in Sources */,
 				A10B0B001000000000000003 /* SentenceLibraryManager.swift in Sources */,
+				A10B0B001000000000000006 /* PlaybackHistoryStore.swift in Sources */,
 				CDF1E5BEB01045B99D6A4AE6 /* SubtitleImportSheet.swift in Sources */,
 				DDD28B638DF74232A0D5EC33 /* SegmentListView.swift in Sources */,
 				A10B0B001000000000000004 /* SentenceLibraryView.swift in Sources */,
+				A10B0B001000000000000007 /* PlaybackListView.swift in Sources */,
+				A10B0B001000000000000005 /* SentenceLibraryPlayer.swift in Sources */,
 				D9BEADAEB2EB419AA686028E /* VideoPlayerView.swift in Sources */,
 				1F63E55E2EA844F4B821EEB3 /* WaveformComponents.swift in Sources */,
 				7D936D2BF1B9419BA30B681C /* BoundaryMarkerHandle.swift in Sources */,
@@ -461,7 +473,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 15;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -471,7 +483,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
+				MARKETING_VERSION = 1.0.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -486,7 +498,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 15;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -495,7 +507,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
+				MARKETING_VERSION = 1.0.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

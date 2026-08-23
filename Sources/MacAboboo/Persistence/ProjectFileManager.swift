@@ -294,6 +294,29 @@ public final class ProjectFileManager: @unchecked Sendable {
         }
     }
 
+    /// 删除指定媒体在 Projects 目录中的全部工程记录，不触碰原始媒体文件。
+    /// 同时移除尚未落盘的保存请求，避免删除后被后台写入重新创建。
+    public func deleteProject(for mediaURL: URL) throws {
+        let standardizedURL = mediaURL.standardizedFileURL
+        pendingLock.lock()
+        pendingSaves.removeValue(forKey: standardizedURL.path)
+        pendingLock.unlock()
+
+        try fileQueue.sync {
+            let baseName = projectBaseName(for: standardizedURL)
+            let relatedFiles = try FileManager.default.contentsOfDirectory(
+                at: projectsDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ).filter { url in
+                url.lastPathComponent == baseName || url.lastPathComponent.hasPrefix(baseName + ".")
+            }
+            for url in relatedFiles {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
     private func loadProjectDirect(for mediaURL: URL) -> MediaProjectFile? {
         let metadataURL = projectFileURL(for: mediaURL)
         guard FileManager.default.fileExists(atPath: metadataURL.path) else { return nil }

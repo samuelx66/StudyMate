@@ -189,6 +189,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var previewEndTime: Double?
     private var securityScopedMediaURL: URL?
     private let projectFileManager: ProjectFileManager
+    private let playbackHistoryStore: PlaybackHistoryStore?
+    private var suppressCurrentProjectPersistence = false
 
     private enum SegmentOrigin {
         case none
@@ -212,19 +214,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.init(
             nativeBackend: AVFoundationPlayerBackend(),
             mpvBackend: MPVPlayerBackend(),
-            projectFileManager: .shared
+            projectFileManager: .shared,
+            playbackHistoryStore: .shared
         )
     }
 
     public init(
         nativeBackend: MediaPlayerBackend,
         mpvBackend: MediaPlayerBackend,
-        projectFileManager: ProjectFileManager = .shared
+        projectFileManager: ProjectFileManager = .shared,
+        playbackHistoryStore: PlaybackHistoryStore? = nil
     ) {
         self.nativeBackend = nativeBackend
         self.mpvBackend = mpvBackend
         self.activeBackend = nativeBackend
         self.projectFileManager = projectFileManager
+        self.playbackHistoryStore = playbackHistoryStore
         self.autoGenerateSubtitles = (UserDefaults.standard.object(forKey: autoGenerateSubtitlesKey) as? Bool) ?? true
         self.speechRecognitionLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
         let savedSpeakerCount = UserDefaults.standard.integer(forKey: expectedSpeakerCountKey)
@@ -550,6 +555,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             debouncedSaveTask?.cancel()
             persistCurrentProject()
         }
+
+        suppressCurrentProjectPersistence = false
+        playbackHistoryStore?.recordPlayed(mediaURL)
 
         if !isAlreadyScoped {
             securityScopedMediaURL?.stopAccessingSecurityScopedResource()
@@ -1168,7 +1176,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     // MARK: - 独立项目工程文件持久化存储
 
     public func persistCurrentProject(includeWaveform: Bool = false) {
-        guard let media = currentMedia else { return }
+        guard let media = currentMedia, !suppressCurrentProjectPersistence else { return }
 
         projectFileManager.saveProject(
             for: media.url,
@@ -1185,6 +1193,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         debouncedSaveTask?.cancel()
         persistCurrentProject()
         projectFileManager.flush()
+    }
+
+    /// 从播放列表移除媒体并清理其工程记录；原始音视频文件保持不变。
+    public func removeFromPlaybackHistory(_ mediaURL: URL) {
+        let standardizedURL = mediaURL.standardizedFileURL
+        if currentMedia?.url.standardizedFileURL == standardizedURL {
+            debouncedSaveTask?.cancel()
+            suppressCurrentProjectPersistence = true
+        }
+        playbackHistoryStore?.remove(standardizedURL)
+        do {
+            try projectFileManager.deleteProject(for: standardizedURL)
+        } catch {
+            lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                ? "删除该文件的工程记录失败：\(error.localizedDescription)"
+                : "Unable to delete project records for this file: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - 播放控制与极速 Seek

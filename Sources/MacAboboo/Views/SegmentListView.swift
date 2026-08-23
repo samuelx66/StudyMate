@@ -75,10 +75,10 @@ public struct SegmentListView: View {
 
                 // 将已选断句统一导出为音频和字幕
                 Menu {
-                    Button(lang.text("逐句导出 MP3＋字幕…", "Export separate MP3 + subtitles…")) {
+                    Button(lang.text("逐句导出 MP3＋LRC…", "Export separate MP3 + LRC…")) {
                         chooseIndividualExportDestination()
                     }
-                    Button(lang.text("合并导出 MP3＋字幕…", "Export merged MP3 + subtitles…")) {
+                    Button(lang.text("合并导出 MP3＋LRC…", "Export merged MP3 + LRC…")) {
                         chooseMergedExportDestination()
                     }
                 } label: {
@@ -94,8 +94,8 @@ public struct SegmentListView: View {
                 .focusable(false)
                 .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || isExporting)
                 .help(lang.text(
-                    selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 MP3 和字幕",
-                    selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as MP3 and subtitles"
+                    selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 MP3 和 LRC",
+                    selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as MP3 and LRC"
                 ))
 
                 // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
@@ -299,8 +299,12 @@ public struct SegmentListView: View {
                                     onDelete: {
                                         engine.deleteSegment(id: seg.id)
                                     },
-                                    onSaveText: { newText in
-                                        engine.updateSegmentText(id: seg.id, text: newText)
+                                    onSaveText: { originalText, translationText in
+                                        engine.updateSegmentText(
+                                            id: seg.id,
+                                            text: originalText,
+                                            translation: translationText
+                                        )
                                     }
                                 )
                                 .id(seg.id)
@@ -350,7 +354,7 @@ public struct SegmentListView: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = lang.text("选择", "Choose")
-        panel.message = lang.text("选择逐句 MP3 和字幕的保存位置", "Choose where to save separate MP3 and subtitle files")
+        panel.message = lang.text("选择逐句 MP3 和 LRC 的保存位置", "Choose where to save separate MP3 and LRC files")
         if panel.runModal() == .OK, let directory = panel.url {
             let segments = selectedSegments
             performExport {
@@ -370,7 +374,7 @@ public struct SegmentListView: View {
         panel.canCreateDirectories = true
         panel.allowedContentTypes = [.mp3]
         panel.nameFieldStringValue = media.title + "-已选句子.mp3"
-        panel.message = lang.text("将生成一个 MP3 和一个同名 SRT 字幕", "One MP3 and one matching SRT subtitle will be created")
+        panel.message = lang.text("将生成一个 MP3 和一个同名 LRC 字幕", "One MP3 and one matching LRC subtitle will be created")
         if panel.runModal() == .OK, let audioURL = panel.url {
             let segments = selectedSegments
             performExport {
@@ -443,6 +447,11 @@ private struct SegmentExportNotice: Identifiable {
 
 /// 单行断句单元格
 struct SegmentRowView: View {
+    private enum EditField: Hashable {
+        case original
+        case translation
+    }
+
     let seg: SentenceSegment
     let isActive: Bool
     let isSelectedForExport: Bool
@@ -452,12 +461,13 @@ struct SegmentRowView: View {
     let onSplit: () -> Void
     let onMergeNext: () -> Void
     let onDelete: () -> Void
-    let onSaveText: (String) -> Void
+    let onSaveText: (String, String) -> Void
 
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
-    @State private var tempText: String = ""
-    @FocusState private var isFieldFocused: Bool
+    @State private var tempOriginalText: String = ""
+    @State private var tempTranslationText: String = ""
+    @FocusState private var focusedField: EditField?
     @ObservedObject private var lang = LanguageManager.shared
 
     var body: some View {
@@ -535,15 +545,16 @@ struct SegmentRowView: View {
                         if isHovering {
                             HStack(spacing: 4) {
                                 Button(action: {
-                                    tempText = seg.text
+                                    tempOriginalText = seg.text
+                                    tempTranslationText = seg.translation
                                     isEditing = true
-                                    isFieldFocused = true
+                                    focusedField = .original
                                 }) {
                                     Image(systemName: "pencil")
                                         .font(.system(size: 9))
                                 }
                                 .buttonStyle(.plain)
-                                .help(lang.localized(.editSentenceText))
+                                .help(lang.text("编辑原文和译文", "Edit original text and translation"))
 
                                 Button(action: onSplit) {
                                     Image(systemName: "rectangle.split.2x1")
@@ -572,28 +583,7 @@ struct SegmentRowView: View {
 
                     // 第二行：分为两个区域，左边显示原文，右边显示译文
                     if isEditing {
-                        HStack(spacing: 4) {
-                            TextField(lang.text("原文…", "Original text…"), text: $tempText)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption)
-                                .focused($isFieldFocused)
-                                .onSubmit {
-                                    onSaveText(tempText)
-                                    isEditing = false
-                                }
-                                .onChange(of: isFieldFocused) { _, focused in
-                                    if !focused {
-                                        onSaveText(tempText)
-                                        isEditing = false
-                                    }
-                                }
-
-                            Button(lang.text("完成", "Done")) {
-                                onSaveText(tempText)
-                                isEditing = false
-                            }
-                            .controlSize(.mini)
-                        }
+                        editingFields
                     } else {
                         HStack(alignment: .top, spacing: 6) {
                             // 左边区域：原文（若无输入则显示默认占位 Sentence #）
@@ -633,6 +623,41 @@ struct SegmentRowView: View {
         .onHover { inside in
             isHovering = inside
         }
+    }
+
+    private var editingFields: some View {
+        HStack(spacing: 4) {
+            TextField(lang.text("原文…", "Original text…"), text: $tempOriginalText)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .focused($focusedField, equals: .original)
+                .onSubmit {
+                    focusedField = .translation
+                }
+
+            TextField(lang.text("译文…", "Translation…"), text: $tempTranslationText)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .focused($focusedField, equals: .translation)
+                .onSubmit {
+                    finishEditing()
+                }
+
+            Button(lang.text("完成", "Done"), action: finishEditing)
+                .controlSize(.mini)
+        }
+        .onChange(of: focusedField) { oldField, newField in
+            if oldField != nil, newField == nil {
+                finishEditing()
+            }
+        }
+    }
+
+    private func finishEditing() {
+        guard isEditing else { return }
+        onSaveText(tempOriginalText, tempTranslationText)
+        isEditing = false
+        focusedField = nil
     }
 }
 

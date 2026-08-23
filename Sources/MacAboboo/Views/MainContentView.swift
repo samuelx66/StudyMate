@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
 public struct MainContentView: View {
     @StateObject private var engine = PlaybackEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
     
     @State private var isSidebarVisible: Bool = true
+    @State private var isPlaylistVisible: Bool = false
     @State private var isWaveformsVisible: Bool = true
     @State private var isSubtitleEditVisible: Bool = false
     @State private var isDropTargeted: Bool = false
@@ -65,9 +67,14 @@ public struct MainContentView: View {
                 SegmentListView(engine: engine)
                     .frame(minWidth: 260, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
             }
+
         }
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
+        .overlay(alignment: .topTrailing) {
+            playlistOverlay
+        }
         // 顶部工具栏 (紧凑型设计)
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -109,18 +116,16 @@ public struct MainContentView: View {
                 .pickerStyle(.menu)
                 .frame(width: 95)
                 
-                // 波形图折叠/展开开关
+                // 播放列表显示/隐藏开关
                 Button(action: {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                        isWaveformsVisible.toggle()
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        isPlaylistVisible.toggle()
                     }
                 }) {
-                    Image(systemName: isWaveformsVisible ? "rectangle.split.1x2" : "rectangle.expand.vertical")
+                    Image(systemName: "music.note.list")
+                        .foregroundStyle(isPlaylistVisible ? Color.blue : Color.primary)
                 }
-                .help(isWaveformsVisible
-                    ? lang.text("折叠双波形图，最大化播放画面（⌥W）", "Hide waveforms and maximize video (⌥W)")
-                    : lang.text("展开双波形图（⌥W）", "Show waveforms (⌥W)"))
-                .keyboardShortcut("w", modifiers: [.option])
+                .help(lang.text("显示或隐藏播放列表", "Show or hide the playlist"))
                 
                 // 侧边栏折叠开关
                 Button(action: {
@@ -161,6 +166,41 @@ public struct MainContentView: View {
             Button(lang.text("好", "OK"), role: .cancel) {}
         } message: {
             Text(engine.lastErrorMessage ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var playlistOverlay: some View {
+        if isPlaylistVisible {
+            ZStack(alignment: .topTrailing) {
+                // 点击播放列表之外的任意内容区域时自动收起，并阻止点击穿透到底层。
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        hidePlaylist()
+                    }
+
+                playlistPanel
+            }
+            .transition(.asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .trailing).combined(with: .opacity)
+            ))
+        }
+    }
+
+    private var playlistPanel: some View {
+        PlaybackListView(engine: engine, historyStore: playbackHistory)
+            .frame(width: 480)
+            .frame(maxHeight: .infinity)
+            .background(.thinMaterial)
+            .border(Color(nsColor: .separatorColor).opacity(0.5), width: 1)
+            .shadow(color: Color.black.opacity(0.2), radius: 12, x: -4, y: 2)
+    }
+
+    private func hidePlaylist() {
+        withAnimation(.easeInOut(duration: 0.24)) {
+            isPlaylistVisible = false
         }
     }
     
@@ -266,6 +306,7 @@ public struct WaveformCollapseToggleBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .keyboardShortcut("w", modifiers: [.option])
         .onHover { hovering in
             isHovered = hovering
             if hovering {

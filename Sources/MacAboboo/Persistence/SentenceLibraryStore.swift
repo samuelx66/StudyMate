@@ -80,7 +80,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func entries(
         libraryID: UUID,
         searchText: String = "",
-        createdAfter: Date? = nil
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil
     ) throws -> [SentenceLibraryEntry] {
         try queue.sync {
             try validateLibrary(id: libraryID)
@@ -91,6 +92,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     clauses.append("(original_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR translation LIKE ? ESCAPE '\\' COLLATE NOCASE)")
                 }
                 if createdAfter != nil { clauses.append("created_at >= ?") }
+                if createdBefore != nil { clauses.append("created_at < ?") }
                 let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
                 let sql = """
                 SELECT id, original_text, translation, note, source_media_name,
@@ -112,6 +114,10 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 if let createdAfter {
                     sqlite3_bind_double(statement, position, createdAfter.timeIntervalSince1970)
+                    position += 1
+                }
+                if let createdBefore {
+                    sqlite3_bind_double(statement, position, createdBefore.timeIntervalSince1970)
                 }
                 var result: [SentenceLibraryEntry] = []
                 while sqlite3_step(statement) == SQLITE_ROW {

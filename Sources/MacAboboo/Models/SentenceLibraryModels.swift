@@ -68,10 +68,15 @@ public enum SentenceLibraryDateFilter: String, CaseIterable, Identifiable, Senda
     case today
     case lastSevenDays
     case lastThirtyDays
+    case specificDay
 
     public var id: String { rawValue }
 
-    public func lowerBound(now: Date = Date(), calendar: Calendar = .current) -> Date? {
+    public func lowerBound(
+        now: Date = Date(),
+        selectedDate: Date? = nil,
+        calendar: Calendar = .current
+    ) -> Date? {
         switch self {
         case .all:
             return nil
@@ -81,6 +86,24 @@ public enum SentenceLibraryDateFilter: String, CaseIterable, Identifiable, Senda
             return calendar.date(byAdding: .day, value: -7, to: now)
         case .lastThirtyDays:
             return calendar.date(byAdding: .day, value: -30, to: now)
+        case .specificDay:
+            return calendar.startOfDay(for: selectedDate ?? now)
+        }
+    }
+
+    public func upperBound(
+        now: Date = Date(),
+        selectedDate: Date? = nil,
+        calendar: Calendar = .current
+    ) -> Date? {
+        switch self {
+        case .today:
+            return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))
+        case .specificDay:
+            let start = calendar.startOfDay(for: selectedDate ?? now)
+            return calendar.date(byAdding: .day, value: 1, to: start)
+        case .all, .lastSevenDays, .lastThirtyDays:
+            return nil
         }
     }
 }

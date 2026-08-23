@@ -59,20 +59,74 @@ public final class SubtitleExporter {
         return srtContent
     }
     
-    /// 导出为标准 LRC 歌词格式字符串
-    public func exportToLRC(segments: [SentenceSegment], title: String = "") -> String {
+    /// 导出为标准双语 LRC 歌词格式字符串。原文和译文使用相同时间戳，
+    /// MacAboboo 再次导入时会自动组合成同一条双语字幕。
+    public func exportToLRC(
+        segments: [SentenceSegment],
+        title: String = "",
+        includeTranslation: Bool = true
+    ) -> String {
+        exportToLRC(
+            segments: segments,
+            startTimes: segments.map(\.startTime),
+            title: title,
+            includeTranslation: includeTranslation
+        )
+    }
+
+    /// 将不连续的断句按合并后 MP3 的连续时间轴生成 LRC。
+    public func exportToConcatenatedLRC(
+        segments: [SentenceSegment],
+        title: String = "",
+        includeTranslation: Bool = true
+    ) -> String {
+        var cursor = 0.0
+        let startTimes = segments.map { segment -> Double in
+            defer { cursor += segment.duration }
+            return cursor
+        }
+        return exportToLRC(
+            segments: segments,
+            startTimes: startTimes,
+            title: title,
+            includeTranslation: includeTranslation
+        )
+    }
+
+    private func exportToLRC(
+        segments: [SentenceSegment],
+        startTimes: [Double],
+        title: String,
+        includeTranslation: Bool
+    ) -> String {
         var lrcContent = ""
         if !title.isEmpty {
             lrcContent += "[ti:\(title)]\n"
         }
         
-        for seg in segments {
-            let timeLRC = formatLRCTimestamp(seg.startTime)
-            let text = seg.text.isEmpty ? "(music)" : seg.text
-            lrcContent += "[\(timeLRC)]\(text)\n"
+        for (segment, startTime) in zip(segments, startTimes) {
+            let timeLRC = formatLRCTimestamp(startTime)
+            let originalLines = normalizedLRCLines(segment.text)
+            let translationLines = includeTranslation ? normalizedLRCLines(segment.translation) : []
+            if originalLines.isEmpty, translationLines.isEmpty {
+                lrcContent += "[\(timeLRC)](music)\n"
+                continue
+            }
+            for line in originalLines {
+                lrcContent += "[\(timeLRC)]\(line)\n"
+            }
+            for line in translationLines {
+                lrcContent += "[\(timeLRC)]\(line)\n"
+            }
         }
         
         return lrcContent
+    }
+
+    private func normalizedLRCLines(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
     
     /// 格式化为 00:01:23,456
@@ -127,7 +181,7 @@ public enum SegmentMediaExportError: LocalizedError {
     }
 }
 
-/// 将已选断句导出为 MP3 与时间轴同步的双语 SRT。
+/// 将已选断句导出为 MP3 与时间轴同步的双语 LRC。
 public final class SegmentMediaExporter: @unchecked Sendable {
     public static let shared = SegmentMediaExporter()
 
@@ -155,10 +209,13 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 let suffix = String(format: "%04d", max(1, segment.index))
                 let fileBase = "\(sanitizedFileName(baseName))-\(suffix)"
                 let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("mp3")
-                let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("srt")
+                let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
                 try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: audioURL)
                 do {
-                    let subtitle = SubtitleExporter.shared.exportToConcatenatedSRT(segments: [segment])
+                    let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+                        segments: [segment],
+                        title: fileBase
+                    )
                     try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
                 } catch {
                     try? FileManager.default.removeItem(at: audioURL)
@@ -196,9 +253,12 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             try exportConcatenatedAudio(mediaURL: mediaURL, segments: ordered, outputURL: outputAudioURL)
         }
 
-        let subtitleURL = outputAudioURL.deletingPathExtension().appendingPathExtension("srt")
+        let subtitleURL = outputAudioURL.deletingPathExtension().appendingPathExtension("lrc")
         do {
-            let subtitle = SubtitleExporter.shared.exportToConcatenatedSRT(segments: ordered)
+            let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+                segments: ordered,
+                title: outputAudioURL.deletingPathExtension().lastPathComponent
+            )
             try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
         } catch {
             try? FileManager.default.removeItem(at: outputAudioURL)

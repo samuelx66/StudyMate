@@ -5,16 +5,25 @@ import UniformTypeIdentifiers
 public struct SentenceLibraryView: View {
     @ObservedObject var manager: SentenceLibraryManager
     @ObservedObject private var lang = LanguageManager.shared
+    @StateObject private var libraryPlayer: SentenceLibraryPlayer
 
     @State private var searchText = ""
     @State private var dateFilter: SentenceLibraryDateFilter = .all
+    @State private var selectedDate = Date()
     @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var selectedEntryID: UUID?
+    @State private var previewRequest: SentencePreviewRequest?
     @State private var showCreateSheet = false
     @State private var confirmLibraryDeletion = false
     @State private var notice: SentenceLibraryNotice?
 
     public init(manager: SentenceLibraryManager) {
         self.manager = manager
+        self._libraryPlayer = StateObject(wrappedValue: SentenceLibraryPlayer())
+    }
+
+    private var selectedEntry: SentenceLibraryEntry? {
+        manager.entries.first { $0.id == selectedEntryID }
     }
 
     public var body: some View {
@@ -74,9 +83,16 @@ public struct SentenceLibraryView: View {
                         Text(lang.text("今天", "Today")).tag(SentenceLibraryDateFilter.today)
                         Text(lang.text("近 7 天", "Last 7 Days")).tag(SentenceLibraryDateFilter.lastSevenDays)
                         Text(lang.text("近 30 天", "Last 30 Days")).tag(SentenceLibraryDateFilter.lastThirtyDays)
+                        Text(lang.text("指定日期", "Specific Date")).tag(SentenceLibraryDateFilter.specificDay)
                     }
                     .labelsHidden()
                     .frame(width: 130)
+
+                    if dateFilter == .specificDay {
+                        DatePicker("", selection: $selectedDate, displayedComponents: .date)
+                            .labelsHidden()
+                            .frame(width: 120)
+                    }
 
                     if !selectedEntryIDs.isEmpty {
                         Button(role: .destructive) { deleteSelectedEntries() } label: {
@@ -87,6 +103,13 @@ public struct SentenceLibraryView: View {
                 }
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+
+                SentenceLibraryPlaybackBar(
+                    player: libraryPlayer,
+                    selectedEntry: selectedEntry
+                )
 
                 Divider()
 
@@ -103,8 +126,20 @@ public struct SentenceLibraryView: View {
                                 SentenceLibraryEntryRow(
                                     entry: entry,
                                     previewURL: manager.previewURL(for: entry),
-                                    isSelected: selectedEntryIDs.contains(entry.id),
-                                    onToggleSelection: { toggleSelection(entry.id) }
+                                    isActive: selectedEntryID == entry.id,
+                                    isChecked: selectedEntryIDs.contains(entry.id),
+                                    onToggleCheck: { toggleSelection(entry.id) },
+                                    onSelect: { selectedEntryID = entry.id },
+                                    onPlay: {
+                                        selectedEntryID = entry.id
+                                        libraryPlayer.play(entry)
+                                    },
+                                    onPreview: {
+                                        if let previewURL = manager.previewURL(for: entry) {
+                                            selectedEntryID = entry.id
+                                            previewRequest = SentencePreviewRequest(url: previewURL, title: entry.originalText)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -116,21 +151,34 @@ public struct SentenceLibraryView: View {
         }
         .frame(minWidth: 820, minHeight: 560)
         .onAppear {
-            manager.updateFilter(searchText: searchText, dateFilter: dateFilter)
+            manager.updateFilter(searchText: searchText, dateFilter: dateFilter, selectedDate: selectedDate)
+        }
+        .onDisappear {
+            libraryPlayer.stop()
         }
         .onChange(of: searchText) { _, value in
-            manager.updateFilter(searchText: value, dateFilter: dateFilter)
+            manager.updateFilter(searchText: value, dateFilter: dateFilter, selectedDate: selectedDate)
             selectedEntryIDs.formIntersection(manager.entries.map(\.id))
         }
         .onChange(of: dateFilter) { _, value in
-            manager.updateFilter(searchText: searchText, dateFilter: value)
+            manager.updateFilter(searchText: searchText, dateFilter: value, selectedDate: selectedDate)
             selectedEntryIDs.formIntersection(manager.entries.map(\.id))
+        }
+        .onChange(of: selectedDate) { _, value in
+            guard dateFilter == .specificDay else { return }
+            manager.updateFilter(searchText: searchText, dateFilter: dateFilter, selectedDate: value)
         }
         .onChange(of: manager.currentLibraryID) { _, _ in
             selectedEntryIDs.removeAll()
+            selectedEntryID = nil
+            libraryPlayer.stop()
         }
         .onChange(of: manager.entries.map(\.id)) { _, currentIDs in
             selectedEntryIDs.formIntersection(currentIDs)
+            if let selectedEntryID, !currentIDs.contains(selectedEntryID) {
+                self.selectedEntryID = nil
+                libraryPlayer.stop()
+            }
         }
         .sheet(isPresented: $showCreateSheet) {
             SentenceLibraryCreationSheet { name in
@@ -140,6 +188,9 @@ public struct SentenceLibraryView: View {
                     notice = SentenceLibraryNotice(title: lang.text("无法新建句库", "Unable to Create Library"), message: error.localizedDescription)
                 }
             }
+        }
+        .sheet(item: $previewRequest) { request in
+            SentenceImagePreview(request: request)
         }
         .confirmationDialog(
             lang.text("删除当前句库？", "Delete Current Library?"),
@@ -168,10 +219,15 @@ public struct SentenceLibraryView: View {
 
     private func deleteSelectedEntries() {
         let ids = selectedEntryIDs
+        let removesActiveEntry = selectedEntryID.map(ids.contains) ?? false
         Task {
             do {
                 try await manager.deleteEntries(ids: ids)
                 selectedEntryIDs.removeAll()
+                if removesActiveEntry {
+                    selectedEntryID = nil
+                    libraryPlayer.stop()
+                }
             } catch {
                 notice = SentenceLibraryNotice(title: lang.text("删除失败", "Delete Failed"), message: error.localizedDescription)
             }
@@ -218,10 +274,15 @@ public struct SentenceLibraryView: View {
 }
 
 private struct SentenceLibraryEntryRow: View {
+    @ObservedObject private var lang = LanguageManager.shared
     let entry: SentenceLibraryEntry
     let previewURL: URL?
-    let isSelected: Bool
-    let onToggleSelection: () -> Void
+    let isActive: Bool
+    let isChecked: Bool
+    let onToggleCheck: () -> Void
+    let onSelect: () -> Void
+    let onPlay: () -> Void
+    let onPreview: () -> Void
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -232,55 +293,182 @@ private struct SentenceLibraryEntryRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Toggle("", isOn: Binding(get: { isSelected }, set: { _ in onToggleSelection() }))
+            Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggleCheck() }))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
 
-            Group {
-                if let previewURL, let image = NSImage(contentsOf: previewURL) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    ZStack {
-                        Color.secondary.opacity(0.08)
-                        Image(systemName: "waveform")
+            HStack(alignment: .top, spacing: 12) {
+                Button(action: onPreview) {
+                    Group {
+                        if let previewURL, let image = NSImage(contentsOf: previewURL) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            ZStack {
+                                Color.secondary.opacity(0.08)
+                                Image(systemName: "waveform")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .frame(width: 132, height: 74)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(alignment: .bottomTrailing) {
+                        if previewURL != nil {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption2.weight(.semibold))
+                                .padding(5)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                                .padding(5)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(previewURL == nil)
+                .help(previewURL == nil ? "" : lang.text("点击放大预览", "Click to enlarge preview"))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    if !entry.originalText.isEmpty {
+                        Text(entry.originalText)
+                            .font(.body)
+                    }
+                    if !entry.translation.isEmpty {
+                        Text(entry.translation)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
-                }
-            }
-            .frame(width: 132, height: 74)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            VStack(alignment: .leading, spacing: 5) {
-                if !entry.originalText.isEmpty {
-                    Text(entry.originalText)
-                        .font(.body)
-                        .textSelection(.enabled)
-                }
-                if !entry.translation.isEmpty {
-                    Text(entry.translation)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                HStack(spacing: 10) {
-                    Label(Self.dateFormatter.string(from: entry.createdAt), systemImage: "calendar")
-                    if !entry.sourceMediaName.isEmpty {
-                        Label(entry.sourceMediaName, systemImage: "play.rectangle")
-                            .lineLimit(1)
+                    HStack(spacing: 10) {
+                        Label(Self.dateFormatter.string(from: entry.createdAt), systemImage: "calendar")
+                        if !entry.sourceMediaName.isEmpty {
+                            Label(entry.sourceMediaName, systemImage: "play.rectangle")
+                                .lineLimit(1)
+                        }
+                        Text("\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))")
                     }
-                    Text("\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                 }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            }
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2, perform: onPlay)
+            .onTapGesture(count: 1, perform: onSelect)
         }
         .padding(10)
-        .background(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+        .background(isActive ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isActive ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 1)
+        }
+    }
+}
+
+private struct SentenceLibraryPlaybackBar: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject var player: SentenceLibraryPlayer
+    let selectedEntry: SentenceLibraryEntry?
+
+    private var displayedEntry: SentenceLibraryEntry? {
+        player.currentEntry ?? selectedEntry
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                Button {
+                    player.togglePlayback(for: selectedEntry)
+                } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .frame(width: 14)
+                }
+                .buttonStyle(.borderless)
+                .disabled(selectedEntry == nil)
+                .help(player.isPlaying ? lang.text("暂停", "Pause") : lang.text("播放所选句子", "Play selected sentence"))
+
+                Text(formatTime(player.currentTime))
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .trailing)
+
+                Slider(
+                    value: Binding(
+                        get: { player.currentTime },
+                        set: { player.seek(to: $0) }
+                    ),
+                    in: 0...max(0.05, player.duration)
+                )
+                .disabled(player.currentEntry == nil)
+
+                Text(formatTime(player.duration))
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .leading)
+
+                Text(displayedEntry?.originalText ?? lang.text("单击选择句子，双击即可播放", "Click to select, double-click to play"))
+                    .font(.caption)
+                    .foregroundStyle(displayedEntry == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                    .frame(minWidth: 180, alignment: .leading)
+            }
+
+            if let errorMessage = player.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "00:00" }
+        let whole = max(0, Int(seconds.rounded(.down)))
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
+    }
+}
+
+private struct SentencePreviewRequest: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+}
+
+private struct SentenceImagePreview: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var lang = LanguageManager.shared
+    let request: SentencePreviewRequest
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text(request.title.isEmpty ? lang.text("句子预览", "Sentence Preview") : request.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                Button(lang.text("关闭", "Close")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if let image = NSImage(contentsOf: request.url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.92))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                ContentUnavailableView(
+                    lang.text("无法读取预览图片", "Unable to Read Preview"),
+                    systemImage: "photo.badge.exclamationmark"
+                )
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 720, minHeight: 500)
     }
 }
 

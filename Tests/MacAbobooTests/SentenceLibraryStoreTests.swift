@@ -2,6 +2,30 @@ import XCTest
 @testable import MacAbobooKit
 
 final class SentenceLibraryStoreTests: XCTestCase {
+    func testSpecificDayFilterUsesExactCalendarDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let selectedDate = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 23,
+            hour: 15,
+            minute: 30
+        )))
+
+        let lower = try XCTUnwrap(SentenceLibraryDateFilter.specificDay.lowerBound(
+            selectedDate: selectedDate,
+            calendar: calendar
+        ))
+        let upper = try XCTUnwrap(SentenceLibraryDateFilter.specificDay.upperBound(
+            selectedDate: selectedDate,
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(calendar.component(.hour, from: lower), 0)
+        XCTAssertEqual(calendar.dateComponents([.day], from: lower, to: upper).day, 1)
+    }
+
     private var temporaryDirectory: URL!
     private var store: SentenceLibraryStore!
 
@@ -51,6 +75,19 @@ final class SentenceLibraryStoreTests: XCTestCase {
             try store.entries(libraryID: library.id, createdAfter: Date(timeIntervalSince1970: 1_500)).map(\.id),
             [newEntry.id]
         )
+        XCTAssertEqual(
+            try store.entries(
+                libraryID: library.id,
+                createdAfter: Date(timeIntervalSince1970: 1_500),
+                createdBefore: Date(timeIntervalSince1970: 2_500)
+            ).map(\.id),
+            [newEntry.id]
+        )
+        XCTAssertTrue(try store.entries(
+            libraryID: library.id,
+            createdAfter: Date(timeIntervalSince1970: 2_001),
+            createdBefore: Date(timeIntervalSince1970: 3_000)
+        ).isEmpty)
         let previewURL = try XCTUnwrap(store.previewURL(for: newEntry, libraryID: library.id))
         XCTAssertEqual(try Data(contentsOf: previewURL), imageData)
 

@@ -17,6 +17,7 @@ public final class SentenceLibraryManager: ObservableObject {
     private let currentLibraryKey = "MacAboboo.CurrentSentenceLibraryID"
     private var searchText = ""
     private var dateFilter: SentenceLibraryDateFilter = .all
+    private var selectedFilterDate = Date()
     private var queryTask: Task<Void, Never>?
 
     public init(
@@ -45,9 +46,14 @@ public final class SentenceLibraryManager: ObservableObject {
         reloadEntries()
     }
 
-    public func updateFilter(searchText: String, dateFilter: SentenceLibraryDateFilter) {
+    public func updateFilter(
+        searchText: String,
+        dateFilter: SentenceLibraryDateFilter,
+        selectedDate: Date? = nil
+    ) {
         self.searchText = searchText
         self.dateFilter = dateFilter
+        if let selectedDate { selectedFilterDate = selectedDate }
         reloadEntries(debounceNanoseconds: 150_000_000)
     }
 
@@ -58,7 +64,9 @@ public final class SentenceLibraryManager: ObservableObject {
             return
         }
         let query = searchText
-        let lowerBound = dateFilter.lowerBound()
+        let filterDate = selectedFilterDate
+        let lowerBound = dateFilter.lowerBound(selectedDate: filterDate)
+        let upperBound = dateFilter.upperBound(selectedDate: filterDate)
         queryTask = Task { [weak self, store] in
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
@@ -69,7 +77,8 @@ public final class SentenceLibraryManager: ObservableObject {
                     try store.entries(
                         libraryID: libraryID,
                         searchText: query,
-                        createdAfter: lowerBound
+                        createdAfter: lowerBound,
+                        createdBefore: upperBound
                     )
                 }
             }.value

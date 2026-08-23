@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class PlaybackEngineTests: XCTestCase {
+    func testOpeningAndRemovingMediaUpdatesPlaylistAndSuppressesProjectRecreation() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("history.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let projects = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: projects,
+            playbackHistoryStore: history
+        )
+
+        engine.loadMedia(from: mediaURL)
+        XCTAssertEqual(history.entries.map(\.mediaPath), [mediaURL.path])
+        engine.persistCurrentProject(includeWaveform: true)
+        projects.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
+
+        engine.removeFromPlaybackHistory(mediaURL)
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
+
+        engine.persistCurrentProject(includeWaveform: true)
+        projects.flush()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
+    }
+
     func testSegmentOperations() {
         let engine = makeTestPlaybackEngine()
         engine.duration = 60.0
@@ -68,6 +97,27 @@ final class PlaybackEngineTests: XCTestCase {
         engine.updateSegmentAnchor(id: secondID, start: 8.5)
         XCTAssertEqual(engine.segments[0].endTime, 6.25, accuracy: 0.0001)
         XCTAssertEqual(engine.segments[1].startTime, 8.5, accuracy: 0.0001)
+    }
+
+    func testSegmentEditorSavesOriginalAndTranslationTogether() {
+        let engine = makeTestPlaybackEngine()
+        let segment = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 3,
+            text: "Old original",
+            translation: "旧译文"
+        )
+        engine.segments = [segment]
+
+        engine.updateSegmentText(
+            id: segment.id,
+            text: "New original",
+            translation: "新译文"
+        )
+
+        XCTAssertEqual(engine.segments[0].text, "New original")
+        XCTAssertEqual(engine.segments[0].translation, "新译文")
     }
 
     func testActiveSegmentDetection() {

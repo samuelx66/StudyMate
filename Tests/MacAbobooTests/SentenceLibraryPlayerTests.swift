@@ -1,0 +1,52 @@
+import XCTest
+@testable import MacAbobooKit
+
+@MainActor
+final class SentenceLibraryPlayerTests: XCTestCase {
+    func testPlayingEntryLoadsAndSeeksIndependentBackendToSentenceRange() async throws {
+        let mediaURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryPlayer-\(UUID().uuidString).mp4")
+        try Data("test-media".utf8).write(to: mediaURL)
+        defer { try? FileManager.default.removeItem(at: mediaURL) }
+
+        let backend = TestMediaPlayerBackend(duration: 60)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entry = makeEntry(path: mediaURL.path, start: 12.5, end: 14.75)
+
+        player.play(entry)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(backend.loadedURL, mediaURL)
+        XCTAssertEqual(backend.currentTime, 12.5, accuracy: 0.001)
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertEqual(player.duration, 2.25, accuracy: 0.001)
+
+        backend.emitTime(14.75)
+        XCTAssertFalse(backend.isPlaying)
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertEqual(player.currentTime, 2.25, accuracy: 0.001)
+    }
+
+    func testMissingSourceReportsReadableErrorWithoutLoadingBackend() {
+        let backend = TestMediaPlayerBackend()
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+
+        player.play(makeEntry(path: "/path/that/does/not/exist.mp4", start: 1, end: 2))
+
+        XCTAssertEqual(backend.loadCount, 0)
+        XCTAssertNotNil(player.errorMessage)
+        XCTAssertFalse(player.isPlaying)
+    }
+
+    private func makeEntry(path: String, start: Double, end: Double) -> SentenceLibraryEntry {
+        SentenceLibraryEntry(
+            originalText: "Original",
+            translation: "译文",
+            sourceMediaName: URL(fileURLWithPath: path).lastPathComponent,
+            sourceMediaPath: path,
+            startTime: start,
+            endTime: end
+        )
+    }
+}

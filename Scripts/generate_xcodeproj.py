@@ -373,7 +373,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tCURRENT_PROJECT_VERSION = 9;
+\t\t\t\tCURRENT_PROJECT_VERSION = 15;
 \t\t\t\tENABLE_DEBUG_DYLIB = YES;
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
@@ -383,7 +383,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = 1.0.8;
+\t\t\t\tMARKETING_VERSION = 1.0.14;
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -398,7 +398,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tCURRENT_PROJECT_VERSION = 9;
+\t\t\t\tCURRENT_PROJECT_VERSION = 15;
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
 \t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -407,7 +407,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = 1.0.8;
+\t\t\t\tMARKETING_VERSION = 1.0.14;
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
