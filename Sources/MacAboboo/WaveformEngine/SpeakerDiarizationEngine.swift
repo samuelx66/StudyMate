@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 import SpeakerKit
 
 /// 一段由 SpeakerKit 标注的说话人活动区间。
@@ -58,6 +59,8 @@ public actor SpeakerDiarizationEngine {
 
     private var speakerKit: SpeakerKit?
     private var loadedModelFolder: URL?
+    private var speakerBackend: SpeechInferenceBackend = .cpu
+    private var speakerAccelerationUnavailable = false
 
     public init() {}
 
@@ -86,13 +89,41 @@ public actor SpeakerDiarizationEngine {
             clipTimestamps: []
         )
 
-        let result = try await kit.diarize(
-            audioArray: pcm.samples,
-            options: options,
-            progressCallback: { callbackProgress in
-                progress(min(1, max(0, callbackProgress.fractionCompleted)))
+        let result: DiarizationResult
+        do {
+            result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+                try await kit.diarize(
+                    audioArray: pcm.samples,
+                    options: options,
+                    progressCallback: { callbackProgress in
+                        progress(min(1, max(0, callbackProgress.fractionCompleted)))
+                    }
+                )
             }
-        )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Core ML backends vary across macOS versions and model variants.
+            // If the accelerated path cannot load or infer, unload it once and
+            // retry the identical SpeakerKit options on CPU. The fallback is
+            // deliberately outside the boundary optimizer, so sentence logic
+            // and overlap preservation remain unchanged.
+            guard speakerBackend == .coreML else { throw error }
+            await kit.unloadModels()
+            speakerKit = nil
+            loadedModelFolder = nil
+            speakerAccelerationUnavailable = true
+            let cpuKit = try await loadSpeakerKit(forceCPU: true)
+            result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+                try await cpuKit.diarize(
+                    audioArray: pcm.samples,
+                    options: options,
+                    progressCallback: { callbackProgress in
+                        progress(min(1, max(0, callbackProgress.fractionCompleted)))
+                    }
+                )
+            }
+        }
         try Task.checkCancellation()
         progress(1)
         return Self.makeTimeline(from: result, duration: pcm.duration)
@@ -102,13 +133,25 @@ public actor SpeakerDiarizationEngine {
         await speakerKit?.unloadModels()
         speakerKit = nil
         loadedModelFolder = nil
+        speakerBackend = .cpu
+        speakerAccelerationUnavailable = false
     }
 
-    private func loadSpeakerKit() async throws -> SpeakerKit {
+    private func loadSpeakerKit(forceCPU: Bool = false) async throws -> SpeakerKit {
         let modelFolder = try Self.bundledModelFolder()
+        let policy = SpeechInferenceResourcePolicy.current()
+        let useCoreML = !forceCPU && policy.preferSpeakerCoreML && !speakerAccelerationUnavailable
+        let requestedBackend: SpeechInferenceBackend = useCoreML ? .coreML : .cpu
         if let speakerKit,
-           loadedModelFolder?.standardizedFileURL == modelFolder.standardizedFileURL {
+           loadedModelFolder?.standardizedFileURL == modelFolder.standardizedFileURL,
+           speakerBackend == requestedBackend {
             return speakerKit
+        }
+
+        if speakerKit != nil {
+            await speakerKit?.unloadModels()
+            speakerKit = nil
+            loadedModelFolder = nil
         }
 
         let config = PyannoteConfig(
@@ -117,12 +160,24 @@ public actor SpeakerDiarizationEngine {
             load: false,
             verbose: false,
             fullRedundancy: true,
-            concurrentSegmenterWorkers: min(4, max(2, ProcessInfo.processInfo.activeProcessorCount / 2)),
-            concurrentEmbedderWorkers: nil
+            concurrentSegmenterWorkers: policy.speakerSegmenterWorkers,
+            concurrentEmbedderWorkers: policy.speakerEmbedderWorkers
         )
+
+        if useCoreML {
+            // Keep PLDA on CPU (it is small); schedule the neural segmenter
+            // and embedder on Core ML so Apple Silicon can use GPU/ANE.
+            config.diarizer = SpeakerKitDiarizer.pyannote(
+                config: config,
+                segmenterModelInfo: .segmenter(computeUnits: .all),
+                embedderModelInfo: .embedder(computeUnits: .all),
+                pldaModelInfo: .plda()
+            )
+        }
         let newSpeakerKit = try await SpeakerKit(config)
         speakerKit = newSpeakerKit
         loadedModelFolder = modelFolder
+        speakerBackend = requestedBackend
         return newSpeakerKit
     }
 

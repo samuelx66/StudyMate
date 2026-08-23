@@ -30,12 +30,24 @@ private final class NativeCancellation: @unchecked Sendable {
     }
 }
 
+private struct WhisperGPUInferenceFailure: Error {}
+
+/// C model handles are confined to their owning actor and are only borrowed
+/// during a synchronous inference call. The wrapper makes that ownership
+/// explicit to Swift's Sendable diagnostics without moving the handle across
+/// actors in practice.
+private struct NativeContextHandle: @unchecked Sendable {
+    let pointer: OpaquePointer
+}
+
 /// 对 whisper.cpp C API 的串行、可取消封装。模型上下文按路径复用，避免每次断句重新加载。
 public actor NativeSpeechRuntime {
     public static let shared = NativeSpeechRuntime()
 
     private var whisperContext: OpaquePointer?
     private var loadedWhisperModelPath: String?
+    private var whisperBackend: SpeechInferenceBackend = .cpu
+    private var whisperGPUUnavailable = false
     private var vadContext: OpaquePointer?
 
     public init() {}
@@ -54,16 +66,18 @@ public actor NativeSpeechRuntime {
         }
         let modelURL = try Self.sileroModelURL()
         let context = try loadVADContext(modelURL: modelURL)
+        let contextHandle = NativeContextHandle(pointer: context)
         let cancellation = NativeCancellation()
 
-        return try await withTaskCancellationHandler {
+        return try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+            try await withTaskCancellationHandler {
             try Task.checkCancellation()
             var outputPointer: UnsafeMutablePointer<MABVoiceActivitySegment>?
             var outputCount: Int32 = 0
             var errorBuffer = [CChar](repeating: 0, count: 512)
             let status = pcm.samples.withUnsafeBufferPointer { samples in
                 mab_vad_detect(
-                    context,
+                    contextHandle.pointer,
                     samples.baseAddress,
                     Int32(clamping: samples.count),
                     Self.nativeVADConfiguration(configuration),
@@ -90,8 +104,9 @@ public actor NativeSpeechRuntime {
                     confidence: segment.confidence
                 )
             }
-        } onCancel: {
-            cancellation.cancel()
+            } onCancel: {
+                cancellation.cancel()
+            }
         }
     }
 
@@ -107,14 +122,57 @@ public actor NativeSpeechRuntime {
         guard pcm.sampleRate == AudioPCMData.requiredSampleRate, !pcm.isEmpty else {
             throw NativeSpeechRuntimeError.invalidPCM
         }
-        let context = try loadWhisperContext(modelURL: modelURL)
+        return try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+            do {
+                return try await self.transcribeLocked(
+                    pcm: pcm,
+                    modelURL: modelURL,
+                    language: language,
+                    configuration: configuration,
+                    useInternalVAD: useInternalVAD,
+                    speechWindows: speechWindows,
+                    progress: progress,
+                    forceCPU: false
+                )
+            } catch is WhisperGPUInferenceFailure {
+                // A context can be created successfully but still reject a
+                // Metal kernel on a particular macOS/model combination. Mark
+                // that backend unavailable and rerun the same windows on CPU
+                // once, without changing any sentence-boundary inputs.
+                await self.markWhisperGPUUnavailable()
+                return try await self.transcribeLocked(
+                    pcm: pcm,
+                    modelURL: modelURL,
+                    language: language,
+                    configuration: configuration,
+                    useInternalVAD: useInternalVAD,
+                    speechWindows: speechWindows,
+                    progress: progress,
+                    forceCPU: true
+                )
+            }
+        }
+    }
+
+    private func transcribeLocked(
+        pcm: AudioPCMData,
+        modelURL: URL,
+        language: String,
+        configuration: VoiceActivityConfiguration,
+        useInternalVAD: Bool,
+        speechWindows: [VoiceActivitySegment],
+        progress: @escaping @Sendable (Double) -> Void,
+        forceCPU: Bool
+    ) async throws -> SpeechRecognitionTimeline {
+        let context = try loadWhisperContext(modelURL: modelURL, forceCPU: forceCPU)
+        let contextHandle = NativeContextHandle(pointer: context)
         let vadModelURL = useInternalVAD ? try Self.sileroModelURL() : nil
         let cancellation = NativeCancellation()
 
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             var whisperConfiguration = MABWhisperConfig()
-            whisperConfiguration.thread_count = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
+            whisperConfiguration.thread_count = SpeechInferenceResourcePolicy.current().whisperThreadCount
             whisperConfiguration.beam_size = 5
             whisperConfiguration.no_speech_threshold = 0.60
             whisperConfiguration.suppress_non_speech_tokens = true
@@ -144,7 +202,6 @@ public actor NativeSpeechRuntime {
 
             for (windowIndex, range) in ranges.enumerated() {
                 try Task.checkCancellation()
-                let samples = Array(pcm.samples[range.start..<range.end])
                 let progressStart = Double(windowIndex) / Double(ranges.count)
                 let progressSpan = 1.0 / Double(ranges.count)
                 let progressBox = NativeProgressBox { localProgress in
@@ -153,14 +210,26 @@ public actor NativeSpeechRuntime {
                 let progressOpaque = Unmanaged.passUnretained(progressBox).toOpaque()
                 var result = MABTranscriptionResult()
                 var errorBuffer = [CChar](repeating: 0, count: 512)
-                let status = samples.withUnsafeBufferPointer { sampleBuffer in
-                    language.withCString { languageCode in
+                // `pcm.samples` is one contiguous, validated Float32 buffer.
+                // Pass a pointer into the requested window instead of copying
+                // up to 24 seconds of audio for every Whisper call. The
+                // pointer remains valid for the complete synchronous C call.
+                let status = pcm.samples.withUnsafeBufferPointer { sampleBuffer in
+                    guard let baseAddress = sampleBuffer.baseAddress,
+                          range.start >= 0,
+                          range.end <= sampleBuffer.count,
+                          range.end > range.start else {
+                        return Int32(-1)
+                    }
+                    let windowPointer = baseAddress.advanced(by: range.start)
+                    let windowCount = Int32(clamping: range.end - range.start)
+                    return language.withCString { languageCode in
                         let transcribe: (UnsafePointer<CChar>?) -> Int32 = { vadPath in
                             mab_whisper_transcribe(
-                                context,
+                                contextHandle.pointer,
                                 vadPath,
-                                sampleBuffer.baseAddress,
-                                Int32(clamping: sampleBuffer.count),
+                                windowPointer,
+                                windowCount,
                                 languageCode,
                                 whisperConfiguration,
                                 cancellation.pointer,
@@ -184,6 +253,12 @@ public actor NativeSpeechRuntime {
                     throw CancellationError()
                 }
                 guard status == 0 else {
+                    if !forceCPU, whisperBackend == .metal {
+                        mab_whisper_free(whisperContext)
+                        whisperContext = nil
+                        whisperBackend = .cpu
+                        throw WhisperGPUInferenceFailure()
+                    }
                     throw NativeSpeechRuntimeError.inferenceFailed(Self.errorMessage(errorBuffer))
                 }
 
@@ -228,9 +303,9 @@ public actor NativeSpeechRuntime {
                 voiceSegments: voiceSegments,
                 detectedLanguage: detectedLanguage
             )
-        } onCancel: {
-            cancellation.cancel()
-        }
+            } onCancel: {
+                cancellation.cancel()
+            }
     }
 
     private struct SampleRange: Sendable {
@@ -316,33 +391,60 @@ public actor NativeSpeechRuntime {
         return output
     }
 
-    private func loadWhisperContext(modelURL: URL) throws -> OpaquePointer {
+    private func loadWhisperContext(
+        modelURL: URL,
+        forceCPU: Bool = false
+    ) throws -> OpaquePointer {
         let modelPath = modelURL.standardizedFileURL.path
+        let policy = SpeechInferenceResourcePolicy.current()
         if loadedWhisperModelPath != modelPath {
             mab_whisper_free(whisperContext)
             whisperContext = nil
             loadedWhisperModelPath = nil
+            whisperBackend = .cpu
+            whisperGPUUnavailable = false
+        }
+        if (forceCPU || !policy.preferWhisperMetal), whisperBackend == .metal {
+            mab_whisper_free(whisperContext)
+            whisperContext = nil
+            whisperBackend = .cpu
         }
         if let whisperContext { return whisperContext }
 
-        var errorBuffer = [CChar](repeating: 0, count: 512)
-        let context = modelPath.withCString { path in
-            // Accelerate/BLAS 在 Apple Silicon 上已可实时运行；CPU 后端还能避免受限环境中
-            // Metal 缓冲区创建失败导致第三方运行时直接终止进程。
-            mab_whisper_create(path, false, &errorBuffer, errorBuffer.count)
+        let shouldTryMetal = !forceCPU && policy.preferWhisperMetal && !whisperGPUUnavailable
+        let attempts = shouldTryMetal ? [true, false] : [false]
+        var lastError = "未知的本地语音模型加载错误"
+
+        for useGPU in attempts {
+            var errorBuffer = [CChar](repeating: 0, count: 512)
+            let context = modelPath.withCString { path in
+                mab_whisper_create(path, useGPU, &errorBuffer, errorBuffer.count)
+            }
+            if let context {
+                whisperContext = context
+                loadedWhisperModelPath = modelPath
+                whisperBackend = useGPU ? .metal : .cpu
+                return context
+            }
+            lastError = Self.errorMessage(errorBuffer)
+            if useGPU {
+                // Persist the failed backend choice for this model lifetime so
+                // every subsequent sentence does not pay another failed Metal
+                // initialization cost.
+                whisperGPUUnavailable = true
+            }
         }
-        guard let context else {
-            throw NativeSpeechRuntimeError.modelLoadFailed(Self.errorMessage(errorBuffer))
-        }
-        whisperContext = context
-        loadedWhisperModelPath = modelPath
-        return context
+        throw NativeSpeechRuntimeError.modelLoadFailed(lastError)
+    }
+
+    private func markWhisperGPUUnavailable() {
+        whisperGPUUnavailable = true
     }
 
     private func loadVADContext(modelURL: URL) throws -> OpaquePointer {
         if let vadContext { return vadContext }
         var errorBuffer = [CChar](repeating: 0, count: 512)
-        let threadCount = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
+        let threadCount = SpeechInferenceResourcePolicy.current().vadThreadCount
         let context = modelURL.path.withCString { path in
             // Silero 只有约 1 MB，CPU 推理更快也更稳定；Metal 留给 Whisper 主模型。
             mab_vad_create(path, false, threadCount, &errorBuffer, errorBuffer.count)

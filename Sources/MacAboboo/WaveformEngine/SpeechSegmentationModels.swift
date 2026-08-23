@@ -264,6 +264,139 @@ public struct AudioPCMData: Sendable {
     }
 }
 
+/// 本地语音模型的执行后端。它只描述推理运行时的资源选择，不参与断句边界计算。
+public enum SpeechInferenceBackend: String, Sendable {
+    case cpu
+    case metal
+    case coreML
+}
+
+/// 统一的推理资源预算。
+///
+/// 断句算法仍由 `SpeechBoundaryOptimizer` 完整决定；本策略只限制线程数、
+/// SpeakerKit 工作线程和模型阶段并发，避免 Silero、SpeakerKit 与 Whisper
+/// 同时抢占所有 CPU 核心。资源预算会根据当前机器核心数和热状态自适应，
+/// 不写入用户设置，也不会改变任何 profile 的阈值或权重。
+public struct SpeechInferenceResourcePolicy: Equatable, Sendable {
+    public let whisperThreadCount: Int32
+    public let vadThreadCount: Int32
+    public let speakerSegmenterWorkers: Int
+    public let speakerEmbedderWorkers: Int
+    public let preferWhisperMetal: Bool
+    public let preferSpeakerCoreML: Bool
+
+    public static func current(
+        processorCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    ) -> SpeechInferenceResourcePolicy {
+        let cores = max(1, processorCount)
+        let constrained = thermalState == .serious || thermalState == .critical
+
+        // Keep a few cores available for AVPlayer, waveform drawing and the
+        // main actor. The previous fixed upper bound of eight threads could
+        // oversubscribe smaller machines and make the UI visibly stutter.
+        let whisperThreads = constrained
+            ? max(2, min(4, cores - 4))
+            : max(2, min(6, cores - 3))
+        let vadThreads = constrained
+            ? 2
+            : max(2, min(4, max(2, cores / 2)))
+        let segmenterWorkers = constrained
+            ? 1
+            : max(1, min(2, max(1, cores / 4)))
+        let embedderWorkers = constrained
+            ? 1
+            : max(1, min(2, max(1, cores / 4)))
+
+        #if arch(arm64)
+        let speakerAccelerated = !constrained
+        // The bundled whisper.cpp Metal backend currently aborts during
+        // process teardown on some macOS 14/Apple Silicon combinations. An
+        // abort cannot be caught as a normal inference error, so keep the
+        // stable CPU path as the release default. Developers can opt in after
+        // upgrading the vendor framework to a fixed build.
+        let whisperMetalOptIn = !constrained
+            && ProcessInfo.processInfo.environment["MACABOBOO_ENABLE_WHISPER_METAL"] == "1"
+        #else
+        let speakerAccelerated = false
+        let whisperMetalOptIn = false
+        #endif
+
+        return SpeechInferenceResourcePolicy(
+            whisperThreadCount: Int32(whisperThreads),
+            vadThreadCount: Int32(vadThreads),
+            speakerSegmenterWorkers: segmenterWorkers,
+            speakerEmbedderWorkers: embedderWorkers,
+            preferWhisperMetal: whisperMetalOptIn,
+            preferSpeakerCoreML: speakerAccelerated
+        )
+    }
+
+    public init(
+        whisperThreadCount: Int32,
+        vadThreadCount: Int32,
+        speakerSegmenterWorkers: Int,
+        speakerEmbedderWorkers: Int,
+        preferWhisperMetal: Bool,
+        preferSpeakerCoreML: Bool
+    ) {
+        self.whisperThreadCount = max(1, whisperThreadCount)
+        self.vadThreadCount = max(1, vadThreadCount)
+        self.speakerSegmenterWorkers = max(1, speakerSegmenterWorkers)
+        self.speakerEmbedderWorkers = max(1, speakerEmbedderWorkers)
+        self.preferWhisperMetal = preferWhisperMetal
+        self.preferSpeakerCoreML = preferSpeakerCoreML
+    }
+}
+
+/// 跨 Silero、SpeakerKit 和 Whisper 的单阶段资源闸门。
+///
+/// 模型内部仍可使用自身的有限 worker 并行，但不同模型阶段不再同时
+/// 启动多个全量推理任务。这样既保留现有算法顺序，又避免打开长视频时
+/// 三套模型叠加造成 CPU 峰值和界面卡顿。
+public actor SpeechInferenceResourceScheduler {
+    public static let shared = SpeechInferenceResourceScheduler()
+
+    private var availablePermits = 1
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func withExclusiveStage<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        await acquire()
+        do {
+            let value = try await operation()
+            release()
+            return value
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        if availablePermits > 0 {
+            availablePermits -= 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            availablePermits += 1
+        } else {
+            let continuation = waiters.removeFirst()
+            // Transfer the permit directly to the resumed waiter.
+            continuation.resume()
+        }
+    }
+}
+
 public struct SpeechToken: Equatable, Sendable {
     public var text: String
     public var startTime: Double

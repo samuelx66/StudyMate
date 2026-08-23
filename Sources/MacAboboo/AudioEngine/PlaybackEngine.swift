@@ -774,7 +774,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         mode: SpeechSegmentationMode,
         showProgress: Bool = true,
         languageOverride: String? = nil,
-        completion: (@MainActor ([SentenceSegment]) -> Void)? = nil
+        completion: (@MainActor ([SentenceSegment]) -> Void)? = nil,
+        waveformData suppliedWaveform: WaveformData? = nil
     ) {
         guard let media = currentMedia else { return }
         let mediaURL = media.url.standardizedFileURL
@@ -793,7 +794,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             whisperModelURL: modelURL,
             recognitionLanguage: languageOverride ?? speechRecognitionLanguage,
             includeRecognizedText: autoGenerateSubtitles,
-            numberOfSpeakers: expectedSpeakerCount
+            numberOfSpeakers: expectedSpeakerCount,
+            waveformData: suppliedWaveform ?? (waveformData.isEmpty ? nil : waveformData)
         )
 
         if showProgress {
@@ -889,26 +891,32 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         config: SileroVADEngine.Config = .standard,
         showProgress: Bool = true
     ) {
-        _ = data
         let mode: SpeechSegmentationMode
         switch config.minSilenceDuration {
         case ..<0.28: mode = .vadSensitive
         case 0.40...: mode = .vadRelaxed
         default: mode = .vadStandard
         }
-        performSegmentation(mode: mode, showProgress: showProgress)
+        performSegmentation(
+            mode: mode,
+            showProgress: showProgress,
+            waveformData: data
+        )
     }
 
     /// 执行智能语音停顿断句（兼容老配置）
     public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config) {
-        _ = data
         let mode: SpeechSegmentationMode
         switch config.minSilenceDuration {
         case ..<0.28: mode = .vadSensitive
         case 0.40...: mode = .vadRelaxed
         default: mode = .vadStandard
         }
-        performSegmentation(mode: mode, showProgress: true)
+        performSegmentation(
+            mode: mode,
+            showProgress: true,
+            waveformData: data
+        )
     }
 
     public func performDualEngineAISegmentation(locale: Locale? = nil) {

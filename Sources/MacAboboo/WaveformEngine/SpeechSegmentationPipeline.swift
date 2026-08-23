@@ -8,6 +8,46 @@ public enum SpeechSegmentationStage: Sendable {
     case optimizing
 }
 
+/// 限制进度回调频率，避免长文件的每个解码块/模型窗口都在主线程创建
+/// 一个新的 UI Task。它只压缩通知，不改变模型执行或断句结果。
+private final class SpeechStageProgressGate: @unchecked Sendable {
+    private let callback: @Sendable (SpeechSegmentationStage) -> Void
+    private let lock = NSLock()
+    private var lastKind = -1
+    private var lastValue = -1.0
+    private var lastEmission = 0.0
+
+    init(callback: @escaping @Sendable (SpeechSegmentationStage) -> Void) {
+        self.callback = callback
+    }
+
+    func send(_ stage: SpeechSegmentationStage) {
+        let (kind, value, force): (Int, Double, Bool) = {
+            switch stage {
+            case .decodingAudio(let progress): return (0, progress, progress >= 0.999)
+            case .detectingVoice: return (1, 0, true)
+            case .diarizing(let progress): return (2, progress, progress >= 0.999)
+            case .transcribing(let progress): return (3, progress, progress >= 0.999)
+            case .optimizing: return (4, 1, true)
+            }
+        }()
+        let now = CFAbsoluteTimeGetCurrent()
+        lock.lock()
+        let shouldEmit = force
+            || kind != lastKind
+            || value - lastValue >= 0.01
+            || now - lastEmission >= 0.05
+        if shouldEmit {
+            lastKind = kind
+            lastValue = value
+            lastEmission = now
+        }
+        lock.unlock()
+        guard shouldEmit else { return }
+        callback(stage)
+    }
+}
+
 public struct SpeechSegmentationRequest: Sendable {
     public var mediaURL: URL
     public var mode: SpeechSegmentationMode
@@ -16,6 +56,9 @@ public struct SpeechSegmentationRequest: Sendable {
     public var includeRecognizedText: Bool
     public var enableSpeakerDiarization: Bool
     public var numberOfSpeakers: Int?
+    /// PlaybackEngine 已经生成的同源波形。非空且时长匹配时直接复用，
+    /// 避免打开文件后再次遍历整份 PCM；不匹配时流水线仍会安全重建。
+    public var waveformData: WaveformData?
 
     public init(
         mediaURL: URL,
@@ -24,7 +67,8 @@ public struct SpeechSegmentationRequest: Sendable {
         recognitionLanguage: String,
         includeRecognizedText: Bool,
         enableSpeakerDiarization: Bool = true,
-        numberOfSpeakers: Int? = nil
+        numberOfSpeakers: Int? = nil,
+        waveformData: WaveformData? = nil
     ) {
         self.mediaURL = mediaURL
         self.mode = mode
@@ -33,6 +77,7 @@ public struct SpeechSegmentationRequest: Sendable {
         self.includeRecognizedText = includeRecognizedText
         self.enableSpeakerDiarization = enableSpeakerDiarization
         self.numberOfSpeakers = numberOfSpeakers
+        self.waveformData = waveformData
     }
 }
 
@@ -82,9 +127,13 @@ public actor SpeechSegmentationPipeline {
         stageChanged: @escaping @Sendable (SpeechSegmentationStage) -> Void,
         preview: @escaping @Sendable ([SentenceSegment]) -> Void
     ) async throws -> SpeechSegmentationOutput {
-        stageChanged(.decodingAudio(0))
+        let progressGate = SpeechStageProgressGate(callback: stageChanged)
+        let emitStage: @Sendable (SpeechSegmentationStage) -> Void = { stage in
+            progressGate.send(stage)
+        }
+        emitStage(.decodingAudio(0))
         let pcm = try await pcmExtractor.extract(from: request.mediaURL) { progress in
-            stageChanged(.decodingAudio(progress))
+            emitStage(.decodingAudio(progress))
         }
         try Task.checkCancellation()
         let profile = request.mode.profile
@@ -94,7 +143,7 @@ public actor SpeechSegmentationPipeline {
             pcm: pcm,
             profile: profile,
             mediaKey: mediaKey,
-            stageChanged: stageChanged
+            stageChanged: emitStage
         )
         let voiceSegments = detection.voiceSegments
         let speakerTimeline = detection.speakerTimeline
@@ -103,7 +152,10 @@ public actor SpeechSegmentationPipeline {
         // Waveform bins are only needed by the optimizer. Build them after the
         // model stages have started so the first visible progress update is not
         // delayed by this UI-oriented representation pass.
-        let waveform = pcm.waveform()
+        let waveform = Self.reusableWaveform(
+            request.waveformData,
+            duration: pcm.duration
+        ) ?? pcm.waveform()
 
         let initialSegments = optimizer.optimize(
             mode: request.mode,
@@ -140,12 +192,17 @@ public actor SpeechSegmentationPipeline {
             throw SpeechSegmentationPipelineError.whisperModelMissing
         }
 
-        stageChanged(.transcribing(0))
-        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|\(request.mode.rawValue)|external-vad|windowed-v2"
+        emitStage(.transcribing(0))
+        let windowFingerprint = Self.windowFingerprint(speechWindows)
+        // The external windows are part of the cache identity. The internal
+        // profile name is intentionally absent because with external VAD the
+        // Whisper C API receives the same configuration and PCM windows;
+        // switching presets can therefore reuse the exact token timeline.
+        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v3"
         var timeline: SpeechRecognitionTimeline
         if let cached = transcriptionCache[transcriptionKey] {
             timeline = cached
-            stageChanged(.transcribing(1))
+            emitStage(.transcribing(1))
         } else {
             timeline = try await runtime.transcribe(
                 pcm: pcm,
@@ -155,14 +212,14 @@ public actor SpeechSegmentationPipeline {
                 useInternalVAD: false,
                 speechWindows: speechWindows
             ) { progress in
-                stageChanged(.transcribing(progress))
+                emitStage(.transcribing(progress))
             }
             insert(timeline, into: &transcriptionCache, key: transcriptionKey)
         }
         try Task.checkCancellation()
         timeline.speakerSegments = speakerTimeline.segments
 
-        stageChanged(.optimizing)
+        emitStage(.optimizing)
         // Silero + SpeakerKit is the authoritative acoustic/turn timeline.
         // Whisper token timestamps are useful semantic evidence, but its
         // optional internal VAD windows must never replace the external VAD
@@ -317,6 +374,31 @@ public actor SpeechSegmentationPipeline {
         while cache.count > maxCacheEntries, let firstKey = cache.keys.first {
             cache.removeValue(forKey: firstKey)
         }
+    }
+
+    private static func reusableWaveform(
+        _ candidate: WaveformData?,
+        duration: Double
+    ) -> WaveformData? {
+        guard let candidate,
+              !candidate.isEmpty,
+              duration.isFinite,
+              duration > 0,
+              abs(candidate.duration - duration) <= max(0.05, duration * 0.002) else {
+            return nil
+        }
+        return candidate
+    }
+
+    private static func windowFingerprint(_ windows: [VoiceActivitySegment]) -> String {
+        var hasher = Hasher()
+        hasher.combine(windows.count)
+        for window in windows {
+            hasher.combine(Int((window.startTime * 10_000).rounded()))
+            hasher.combine(Int((window.endTime * 10_000).rounded()))
+            hasher.combine(Int((Double(window.confidence) * 1_000).rounded()))
+        }
+        return String(hasher.finalize(), radix: 16)
     }
 
     private static func mediaFingerprint(for url: URL) -> String {
