@@ -55,6 +55,13 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     private var loadTask: Task<Void, Never>?
     private var loadGeneration = UUID()
     private var seekGeneration: UInt64 = 0
+    /// Exact AVPlayer seeks can fail for a valid compressed file when the
+    /// target falls on an awkward sample/edit-list boundary. Keep the exact
+    /// path first, then retry with a small and finally a broad tolerance so a
+    /// sentence never becomes unplayable just because its generated start
+    /// time is not a key frame.
+    private var seekFallbackAttempt = 0
+    private var seekRecoveryTask: Task<Void, Never>?
     
     public override init() {
         super.init()
@@ -69,6 +76,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         loadTask?.cancel()
         loadGeneration = UUID()
         seekGeneration &+= 1
+        seekRecoveryTask?.cancel()
+        seekRecoveryTask = nil
         isSeekingInternal = false
         let generation = loadGeneration
         teardownItemObservations()
@@ -196,7 +205,10 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     
     public func play() {
         guard player.currentItem?.status == .readyToPlay else { return }
-        player.rate = playbackRate
+        // Setting `rate` alone can leave AVPlayer in a paused/waiting state
+        // after a precise seek. `playImmediately` explicitly resumes the
+        // current item and is still hardware accelerated for native media.
+        player.playImmediately(atRate: playbackRate)
         isPlaying = true
         onStateChanged?(true)
     }
@@ -212,55 +224,139 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         seek(to: 0.0, completion: nil)
     }
     
-    /// 0ms 瞬间秒跳定位（零容差精准锁定目标帧，绝无延迟）
+    /// 尽量精确地定位到目标时间，并为 AVPlayer 的压缩媒体寻址失败提供
+    /// 两级回退。首选零容差，不牺牲断句时间轴精度；只有系统无法在该
+    /// 时间点完成精确寻址时，才允许一个很小的帧级误差，最后才使用
+    /// 宽容差定位到最近可解码点。
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)?) {
         let clamped = max(0, min(seconds, max(0.1, duration)))
         let targetTime = CMTime(seconds: clamped, preferredTimescale: 600)
-        
+
+        seekRecoveryTask?.cancel()
+        seekRecoveryTask = nil
         isSeekingInternal = true
+        seekFallbackAttempt = 0
         currentTime = clamped
         seekGeneration &+= 1
         let generation = seekGeneration
-        
+
         player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor [weak self] in
-                // AVPlayer calls the completion with `finished == false` when
-                // a seek is cancelled or cannot be completed.  The previous
-                // implementation returned in that case and left
-                // `isSeekingInternal` set forever, suppressing all time
-                // updates and making the selected sentence appear unplayable.
-                // Only ignore callbacks belonging to an older seek; the
-                // latest callback must always release the seeking lock.
-                guard let self = self, generation == self.seekGeneration else { return }
-                self.isSeekingInternal = false
-                self.currentTime = clamped
-                if finished, self.isPlaying {
-                    self.player.rate = self.playbackRate
+                guard let self,
+                      generation == self.seekGeneration,
+                      self.seekFallbackAttempt == 0 else { return }
+                if finished {
+                    self.finishSeek(
+                        generation: generation,
+                        at: clamped,
+                        completion: completion
+                    )
+                } else {
+                    self.beginSeekFallback(
+                        generation: generation,
+                        target: targetTime,
+                        at: clamped,
+                        completion: completion
+                    )
                 }
-                completion?()
             }
         }
 
-        // Keep the backend-side time observer recoverable as well. The engine
-        // has its own guard, but without this fallback AVPlayer could remain
-        // in `isSeekingInternal` and suppress future time updates after a
-        // completely lost completion callback.
-        Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            } catch {
-                return
-            }
-            guard let self,
-                  generation == self.seekGeneration,
-                  self.isSeekingInternal else { return }
-            self.isSeekingInternal = false
-            self.currentTime = clamped
-            if self.isPlaying {
-                self.player.rate = self.playbackRate
-            }
-            completion?()
+        // A valid asset can occasionally omit the completion callback while
+        // seeking to a non-keyframe. Start the same bounded recovery path
+        // proactively, without waiting for the engine's outer timeout.
+        seekRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard generation == self.seekGeneration, self.isSeekingInternal else { return }
+            self.beginSeekFallback(
+                generation: generation,
+                target: targetTime,
+                at: clamped,
+                completion: completion
+            )
+
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard generation == self.seekGeneration, self.isSeekingInternal else { return }
+            self.beginSeekFallback(
+                generation: generation,
+                target: targetTime,
+                at: clamped,
+                completion: completion
+            )
+
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard generation == self.seekGeneration, self.isSeekingInternal else { return }
+            // Do not hold the engine in a seeking state forever if AVPlayer
+            // loses every callback. The player has still been asked to seek
+            // and the next time observer update will provide the real time.
+            self.finishSeek(
+                generation: generation,
+                at: clamped,
+                completion: completion
+            )
         }
+    }
+
+    private func beginSeekFallback(
+        generation: UInt64,
+        target: CMTime,
+        at clamped: Double,
+        completion: (@Sendable () -> Void)?
+    ) {
+        guard generation == seekGeneration,
+              isSeekingInternal,
+              seekFallbackAttempt < 2 else { return }
+
+        seekFallbackAttempt += 1
+        let attempt = seekFallbackAttempt
+        let tolerance: CMTime = attempt == 1
+            ? CMTime(seconds: 0.12, preferredTimescale: 600)
+            : .positiveInfinity
+
+        player.seek(
+            to: target,
+            toleranceBefore: tolerance,
+            toleranceAfter: tolerance
+        ) { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      generation == self.seekGeneration,
+                      self.isSeekingInternal,
+                      self.seekFallbackAttempt == attempt else { return }
+
+                if finished || attempt >= 2 {
+                    self.finishSeek(
+                        generation: generation,
+                        at: clamped,
+                        completion: completion
+                    )
+                } else {
+                    self.beginSeekFallback(
+                        generation: generation,
+                        target: target,
+                        at: clamped,
+                        completion: completion
+                    )
+                }
+            }
+        }
+    }
+
+    private func finishSeek(
+        generation: UInt64,
+        at clamped: Double,
+        completion: (@Sendable () -> Void)?
+    ) {
+        guard generation == seekGeneration, isSeekingInternal else { return }
+        seekRecoveryTask?.cancel()
+        seekRecoveryTask = nil
+        isSeekingInternal = false
+        currentTime = clamped
+        if isPlaying {
+            player.playImmediately(atRate: playbackRate)
+        }
+        completion?()
     }
     
     public func teardown() {
@@ -268,6 +364,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         loadTask = nil
         loadGeneration = UUID()
         seekGeneration &+= 1
+        seekRecoveryTask?.cancel()
+        seekRecoveryTask = nil
         isSeekingInternal = false
         teardownItemObservations()
         player.pause()
@@ -298,6 +396,11 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // AVPlayer briefly reports `.paused` while it resolves a
+                // precise seek. Exposing that transient state would make the
+                // engine mark a sentence as stopped and race the seek
+                // completion that resumes playback.
+                guard !self.isSeekingInternal else { return }
                 let playing = player.timeControlStatus != .paused
                 if self.isPlaying != playing {
                     self.isPlaying = playing

@@ -172,6 +172,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var seekTimeoutTask: Task<Void, Never>?
     private var isBackendReady = false
     private var wantsPlayback = false
+    /// 自然播放到最后一句后，允许用户点击任意断句重新开始播放。
+    /// 该状态只在自然结束时保留；用户主动暂停/停止后必须清除，避免
+    /// 普通的暂停状态在点击断句时意外自动播放。
+    private var canResumePlaybackFromSegmentSelection = false
     private var pendingResumeTime: Double = 0
     private var pendingResumePlayback = false
     private var previewEndTime: Double?
@@ -254,6 +258,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         backend.onFinished = { [weak self, weak backend] in
             Task { @MainActor [weak self] in
                 guard let self = self, self.activeBackend === backend else { return }
+                let hadPlaybackIntent = self.wantsPlayback
                 self.isPlaying = false
                 if self.loopMode == .all {
                     self.seek(to: 0.0) {
@@ -263,6 +268,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     }
                 } else {
                     self.wantsPlayback = false
+                    // 保留一次“自然结束后点击断句即可继续播放”的意图。
+                    // 如果用户在结束回调前已经主动暂停，不能把普通暂停误判为自然结束。
+                    if hadPlaybackIntent {
+                        self.canResumePlaybackFromSegmentSelection = true
+                    }
                 }
             }
         }
@@ -585,6 +595,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         duration = 0
         isPlaying = false
         wantsPlayback = false
+        canResumePlaybackFromSegmentSelection = false
 
         let ext = mediaURL.pathExtension.lowercased()
         let fileSize = (try? mediaURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
@@ -1191,6 +1202,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isShadowingPaused = false
         pendingResumePlayback = false
         wantsPlayback = false
+        canResumePlaybackFromSegmentSelection = false
         activeBackend.pause()
         isPlaying = false
         if currentMedia != nil { scheduleDebouncedPersistence(delay: 0.2) }
@@ -1389,8 +1401,35 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         if let nextIdx = targetIndex {
             if loopMode == .normal {
-                // 连续播放模式：断句1播放结束后直接跳至断句2的开始时间戳继续播放，跳过两句之间的非断句/空白内容
-                jumpToSegment(at: nextIdx)
+                // 连续播放模式：如果下一句紧贴当前句末尾，直接让 AVPlayer
+                // 沿当前时间流自然前进，不再对“当前时间 == 下一句起点”
+                // 发起一次零容差 Seek。AVPlayer 在这个边界上可能报告 Seek
+                // 已完成，但实际 timeControlStatus 仍停在暂停，导致界面显示
+                // 正在播放而时间永远停在下一句起点。
+                let nextSegment = segments[nextIdx]
+                let isAdjacentNaturalContinuation =
+                    !onlyPlayBookmarked &&
+                    nextIdx == currentIndex + 1 &&
+                    abs(nextSegment.startTime - currentTime) <= 0.04
+
+                if isAdjacentNaturalContinuation {
+                    activeSegmentIndex = nextIdx
+                    currentRepeatCount = 1
+                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
+                    updateSecondaryViewportForActiveSegment(force: true)
+
+                    // 正常情况下后端仍在播放；如果系统解码器在边界瞬间
+                    // 报告了暂停，补发一次播放命令，但不再触发 Seek。
+                    if wantsPlayback && !activeBackend.isPlaying {
+                        activeBackend.playbackRate = playbackRate
+                        activeBackend.play()
+                        isPlaying = true
+                    }
+                } else {
+                    // 两句之间存在可见间隔时，仍然 Seek 到下一句起点，
+                    // 保持连续播放跳过空白区的既有行为。
+                    jumpToSegment(at: nextIdx)
+                }
             } else {
                 let isNaturalContinuation = !onlyPlayBookmarked && nextIdx == currentIndex + 1
                 if isNaturalContinuation {
@@ -1403,8 +1442,26 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
         } else {
-            pause()
+            if loopMode == .normal {
+                finishPlaybackAtNaturalEnd()
+            } else {
+                pause()
+            }
         }
+    }
+
+    /// 断句连续播放自然到达最后一句末尾时停止，但保留一次由断句选择
+    /// 触发的恢复意图。这样列表点击不会改变普通暂停的行为，同时可以
+    /// 从最后一句结束后的任意断句重新开始播放。
+    private func finishPlaybackAtNaturalEnd() {
+        shadowingTask?.cancel()
+        isShadowingPaused = false
+        pendingResumePlayback = false
+        wantsPlayback = false
+        canResumePlaybackFromSegmentSelection = true
+        activeBackend.pause()
+        isPlaying = false
+        if currentMedia != nil { scheduleDebouncedPersistence(delay: 0.2) }
     }
 
     public func updateActiveSegment(for time: Double) {
@@ -1444,6 +1501,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
         let seg = segments[index]
+        let resumeAfterNaturalEnd = canResumePlaybackFromSegmentSelection
+        if resumeAfterNaturalEnd {
+            canResumePlaybackFromSegmentSelection = false
+            wantsPlayback = true
+            if !isBackendReady {
+                pendingResumePlayback = true
+            }
+        }
         activeSegmentIndex = index
         currentRepeatCount = 1
         ensureSegmentVisibleInPrimaryViewport(at: index)

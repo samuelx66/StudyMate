@@ -207,6 +207,40 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
+    func testContinuousPlaybackKeepsNativeStreamAtAdjacentBoundary() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("adjacent-boundary.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 3, endTime: 6)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+        let seekCountBeforeBoundary = native.seekCount
+
+        // 相邻断句不应对同一时间点再次 Seek；这正是 AVPlayer 在系统解码
+        // 下容易停在下一句起点的边界。
+        native.emitTime(3.0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 3.0, accuracy: 0.001)
+        XCTAssertEqual(native.seekCount, seekCountBeforeBoundary)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
     func testContinuousPlaybackPausesAtEndOfLastSegment() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -232,6 +266,40 @@ final class PlaybackEngineTests: XCTestCase {
         await Task.yield()
 
         XCTAssertFalse(engine.isPlaying)
+    }
+
+    func testSelectingSegmentAfterLastSegmentResumesPlayback() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+
+        // 最后一句自然结束后，列表点击应恢复播放，而不是只完成 Seek。
+        native.emitTime(8.0)
+        await Task.yield()
+        XCTAssertFalse(engine.isPlaying)
+
+        engine.jumpToSegment(at: 0)
+        await Task.yield()
+
+        XCTAssertEqual(native.currentTime, 0.0, accuracy: 0.001)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
     }
 
     func testLoopAllModeDoesNotSkipContinuousSentenceBoundary() async throws {

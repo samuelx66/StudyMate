@@ -5,17 +5,17 @@ import AppKit
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
-    
+
     @State private var searchText: String = ""
     @State private var showImportSheet: Bool = false
     @State private var showSettingsPopover: Bool = false
     @State private var filterBookmarkedOnly: Bool = false
     @State private var exportErrorMessage: String?
-    
+
     public init(engine: PlaybackEngine) {
         self.engine = engine
     }
-    
+
     private var displayedSegments: [SentenceSegment] {
         var list = engine.segments
         if filterBookmarkedOnly {
@@ -29,20 +29,20 @@ public struct SegmentListView: View {
         }
         return list
     }
-    
+
     public var body: some View {
         VStack(spacing: 0) {
             // 列表头部工具栏
             HStack(spacing: 6) {
                 Label(lang.localized(.segmentList), systemImage: "list.bullet.indent")
                     .font(.subheadline.bold())
-                
+
                 Text("(\(engine.segments.count))")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
                 Spacer()
-                
+
                 // 难句过滤筛选开关
                 Button(action: { filterBookmarkedOnly.toggle() }) {
                     Image(systemName: filterBookmarkedOnly ? "star.fill" : "star")
@@ -51,7 +51,7 @@ public struct SegmentListView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                
+
                 // 导入字幕按钮
                 Button(action: { showImportSheet = true }) {
                     Image(systemName: "square.and.arrow.down")
@@ -60,7 +60,7 @@ public struct SegmentListView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                
+
                 // 导出字幕菜单
                 Menu {
                     Button(lang.text("导出为 SRT 字幕文件…", "Export as SRT…")) {
@@ -76,16 +76,16 @@ public struct SegmentListView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-                
+
                 // 三种用户断句预设；六个细分 profile 由句子长度偏好自动选择
                 Menu {
-                    Button(lang.text("🎯 高精度多人对话（推荐）", "🎯 High-precision multi-speaker (Recommended)")) {
-                        engine.performSegmentation(preset: .highPrecision)
-                    }
-                    Button(lang.text("⚡️ 快速断句（不识别文字）", "⚡️ Fast segmentation (no transcription)")) {
+                    Button(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)")) {
                         engine.performSegmentation(preset: .fast)
                     }
-                    Button(lang.text("✨ 纯语义断句（嘈杂/快对话）", "✨ Semantic priority (noisy/fast dialogue)")) {
+                    Button(lang.text("高精度多人对话（推荐）", "High-precision multi-speaker (Recommended)")) {
+                        engine.performSegmentation(preset: .highPrecision)
+                    }
+                    Button(lang.text("纯语义断句（嘈杂/快对话）", "Semantic priority (noisy/fast dialogue)")) {
                         engine.performSegmentation(preset: .semantic)
                     }
                 } label: {
@@ -95,7 +95,7 @@ public struct SegmentListView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-                
+
                 // 添加断句
                 Button(action: {
                     let cur = engine.currentTime
@@ -111,7 +111,7 @@ public struct SegmentListView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
-            
+
             // AI 语音识别与智能断句进度指示条
             if engine.isAITranscribing {
                 HStack(spacing: 8) {
@@ -148,7 +148,7 @@ public struct SegmentListView: View {
                 .padding(.vertical, 5)
                 .background(Color.orange.opacity(0.10))
             }
-            
+
             // 搜索过滤栏
             HStack {
                 Image(systemName: "magnifyingglass")
@@ -171,9 +171,9 @@ public struct SegmentListView: View {
             .cornerRadius(6)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            
+
             Divider()
-            
+
             // 断句列表 (采用高性能 ScrollView + LazyVStack，杜绝 NSTableView 代理重入警告)
             if displayedSegments.isEmpty {
                 VStack(spacing: 8) {
@@ -253,12 +253,12 @@ public struct SegmentListView: View {
             Text(exportErrorMessage ?? "")
         }
     }
-    
+
     private func exportSubtitles(format: SubtitleFormat) {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = (engine.currentMedia?.title ?? "Subtitles") + "." + format.rawValue
-        
+
         if panel.runModal() == .OK, let url = panel.url {
             let content: String
             if format == .lrc {
@@ -285,13 +285,13 @@ struct SegmentRowView: View {
     let onMergeNext: () -> Void
     let onDelete: () -> Void
     let onSaveText: (String) -> Void
-    
+
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
     @State private var tempText: String = ""
     @FocusState private var isFieldFocused: Bool
     @ObservedObject private var lang = LanguageManager.shared
-    
+
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 0) {
@@ -300,7 +300,7 @@ struct SegmentRowView: View {
                     .fill(isActive ? Color.blue : Color.clear)
                     .frame(width: 3)
                     .padding(.vertical, 2)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         // 难句收藏星标按钮
@@ -310,7 +310,7 @@ struct SegmentRowView: View {
                                 .foregroundColor(seg.isBookmarked ? .yellow : .gray.opacity(0.4))
                         }
                         .buttonStyle(.plain)
-                        
+
                         // 序号
                         Text("#\(seg.index)")
                             .font(.caption2.bold())
@@ -319,7 +319,7 @@ struct SegmentRowView: View {
                             .background(isActive ? Color.blue : Color.gray.opacity(0.2))
                             .foregroundColor(isActive ? .white : .primary)
                             .cornerRadius(3)
-                        
+
                         // 起止时间
                         Text("\(seg.formattedStartTime) - \(seg.formattedEndTime)")
                             .font(.system(size: 10, weight: isActive ? .bold : .regular).monospacedDigit())
@@ -345,14 +345,14 @@ struct SegmentRowView: View {
                                 .cornerRadius(3)
                                 .help(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
                         }
-                        
+
                         Spacer()
-                        
+
                         // 时长
                         Text(seg.formattedDuration)
                             .font(.system(size: 9).monospacedDigit())
                             .foregroundColor(.secondary.opacity(0.8))
-                        
+
                         // 悬停操作按钮
                         if isHovering {
                             HStack(spacing: 4) {
@@ -366,21 +366,21 @@ struct SegmentRowView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(lang.localized(.editSentenceText))
-                                
+
                                 Button(action: onSplit) {
-                                    Image(systemName: "scissors")
+                                    Image(systemName: "rectangle.split.2x1")
                                         .font(.system(size: 9))
                                 }
                                 .buttonStyle(.plain)
                                 .help(lang.text("在中间拆分此句", "Split this sentence at its midpoint"))
-                                
+
                                 Button(action: onMergeNext) {
-                                    Image(systemName: "arrow.down.to.line")
+                                    Image(systemName: "arrow.triangle.merge")
                                         .font(.system(size: 9))
                                 }
                                 .buttonStyle(.plain)
                                 .help(lang.localized(.mergeSegment))
-                                
+
                                 Button(action: onDelete) {
                                     Image(systemName: "trash")
                                         .font(.system(size: 9))
@@ -391,7 +391,7 @@ struct SegmentRowView: View {
                             }
                         }
                     }
-                    
+
                     // 第二行：分为两个区域，左边显示原文，右边显示译文
                     if isEditing {
                         HStack(spacing: 4) {
@@ -409,7 +409,7 @@ struct SegmentRowView: View {
                                         isEditing = false
                                     }
                                 }
-                            
+
                             Button(lang.text("完成", "Done")) {
                                 onSaveText(tempText)
                                 isEditing = false
@@ -425,7 +425,7 @@ struct SegmentRowView: View {
                                 .foregroundColor(orig.isEmpty ? .secondary.opacity(0.6) : (isActive ? .primary : .primary.opacity(0.85)))
                                 .lineLimit(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            
+
                             // 右边区域：译文
                             let trans = seg.translation.trimmingCharacters(in: .whitespacesAndNewlines)
                             if !trans.isEmpty {

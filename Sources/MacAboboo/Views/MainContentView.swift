@@ -9,7 +9,7 @@ public struct MainContentView: View {
     
     @State private var isSidebarVisible: Bool = true
     @State private var isWaveformsVisible: Bool = true
-    @State private var isSubtitleEditVisible: Bool = true
+    @State private var isSubtitleEditVisible: Bool = false
     @State private var isDropTargeted: Bool = false
     
     public init() {}

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 专业精听与复读设置浮窗面板
+/// 专业精听与复读设置独立窗口内容
 public struct IntensiveSettingsPopover: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
@@ -17,7 +17,7 @@ public struct IntensiveSettingsPopover: View {
     }
 
     public var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 12) {
                 // 顶部标题
                 HStack {
@@ -342,10 +342,10 @@ public struct IntensiveSettingsPopover: View {
                     .toggleStyle(.switch)
                 }
             }
-            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
-        .frame(width: 360)
-        .frame(maxHeight: 560)
+        .frame(minWidth: 620, idealWidth: 640, minHeight: 820, idealHeight: 820)
     }
 
     private var decoderDescription: String {

@@ -41,7 +41,7 @@ struct MacAbobooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
     @StateObject private var engine = PlaybackEngine.shared
-    @State private var isSettingsPresented = false
+    @Environment(\.openWindow) private var openWindow
     
     init() {
         UserDefaults.standard.register(defaults: [
@@ -56,10 +56,6 @@ struct MacAbobooApp: App {
             MainContentView()
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
-                .sheet(isPresented: $isSettingsPresented) {
-                    IntensiveSettingsPopover(engine: engine)
-                        .frame(width: 390, height: 620)
-                }
                 .onOpenURL { url in
                     PlaybackEngine.shared.loadMedia(from: url)
                 }
@@ -72,7 +68,7 @@ struct MacAbobooApp: App {
             // 应用菜单：将设置放在 MacAboboo 菜单下，并使用 macOS 标准快捷键 ⌘,
             CommandGroup(after: .appInfo) {
                 Button(languageManager.text("设置", "Settings")) {
-                    isSettingsPresented = true
+                    openWindow(id: "settings")
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }
@@ -169,6 +165,16 @@ struct MacAbobooApp: App {
                 .keyboardShortcut("3", modifiers: [.option, .command])
             }
         }
+
+        // 独立设置窗口：不使用 sheet，允许设置窗口与主窗口并行存在，
+        // 且不设置 floating level，避免强制置顶遮挡其它应用。
+        Window(languageManager.text("设置", "Settings"), id: "settings") {
+            IntensiveSettingsPopover(engine: engine)
+                .background(SettingsWindowAccessor())
+        }
+        .defaultSize(width: 680, height: 880)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
     }
     
     private func openFileAction() {
@@ -230,5 +236,38 @@ struct WindowAccessor: NSViewRepresentable {
         window.isMovableByWindowBackground = false
         window.tabbingMode = .disallowed
 
+    }
+}
+
+/// 设置窗口的原生窗口配置：保留标准三色按钮，但只允许关闭。
+/// 不设置 floating level，设置窗口可以被其它窗口正常覆盖。
+struct SettingsWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { [weak view] in
+            configureWindow(view?.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configureWindow(nsView.window)
+    }
+
+    private func configureWindow(_ window: NSWindow?) {
+        guard let window else { return }
+
+        window.titleVisibility = .visible
+        window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable])
+        window.level = .normal
+        window.minSize = NSSize(width: 620, height: 820)
+        window.maxSize = NSSize(width: 1200, height: 1200)
+        window.showsResizeIndicator = true
+        window.isMovableByWindowBackground = false
+        window.tabbingMode = .disallowed
+
+        window.standardWindowButton(.closeButton)?.isEnabled = true
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
     }
 }
