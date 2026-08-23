@@ -82,6 +82,17 @@ final class PlaybackEngineTests: XCTestCase {
 
         engine.updateActiveSegment(for: 5.0)
         XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // 保持既有语义：位于断句间隙时预选下一句，公共边界属于下一句。
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0.0, endTime: 3.0),
+            SentenceSegment(index: 2, startTime: 5.0, endTime: 8.0),
+            SentenceSegment(index: 3, startTime: 8.0, endTime: 12.0)
+        ]
+        engine.updateActiveSegment(for: 4.0)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        engine.updateActiveSegment(for: 8.0)
+        XCTAssertEqual(engine.activeSegmentIndex, 2)
     }
 
     func testBoundaryDragSource() {

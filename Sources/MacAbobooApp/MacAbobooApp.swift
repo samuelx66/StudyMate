@@ -7,6 +7,7 @@ import MacAbobooKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var keyMonitor: Any?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -18,10 +19,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PlaybackEngine.shared.togglePlayPause()
             return nil
         }
+
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        source.setEventHandler {
+            Task {
+                await SpeechSegmentationPipeline.shared.clearCaches()
+                await SpeakerDiarizationEngine.shared.unloadModels()
+                await NativeSpeechRuntime.shared.unloadModels()
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        memoryPressureSource?.cancel()
         PlaybackEngine.shared.flushPendingPersistence()
     }
     

@@ -239,6 +239,15 @@ public final class MPVClient: @unchecked Sendable {
         }
         return status >= 0 ? value : nil
     }
+
+    public func getPropertyFlag(_ handle: OpaquePointer?, name: String) -> Bool? {
+        guard let h = handle else { return nil }
+        var value: Int32 = 0
+        let status = name.withCString { namePointer in
+            self._get_property?(h, namePointer, MPVFormat.flag.rawValue, &value) ?? -1
+        }
+        return status >= 0 ? value != 0 : nil
+    }
     
     public func getPropertyString(_ handle: OpaquePointer?, name: String) -> String? {
         guard let h = handle else { return nil }

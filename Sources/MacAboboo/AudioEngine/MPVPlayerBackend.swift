@@ -42,20 +42,22 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private let hostView = MPVHostView(frame: .zero)
     public var playerView: NSView { return hostView }
     
-    public var onTimeUpdate: ((Double, Double) -> Void)?
-    public var onStateChanged: ((Bool) -> Void)?
-    public var onFinished: (() -> Void)?
-    public var onError: ((Error) -> Void)?
+    public var onTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public var onStateChanged: (@MainActor (Bool) -> Void)?
+    public var onFinished: (@MainActor () -> Void)?
+    public var onError: (@MainActor (Error) -> Void)?
     
     private var mpvHandle: OpaquePointer?
     private var renderContext: OpaquePointer?
     private var pollTimer: Timer?
     private var isSeekingInternal = false
     private var isPollingActive = false
+    private var pollTick: UInt64 = 0
     private var loadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
     private let commandQueue = DispatchQueue(label: "com.macaboboo.mpv.commands", qos: .userInitiated)
     private var loadCancellationToken: MPVCancellationToken?
+    private var seekCancellationToken: MPVCancellationToken?
     
     private static let openGLFrameworkHandle: UnsafeMutableRawPointer? = dlopen("/System/Library/Frameworks/OpenGL.framework/OpenGL", RTLD_NOW | RTLD_GLOBAL)
     
@@ -102,15 +104,13 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
             MPVClient.shared.setRenderUpdateCallback(rCtx, callback: { ctx in
                 guard let c = ctx else { return }
                 let layer = Unmanaged<MPVOpenGLLayer>.fromOpaque(c).takeUnretainedValue()
-                DispatchQueue.main.async {
-                    layer.setNeedsDisplay()
-                }
+                layer.requestDisplay()
             }, ctx: layerPtr)
             print("[MPVPlayerBackend] Shared mpv_render_context initialized successfully at startup.")
         }
     }
     
-    public func load(url: URL, completion: @escaping (Bool) -> Void) {
+    public func load(url: URL, completion: @escaping @MainActor (Bool) -> Void) {
         guard let handle = mpvHandle else {
             completion(false)
             return
@@ -129,6 +129,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         isPlaying = false
         isSeekingInternal = false
         isPollingActive = false
+        pollTick = 0
         
         let handleBits = UInt(bitPattern: handle)
         let path = url.standardizedFileURL.path
@@ -240,6 +241,9 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         }
         
         let clamped = max(0, min(seconds, max(0.1, duration)))
+        seekCancellationToken?.cancel()
+        let cancellationToken = MPVCancellationToken()
+        seekCancellationToken = cancellationToken
         isSeekingInternal = true
         currentTime = clamped
         seekGeneration &+= 1
@@ -254,11 +258,33 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                 }
                 return
             }
-            _ = MPVClient.shared.command(h, args: ["seek", "\(clamped)", "absolute", "exact"])
+            let status = MPVClient.shared.command(h, args: ["seek", "\(clamped)", "absolute", "exact"])
+            var confirmedPosition: Double?
+            if status >= 0 {
+                // `mpv_command` returning success only means the seek command
+                // was accepted. Wait until the decoder's real clock reaches
+                // the requested position before releasing PlaybackEngine's
+                // seek lock and allowing playback to resume.
+                let deadline = CFAbsoluteTimeGetCurrent() + 1.0
+                repeat {
+                    guard !cancellationToken.isCancelled else { return }
+                    if let position = MPVClient.shared.getPropertyDouble(h, name: "time-pos") {
+                        confirmedPosition = position
+                        if abs(position - clamped) <= 0.10 { break }
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                } while CFAbsoluteTimeGetCurrent() < deadline
+            }
             
             DispatchQueue.main.async {
-                guard let self = self, generation == self.seekGeneration else { return }
+                guard let self = self,
+                      generation == self.seekGeneration,
+                      !cancellationToken.isCancelled else { return }
+                self.seekCancellationToken = nil
                 self.isSeekingInternal = false
+                if let confirmedPosition, confirmedPosition.isFinite, confirmedPosition >= 0 {
+                    self.currentTime = confirmedPosition
+                }
                 self.hostView.mpvLayer.setNeedsDisplay()
                 completion?()
             }
@@ -276,6 +302,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
             guard let self,
                   generation == self.seekGeneration,
                   self.isSeekingInternal else { return }
+            self.seekCancellationToken?.cancel()
+            self.seekCancellationToken = nil
             self.isSeekingInternal = false
             self.hostView.mpvLayer.setNeedsDisplay()
             completion?()
@@ -286,6 +314,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         loadGeneration &+= 1
         loadCancellationToken?.cancel()
         loadCancellationToken = nil
+        seekCancellationToken?.cancel()
+        seekCancellationToken = nil
         seekGeneration &+= 1
         stopPolling()
         if let handle = mpvHandle {
@@ -305,7 +335,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private func startPolling() {
         guard pollTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 self?.pollPlaybackState()
             }
         }
@@ -321,14 +351,24 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private func pollPlaybackState() {
         guard !isSeekingInternal, !isPollingActive, let handle = mpvHandle else { return }
         isPollingActive = true
+        pollTick &+= 1
+        let shouldRefreshDuration = duration <= 0 || pollTick % 60 == 0
         let generation = loadGeneration
         
         let handleBits = UInt(bitPattern: handle)
         commandQueue.async { [weak self] in
-            guard let h = OpaquePointer(bitPattern: handleBits) else { return }
+            guard let h = OpaquePointer(bitPattern: handleBits) else {
+                DispatchQueue.main.async {
+                    guard let self, generation == self.loadGeneration else { return }
+                    self.isPollingActive = false
+                }
+                return
+            }
             let pos = MPVClient.shared.getPropertyDouble(h, name: "time-pos") ?? -1
-            let dur = MPVClient.shared.getPropertyDouble(h, name: "duration") ?? 0
-            let eof = (MPVClient.shared.getPropertyString(h, name: "eof-reached") == "yes")
+            let dur = shouldRefreshDuration
+                ? (MPVClient.shared.getPropertyDouble(h, name: "duration") ?? 0)
+                : 0
+            let eof = MPVClient.shared.getPropertyFlag(h, name: "eof-reached") ?? false
             
             DispatchQueue.main.async {
                 guard let self = self, generation == self.loadGeneration else { return }
@@ -354,6 +394,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     
     deinit {
         loadCancellationToken?.cancel()
+        seekCancellationToken?.cancel()
         pollTimer?.invalidate()
         if let r = renderContext {
             MPVClient.shared.freeRenderContext(r)
@@ -389,6 +430,25 @@ final class MPVOpenGLLayer: CAOpenGLLayer {
     let cglPixelFormatObj: CGLPixelFormatObj?
     let cglContextObj: CGLContextObj?
     var renderContext: OpaquePointer?
+    private let displayRequestLock = NSLock()
+    private var isDisplayRequestPending = false
+
+    func requestDisplay() {
+        displayRequestLock.lock()
+        guard !isDisplayRequestPending else {
+            displayRequestLock.unlock()
+            return
+        }
+        isDisplayRequestPending = true
+        displayRequestLock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.displayRequestLock.lock()
+            self.isDisplayRequestPending = false
+            self.displayRequestLock.unlock()
+            self.setNeedsDisplay()
+        }
+    }
     
     override init() {
         var pixAttrs: [CGLPixelFormatAttribute] = [

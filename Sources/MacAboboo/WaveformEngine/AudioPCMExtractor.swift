@@ -21,6 +21,14 @@ public actor AudioPCMExtractor {
     private struct CacheDescriptor: Sendable {
         let key: String
         let fileURL: URL?
+        let legacyFileURL: URL?
+    }
+
+    private struct DecodeFlight {
+        let id: UUID
+        let task: Task<AudioPCMData, Error>
+        var waiters: Set<UUID>
+        var isCompleted: Bool
     }
 
     private static let cacheMagic = Data("MABPCM01".utf8)
@@ -29,21 +37,28 @@ public actor AudioPCMExtractor {
 
     private let memoryCache = NSCache<NSString, PCMCacheBox>()
     private let cacheDirectory: URL?
-    private var inFlight: [String: Task<AudioPCMData, Error>] = [:]
+    private let legacyCacheDirectory: URL?
+    private var inFlight: [String: DecodeFlight] = [:]
 
     public init() {
         memoryCache.countLimit = 2
         memoryCache.totalCostLimit = 256 * 1024 * 1024
 
-        if let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            let directory = cachesURL
+        if let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let directory = appSupportURL
                 .appendingPathComponent("MacAboboo", isDirectory: true)
-                .appendingPathComponent("PCM", isDirectory: true)
+                .appendingPathComponent("PCMCache", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             cacheDirectory = directory
+            Task.detached(priority: .background) {
+                Self.pruneDiskCache(in: directory)
+            }
         } else {
             cacheDirectory = nil
         }
+        legacyCacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("MacAboboo", isDirectory: true)
+            .appendingPathComponent("PCM", isDirectory: true)
     }
 
     public func extract(
@@ -51,7 +66,11 @@ public actor AudioPCMExtractor {
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> AudioPCMData {
         try Task.checkCancellation()
-        let descriptor = Self.cacheDescriptor(for: url, cacheDirectory: cacheDirectory)
+        let descriptor = Self.cacheDescriptor(
+            for: url,
+            cacheDirectory: cacheDirectory,
+            legacyCacheDirectory: legacyCacheDirectory
+        )
         let memoryKey = descriptor.key as NSString
 
         if let cached = memoryCache.object(forKey: memoryKey)?.value {
@@ -65,27 +84,57 @@ public actor AudioPCMExtractor {
             progress?(1)
             return cached
         }
-
-        if let existingTask = inFlight[descriptor.key] {
-            let pcm = try await existingTask.value
-            try Task.checkCancellation()
-            memoryCache.setObject(Self.PCMCacheBox(value: pcm), forKey: memoryKey, cost: Self.cacheCost(for: pcm))
+        if let legacyURL = descriptor.legacyFileURL,
+           let cached = Self.readDiskCache(from: legacyURL) {
+            memoryCache.setObject(Self.PCMCacheBox(value: cached), forKey: memoryKey, cost: Self.cacheCost(for: cached))
+            if let cacheURL = descriptor.fileURL {
+                _ = Self.scheduleDiskWrite(cached, to: cacheURL)
+            }
             progress?(1)
-            return pcm
+            return cached
         }
 
-        let decodeTask = Task.detached(priority: .utility) {
-            try await Self.decodeUncached(from: url, progress: progress)
+        let waiterID = UUID()
+        let flightID: UUID
+        let decodeTask: Task<AudioPCMData, Error>
+        if var existingFlight = inFlight[descriptor.key] {
+            existingFlight.waiters.insert(waiterID)
+            inFlight[descriptor.key] = existingFlight
+            flightID = existingFlight.id
+            decodeTask = existingFlight.task
+        } else {
+            let task = Task.detached(priority: .utility) {
+                try await Self.decodeUncached(from: url, progress: progress)
+            }
+            let id = UUID()
+            inFlight[descriptor.key] = DecodeFlight(
+                id: id,
+                task: task,
+                waiters: [waiterID],
+                isCompleted: false
+            )
+            flightID = id
+            decodeTask = task
         }
-        inFlight[descriptor.key] = decodeTask
 
         do {
-            let pcm = try await decodeTask.value
-            inFlight[descriptor.key] = nil
+            let pcm = try await withTaskCancellationHandler {
+                try await decodeTask.value
+            } onCancel: {
+                Task {
+                    await self.cancelWaiter(
+                        waiterID,
+                        for: descriptor.key,
+                        flightID: flightID
+                    )
+                }
+            }
+            removeWaiter(waiterID, for: descriptor.key, flightID: flightID)
             try Task.checkCancellation()
 
             memoryCache.setObject(Self.PCMCacheBox(value: pcm), forKey: memoryKey, cost: Self.cacheCost(for: pcm))
-            if let cacheURL = descriptor.fileURL {
+            let shouldFinalize = markFlightCompleted(for: descriptor.key, flightID: flightID)
+            if shouldFinalize, let cacheURL = descriptor.fileURL {
                 let writeTask = Self.scheduleDiskWrite(pcm, to: cacheURL)
                 // Keep the completed result visible while the asynchronous
                 // cache write finishes. This prevents a second immediate
@@ -93,22 +142,27 @@ public actor AudioPCMExtractor {
                 // a long recording because of its cost limit.
                 Task.detached { [weak self] in
                     _ = await writeTask.value
-                    await self?.removeCompletedFlight(for: descriptor.key)
+                    await self?.removeCompletedFlight(for: descriptor.key, flightID: flightID)
                 }
-            } else {
-                inFlight[descriptor.key] = nil
+            } else if shouldFinalize {
+                removeCompletedFlight(for: descriptor.key, flightID: flightID)
             }
             progress?(1)
             return pcm
         } catch {
-            inFlight[descriptor.key] = nil
+            removeWaiter(waiterID, for: descriptor.key, flightID: flightID)
+            removeFailedFlight(for: descriptor.key, flightID: flightID)
             throw error
         }
     }
 
     // MARK: - Cache
 
-    private static func cacheDescriptor(for url: URL, cacheDirectory: URL?) -> CacheDescriptor {
+    private static func cacheDescriptor(
+        for url: URL,
+        cacheDirectory: URL?,
+        legacyCacheDirectory: URL?
+    ) -> CacheDescriptor {
         let standardizedURL = url.standardizedFileURL
         let values = try? standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let fileSize = values?.fileSize ?? -1
@@ -126,7 +180,8 @@ public actor AudioPCMExtractor {
             .map { String(format: "%02x", $0) }
             .joined()
         let fileURL = cacheDirectory?.appendingPathComponent("\(digest).pcmcache")
-        return CacheDescriptor(key: digest, fileURL: fileURL)
+        let legacyFileURL = legacyCacheDirectory?.appendingPathComponent("\(digest).pcmcache")
+        return CacheDescriptor(key: digest, fileURL: fileURL, legacyFileURL: legacyFileURL)
     }
 
     private static func cacheCost(for pcm: AudioPCMData) -> Int {
@@ -195,10 +250,12 @@ public actor AudioPCMExtractor {
                     var offset = 0
                     while offset < rawBuffer.count {
                         let count = min(chunkSize, rawBuffer.count - offset)
-                        try handle.write(contentsOf: Data(
-                            bytes: baseAddress.advanced(by: offset),
-                            count: count
-                        ))
+                        let chunk = Data(
+                            bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress.advanced(by: offset)),
+                            count: count,
+                            deallocator: .none
+                        )
+                        try handle.write(contentsOf: chunk)
                         offset += count
                     }
                 }
@@ -217,8 +274,80 @@ public actor AudioPCMExtractor {
         }
     }
 
-    private func removeCompletedFlight(for key: String) {
+    private func cancelWaiter(_ waiterID: UUID, for key: String, flightID: UUID) {
+        guard var flight = inFlight[key], flight.id == flightID else { return }
+        flight.waiters.remove(waiterID)
+        if flight.waiters.isEmpty, !flight.isCompleted {
+            inFlight[key] = nil
+            flight.task.cancel()
+        } else {
+            inFlight[key] = flight
+        }
+    }
+
+    private func removeWaiter(_ waiterID: UUID, for key: String, flightID: UUID) {
+        guard var flight = inFlight[key], flight.id == flightID else { return }
+        flight.waiters.remove(waiterID)
+        inFlight[key] = flight
+    }
+
+    private func markFlightCompleted(for key: String, flightID: UUID) -> Bool {
+        guard var flight = inFlight[key], flight.id == flightID else { return false }
+        guard !flight.isCompleted else { return false }
+        flight.isCompleted = true
+        inFlight[key] = flight
+        return true
+    }
+
+    private func removeCompletedFlight(for key: String, flightID: UUID) {
+        guard let flight = inFlight[key], flight.id == flightID, flight.isCompleted else { return }
         inFlight[key] = nil
+    }
+
+    private func removeFailedFlight(for key: String, flightID: UUID) {
+        guard let flight = inFlight[key], flight.id == flightID else { return }
+        if flight.waiters.isEmpty || flight.task.isCancelled {
+            inFlight[key] = nil
+        }
+    }
+
+    private static func pruneDiskCache(in directory: URL) {
+        let resourceKeys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .contentAccessDateKey,
+            .contentModificationDateKey
+        ]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let now = Date()
+        let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+        let maximumBytes: Int64 = 4 * 1024 * 1024 * 1024
+        var retained: [(url: URL, size: Int64, date: Date)] = []
+        var totalBytes: Int64 = 0
+
+        for url in files where url.pathExtension == "pcmcache" {
+            guard let values = try? url.resourceValues(forKeys: resourceKeys),
+                  values.isRegularFile == true else { continue }
+            let date = values.contentAccessDate ?? values.contentModificationDate ?? .distantPast
+            if now.timeIntervalSince(date) > maximumAge {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            let size = Int64(values.fileSize ?? 0)
+            retained.append((url, size, date))
+            totalBytes += size
+        }
+
+        guard totalBytes > maximumBytes else { return }
+        for item in retained.sorted(by: { $0.date < $1.date }) where totalBytes > maximumBytes {
+            if (try? FileManager.default.removeItem(at: item.url)) != nil {
+                totalBytes -= item.size
+            }
+        }
     }
 
     private static func readUInt32LittleEndian(_ data: Data, at offset: Int) -> UInt32 {

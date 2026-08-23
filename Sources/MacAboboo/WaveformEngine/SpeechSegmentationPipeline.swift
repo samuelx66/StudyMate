@@ -108,6 +108,9 @@ public actor SpeechSegmentationPipeline {
     private var voiceCache: [String: [VoiceActivitySegment]] = [:]
     private var diarizationCache: [String: SpeakerDiarizationTimeline] = [:]
     private var transcriptionCache: [String: SpeechRecognitionTimeline] = [:]
+    private var voiceCacheOrder: [String] = []
+    private var diarizationCacheOrder: [String] = []
+    private var transcriptionCacheOrder: [String] = []
     private let maxCacheEntries = 8
 
     public init(
@@ -201,6 +204,7 @@ public actor SpeechSegmentationPipeline {
         let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v3"
         var timeline: SpeechRecognitionTimeline
         if let cached = transcriptionCache[transcriptionKey] {
+            touch(transcriptionKey, in: &transcriptionCacheOrder)
             timeline = cached
             emitStage(.transcribing(1))
         } else {
@@ -214,7 +218,12 @@ public actor SpeechSegmentationPipeline {
             ) { progress in
                 emitStage(.transcribing(progress))
             }
-            insert(timeline, into: &transcriptionCache, key: transcriptionKey)
+            insert(
+                timeline,
+                into: &transcriptionCache,
+                order: &transcriptionCacheOrder,
+                key: transcriptionKey
+            )
         }
         try Task.checkCancellation()
         timeline.speakerSegments = speakerTimeline.segments
@@ -293,6 +302,8 @@ public actor SpeechSegmentationPipeline {
         let cachedDiarization = request.enableSpeakerDiarization
             ? diarizationCache[diarizationKey]
             : nil
+        if cachedVoice != nil { touch(voiceKey, in: &voiceCacheOrder) }
+        if cachedDiarization != nil { touch(diarizationKey, in: &diarizationCacheOrder) }
 
         stageChanged(.detectingVoice)
         if request.enableSpeakerDiarization {
@@ -336,7 +347,7 @@ public actor SpeechSegmentationPipeline {
         } else {
             do {
                 voiceSegments = try await voiceTask?.value ?? []
-                insert(voiceSegments, into: &voiceCache, key: voiceKey)
+                insert(voiceSegments, into: &voiceCache, order: &voiceCacheOrder, key: voiceKey)
             } catch {
                 diarizationTask?.cancel()
                 throw error
@@ -349,7 +360,12 @@ public actor SpeechSegmentationPipeline {
         if let diarizationTask {
             do {
                 speakerTimeline = try await diarizationTask.value
-                insert(speakerTimeline, into: &diarizationCache, key: diarizationKey)
+                insert(
+                    speakerTimeline,
+                    into: &diarizationCache,
+                    order: &diarizationCacheOrder,
+                    key: diarizationKey
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -368,12 +384,31 @@ public actor SpeechSegmentationPipeline {
     private func insert<Value>(
         _ value: Value,
         into cache: inout [String: Value],
+        order: inout [String],
         key: String
     ) {
         cache[key] = value
-        while cache.count > maxCacheEntries, let firstKey = cache.keys.first {
-            cache.removeValue(forKey: firstKey)
+        touch(key, in: &order)
+        while cache.count > maxCacheEntries, !order.isEmpty {
+            let oldestKey = order.removeFirst()
+            cache.removeValue(forKey: oldestKey)
         }
+    }
+
+    private func touch(_ key: String, in order: inout [String]) {
+        if let index = order.firstIndex(of: key) {
+            order.remove(at: index)
+        }
+        order.append(key)
+    }
+
+    public func clearCaches() {
+        voiceCache.removeAll(keepingCapacity: false)
+        diarizationCache.removeAll(keepingCapacity: false)
+        transcriptionCache.removeAll(keepingCapacity: false)
+        voiceCacheOrder.removeAll(keepingCapacity: false)
+        diarizationCacheOrder.removeAll(keepingCapacity: false)
+        transcriptionCacheOrder.removeAll(keepingCapacity: false)
     }
 
     private static func reusableWaveform(

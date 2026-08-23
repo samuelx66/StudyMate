@@ -16,6 +16,7 @@ public final class WaveformExtractor: @unchecked Sendable {
 
     public init() {
         cache.countLimit = 30
+        cache.totalCostLimit = 96 * 1024 * 1024
     }
 
     /// 异步提取波形数据。音频解码由 `AudioPCMExtractor` 统一完成并共享缓存。
@@ -45,7 +46,11 @@ public final class WaveformExtractor: @unchecked Sendable {
                 let data = pcm.waveform(samplesPerSecond: samplingRate)
                 guard !Task.isCancelled else { return }
 
-                self.cache.setObject(WaveformCacheWrapper(data: data), forKey: cacheKey)
+                self.cache.setObject(
+                    WaveformCacheWrapper(data: data),
+                    forKey: cacheKey,
+                    cost: self.cacheCost(for: data)
+                )
                 await MainActor.run {
                     onProgress?(1, data)
                     completion(.success(data))
@@ -66,5 +71,11 @@ public final class WaveformExtractor: @unchecked Sendable {
         let size = values?.fileSize ?? -1
         let modified = values?.contentModificationDate?.timeIntervalSince1970 ?? -1
         return "\(url.standardizedFileURL.path)|\(size)|\(modified)|\(samplesPerSecond)" as NSString
+    }
+
+    private func cacheCost(for data: WaveformData) -> Int {
+        let elementCount = data.peaks.count + data.minPeaks.count + data.maxPeaks.count
+        guard elementCount <= Int.max / MemoryLayout<Float>.size else { return Int.max }
+        return elementCount * MemoryLayout<Float>.size
     }
 }

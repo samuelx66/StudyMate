@@ -40,6 +40,15 @@ public enum WhisperModelLevel: String, CaseIterable, Identifiable, Codable, Send
     public var downloadURL: URL {
         URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")!
     }
+
+    /// 仅用于识别明显残缺的下载或代理返回的错误页面，不改变模型选择。
+    public var minimumValidFileSize: Int64 {
+        switch self {
+        case .tiny: return 50_000_000
+        case .base: return 100_000_000
+        case .small: return 300_000_000
+        }
+    }
 }
 
 /// 模型就绪状态
@@ -98,8 +107,7 @@ public final class WhisperModelManager: NSObject, ObservableObject, URLSessionDo
         let fileURL = modelFileURL(for: level)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return false }
         let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
-        // 至少大于 1MB 避免不完整占位文件
-        return size > 1_000_000
+        return size >= level.minimumValidFileSize
     }
     
     /// 刷新所有模型的磁盘状态
@@ -173,11 +181,22 @@ public final class WhisperModelManager: NSObject, ObservableObject, URLSessionDo
     ) {
         guard let level = activeDownloads[downloadTask.taskIdentifier] else { return }
         let targetURL = modelFileURL(for: level)
-        
-        try? FileManager.default.removeItem(at: targetURL)
+
         do {
-            try FileManager.default.moveItem(at: location, to: targetURL)
-            let size = (try? FileManager.default.attributesOfItem(atPath: targetURL.path)[.size] as? Int64) ?? 0
+            guard let response = downloadTask.response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode) else {
+                throw ModelDownloadValidationError.invalidHTTPResponse
+            }
+            let size = (try FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard size >= level.minimumValidFileSize else {
+                throw ModelDownloadValidationError.incompleteFile(actualBytes: size)
+            }
+            // 先验证临时文件，再替换旧模型，失败时保留原有可用文件。
+            if FileManager.default.fileExists(atPath: targetURL.path) {
+                _ = try FileManager.default.replaceItemAt(targetURL, withItemAt: location)
+            } else {
+                try FileManager.default.moveItem(at: location, to: targetURL)
+            }
             let formatted = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
             modelStatuses[level] = .ready(fileSize: formatted)
         } catch {
@@ -203,6 +222,21 @@ public final class WhisperModelManager: NSObject, ObservableObject, URLSessionDo
             modelStatuses[level] = .error(message: "下载出错: \(error.localizedDescription)")
         } else if modelStatuses[level] == nil || !isModelDownloaded(level) {
             modelStatuses[level] = .notDownloaded
+        }
+    }
+}
+
+private enum ModelDownloadValidationError: LocalizedError {
+    case invalidHTTPResponse
+    case incompleteFile(actualBytes: Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidHTTPResponse:
+            return "服务器返回异常，请稍后重试"
+        case let .incompleteFile(actualBytes):
+            let size = ByteCountFormatter.string(fromByteCount: actualBytes, countStyle: .file)
+            return "模型文件不完整（仅收到 \(size)），请重新下载"
         }
     }
 }

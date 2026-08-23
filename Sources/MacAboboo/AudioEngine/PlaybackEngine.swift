@@ -234,71 +234,63 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     private func setupBackendCallbacks(for backend: MediaPlayerBackend) {
         backend.onTimeUpdate = { [weak self, weak backend] current, total in
-            Task { @MainActor [weak self] in
-                guard let self = self,
-                      self.activeBackend === backend,
-                      self.isBackendReady,
-                      !self.isSeeking else { return }
-                self.updateMediaDurationIfNeeded(total)
-                self.currentTime = current
-                self.handlePlaybackBoundary(at: current)
-                self.followPlaybackIfNeeded(at: current)
-            }
+            guard let self,
+                  self.activeBackend === backend,
+                  self.isBackendReady,
+                  !self.isSeeking else { return }
+            self.updateMediaDurationIfNeeded(total)
+            self.currentTime = current
+            self.handlePlaybackBoundary(at: current)
+            self.followPlaybackIfNeeded(at: current)
         }
 
         backend.onStateChanged = { [weak self, weak backend] playing in
-            Task { @MainActor [weak self] in
-                guard let self, let backend, self.activeBackend === backend else { return }
-                if !self.isShadowingPaused {
-                    self.isPlaying = playing
-                }
+            guard let self, let backend, self.activeBackend === backend else { return }
+            if !self.isShadowingPaused {
+                self.isPlaying = playing
             }
         }
 
         backend.onFinished = { [weak self, weak backend] in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.activeBackend === backend else { return }
-                let hadPlaybackIntent = self.wantsPlayback
-                self.isPlaying = false
-                if self.loopMode == .all {
-                    self.seek(to: 0.0) {
-                        Task { @MainActor [weak self] in
-                            self?.play()
-                        }
+            guard let self, self.activeBackend === backend else { return }
+            let hadPlaybackIntent = self.wantsPlayback
+            self.isPlaying = false
+            if self.loopMode == .all {
+                self.seek(to: 0.0) {
+                    Task { @MainActor [weak self] in
+                        self?.play()
                     }
-                } else {
-                    self.wantsPlayback = false
-                    // 保留一次“自然结束后点击断句即可继续播放”的意图。
-                    // 如果用户在结束回调前已经主动暂停，不能把普通暂停误判为自然结束。
-                    if hadPlaybackIntent {
-                        self.canResumePlaybackFromSegmentSelection = true
-                    }
+                }
+            } else {
+                self.wantsPlayback = false
+                // 保留一次“自然结束后点击断句即可继续播放”的意图。
+                // 如果用户在结束回调前已经主动暂停，不能把普通暂停误判为自然结束。
+                if hadPlaybackIntent {
+                    self.canResumePlaybackFromSegmentSelection = true
                 }
             }
         }
 
         backend.onError = { [weak self, weak backend] error in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.activeBackend === backend else { return }
-                print("[PlaybackEngine] Active backend reported error: \(error.localizedDescription)")
+            guard let self, self.activeBackend === backend else { return }
+            print("[PlaybackEngine] Active backend reported error: \(error.localizedDescription)")
 
-                if backend === self.nativeBackend,
-                   self.decoderMode == .hybrid,
-                   self.mpvBackend.isAvailable,
-                   let media = self.currentMedia {
-                    self.loadBackend(
-                        self.mpvBackend,
-                        url: media.url,
-                        sessionID: self.mediaSessionID,
-                        resumeTime: self.currentTime,
-                        shouldPlay: self.wantsPlayback,
-                        allowHybridFallback: false
-                    )
-                } else {
-                    self.isPlaying = false
-                    self.wantsPlayback = false
-                    self.lastErrorMessage = error.localizedDescription
-                }
+            if backend === self.nativeBackend,
+               self.decoderMode == .hybrid,
+               self.mpvBackend.isAvailable,
+               let media = self.currentMedia {
+                self.loadBackend(
+                    self.mpvBackend,
+                    url: media.url,
+                    sessionID: self.mediaSessionID,
+                    resumeTime: self.currentTime,
+                    shouldPlay: self.wantsPlayback,
+                    allowHybridFallback: false
+                )
+            } else {
+                self.isPlaying = false
+                self.wantsPlayback = false
+                self.lastErrorMessage = error.localizedDescription
             }
         }
     }
@@ -351,42 +343,40 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         activeBackend.volume = volume
 
         backend.load(url: url) { [weak self, weak backend] success in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let backend,
-                      sessionID == self.mediaSessionID,
-                      self.activeBackend === backend else { return }
+            guard let self,
+                  let backend,
+                  sessionID == self.mediaSessionID,
+                  self.activeBackend === backend else { return }
 
-                if success, backend.loadedURL?.standardizedFileURL == url.standardizedFileURL {
-                    self.isBackendReady = true
-                    self.isMediaLoading = false
-                    self.updateMediaDurationIfNeeded(backend.duration)
-                    self.applyPendingPlaybackRestore()
-                    return
-                }
+            if success, backend.loadedURL?.standardizedFileURL == url.standardizedFileURL {
+                self.isBackendReady = true
+                self.isMediaLoading = false
+                self.updateMediaDurationIfNeeded(backend.duration)
+                self.applyPendingPlaybackRestore()
+                return
+            }
 
-                if allowHybridFallback,
-                   backend === self.nativeBackend,
-                   self.decoderMode == .hybrid,
-                   self.mpvBackend.isAvailable {
-                    self.loadBackend(
-                        self.mpvBackend,
-                        url: url,
-                        sessionID: sessionID,
-                        resumeTime: self.pendingResumeTime,
-                        shouldPlay: self.pendingResumePlayback,
-                        allowHybridFallback: false
-                    )
-                } else {
-                    self.isBackendReady = false
-                    self.isMediaLoading = false
-                    self.isPlaying = false
-                    self.wantsPlayback = false
-                    self.pendingResumePlayback = false
-                    self.lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
-                        ? "无法加载媒体文件：\(url.lastPathComponent)"
-                        : "Unable to load media: \(url.lastPathComponent)"
-                }
+            if allowHybridFallback,
+               backend === self.nativeBackend,
+               self.decoderMode == .hybrid,
+               self.mpvBackend.isAvailable {
+                self.loadBackend(
+                    self.mpvBackend,
+                    url: url,
+                    sessionID: sessionID,
+                    resumeTime: self.pendingResumeTime,
+                    shouldPlay: self.pendingResumePlayback,
+                    allowHybridFallback: false
+                )
+            } else {
+                self.isBackendReady = false
+                self.isMediaLoading = false
+                self.isPlaying = false
+                self.wantsPlayback = false
+                self.pendingResumePlayback = false
+                self.lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                    ? "无法加载媒体文件：\(url.lastPathComponent)"
+                    : "Unable to load media: \(url.lastPathComponent)"
             }
         }
     }
@@ -1252,6 +1242,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                       self.isSeeking else { return }
                 self.seekTimeoutTask?.cancel()
                 self.seekTimeoutTask = nil
+                let backendTime = backend.currentTime
+                if backendTime.isFinite, backendTime >= 0 {
+                    self.currentTime = backendTime
+                    self.updateActiveSegment(for: backendTime)
+                }
                 self.isSeeking = false
                 if self.wantsPlayback {
                     backend.playbackRate = self.playbackRate
@@ -1374,16 +1369,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func advanceToNextSentence(from currentIndex: Int) {
-        let candidateIndices = Array((currentIndex + 1)..<segments.count)
         var targetIndex: Int?
 
         if onlyPlayBookmarked {
-            targetIndex = candidateIndices.first(where: { segments[$0].isBookmarked })
+            var index = currentIndex + 1
+            while index < segments.count {
+                if segments[index].isBookmarked {
+                    targetIndex = index
+                    break
+                }
+                index += 1
+            }
             if targetIndex == nil && loopMode == .all {
                 targetIndex = segments.firstIndex(where: { $0.isBookmarked })
             }
         } else {
-            targetIndex = candidateIndices.first
+            targetIndex = currentIndex + 1 < segments.count ? currentIndex + 1 : nil
             if targetIndex == nil && loopMode == .all {
                 targetIndex = 0
             }
@@ -1466,15 +1467,36 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func updateActiveSegment(for time: Double) {
         guard time.isFinite else { return }
-        if let index = segments.firstIndex(where: { $0.contains(time: time) }) {
-            if activeSegmentIndex != index {
-                activeSegmentIndex = index
+        guard !segments.isEmpty else { return }
+
+        if let current = activeSegmentIndex, segments.indices.contains(current) {
+            if segments[current].contains(time: time) { return }
+            let next = current + 1
+            if segments.indices.contains(next), segments[next].contains(time: time) {
+                activeSegmentIndex = next
+                return
             }
-        } else if let next = segments.firstIndex(where: { $0.startTime > time }) {
-            activeSegmentIndex = next
-        } else if !segments.isEmpty {
-            activeSegmentIndex = segments.count - 1
+            let previous = current - 1
+            if segments.indices.contains(previous), segments[previous].contains(time: time) {
+                activeSegmentIndex = previous
+                return
+            }
         }
+
+        // Segments are kept sorted and non-overlapping. Find the first range
+        // whose end lies after the requested time; this is either the range
+        // containing the time or the next sentence across a silent gap.
+        var lower = 0
+        var upper = segments.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if segments[middle].endTime > time {
+                upper = middle
+            } else {
+                lower = middle + 1
+            }
+        }
+        activeSegmentIndex = lower < segments.count ? lower : segments.count - 1
     }
 
     // MARK: - 断句快捷操作与难句收藏
@@ -1527,8 +1549,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let targetIndex: Int
 
         if onlyPlayBookmarked {
-            let prevIndices = Array(0..<current).reversed()
-            targetIndex = prevIndices.first(where: { segments[$0].isBookmarked }) ?? current
+            var candidate = current - 1
+            var found: Int?
+            while candidate >= 0 {
+                if segments[candidate].isBookmarked {
+                    found = candidate
+                    break
+                }
+                candidate -= 1
+            }
+            targetIndex = found ?? current
         } else {
             targetIndex = max(0, current - 1)
         }
@@ -1541,8 +1571,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let targetIndex: Int
 
         if onlyPlayBookmarked {
-            let nextIndices = Array((current + 1)..<segments.count)
-            targetIndex = nextIndices.first(where: { segments[$0].isBookmarked }) ?? current
+            var candidate = current + 1
+            var found: Int?
+            while candidate < segments.count {
+                if segments[candidate].isBookmarked {
+                    found = candidate
+                    break
+                }
+                candidate += 1
+            }
+            targetIndex = found ?? current
         } else {
             targetIndex = min(segments.count - 1, current + 1)
         }

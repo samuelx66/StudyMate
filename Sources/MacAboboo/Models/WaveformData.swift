@@ -38,6 +38,23 @@ public struct WaveformData: Equatable, Codable, Sendable {
         self.sampleRate = sampleRate.isFinite ? max(1, sampleRate) : 100
     }
 
+    /// Internal fast path for PCM/cache output that has already validated the
+    /// array lengths and finite sample range. Avoids copying three complete
+    /// waveform arrays for long recordings.
+    init(
+        uncheckedPeaks peaks: [Float],
+        minPeaks: [Float],
+        maxPeaks: [Float],
+        duration: Double,
+        sampleRate: Double
+    ) {
+        self.peaks = peaks
+        self.minPeaks = minPeaks
+        self.maxPeaks = maxPeaks
+        self.duration = duration
+        self.sampleRate = sampleRate
+    }
+
     private enum CodingKeys: String, CodingKey {
         case peaks, minPeaks, maxPeaks, duration, sampleRate
     }

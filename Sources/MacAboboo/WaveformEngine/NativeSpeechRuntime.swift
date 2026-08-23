@@ -57,6 +57,18 @@ public actor NativeSpeechRuntime {
         mab_vad_free(vadContext)
     }
 
+    /// Release model contexts under system memory pressure. They are loaded
+    /// lazily with the same configuration on the next segmentation request.
+    public func unloadModels() {
+        mab_whisper_free(whisperContext)
+        whisperContext = nil
+        loadedWhisperModelPath = nil
+        whisperBackend = .cpu
+        whisperGPUUnavailable = false
+        mab_vad_free(vadContext)
+        vadContext = nil
+    }
+
     public func detectVoiceActivity(
         pcm: AudioPCMData,
         configuration: VoiceActivityConfiguration

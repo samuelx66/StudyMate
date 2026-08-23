@@ -114,6 +114,21 @@ public final class ProjectFileManager: @unchecked Sendable {
 
     private let projectsDirectory: URL
     private let fileQueue = DispatchQueue(label: "com.macaboboo.project.filemanager", qos: .utility)
+    private let pendingLock = NSLock()
+    private var pendingSaves: [String: SaveRequest] = [:]
+    private var isDrainScheduled = false
+
+    private struct SaveRequest: Sendable {
+        let mediaURL: URL
+        let title: String
+        let duration: Double
+        let lastPosition: Double
+        let segments: [SentenceSegment]
+        let waveformData: WaveformData?
+        let persistWaveform: Bool
+        let fileSize: Int64?
+        let modificationDate: Date?
+    }
 
     /// 注入目录主要用于测试隔离；默认仍保存到 Application Support。
     public init(baseDirectory: URL? = nil) {
@@ -158,47 +173,110 @@ public final class ProjectFileManager: @unchecked Sendable {
         persistWaveform: Bool = false
     ) {
         let standardizedURL = mediaURL.standardizedFileURL
-        let metadataURL = projectFileURL(for: standardizedURL)
-        let waveformURL = waveformFileURL(for: standardizedURL)
         let attributes = try? FileManager.default.attributesOfItem(atPath: standardizedURL.path)
         let fileSize = (attributes?[.size] as? NSNumber)?.int64Value
         let modificationDate = attributes?[.modificationDate] as? Date
 
-        fileQueue.async {
-            do {
-                var existingMetadataIsCompatible = false
-                if let existingData = try? Data(contentsOf: metadataURL) {
-                    let decoder = JSONDecoder()
-                    decoder.dateDecodingStrategy = .iso8601
-                    existingMetadataIsCompatible = (try? decoder.decode(MediaProjectFile.self, from: existingData))?
-                        .isCompatible(with: standardizedURL) == true
-                }
-                var hasWaveformCache = existingMetadataIsCompatible && FileManager.default.fileExists(atPath: waveformURL.path)
-                if persistWaveform, let waveformData, !waveformData.isEmpty {
-                    let cacheData = self.encodeWaveformCache(waveformData)
-                    try cacheData.write(to: waveformURL, options: .atomic)
-                    hasWaveformCache = true
-                }
+        let request = SaveRequest(
+            mediaURL: standardizedURL,
+            title: title,
+            duration: duration,
+            lastPosition: lastPosition,
+            segments: segments,
+            waveformData: waveformData,
+            persistWaveform: persistWaveform,
+            fileSize: fileSize,
+            modificationDate: modificationDate
+        )
+        pendingLock.lock()
+        if let existing = pendingSaves[standardizedURL.path],
+           existing.persistWaveform,
+           !request.persistWaveform {
+            // Keep the newest lightweight metadata snapshot without dropping
+            // an earlier waveform write that has not reached disk yet.
+            pendingSaves[standardizedURL.path] = SaveRequest(
+                mediaURL: request.mediaURL,
+                title: request.title,
+                duration: request.duration,
+                lastPosition: request.lastPosition,
+                segments: request.segments,
+                waveformData: existing.waveformData,
+                persistWaveform: true,
+                fileSize: request.fileSize,
+                modificationDate: request.modificationDate
+            )
+        } else {
+            pendingSaves[standardizedURL.path] = request
+        }
+        let shouldSchedule = !isDrainScheduled
+        if shouldSchedule { isDrainScheduled = true }
+        pendingLock.unlock()
 
-                let project = MediaProjectFile(
-                    mediaPath: standardizedURL.path,
-                    mediaTitle: title,
-                    duration: duration,
-                    lastPosition: lastPosition,
-                    segments: segments,
-                    waveformData: nil,
-                    waveformCacheFile: hasWaveformCache ? waveformURL.lastPathComponent : nil,
-                    mediaFileSize: fileSize,
-                    mediaModificationDate: modificationDate,
-                    updatedAt: Date()
-                )
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(project)
-                try data.write(to: metadataURL, options: .atomic)
-            } catch {
-                print("Failed to save project file: \(error)")
+        if shouldSchedule {
+            fileQueue.async { [weak self] in
+                self?.drainPendingSaves()
             }
+        }
+    }
+
+    private func drainPendingSaves() {
+        while true {
+            pendingLock.lock()
+            guard !pendingSaves.isEmpty else {
+                isDrainScheduled = false
+                pendingLock.unlock()
+                return
+            }
+            let requests = Array(pendingSaves.values)
+            pendingSaves.removeAll(keepingCapacity: true)
+            pendingLock.unlock()
+
+            for request in requests {
+                writeProject(request)
+            }
+        }
+    }
+
+    private func writeProject(_ request: SaveRequest) {
+        let metadataURL = projectFileURL(for: request.mediaURL)
+        let waveformURL = waveformFileURL(for: request.mediaURL)
+        do {
+            var existingMetadataIsCompatible = false
+            if let existingData = try? Data(contentsOf: metadataURL) {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                existingMetadataIsCompatible = (try? decoder.decode(MediaProjectFile.self, from: existingData))?
+                    .isCompatible(with: request.mediaURL) == true
+            }
+            var hasWaveformCache = existingMetadataIsCompatible
+                && FileManager.default.fileExists(atPath: waveformURL.path)
+            if request.persistWaveform,
+               let waveformData = request.waveformData,
+               !waveformData.isEmpty {
+                let cacheData = encodeWaveformCache(waveformData)
+                try cacheData.write(to: waveformURL, options: .atomic)
+                hasWaveformCache = true
+            }
+
+            let project = MediaProjectFile(
+                mediaPath: request.mediaURL.path,
+                mediaTitle: request.title,
+                duration: request.duration,
+                lastPosition: request.lastPosition,
+                segments: request.segments,
+                waveformData: nil,
+                waveformCacheFile: hasWaveformCache ? waveformURL.lastPathComponent : nil,
+                mediaFileSize: request.fileSize,
+                mediaModificationDate: request.modificationDate,
+                updatedAt: Date()
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(project)
+            try FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
+            try data.write(to: metadataURL, options: .atomic)
+        } catch {
+            print("Failed to save project file: \(error)")
         }
     }
 
@@ -260,7 +338,9 @@ public final class ProjectFileManager: @unchecked Sendable {
 
     /// 应用退出和测试断言前等待已排队写入完成。
     public func flush() {
-        fileQueue.sync {}
+        fileQueue.sync {
+            drainPendingSaves()
+        }
     }
 
     private func encodeWaveformCache(_ waveform: WaveformData) -> Data {
@@ -318,7 +398,7 @@ public final class ProjectFileManager: @unchecked Sendable {
         let sampleRate = Double(bitPattern: sampleRateBits)
         guard duration.isFinite, duration > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
         return WaveformData(
-            peaks: peaks,
+            uncheckedPeaks: peaks,
             minPeaks: minimums,
             maxPeaks: maximums,
             duration: duration,

@@ -30,10 +30,10 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         return avPlayerView
     }
     
-    public var onTimeUpdate: ((Double, Double) -> Void)?
-    public var onStateChanged: ((Bool) -> Void)?
-    public var onFinished: (() -> Void)?
-    public var onError: ((Error) -> Void)?
+    public var onTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public var onStateChanged: (@MainActor (Bool) -> Void)?
+    public var onFinished: (@MainActor () -> Void)?
+    public var onError: (@MainActor (Error) -> Void)?
     
     private let player = AVPlayer()
     private let avPlayerView: AVPlayerView = {
@@ -72,7 +72,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         setupTimeControlObservation()
     }
     
-    public func load(url: URL, completion: @escaping (Bool) -> Void) {
+    public func load(url: URL, completion: @escaping @MainActor (Bool) -> Void) {
         loadTask?.cancel()
         loadGeneration = UUID()
         seekGeneration &+= 1
@@ -352,7 +352,11 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         seekRecoveryTask?.cancel()
         seekRecoveryTask = nil
         isSeekingInternal = false
-        currentTime = clamped
+        // AVPlayer can reject a non-keyframe seek while still invoking a
+        // fallback completion. Publish the decoder's real position instead of
+        // claiming that the requested timestamp was reached.
+        let actualTime = CMTimeGetSeconds(player.currentTime())
+        currentTime = actualTime.isFinite && actualTime >= 0 ? actualTime : clamped
         if isPlaying {
             player.playImmediately(atRate: playbackRate)
         }
@@ -380,7 +384,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         guard timeObserverToken == nil else { return }
         let interval = CMTime(value: 1, timescale: 60) // 60fps 平滑时间回调
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self = self, !self.isSeekingInternal else { return }
                 let current = CMTimeGetSeconds(time)
                 if current >= 0, !current.isNaN {

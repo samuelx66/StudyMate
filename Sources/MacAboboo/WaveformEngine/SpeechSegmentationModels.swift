@@ -255,7 +255,7 @@ public struct AudioPCMData: Sendable {
             }
         }
         return WaveformData(
-            peaks: peaks,
+            uncheckedPeaks: peaks,
             minPeaks: minima,
             maxPeaks: maxima,
             duration: duration,
@@ -357,15 +357,26 @@ public struct SpeechInferenceResourcePolicy: Equatable, Sendable {
 public actor SpeechInferenceResourceScheduler {
     public static let shared = SpeechInferenceResourceScheduler()
 
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private var availablePermits = 1
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     public init() {}
 
     public func withExclusiveStage<T: Sendable>(
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        await acquire()
+        try await acquire()
+        do {
+            try Task.checkCancellation()
+        } catch {
+            release()
+            throw error
+        }
         do {
             let value = try await operation()
             release()
@@ -376,23 +387,35 @@ public actor SpeechInferenceResourceScheduler {
         }
     }
 
-    private func acquire() async {
+    private func acquire() async throws {
+        try Task.checkCancellation()
         if availablePermits > 0 {
             availablePermits -= 1
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID) }
         }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     private func release() {
         if waiters.isEmpty {
             availablePermits += 1
         } else {
-            let continuation = waiters.removeFirst()
+            let waiter = waiters.removeFirst()
             // Transfer the permit directly to the resumed waiter.
-            continuation.resume()
+            waiter.continuation.resume()
         }
     }
 }

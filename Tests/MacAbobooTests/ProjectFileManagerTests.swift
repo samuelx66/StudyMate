@@ -49,4 +49,61 @@ final class ProjectFileManagerTests: XCTestCase {
         try? Data("changed media contents".utf8).write(to: dummyMediaURL, options: .atomic)
         XCTAssertFalse(loaded?.isCompatible(with: dummyMediaURL) ?? true)
     }
+
+    func testRapidSavesPersistLatestMetadataSnapshot() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-CoalescedSaveTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let manager = ProjectFileManager(baseDirectory: testDirectory)
+        let mediaURL = testDirectory.appendingPathComponent("lesson.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+
+        for position in 0..<100 {
+            manager.saveProject(
+                for: mediaURL,
+                title: "Lesson",
+                duration: 120,
+                lastPosition: Double(position),
+                segments: [SentenceSegment(index: 1, startTime: 0, endTime: Double(position + 1))]
+            )
+        }
+        manager.flush()
+
+        let loaded = manager.loadProject(for: mediaURL)
+        XCTAssertEqual(loaded?.lastPosition, 99)
+        XCTAssertEqual(loaded?.segments.first?.endTime, 100)
+    }
+
+    func testLightweightSaveDoesNotDropPendingWaveformPersistence() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-WaveformCarryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let manager = ProjectFileManager(baseDirectory: testDirectory)
+        let mediaURL = testDirectory.appendingPathComponent("lesson.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let waveform = WaveformData(peaks: [0.1, 0.4, 0.8], duration: 3, sampleRate: 100)
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Initial",
+            duration: 3,
+            lastPosition: 0,
+            segments: [],
+            waveformData: waveform,
+            persistWaveform: true
+        )
+        manager.saveProject(
+            for: mediaURL,
+            title: "Latest",
+            duration: 3,
+            lastPosition: 2,
+            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 3)]
+        )
+        manager.flush()
+
+        let loaded = manager.loadProject(for: mediaURL)
+        XCTAssertEqual(loaded?.mediaTitle, "Latest")
+        XCTAssertEqual(loaded?.lastPosition, 2)
+        XCTAssertEqual(loaded?.waveformData?.peaks, waveform.peaks)
+    }
 }

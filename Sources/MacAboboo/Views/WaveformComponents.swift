@@ -26,7 +26,7 @@ public struct WaveformCanvas: View {
     public var body: some View {
         Canvas { context, size in
             guard !waveformData.isEmpty, width > 0, height > 0 else { return }
-            
+
             let barWidth: CGFloat = 2.0
             let spacing: CGFloat = 1.0
             let totalBarSlot = barWidth + spacing
@@ -85,30 +85,49 @@ public struct WaveformSentenceSegmentsOverlay: View {
     public var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
         
-        ForEach(engine.segments) { seg in
-            if seg.endTime >= viewportStart && seg.startTime <= viewportEnd {
-                let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
-                let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
-                let segW = max(2, segX2 - segX1)
-                let isActive = engine.activeSegmentIndex == (seg.index - 1)
+        ForEach(visibleSegments) { seg in
+            let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
+            let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
+            let segW = max(2, segX2 - segX1)
+            let isActive = engine.activeSegmentIndex == (seg.index - 1)
+
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(
+                        isActive
+                            ? Color.blue.opacity(0.24)
+                            : (seg.index % 2 == 0 ? Color.primary.opacity(0.025) : Color.primary.opacity(0.05))
+                    )
                 
-                ZStack(alignment: .topLeading) {
+                if isActive {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(
-                            isActive
-                                ? Color.blue.opacity(0.24)
-                                : (seg.index % 2 == 0 ? Color.primary.opacity(0.025) : Color.primary.opacity(0.05))
-                        )
-                    
-                    if isActive {
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.blue.opacity(0.75), lineWidth: 1.5)
-                    }
+                        .stroke(Color.blue.opacity(0.75), lineWidth: 1.5)
                 }
-                .frame(width: segW, height: height)
-                .position(x: segX1 + segW / 2.0, y: height / 2.0)
+            }
+            .frame(width: segW, height: height)
+            .position(x: segX1 + segW / 2.0, y: height / 2.0)
+        }
+    }
+
+    private var visibleSegments: ArraySlice<SentenceSegment> {
+        let segments = engine.segments
+        guard !segments.isEmpty else { return [] }
+        var lower = 0
+        var upper = segments.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if segments[middle].endTime >= viewportStart {
+                upper = middle
+            } else {
+                lower = middle + 1
             }
         }
+        let start = lower
+        var end = start
+        while end < segments.count, segments[end].startTime <= viewportEnd {
+            end += 1
+        }
+        return segments[start..<end]
     }
 }
 
