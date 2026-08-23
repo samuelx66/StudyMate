@@ -495,7 +495,7 @@ public actor AudioPCMExtractor {
         from url: URL,
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> AudioPCMData {
-        guard let executable = ffmpegExecutableURL() else {
+        guard let executable = Self.ffmpegExecutableURL() else {
             throw PCMExtractionError.ffmpegUnavailable
         }
 
@@ -565,7 +565,8 @@ public actor AudioPCMExtractor {
         return AudioPCMData(uncheckedSamples: samples)
     }
 
-    private static func ffmpegExecutableURL() -> URL? {
+    /// 供媒体导出与扩展解码共用，确保正式包始终优先使用内置 ffmpeg。
+    static func ffmpegExecutableURL() -> URL? {
         let candidates = [
             Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ffmpeg"),
             URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),

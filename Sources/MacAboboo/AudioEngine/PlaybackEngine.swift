@@ -170,6 +170,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// occasionally lose its callback while switching sentences quickly. A
     /// bounded fallback keeps the engine from remaining in `isSeeking` forever.
     private var seekTimeoutTask: Task<Void, Never>?
+    private struct ExplicitSegmentSelection {
+        let segmentID: UUID
+        var hasCompletedSeek: Bool
+    }
+    /// AVPlayer may complete an exact seek a fraction of a frame before a
+    /// sentence boundary. Preserve an explicitly clicked sentence across that
+    /// decoder rounding only; ordinary timeline seeks still follow real time.
+    private var explicitSegmentSelection: ExplicitSegmentSelection?
     private var isBackendReady = false
     private var wantsPlayback = false
     /// 自然播放到最后一句后，允许用户点击任意断句重新开始播放。
@@ -609,30 +617,50 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         sidecarTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let savedProject = await self.projectFileManager.loadProjectAsync(for: mediaURL)
+            async let savedProjectResult = self.projectFileManager.loadProjectAsync(for: mediaURL)
+            async let sidecarItemsResult = self.loadSidecarItems(for: mediaURL)
+            let (savedProject, sidecarItems) = await (savedProjectResult, sidecarItemsResult)
             guard !Task.isCancelled,
                   sessionID == self.mediaSessionID,
                   self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
 
-            if let savedProject, savedProject.isCompatible(with: mediaURL) {
-                self.restoreProject(savedProject, for: mediaURL)
-                if let savedWaveform = savedProject.waveformData, !savedWaveform.isEmpty {
+            let compatibleProject = savedProject.flatMap { project in
+                project.isCompatible(with: mediaURL) ? project : nil
+            }
+            if let compatibleProject {
+                self.restoreProject(compatibleProject, for: mediaURL)
+            }
+
+            // 同名字幕始终接管断句时间轴，但仍复用工程中的播放位置和波形。
+            if let sidecarItems, !sidecarItems.isEmpty {
+                self.applySubtitleItems(sidecarItems, origin: .sidecar, persist: true)
+                if let compatibleProject,
+                   let savedWaveform = compatibleProject.waveformData,
+                   !savedWaveform.isEmpty {
+                    self.waveformData = savedWaveform
+                    self.waveformExtractionProgress = 1
+                    if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
+                    if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
+                        self.persistCurrentProject(includeWaveform: true)
+                    }
+                    return
+                }
+                self.extractWaveform(from: mediaURL, sessionID: sessionID)
+                return
+            }
+
+            if let compatibleProject {
+                if let savedWaveform = compatibleProject.waveformData, !savedWaveform.isEmpty {
                     self.waveformData = savedWaveform
                     self.waveformExtractionProgress = 1
                     if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
                     if self.segments.isEmpty {
                         self.performSmartSegmentation(using: savedWaveform)
                     }
-                    if savedProject.schemaVersion < MediaProjectFile.currentSchemaVersion || savedProject.waveformCacheFile == nil {
+                    if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
                         self.persistCurrentProject(includeWaveform: true)
                     }
                     return
-                }
-            } else {
-                let items = await self.loadSidecarItems(for: mediaURL)
-                guard !Task.isCancelled, sessionID == self.mediaSessionID else { return }
-                if let items, !items.isEmpty {
-                    self.applySubtitleItems(items, origin: .sidecar, persist: false)
                 }
             }
 
@@ -689,6 +717,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let subURL = base.appendingPathExtension(ext)
             if FileManager.default.fileExists(atPath: subURL.path) {
                 if let items = try? SubtitleParser.shared.parse(from: subURL), !items.isEmpty {
+                    cancelSegmentation()
                     applySubtitleItems(items, origin: .sidecar, persist: true)
                     return true
                 }
@@ -985,8 +1014,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - 字幕导入与应用
 
-    public func importSubtitleItems(_ items: [ParsedSubtitleItem]) {
-        applySubtitleItems(items, origin: .imported, persist: true)
+    public func importSubtitleItems(
+        _ items: [ParsedSubtitleItem],
+        target: SubtitleImportTarget = .automatic
+    ) {
+        let mappedItems = target.apply(to: items)
+        guard !mappedItems.isEmpty else { return }
+        sidecarTask?.cancel()
+        sidecarTask = nil
+        cancelSegmentation()
+        segments = []
+        activeSegmentIndex = nil
+        segmentOrigin = .none
+        applySubtitleItems(mappedItems, origin: .imported, persist: true)
     }
 
     /// 字幕导入界面的撤销入口；同样经过时间轴清洗，不允许恢复出非法边界。
@@ -1206,6 +1246,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 毫秒级极速精准 Seek（实时刷新视频画面与音频时间戳）
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
+        explicitSegmentSelection = nil
+        performSeek(to: seconds, completion: completion)
+    }
+
+    private func seekToExplicitlySelectedSegment(
+        _ segment: SentenceSegment,
+        completion: (@Sendable () -> Void)? = nil
+    ) {
+        explicitSegmentSelection = ExplicitSegmentSelection(
+            segmentID: segment.id,
+            hasCompletedSeek: false
+        )
+        performSeek(to: segment.startTime, completion: completion)
+    }
+
+    private func performSeek(to seconds: Double, completion: (@Sendable () -> Void)?) {
         guard seconds.isFinite else {
             completion?()
             return
@@ -1244,6 +1300,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.seekTimeoutTask = nil
                 let backendTime = backend.currentTime
                 if backendTime.isFinite, backendTime >= 0 {
+                    self.explicitSegmentSelection?.hasCompletedSeek = true
                     self.currentTime = backendTime
                     self.updateActiveSegment(for: backendTime)
                 }
@@ -1469,6 +1526,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard time.isFinite else { return }
         guard !segments.isEmpty else { return }
 
+        if let explicitSelection = explicitSegmentSelection {
+            if let targetIndex = segments.firstIndex(where: { $0.id == explicitSelection.segmentID }) {
+                let target = segments[targetIndex]
+                // One 60 Hz UI frame plus a small decoder rounding margin.
+                // This is deliberately far below a meaningful subtitle offset.
+                let earlySeekTolerance = 0.025
+                if time >= target.startTime - earlySeekTolerance, time < target.endTime {
+                    if activeSegmentIndex != targetIndex {
+                        activeSegmentIndex = targetIndex
+                    }
+                    if explicitSelection.hasCompletedSeek, time >= target.startTime {
+                        explicitSegmentSelection = nil
+                    }
+                    return
+                }
+            }
+            explicitSegmentSelection = nil
+        }
+
         if let current = activeSegmentIndex, segments.indices.contains(current) {
             if segments[current].contains(time: time) { return }
             let next = current + 1
@@ -1535,7 +1611,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         currentRepeatCount = 1
         ensureSegmentVisibleInPrimaryViewport(at: index)
         updateSecondaryViewportForActiveSegment(force: true)
-        seek(to: seg.startTime)
+        seekToExplicitlySelectedSegment(seg)
     }
 
     public func jumpToSegment(id: UUID) {

@@ -57,6 +57,7 @@ struct MacAbobooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
     @StateObject private var engine = PlaybackEngine.shared
+    @StateObject private var sentenceLibraryManager = SentenceLibraryManager.shared
     @Environment(\.openWindow) private var openWindow
     
     init() {
@@ -73,7 +74,14 @@ struct MacAbobooApp: App {
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
                 .onOpenURL { url in
-                    PlaybackEngine.shared.loadMedia(from: url)
+                    if url.pathExtension.lowercased() == "mablib" {
+                        Task {
+                            try? await sentenceLibraryManager.importLibrary(from: url)
+                            openWindow(id: "sentence-library")
+                        }
+                    } else {
+                        PlaybackEngine.shared.loadMedia(from: url)
+                    }
                 }
         }
         .defaultSize(width: 1050, height: 720)
@@ -189,6 +197,14 @@ struct MacAbobooApp: App {
                 .background(SettingsWindowAccessor())
         }
         .defaultSize(width: 680, height: 880)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+
+        Window(languageManager.text("句库", "Sentence Library"), id: "sentence-library") {
+            SentenceLibraryView(manager: sentenceLibraryManager)
+                .environmentObject(languageManager)
+        }
+        .defaultSize(width: 980, height: 680)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
     }

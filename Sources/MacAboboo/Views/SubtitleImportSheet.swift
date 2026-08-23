@@ -14,6 +14,7 @@ public struct SubtitleImportSheet: View {
     @State private var plainTextContent: String = ""
     @State private var splitSentencesPreview: [String] = []
     @State private var selectedFileName: String = ""
+    @State private var subtitleImportTarget: SubtitleImportTarget = .automatic
     @State private var isFileTargeted: Bool = false
     @State private var isParsing: Bool = false
     @State private var importErrorMessage: String?
@@ -168,15 +169,24 @@ public struct SubtitleImportSheet: View {
                         Button(lang.text("重新选择", "Choose Again")) {
                             importedItems = []
                             selectedFileName = ""
+                            subtitleImportTarget = .automatic
                         }
                         .controlSize(.small)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 8)
+
+                    Picker(lang.text("导入到", "Import as"), selection: $subtitleImportTarget) {
+                        Text(lang.text("自动检测", "Auto Detect")).tag(SubtitleImportTarget.automatic)
+                        Text(lang.text("原文", "Original")).tag(SubtitleImportTarget.original)
+                        Text(lang.text("译文", "Translation")).tag(SubtitleImportTarget.translation)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 14)
                     
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 4) {
-                            ForEach(importedItems, id: \.index) { item in
+                            ForEach(previewSubtitleItems, id: \.index) { item in
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack {
                                         Text("#\(item.index)")
@@ -251,6 +261,10 @@ public struct SubtitleImportSheet: View {
     }
     
     // MARK: - 动作逻辑
+
+    private var previewSubtitleItems: [ParsedSubtitleItem] {
+        subtitleImportTarget.apply(to: importedItems)
+    }
     
     private func selectSubtitleFile() {
         let panel = NSOpenPanel()
@@ -288,6 +302,7 @@ public struct SubtitleImportSheet: View {
             case .success(let items) where !items.isEmpty:
                 importedItems = items
                 selectedFileName = url.lastPathComponent
+                subtitleImportTarget = .automatic
             case .success:
                 importErrorMessage = lang.currentLanguage == .zh
                     ? "没有找到有效的字幕时间码。"
@@ -321,7 +336,7 @@ public struct SubtitleImportSheet: View {
         undoManager?.setActionName(lang.currentLanguage == .zh ? "导入字幕" : "Import Subtitles")
 
         if pendingImportKind == 0 {
-            engine.importSubtitleItems(importedItems)
+            engine.importSubtitleItems(importedItems, target: subtitleImportTarget)
         } else {
             engine.importPlainText(plainTextContent)
         }

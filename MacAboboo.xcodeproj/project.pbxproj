@@ -21,6 +21,7 @@
 		B4595CE21C0E433BB6AB446C /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D077723EB54D9C95BC83B3 /* WaveformData.swift */; };
 		1BD7DD9664284980A6A7D93D /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD06DBB01D8446969C6925E3 /* MediaItem.swift */; };
 		71BC6422A3FB45F7ADCD3151 /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05EAAD5078044804855F6F3A /* SentenceSegment.swift */; };
+		A10B0B001000000000000001 /* SentenceLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000001 /* SentenceLibraryModels.swift */; };
 		C25297117CCE4569B98725A0 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C068798755E4956B9516B78 /* WhisperModelManager.swift */; };
 		F44CF03C2D3644948DAA7925 /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73316261334249BBB71B46C9 /* SpeechAlignmentEngine.swift */; };
 		9C8EC0AC4575425280476A5F /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35A59076A0048BE9D85C2C5 /* SpeechSegmentationPipeline.swift */; };
@@ -40,8 +41,11 @@
 		56067C373BCB4BD6A6A1A7E6 /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4C2B4157A7C49FEAC1F1683 /* SubtitleParser.swift */; };
 		0F7B22BF6F364630BECD02A5 /* SegmentationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2707ABEC75F424F84314711 /* SegmentationStore.swift */; };
 		BFD86F3A874247E9AFA62891 /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC5B24A08FFB4F53AB12A67E /* ProjectFileManager.swift */; };
+		A10B0B001000000000000002 /* SentenceLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000002 /* SentenceLibraryStore.swift */; };
+		A10B0B001000000000000003 /* SentenceLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000003 /* SentenceLibraryManager.swift */; };
 		CDF1E5BEB01045B99D6A4AE6 /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */; };
 		DDD28B638DF74232A0D5EC33 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B2E89AB474410BAB4762BB /* SegmentListView.swift */; };
+		A10B0B001000000000000004 /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B0B002000000000000004 /* SentenceLibraryView.swift */; };
 		D9BEADAEB2EB419AA686028E /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3512BBB79174F009B131A31 /* VideoPlayerView.swift */; };
 		1F63E55E2EA844F4B821EEB3 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C231399E83F44E54989452D6 /* WaveformComponents.swift */; };
 		7D936D2BF1B9419BA30B681C /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */; };
@@ -79,6 +83,7 @@
 		56D077723EB54D9C95BC83B3 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/WaveformData.swift"; sourceTree = "<group>"; };
 		AD06DBB01D8446969C6925E3 /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/MediaItem.swift"; sourceTree = "<group>"; };
 		05EAAD5078044804855F6F3A /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000001 /* SentenceLibraryModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceLibraryModels.swift"; sourceTree = "<group>"; };
 		8C068798755E4956B9516B78 /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
 		73316261334249BBB71B46C9 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
 		D35A59076A0048BE9D85C2C5 /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
@@ -98,8 +103,11 @@
 		E4C2B4157A7C49FEAC1F1683 /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
 		D2707ABEC75F424F84314711 /* SegmentationStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SegmentationStore.swift"; sourceTree = "<group>"; };
 		CC5B24A08FFB4F53AB12A67E /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000002 /* SentenceLibraryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryStore.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000003 /* SentenceLibraryManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryManager.swift"; sourceTree = "<group>"; };
 		56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
 		C7B2E89AB474410BAB4762BB /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SegmentListView.swift"; sourceTree = "<group>"; };
+		A10B0B002000000000000004 /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
 		C3512BBB79174F009B131A31 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
 		C231399E83F44E54989452D6 /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
 		DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
@@ -173,6 +181,7 @@
 				56D077723EB54D9C95BC83B3 /* WaveformData.swift */,
 				AD06DBB01D8446969C6925E3 /* MediaItem.swift */,
 				05EAAD5078044804855F6F3A /* SentenceSegment.swift */,
+				A10B0B002000000000000001 /* SentenceLibraryModels.swift */,
 				8C068798755E4956B9516B78 /* WhisperModelManager.swift */,
 				73316261334249BBB71B46C9 /* SpeechAlignmentEngine.swift */,
 				D35A59076A0048BE9D85C2C5 /* SpeechSegmentationPipeline.swift */,
@@ -193,8 +202,11 @@
 				E4C2B4157A7C49FEAC1F1683 /* SubtitleParser.swift */,
 				D2707ABEC75F424F84314711 /* SegmentationStore.swift */,
 				CC5B24A08FFB4F53AB12A67E /* ProjectFileManager.swift */,
+				A10B0B002000000000000002 /* SentenceLibraryStore.swift */,
+				A10B0B002000000000000003 /* SentenceLibraryManager.swift */,
 				56F1B1DA81B247DD8E22042F /* SubtitleImportSheet.swift */,
 				C7B2E89AB474410BAB4762BB /* SegmentListView.swift */,
+				A10B0B002000000000000004 /* SentenceLibraryView.swift */,
 				C3512BBB79174F009B131A31 /* VideoPlayerView.swift */,
 				C231399E83F44E54989452D6 /* WaveformComponents.swift */,
 				DF9A3C32C5DB4697B35A4153 /* BoundaryMarkerHandle.swift */,
@@ -314,6 +326,7 @@
 				B4595CE21C0E433BB6AB446C /* WaveformData.swift in Sources */,
 				1BD7DD9664284980A6A7D93D /* MediaItem.swift in Sources */,
 				71BC6422A3FB45F7ADCD3151 /* SentenceSegment.swift in Sources */,
+				A10B0B001000000000000001 /* SentenceLibraryModels.swift in Sources */,
 				C25297117CCE4569B98725A0 /* WhisperModelManager.swift in Sources */,
 				F44CF03C2D3644948DAA7925 /* SpeechAlignmentEngine.swift in Sources */,
 				9C8EC0AC4575425280476A5F /* SpeechSegmentationPipeline.swift in Sources */,
@@ -334,8 +347,11 @@
 				56067C373BCB4BD6A6A1A7E6 /* SubtitleParser.swift in Sources */,
 				0F7B22BF6F364630BECD02A5 /* SegmentationStore.swift in Sources */,
 				BFD86F3A874247E9AFA62891 /* ProjectFileManager.swift in Sources */,
+				A10B0B001000000000000002 /* SentenceLibraryStore.swift in Sources */,
+				A10B0B001000000000000003 /* SentenceLibraryManager.swift in Sources */,
 				CDF1E5BEB01045B99D6A4AE6 /* SubtitleImportSheet.swift in Sources */,
 				DDD28B638DF74232A0D5EC33 /* SegmentListView.swift in Sources */,
+				A10B0B001000000000000004 /* SentenceLibraryView.swift in Sources */,
 				D9BEADAEB2EB419AA686028E /* VideoPlayerView.swift in Sources */,
 				1F63E55E2EA844F4B821EEB3 /* WaveformComponents.swift in Sources */,
 				7D936D2BF1B9419BA30B681C /* BoundaryMarkerHandle.swift in Sources */,
@@ -445,7 +461,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -455,7 +471,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.4;
+				MARKETING_VERSION = 1.0.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -470,7 +486,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -479,7 +495,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.4;
+				MARKETING_VERSION = 1.0.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

@@ -1,16 +1,22 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
-/// 断句列表区视图（支持字幕导入导出、星标难句过滤、文本编辑与快捷切分）
+/// 断句列表区视图（支持字幕导入、选句媒体导出、星标过滤、文本编辑与快捷切分）
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
+    @ObservedObject private var libraryManager = SentenceLibraryManager.shared
+    @Environment(\.openWindow) private var openWindow
 
     @State private var searchText: String = ""
     @State private var showImportSheet: Bool = false
     @State private var showSettingsPopover: Bool = false
     @State private var filterBookmarkedOnly: Bool = false
-    @State private var exportErrorMessage: String?
+    @State private var selectedSegmentIDs: Set<UUID> = []
+    @State private var isExporting: Bool = false
+    @State private var isAddingToLibrary: Bool = false
+    @State private var exportNotice: SegmentExportNotice?
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -41,6 +47,12 @@ public struct SegmentListView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
+                if !selectedSegmentIDs.isEmpty {
+                    Text(lang.text("已选 \(selectedSegmentIDs.count)", "\(selectedSegmentIDs.count) selected"))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
                 Spacer()
 
                 // 难句过滤筛选开关
@@ -61,21 +73,83 @@ public struct SegmentListView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
 
-                // 导出字幕菜单
+                // 将已选断句统一导出为音频和字幕
                 Menu {
-                    Button(lang.text("导出为 SRT 字幕文件…", "Export as SRT…")) {
-                        exportSubtitles(format: .srt)
+                    Button(lang.text("逐句导出 MP3＋字幕…", "Export separate MP3 + subtitles…")) {
+                        chooseIndividualExportDestination()
                     }
-                    Button(lang.text("导出为 LRC 歌词文件…", "Export as LRC…")) {
-                        exportSubtitles(format: .lrc)
+                    Button(lang.text("合并导出 MP3＋字幕…", "Export merged MP3 + subtitles…")) {
+                        chooseMergedExportDestination()
                     }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .foregroundColor(.secondary)
-                        .help(lang.text("导出字幕", "Export subtitles"))
+                    if isExporting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
+                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || isExporting)
+                .help(lang.text(
+                    selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 MP3 和字幕",
+                    selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as MP3 and subtitles"
+                ))
+
+                // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
+                Menu {
+                    Button {
+                        addSelectedSegmentsToLibrary()
+                    } label: {
+                        Label(
+                            lang.text(
+                                "加入“\(libraryManager.currentLibrary?.name ?? "默认句库")”",
+                                "Add to “\(libraryManager.currentLibrary?.name ?? "Default Library")”"
+                            ),
+                            systemImage: "text.badge.plus"
+                        )
+                    }
+                    .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || isAddingToLibrary)
+
+                    if libraryManager.libraries.count > 1 {
+                        Menu(lang.text("切换句库", "Switch Library")) {
+                            ForEach(libraryManager.libraries) { library in
+                                Button {
+                                    libraryManager.selectLibrary(library.id)
+                                } label: {
+                                    if library.id == libraryManager.currentLibraryID {
+                                        Label(library.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(library.name)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+                    Button {
+                        openWindow(id: "sentence-library")
+                    } label: {
+                        Label(lang.text("打开句库…", "Open Sentence Library…"), systemImage: "books.vertical")
+                    }
+                } label: {
+                    if isAddingToLibrary {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "text.badge.plus")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .focusable(false)
+                .help(lang.text(
+                    selectedSegmentIDs.isEmpty ? "请先勾选要加入句库的句子" : "将已选句子加入当前句库",
+                    selectedSegmentIDs.isEmpty ? "Select sentences to add to a library" : "Add selected sentences to the current library"
+                ))
 
                 // 三种用户断句预设；六个细分 profile 由句子长度偏好自动选择
                 Menu {
@@ -202,6 +276,14 @@ public struct SegmentListView: View {
                                 SegmentRowView(
                                     seg: seg,
                                     isActive: isActive,
+                                    isSelectedForExport: selectedSegmentIDs.contains(seg.id),
+                                    onToggleExportSelection: {
+                                        if selectedSegmentIDs.contains(seg.id) {
+                                            selectedSegmentIDs.remove(seg.id)
+                                        } else {
+                                            selectedSegmentIDs.insert(seg.id)
+                                        }
+                                    },
                                     onSelect: {
                                         engine.jumpToSegment(id: seg.id)
                                     },
@@ -244,41 +326,127 @@ public struct SegmentListView: View {
         .sheet(isPresented: $showImportSheet) {
             SubtitleImportSheet(engine: engine)
         }
-        .alert(lang.text("导出失败", "Export Failed"), isPresented: Binding(
-            get: { exportErrorMessage != nil },
-            set: { if !$0 { exportErrorMessage = nil } }
-        )) {
-            Button(lang.text("好", "OK"), role: .cancel) {}
-        } message: {
-            Text(exportErrorMessage ?? "")
+        .onChange(of: engine.segments.map(\.id)) { _, currentIDs in
+            selectedSegmentIDs.formIntersection(currentIDs)
+        }
+        .alert(item: $exportNotice) { notice in
+            Alert(
+                title: Text(notice.title),
+                message: Text(notice.message),
+                dismissButton: .default(Text(lang.text("好", "OK")))
+            )
         }
     }
 
-    private func exportSubtitles(format: SubtitleFormat) {
+    private var selectedSegments: [SentenceSegment] {
+        engine.segments.filter { selectedSegmentIDs.contains($0.id) }
+    }
+
+    private func chooseIndividualExportDestination() {
+        guard let media = engine.currentMedia, !selectedSegments.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = lang.text("选择", "Choose")
+        panel.message = lang.text("选择逐句 MP3 和字幕的保存位置", "Choose where to save separate MP3 and subtitle files")
+        if panel.runModal() == .OK, let directory = panel.url {
+            let segments = selectedSegments
+            performExport {
+                try SegmentMediaExporter.shared.exportIndividually(
+                    mediaURL: media.url,
+                    segments: segments,
+                    destinationDirectory: directory,
+                    baseName: media.title
+                )
+            }
+        }
+    }
+
+    private func chooseMergedExportDestination() {
+        guard let media = engine.currentMedia, !selectedSegments.isEmpty else { return }
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = (engine.currentMedia?.title ?? "Subtitles") + "." + format.rawValue
-
-        if panel.runModal() == .OK, let url = panel.url {
-            let content: String
-            if format == .lrc {
-                content = SubtitleExporter.shared.exportToLRC(segments: engine.segments, title: engine.currentMedia?.title ?? "")
-            } else {
-                content = SubtitleExporter.shared.exportToSRT(segments: engine.segments)
-            }
-            do {
-                try content.write(to: url, atomically: true, encoding: .utf8)
-            } catch {
-                exportErrorMessage = error.localizedDescription
+        panel.allowedContentTypes = [.mp3]
+        panel.nameFieldStringValue = media.title + "-已选句子.mp3"
+        panel.message = lang.text("将生成一个 MP3 和一个同名 SRT 字幕", "One MP3 and one matching SRT subtitle will be created")
+        if panel.runModal() == .OK, let audioURL = panel.url {
+            let segments = selectedSegments
+            performExport {
+                try SegmentMediaExporter.shared.exportMerged(
+                    mediaURL: media.url,
+                    segments: segments,
+                    outputAudioURL: audioURL
+                )
             }
         }
     }
+
+    private func performExport(
+        operation: @escaping @Sendable () throws -> SegmentMediaExportResult
+    ) {
+        isExporting = true
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try operation() }
+            }.value
+            isExporting = false
+            switch result {
+            case let .success(output):
+                exportNotice = SegmentExportNotice(
+                    title: lang.text("导出完成", "Export Complete"),
+                    message: lang.text(
+                        "已生成 \(output.audioFileCount) 个 MP3 和 \(output.subtitleFileCount) 个字幕文件。\n\(output.location.path)",
+                        "Created \(output.audioFileCount) MP3 and \(output.subtitleFileCount) subtitle file(s).\n\(output.location.path)"
+                    )
+                )
+            case let .failure(error):
+                exportNotice = SegmentExportNotice(
+                    title: lang.text("导出失败", "Export Failed"),
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func addSelectedSegmentsToLibrary() {
+        guard let media = engine.currentMedia, !selectedSegments.isEmpty else { return }
+        let segments = selectedSegments
+        isAddingToLibrary = true
+        Task {
+            defer { isAddingToLibrary = false }
+            do {
+                let count = try await libraryManager.add(segments: segments, from: media)
+                exportNotice = SegmentExportNotice(
+                    title: lang.text("已加入句库", "Added to Library"),
+                    message: lang.text(
+                        "已将 \(count) 个句子加入“\(libraryManager.currentLibrary?.name ?? "默认句库")”。",
+                        "Added \(count) sentence(s) to “\(libraryManager.currentLibrary?.name ?? "Default Library")”."
+                    )
+                )
+            } catch {
+                exportNotice = SegmentExportNotice(
+                    title: lang.text("加入句库失败", "Unable to Add to Library"),
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+}
+
+private struct SegmentExportNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }
 
 /// 单行断句单元格
 struct SegmentRowView: View {
     let seg: SentenceSegment
     let isActive: Bool
+    let isSelectedForExport: Bool
+    let onToggleExportSelection: () -> Void
     let onSelect: () -> Void
     let onToggleBookmark: () -> Void
     let onSplit: () -> Void
@@ -295,6 +463,16 @@ struct SegmentRowView: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 0) {
+                Toggle("", isOn: Binding(
+                    get: { isSelectedForExport },
+                    set: { _ in onToggleExportSelection() }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .help(lang.text("选择此句用于导出或加入句库", "Select this sentence for export or sentence library"))
+                .padding(.leading, 4)
+                .padding(.trailing, 6)
+
                 // 左侧活跃状态指示竖条
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(isActive ? Color.blue : Color.clear)

@@ -12,6 +12,7 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     private(set) var loadCount = 0
     var automaticallyCompletesLoads: Bool
     var automaticallyCompletesSeeks: Bool
+    var seekResultOffset: Double = 0
     private var pendingLoads: [(URL, @MainActor (Bool) -> Void)] = []
     private var pendingSeekCompletions: [(@Sendable () -> Void)?] = []
     var playbackRate: Float = 1
@@ -60,7 +61,7 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
 
     func seek(to seconds: Double, completion: (@Sendable () -> Void)?) {
         seekCount += 1
-        currentTime = max(0, min(seconds, duration))
+        currentTime = max(0, min(seconds + seekResultOffset, duration))
         if automaticallyCompletesSeeks {
             completion?()
         } else {

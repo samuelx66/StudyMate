@@ -95,6 +95,50 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 2)
     }
 
+    func testExplicitAdjacentSentenceSelectionSurvivesFrameEarlySeekResult() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("frame-early-seek.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 12)
+        native.seekResultOffset = -0.001
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 12),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        for _ in 0..<20 where engine.isMediaLoading {
+            await Task.yield()
+        }
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 5),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
+        ]
+
+        engine.jumpToSegment(at: 1)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(engine.currentTime, 4.999, accuracy: 0.0001)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // A paused AVPlayer may publish the same rounded position again.
+        native.emitTime(4.999)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // Once playback enters the sentence, the temporary selection guard is released.
+        native.emitTime(5.001)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // An ordinary timeline seek still follows the decoder's real time and
+        // must not inherit the explicit-row-selection guard.
+        native.seekResultOffset = 0
+        engine.seek(to: 4.999)
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+    }
+
     func testBoundaryDragSource() {
         let engine = makeTestPlaybackEngine()
 
@@ -561,6 +605,74 @@ final class PlaybackEngineTests: XCTestCase {
 
         engine.autoGenerateSubtitles = false
         XCTAssertFalse(engine.autoGenerateSubtitles)
+    }
+
+    func testSameNameSidecarOverridesSavedProjectSegmentsAndReusesWaveform() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("sidecar-priority.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let subtitleURL = directory.appendingPathComponent("sidecar-priority.srt")
+        try """
+        1
+        00:00:01,000 --> 00:00:03,000
+        Sidecar original
+        同名字幕译文
+        """.write(to: subtitleURL, atomically: true, encoding: .utf8)
+
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let waveform = WaveformData(peaks: [0.2, 0.5, 0.3], duration: 10, sampleRate: 100)
+        manager.saveProject(
+            for: mediaURL,
+            title: "Saved Project",
+            duration: 10,
+            lastPosition: 2,
+            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 10, text: "Old project sentence")],
+            waveformData: waveform,
+            persistWaveform: true
+        )
+        manager.flush()
+
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: manager
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+
+        for _ in 0..<50 where engine.segments.first?.text != "Sidecar original" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(engine.segments.count, 1)
+        let segment = try XCTUnwrap(engine.segments.first)
+        XCTAssertEqual(segment.startTime, 1, accuracy: 0.001)
+        XCTAssertEqual(segment.endTime, 3, accuracy: 0.001)
+        XCTAssertEqual(segment.text, "Sidecar original")
+        XCTAssertEqual(segment.translation, "同名字幕译文")
+        XCTAssertEqual(engine.currentTime, 2, accuracy: 0.001)
+        XCTAssertEqual(engine.waveformData.peaks, waveform.peaks)
+    }
+
+    func testManualSubtitleImportReplacesEveryExistingSegmentAndTargetsTranslation() {
+        let engine = makeTestPlaybackEngine()
+        engine.duration = 20
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 5, text: "Old one"),
+            SentenceSegment(index: 2, startTime: 5, endTime: 10, text: "Old two")
+        ]
+        let imported = [
+            ParsedSubtitleItem(index: 1, startTime: 2, endTime: 4, text: "New subtitle"),
+            ParsedSubtitleItem(index: 2, startTime: 8, endTime: 11, text: "Another subtitle")
+        ]
+
+        engine.importSubtitleItems(imported, target: .translation)
+
+        XCTAssertEqual(engine.segments.count, 2)
+        XCTAssertEqual(engine.segments.map(\.startTime), [2, 8])
+        XCTAssertEqual(engine.segments.map(\.endTime), [4, 11])
+        XCTAssertEqual(engine.segments.map(\.text), ["", ""])
+        XCTAssertEqual(engine.segments.map(\.translation), ["New subtitle", "Another subtitle"])
     }
 
     private func temporaryTestDirectory() -> URL {

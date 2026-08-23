@@ -23,6 +23,43 @@ public struct ParsedSubtitleItem: Equatable, Sendable {
     }
 }
 
+/// 字幕文件内容应写入断句的哪个文字区域。
+public enum SubtitleImportTarget: String, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case original
+    case translation
+
+    public var id: String { rawValue }
+
+    public func apply(to items: [ParsedSubtitleItem]) -> [ParsedSubtitleItem] {
+        items.map { item in
+            let combined = [item.text, item.translation]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            switch self {
+            case .automatic:
+                return item
+            case .original:
+                return ParsedSubtitleItem(
+                    index: item.index,
+                    startTime: item.startTime,
+                    endTime: item.endTime,
+                    text: combined
+                )
+            case .translation:
+                return ParsedSubtitleItem(
+                    index: item.index,
+                    startTime: item.startTime,
+                    endTime: item.endTime,
+                    text: "",
+                    translation: combined
+                )
+            }
+        }
+    }
+}
+
 public enum SubtitleParserError: LocalizedError {
     case fileTooLarge
     case unsupportedEncoding
@@ -152,10 +189,12 @@ public final class SubtitleParser: @unchecked Sendable {
     private func splitTextAndTranslation(_ lines: [String]) -> (String, String) {
         guard lines.count > 1 else { return (lines.first ?? "", "") }
         let firstHasCJK = containsCJK(lines[0])
-        let remaining = lines.dropFirst().joined(separator: "\n")
-        let remainingHasCJK = containsCJK(remaining)
-        if firstHasCJK != remainingHasCJK {
-            return (lines[0], remaining)
+        if let boundary = lines.dropFirst().firstIndex(where: { containsCJK($0) != firstHasCJK }) {
+            let original = lines[..<boundary].joined(separator: "\n")
+            let translation = lines[boundary...].joined(separator: "\n")
+            if !original.isEmpty, !translation.isEmpty {
+                return (original, translation)
+            }
         }
         // 无法可靠判断双语时保留所有行，避免把同语种的第二行误当成译文。
         return (lines.joined(separator: "\n"), "")
@@ -231,13 +270,28 @@ public final class SubtitleParser: @unchecked Sendable {
             if $0.time == $1.time { return $0.order < $1.order }
             return $0.time < $1.time
         }
-        return entries.enumerated().map { offset, entry in
-            let nextTime = offset + 1 < entries.count ? entries[offset + 1].time : entry.time + 4
+
+        // 双语 LRC 常在完全相同的时间戳下各写一行；先合并为同一 cue，
+        // 再沿用 SRT/VTT 的语言边界检测，避免生成一个 50ms 的伪断句。
+        var grouped: [(time: Double, texts: [String])] = []
+        for entry in entries {
+            if let lastIndex = grouped.indices.last,
+               abs(grouped[lastIndex].time - entry.time) <= 0.001 {
+                grouped[lastIndex].texts.append(entry.text)
+            } else {
+                grouped.append((entry.time, [entry.text]))
+            }
+        }
+
+        return grouped.enumerated().map { offset, entry in
+            let nextTime = offset + 1 < grouped.count ? grouped[offset + 1].time : entry.time + 4
+            let (text, translation) = splitTextAndTranslation(entry.texts)
             return ParsedSubtitleItem(
                 index: offset + 1,
                 startTime: entry.time,
                 endTime: max(entry.time + 0.05, nextTime),
-                text: entry.text
+                text: text,
+                translation: translation
             )
         }
     }

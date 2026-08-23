@@ -49,6 +49,24 @@ final class SubtitleParserTests: XCTestCase {
         XCTAssertEqual(items[1].startTime, 6.8, accuracy: 0.01)
         XCTAssertEqual(items[1].endTime, 12.345, accuracy: 0.01)
     }
+
+    func testBilingualLRCGroupsMatchingTimestamps() {
+        let content = """
+        [00:01.00]Good morning.
+        [00:01.00]早上好。
+        [00:03.50]How are you?
+        [00:03.50]你好吗？
+        """
+
+        let items = SubtitleParser.shared.parseLRC(content: content)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].startTime, 1, accuracy: 0.001)
+        XCTAssertEqual(items[0].endTime, 3.5, accuracy: 0.001)
+        XCTAssertEqual(items[0].text, "Good morning.")
+        XCTAssertEqual(items[0].translation, "早上好。")
+        XCTAssertEqual(items[1].text, "How are you?")
+        XCTAssertEqual(items[1].translation, "你好吗？")
+    }
     
     func testTimestampParsing() {
         XCTAssertEqual(SubtitleParser.shared.parseTimestamp("01:23.456") ?? 0, 83.456, accuracy: 0.001)
@@ -83,6 +101,40 @@ final class SubtitleParserTests: XCTestCase {
         let items = SubtitleParser.shared.parseSRT(content: content)
         XCTAssertEqual(items.first?.text, "This is one long subtitle\nwrapped across two lines.")
         XCTAssertEqual(items.first?.translation, "")
+    }
+
+    func testWrappedBilingualCueSplitsAtLanguageBoundary() {
+        let content = """
+        1
+        00:00:01,000 --> 00:00:04,000
+        This original subtitle wraps
+        across two lines.
+        这条译文也会换行，
+        并完整保留。
+        """
+        let items = SubtitleParser.shared.parseSRT(content: content)
+        XCTAssertEqual(items.first?.text, "This original subtitle wraps\nacross two lines.")
+        XCTAssertEqual(items.first?.translation, "这条译文也会换行，\n并完整保留。")
+    }
+
+    func testExplicitImportTargetMovesAllTextIntoChosenField() {
+        let item = ParsedSubtitleItem(
+            index: 1,
+            startTime: 1,
+            endTime: 2,
+            text: "Original",
+            translation: "译文"
+        )
+
+        let original = SubtitleImportTarget.original.apply(to: [item])[0]
+        XCTAssertEqual(original.text, "Original\n译文")
+        XCTAssertEqual(original.translation, "")
+
+        let translation = SubtitleImportTarget.translation.apply(to: [item])[0]
+        XCTAssertEqual(translation.text, "")
+        XCTAssertEqual(translation.translation, "Original\n译文")
+
+        XCTAssertEqual(SubtitleImportTarget.automatic.apply(to: [item]), [item])
     }
 
     func testUTF16SubtitleFile() throws {
