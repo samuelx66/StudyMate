@@ -38,6 +38,13 @@ public struct PrimaryWaveformView: View {
                     Text(lang.localized(.extractingWaveform))
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                } else if engine.isAITranscribing {
+                    ProgressView(value: max(0.05, engine.aiTranscriptionProgress))
+                        .progressViewStyle(.linear)
+                        .frame(width: 90)
+                    Text(engine.aiTranscriptionStatusText)
+                        .font(.caption2.bold())
+                        .foregroundColor(.blue)
                 }
                 
                 Spacer()

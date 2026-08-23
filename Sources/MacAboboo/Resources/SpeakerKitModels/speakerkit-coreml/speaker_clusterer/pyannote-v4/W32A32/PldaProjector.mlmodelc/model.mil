@@ -1,0 +1,55 @@
+program(1.0)
+[buildInfo = dict<tensor<string, []>, tensor<string, []>>({{"coremlc-component-MIL", "3405.2.1"}, {"coremlc-version", "3404.23.1"}, {"coremltools-component-torch", "2.5.0"}, {"coremltools-source-dialect", "TorchScript"}, {"coremltools-version", "8.3.0"}})]
+{
+    func main<ios16>(tensor<fp16, [1, 64, 256]> embeddings) {
+            tensor<string, []> cast_0_dtype_0 = const()[name = tensor<string, []>("cast_0_dtype_0"), val = tensor<string, []>("fp32")];
+            tensor<fp32, [1, 128, 1, 1]> plda_mean = const()[name = tensor<string, []>("plda_mean"), val = tensor<fp32, [1, 128, 1, 1]>(BLOBFILE(path = tensor<string, []>("@model_path/weights/weight.bin"), offset = tensor<uint64, []>(64)))];
+            tensor<fp32, [1, 256, 1, 1]> xvectors_mean = const()[name = tensor<string, []>("xvectors_mean"), val = tensor<fp32, [1, 256, 1, 1]>(BLOBFILE(path = tensor<string, []>("@model_path/weights/weight.bin"), offset = tensor<uint64, []>(640)))];
+            tensor<fp32, [128, 256, 1, 1]> lda_proj_weight = const()[name = tensor<string, []>("lda_proj_weight"), val = tensor<fp32, [128, 256, 1, 1]>(BLOBFILE(path = tensor<string, []>("@model_path/weights/weight.bin"), offset = tensor<uint64, []>(1728)))];
+            tensor<fp32, [128, 128, 1, 1]> plda_proj_weight = const()[name = tensor<string, []>("plda_proj_weight"), val = tensor<fp32, [128, 128, 1, 1]>(BLOBFILE(path = tensor<string, []>("@model_path/weights/weight.bin"), offset = tensor<uint64, []>(132864)))];
+            tensor<int32, [3]> var_11_perm_0 = const()[name = tensor<string, []>("op_11_perm_0"), val = tensor<int32, [3]>([0, 2, 1])];
+            tensor<int32, [1]> embeddings_3_axes_0 = const()[name = tensor<string, []>("embeddings_3_axes_0"), val = tensor<int32, [1]>([-2])];
+            tensor<fp32, [1, 64, 256]> cast_0 = cast(dtype = cast_0_dtype_0, x = embeddings)[name = tensor<string, []>("cast_5")];
+            tensor<fp32, [1, 256, 64]> var_11 = transpose(perm = var_11_perm_0, x = cast_0)[name = tensor<string, []>("transpose_1")];
+            tensor<fp32, [1, 256, 1, 64]> embeddings_3 = expand_dims(axes = embeddings_3_axes_0, x = var_11)[name = tensor<string, []>("embeddings_3")];
+            tensor<fp32, [1, 256, 1, 64]> inputs_1 = sub(x = embeddings_3, y = xvectors_mean)[name = tensor<string, []>("inputs_1")];
+            tensor<fp32, [1, 256, 1, 64]> inputs_sq_1 = mul(x = inputs_1, y = inputs_1)[name = tensor<string, []>("inputs_sq_1")];
+            tensor<int32, [1]> variance_1_axes_0 = const()[name = tensor<string, []>("variance_1_axes_0"), val = tensor<int32, [1]>([1])];
+            tensor<bool, []> variance_1_keep_dims_0 = const()[name = tensor<string, []>("variance_1_keep_dims_0"), val = tensor<bool, []>(true)];
+            tensor<fp32, [1, 1, 1, 64]> variance_1 = reduce_mean(axes = variance_1_axes_0, keep_dims = variance_1_keep_dims_0, x = inputs_sq_1)[name = tensor<string, []>("variance_1")];
+            tensor<fp32, []> var_24 = const()[name = tensor<string, []>("op_24"), val = tensor<fp32, []>(0x1.0c6f7ap-20)];
+            tensor<fp32, [1, 1, 1, 64]> var_25 = add(x = variance_1, y = var_24)[name = tensor<string, []>("op_25")];
+            tensor<fp32, []> var_26_epsilon_0 = const()[name = tensor<string, []>("op_26_epsilon_0"), val = tensor<fp32, []>(0x1.197998p-40)];
+            tensor<fp32, [1, 1, 1, 64]> var_26 = rsqrt(epsilon = var_26_epsilon_0, x = var_25)[name = tensor<string, []>("op_26")];
+            tensor<fp32, [1, 256, 1, 64]> hidden_states_1 = mul(x = inputs_1, y = var_26)[name = tensor<string, []>("hidden_states_1")];
+            tensor<string, []> embeddings_5_pad_type_0 = const()[name = tensor<string, []>("embeddings_5_pad_type_0"), val = tensor<string, []>("valid")];
+            tensor<int32, [2]> embeddings_5_strides_0 = const()[name = tensor<string, []>("embeddings_5_strides_0"), val = tensor<int32, [2]>([1, 1])];
+            tensor<int32, [4]> embeddings_5_pad_0 = const()[name = tensor<string, []>("embeddings_5_pad_0"), val = tensor<int32, [4]>([0, 0, 0, 0])];
+            tensor<int32, [2]> embeddings_5_dilations_0 = const()[name = tensor<string, []>("embeddings_5_dilations_0"), val = tensor<int32, [2]>([1, 1])];
+            tensor<int32, []> embeddings_5_groups_0 = const()[name = tensor<string, []>("embeddings_5_groups_0"), val = tensor<int32, []>(1)];
+            tensor<fp32, [128]> const_0 = const()[name = tensor<string, []>("const_0"), val = tensor<fp32, [128]>(BLOBFILE(path = tensor<string, []>("@model_path/weights/weight.bin"), offset = tensor<uint64, []>(198464)))];
+            tensor<fp32, [1, 128, 1, 64]> inputs = conv(bias = const_0, dilations = embeddings_5_dilations_0, groups = embeddings_5_groups_0, pad = embeddings_5_pad_0, pad_type = embeddings_5_pad_type_0, strides = embeddings_5_strides_0, weight = lda_proj_weight, x = hidden_states_1)[name = tensor<string, []>("inputs")];
+            tensor<fp32, [1, 128, 1, 64]> inputs_sq = mul(x = inputs, y = inputs)[name = tensor<string, []>("inputs_sq")];
+            tensor<int32, [1]> variance_axes_0 = const()[name = tensor<string, []>("variance_axes_0"), val = tensor<int32, [1]>([1])];
+            tensor<bool, []> variance_keep_dims_0 = const()[name = tensor<string, []>("variance_keep_dims_0"), val = tensor<bool, []>(true)];
+            tensor<fp32, [1, 1, 1, 64]> variance = reduce_mean(axes = variance_axes_0, keep_dims = variance_keep_dims_0, x = inputs_sq)[name = tensor<string, []>("variance")];
+            tensor<fp32, []> var_52 = const()[name = tensor<string, []>("op_52"), val = tensor<fp32, []>(0x1.0c6f7ap-20)];
+            tensor<fp32, [1, 1, 1, 64]> var_53 = add(x = variance, y = var_52)[name = tensor<string, []>("op_53")];
+            tensor<fp32, []> var_54_epsilon_0 = const()[name = tensor<string, []>("op_54_epsilon_0"), val = tensor<fp32, []>(0x1.197998p-40)];
+            tensor<fp32, [1, 1, 1, 64]> var_54 = rsqrt(epsilon = var_54_epsilon_0, x = var_53)[name = tensor<string, []>("op_54")];
+            tensor<fp32, [1, 128, 1, 64]> hidden_states = mul(x = inputs, y = var_54)[name = tensor<string, []>("hidden_states")];
+            tensor<fp32, [1, 128, 1, 64]> input = sub(x = hidden_states, y = plda_mean)[name = tensor<string, []>("input")];
+            tensor<string, []> embeddings_pad_type_0 = const()[name = tensor<string, []>("embeddings_pad_type_0"), val = tensor<string, []>("valid")];
+            tensor<int32, [2]> embeddings_strides_0 = const()[name = tensor<string, []>("embeddings_strides_0"), val = tensor<int32, [2]>([1, 1])];
+            tensor<int32, [4]> embeddings_pad_0 = const()[name = tensor<string, []>("embeddings_pad_0"), val = tensor<int32, [4]>([0, 0, 0, 0])];
+            tensor<int32, [2]> embeddings_dilations_0 = const()[name = tensor<string, []>("embeddings_dilations_0"), val = tensor<int32, [2]>([1, 1])];
+            tensor<int32, []> embeddings_groups_0 = const()[name = tensor<string, []>("embeddings_groups_0"), val = tensor<int32, []>(1)];
+            tensor<fp32, [1, 128, 1, 64]> embeddings_1 = conv(dilations = embeddings_dilations_0, groups = embeddings_groups_0, pad = embeddings_pad_0, pad_type = embeddings_pad_type_0, strides = embeddings_strides_0, weight = plda_proj_weight, x = input)[name = tensor<string, []>("embeddings")];
+            tensor<int32, [1]> var_73_axes_0 = const()[name = tensor<string, []>("op_73_axes_0"), val = tensor<int32, [1]>([-2])];
+            tensor<fp32, [1, 128, 64]> var_73 = squeeze(axes = var_73_axes_0, x = embeddings_1)[name = tensor<string, []>("op_73")];
+            tensor<int32, [3]> obj_perm_0 = const()[name = tensor<string, []>("obj_perm_0"), val = tensor<int32, [3]>([0, 2, 1])];
+            tensor<string, []> cast_3_dtype_0 = const()[name = tensor<string, []>("cast_3_dtype_0"), val = tensor<string, []>("fp16")];
+            tensor<fp32, [1, 64, 128]> plda_embeddings_type_fp32 = transpose(perm = obj_perm_0, x = var_73)[name = tensor<string, []>("transpose_0")];
+            tensor<fp16, [1, 64, 128]> plda_embeddings = cast(dtype = cast_3_dtype_0, x = plda_embeddings_type_fp32)[name = tensor<string, []>("cast_4")];
+        } -> (plda_embeddings);
+}

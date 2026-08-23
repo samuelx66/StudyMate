@@ -17,14 +17,42 @@ let package = Package(
             targets: ["MacAbobooKit"]
         )
     ],
-    dependencies: [],
+    dependencies: [
+        // SpeakerKit provides the on-device Pyannote diarization pipeline used to
+        // keep sentence boundaries aligned with real speaker changes.
+        .package(
+            url: "https://github.com/argmaxinc/argmax-oss-swift.git",
+            exact: "1.1.0"
+        )
+    ],
     targets: [
+        .binaryTarget(
+            name: "WhisperFramework",
+            path: "Vendor/Whisper/whisper.xcframework"
+        ),
+        .target(
+            name: "CSpeechRuntime",
+            dependencies: ["WhisperFramework"],
+            path: "Sources/CSpeechRuntime",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "MacAbobooKit",
-            dependencies: [],
+            dependencies: [
+                "CSpeechRuntime",
+                .product(name: "SpeakerKit", package: "argmax-oss-swift")
+            ],
             path: "Sources/MacAboboo",
+            exclude: [
+                "Resources/Helpers"
+            ],
             resources: [
-                .process("Resources")
+                .process("Resources/Assets.xcassets"),
+                .process("Resources/Models"),
+                // Keep the nested Core ML directory layout intact. SpeakerKit's
+                // model loader resolves segmenter/embedder/PLDA by this layout.
+                .copy("Resources/SpeakerKitModels"),
+                .process("Resources/ThirdPartyNotices")
             ],
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION")

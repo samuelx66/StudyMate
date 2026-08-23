@@ -10,6 +10,12 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
     public var translation: String
     public var note: String
     public var isBookmarked: Bool
+    /// Speaker labels that participate in this sentence. The list may contain
+    /// multiple speakers who took turns; `isSpeakerOverlap` is reserved for
+    /// speakers that were active at the same time.
+    public var speakerID: Int?
+    public var speakerIDs: [Int]
+    public var isSpeakerOverlap: Bool
     
     public init(
         id: UUID = UUID(),
@@ -19,7 +25,10 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
         text: String = "",
         translation: String = "",
         note: String = "",
-        isBookmarked: Bool = false
+        isBookmarked: Bool = false,
+        speakerID: Int? = nil,
+        speakerIDs: [Int] = [],
+        isSpeakerOverlap: Bool = false
     ) {
         let safeStart = startTime.isFinite ? max(0, startTime) : 0
         let safeEnd = endTime.isFinite ? endTime : safeStart + 0.05
@@ -31,10 +40,18 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
         self.translation = translation
         self.note = note
         self.isBookmarked = isBookmarked
+        var normalizedSpeakerIDs = Set(speakerIDs)
+        if let speakerID { normalizedSpeakerIDs.insert(speakerID) }
+        self.speakerIDs = normalizedSpeakerIDs.sorted()
+        self.speakerID = speakerID ?? (self.speakerIDs.count == 1 ? self.speakerIDs[0] : nil)
+        // Do not infer overlap from the number of labels. A sentence can span
+        // a turn boundary without containing simultaneous speech.
+        self.isSpeakerOverlap = isSpeakerOverlap
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, index, startTime, endTime, text, translation, note, isBookmarked
+        case id, index, startTime, endTime, text, translation, note, isBookmarked,
+             speakerID, speakerIDs, isSpeakerOverlap
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,7 +64,10 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
             text: try container.decodeIfPresent(String.self, forKey: .text) ?? "",
             translation: try container.decodeIfPresent(String.self, forKey: .translation) ?? "",
             note: try container.decodeIfPresent(String.self, forKey: .note) ?? "",
-            isBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isBookmarked) ?? false
+            isBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isBookmarked) ?? false,
+            speakerID: try container.decodeIfPresent(Int.self, forKey: .speakerID),
+            speakerIDs: try container.decodeIfPresent([Int].self, forKey: .speakerIDs) ?? [],
+            isSpeakerOverlap: try container.decodeIfPresent(Bool.self, forKey: .isSpeakerOverlap) ?? false
         )
     }
     

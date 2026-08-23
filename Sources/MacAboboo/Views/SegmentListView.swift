@@ -77,27 +77,21 @@ public struct SegmentListView: View {
                 .menuStyle(.borderlessButton)
                 .focusable(false)
                 
-                // 智能 VAD 断句与 AI 识别菜单
+                // 三种用户断句预设；六个细分 profile 由句子长度偏好自动选择
                 Menu {
-                    Button(lang.text("✨ AI 识词断句并生成台词 (双引擎模式)", "✨ AI Transcript & Segments (Dual Engine)")) {
-                        engine.performDualEngineAISegmentation()
+                    Button(lang.text("🎯 高精度多人对话（推荐）", "🎯 High-precision multi-speaker (Recommended)")) {
+                        engine.performSegmentation(preset: .highPrecision)
                     }
-                    
-                    Divider()
-                    
-                    Button(lang.text("⚡️ Silero VAD 标准抗噪断句 (~0.32s 停顿)", "⚡️ Silero VAD Standard (~0.32s)")) {
-                        engine.performSmartSegmentation(config: SileroVADEngine.Config.standard)
+                    Button(lang.text("⚡️ 快速断句（不识别文字）", "⚡️ Fast segmentation (no transcription)")) {
+                        engine.performSegmentation(preset: .fast)
                     }
-                    Button(lang.text("⚡️ Silero VAD 精细短句 (~0.22s 停顿)", "⚡️ Silero VAD Sensitive (~0.22s)")) {
-                        engine.performSmartSegmentation(config: SileroVADEngine.Config.sensitive)
-                    }
-                    Button(lang.text("⚡️ Silero VAD 完整长句 (~0.50s 停顿)", "⚡️ Silero VAD Relaxed (~0.50s)")) {
-                        engine.performSmartSegmentation(config: SileroVADEngine.Config.relaxed)
+                    Button(lang.text("✨ 纯语义断句（嘈杂/快对话）", "✨ Semantic priority (noisy/fast dialogue)")) {
+                        engine.performSegmentation(preset: .semantic)
                     }
                 } label: {
                     Image(systemName: "wand.and.stars")
                         .foregroundColor(.secondary)
-                        .help(lang.text("智能 AI 语音断句 (Silero VAD / Whisper 模式)", "Smart AI Voice Segmentation"))
+                        .help(lang.text("智能断句预设", "Segmentation presets"))
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
@@ -118,19 +112,41 @@ public struct SegmentListView: View {
             .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
             
-            // AI 语音识别进度指示条
+            // AI 语音识别与智能断句进度指示条
             if engine.isAITranscribing {
                 HStack(spacing: 8) {
-                    ProgressView(value: engine.aiTranscriptionProgress)
+                    ProgressView(value: max(0.05, engine.aiTranscriptionProgress))
                         .progressViewStyle(.linear)
                         .frame(maxWidth: .infinity)
                     Text(engine.aiTranscriptionStatusText)
                         .font(.caption2.bold())
                         .foregroundColor(.blue)
+                    Button(action: { engine.cancelSegmentation() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(lang.text("取消断句", "Cancel segmentation"))
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color.blue.opacity(0.1))
+                .padding(.vertical, 6)
+                .background(Color.blue.opacity(0.12))
+                .animation(.easeInOut(duration: 0.2), value: engine.aiTranscriptionProgress)
+            }
+
+            if let warning = engine.segmentationWarningMessage {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(warning)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.orange.opacity(0.10))
             }
             
             // 搜索过滤栏
@@ -308,6 +324,27 @@ struct SegmentRowView: View {
                         Text("\(seg.formattedStartTime) - \(seg.formattedEndTime)")
                             .font(.system(size: 10, weight: isActive ? .bold : .regular).monospacedDigit())
                             .foregroundColor(isActive ? .primary : .secondary)
+
+                        if !seg.speakerIDs.isEmpty {
+                            let speakerLabel: String = {
+                                let ids = seg.speakerIDs.map { String($0 + 1) }
+                                if seg.isSpeakerOverlap {
+                                    return "S" + ids.joined(separator: "+")
+                                }
+                                if ids.count > 1 {
+                                    return "S" + ids.joined(separator: "→")
+                                }
+                                return "S\(ids[0])"
+                            }()
+                            Text(speakerLabel)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(seg.isSpeakerOverlap ? .orange : .purple)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background((seg.isSpeakerOverlap ? Color.orange : Color.purple).opacity(0.12))
+                                .cornerRadius(3)
+                                .help(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
+                        }
                         
                         Spacer()
                         

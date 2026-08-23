@@ -29,7 +29,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public static let shared = PlaybackEngine()
-    
+
     // MARK: - 智能多媒体双引擎架构
     public let nativeBackend: MediaPlayerBackend
     public let mpvBackend: MediaPlayerBackend
@@ -37,7 +37,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public let clock = PlaybackClock()
     public let waveformState = WaveformPresentationState()
-    
+
     // MARK: - 基础播放状态
     @Published public var currentMedia: MediaItem?
     @Published public var isPlaying: Bool = false
@@ -48,6 +48,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var duration: Double = 0.0
     @Published public private(set) var isMediaLoading: Bool = false
     @Published public var lastErrorMessage: String?
+    @Published public private(set) var segmentationWarningMessage: String?
     @Published public var playbackRate: Float = 1.0 {
         didSet {
             activeBackend.playbackRate = playbackRate
@@ -59,7 +60,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             activeBackend.volume = volume
         }
     }
-    
+
     // MARK: - 解码引擎配置模式 (系统解码 / libmpv 解码 / 混合解码)
     @Published public var decoderMode: DecoderEngineMode = {
         if let saved = UserDefaults.standard.string(forKey: "MacAboboo_DecoderEngineMode"),
@@ -68,7 +69,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         return .hybrid
     }()
-    
+
     // MARK: - 智能精听与复读系统状态
     /// 单句定次复读上限 (1, 2, 3, 5, 10，0 表示无限单句循环)
     @Published public var repeatCountLimit: Int = 1
@@ -82,13 +83,42 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var shadowingCountdownRemaining: Double = 0.0
     /// 仅复读收藏难句模式
     @Published public var onlyPlayBookmarked: Bool = false
-    
+
     // MARK: - AI 语音识词与双引擎断句状态
     @Published public var isAITranscribing: Bool = false
     @Published public var aiTranscriptionProgress: Double = 0.0
     @Published public var aiTranscriptionStatusText: String = ""
-    
+
     // MARK: - 断句与波形数据
+    private let autoGenerateSubtitlesKey = "MacAboboo.AutoGenerateSubtitles"
+    private let speechRecognitionLanguageKey = "MacAboboo.SpeechRecognitionLanguage"
+    private let expectedSpeakerCountKey = "MacAboboo.ExpectedSpeakerCount"
+    private let segmentationSentenceLengthKey = "MacAboboo.SegmentationSentenceLength"
+    @Published public var autoGenerateSubtitles: Bool {
+        didSet {
+            UserDefaults.standard.set(autoGenerateSubtitles, forKey: autoGenerateSubtitlesKey)
+        }
+    }
+    /// `auto` 会由 Whisper 从音频中检测语言；也可锁定常用语言以减少误判。
+    @Published public var speechRecognitionLanguage: String {
+        didSet {
+            UserDefaults.standard.set(speechRecognitionLanguage, forKey: speechRecognitionLanguageKey)
+        }
+    }
+    /// Optional known speaker count. Supplying it prevents noisy recordings
+    /// from being over/under-clustered by automatic diarization.
+    @Published public var expectedSpeakerCount: Int? {
+        didSet {
+            UserDefaults.standard.set(expectedSpeakerCount ?? 0, forKey: expectedSpeakerCountKey)
+        }
+    }
+    /// 用户界面使用三种预设，内部仍映射到六个成熟 profile。
+    @Published public var segmentationSentenceLength: SpeechSentenceLength {
+        didSet {
+            UserDefaults.standard.set(segmentationSentenceLength.rawValue, forKey: segmentationSentenceLengthKey)
+        }
+    }
+
     @Published public var segments: [SentenceSegment] = []
     @Published public var activeSegmentIndex: Int? {
         didSet {
@@ -98,7 +128,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     // 统一波形图视口状态管理
     public private(set) var primaryViewport: (start: Double, end: Double) {
         get { waveformState.primaryViewport }
@@ -109,7 +139,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         set { waveformState.secondaryViewport = newValue }
     }
     private var lastSecondarySegmentId: UUID? = nil
-    
+
     public private(set) var waveformData: WaveformData {
         get { waveformState.waveformData }
         set { waveformState.waveformData = newValue }
@@ -122,7 +152,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         get { waveformState.extractionProgress }
         set { waveformState.extractionProgress = newValue }
     }
-    
+
     // 交互辅助状态
     @Published public var isSeeking: Bool = false
     @Published public var isPreviewingAnchor: Bool = false
@@ -132,8 +162,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var debouncedSaveTask: Task<Void, Never>?
     private var waveformTask: Task<Void, Never>?
     private var sidecarTask: Task<Void, Never>?
+    private var segmentationTask: Task<Void, Never>?
+    private var segmentationRequestID = UUID()
     private var mediaSessionID = UUID()
     private var seekGeneration: UInt64 = 0
+    /// AVPlayer/libmpv should always finish a seek, but a cancelled seek can
+    /// occasionally lose its callback while switching sentences quickly. A
+    /// bounded fallback keeps the engine from remaining in `isSeeking` forever.
+    private var seekTimeoutTask: Task<Void, Never>?
     private var isBackendReady = false
     private var wantsPlayback = false
     private var pendingResumeTime: Double = 0
@@ -159,7 +195,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private static let nonNativeExtensions: Set<String> = [
         "mkv", "webm", "avi", "flv", "wmv", "ts", "vob", "ogv", "rmvb", "3gp", "ape", "wma"
     ]
-    
+
     public override convenience init() {
         self.init(
             nativeBackend: AVFoundationPlayerBackend(),
@@ -177,6 +213,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.mpvBackend = mpvBackend
         self.activeBackend = nativeBackend
         self.projectFileManager = projectFileManager
+        self.autoGenerateSubtitles = (UserDefaults.standard.object(forKey: autoGenerateSubtitlesKey) as? Bool) ?? true
+        self.speechRecognitionLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
+        let savedSpeakerCount = UserDefaults.standard.integer(forKey: expectedSpeakerCountKey)
+        self.expectedSpeakerCount = (2...8).contains(savedSpeakerCount) ? savedSpeakerCount : nil
+        self.segmentationSentenceLength = UserDefaults.standard.string(forKey: segmentationSentenceLengthKey)
+            .flatMap(SpeechSentenceLength.init(rawValue:)) ?? .standard
         super.init()
         self.nativeBackend.volume = self.volume
         self.nativeBackend.playbackRate = self.playbackRate
@@ -185,7 +227,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         setupBackendCallbacks(for: nativeBackend)
         setupBackendCallbacks(for: mpvBackend)
     }
-    
+
     private func setupBackendCallbacks(for backend: MediaPlayerBackend) {
         backend.onTimeUpdate = { [weak self, weak backend] current, total in
             Task { @MainActor [weak self] in
@@ -199,16 +241,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.followPlaybackIfNeeded(at: current)
             }
         }
-        
+
         backend.onStateChanged = { [weak self, weak backend] playing in
             Task { @MainActor [weak self] in
-                guard let self = self, self.activeBackend === backend else { return }
+                guard let self, let backend, self.activeBackend === backend else { return }
                 if !self.isShadowingPaused {
                     self.isPlaying = playing
                 }
             }
         }
-        
+
         backend.onFinished = { [weak self, weak backend] in
             Task { @MainActor [weak self] in
                 guard let self = self, self.activeBackend === backend else { return }
@@ -224,12 +266,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
         }
-        
+
         backend.onError = { [weak self, weak backend] error in
             Task { @MainActor [weak self] in
                 guard let self = self, self.activeBackend === backend else { return }
                 print("[PlaybackEngine] Active backend reported error: \(error.localizedDescription)")
-                
+
                 if backend === self.nativeBackend,
                    self.decoderMode == .hybrid,
                    self.mpvBackend.isAvailable,
@@ -385,7 +427,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         debouncedSaveTask?.cancel()
         persistCurrentProject()
     }
-    
+
     public func scheduleDebouncedPersistence(delay: TimeInterval = 0.5) {
         debouncedSaveTask?.cancel()
         debouncedSaveTask = Task { @MainActor [weak self] in
@@ -394,7 +436,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             self?.persistCurrentProject()
         }
     }
-    
+
     /// 当切换活跃断句时，计算次波形图的固定基准放大视口（拖动起止标线时保持此视口绝对固定，波形底图不动）
     public func updateSecondaryViewportForActiveSegment(force: Bool = false) {
         guard let idx = activeSegmentIndex, idx >= 0, idx < segments.count else { return }
@@ -408,7 +450,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             secondaryViewport = (vStart, vEnd)
         }
     }
-    
+
     /// 主波形图左右拖拽平移浏览时间轴
     public func panPrimaryViewport(by deltaTime: Double) {
         guard duration > 0 else { return }
@@ -419,7 +461,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let newEnd = min(duration, newStart + span)
         primaryViewport = (newStart, newEnd)
     }
-    
+
     /// 主波形图缩放控制
     public func setPrimaryViewportZoom(zoomLevel: Double) {
         guard duration > 0 else { return }
@@ -431,13 +473,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let finalStart = max(0, idealEnd - newSpan)
         primaryViewport = (finalStart, idealEnd)
     }
-    
+
     /// 播放时主波形图自动跟随平移（当游标接近右侧或在视口外时，视口平滑向右推进）
     public func followPlaybackIfNeeded(at current: Double) {
         guard isPlaying, !isBoundaryDragging, duration > 0 else { return }
         let span = primaryViewport.end - primaryViewport.start
         guard span > 0, span < duration else { return }
-        
+
         if current >= (primaryViewport.end - span * 0.3) || current < primaryViewport.start {
             let newStart = max(0, current - span * 0.3)
             let newEnd = min(duration, newStart + span)
@@ -446,7 +488,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     public func setDecoderMode(_ mode: DecoderEngineMode) {
         guard self.decoderMode != mode else { return }
         if mode == .mpv && !mpvBackend.isAvailable {
@@ -458,12 +500,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.decoderMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "MacAboboo_DecoderEngineMode")
         print("[PlaybackEngine] Decoder engine mode set to: \(mode.rawValue)")
-        
+
         // 如果当前已打开媒体文件，立即无缝无损热切换至对应后端并恢复进度与播放状态
         if let media = currentMedia {
             let savedTime = self.currentTime
             let wasPlaying = self.wantsPlayback
-            
+
             let target = targetBackend(for: media.url, mode: mode)
             guard target !== activeBackend else { return }
             loadBackend(
@@ -476,9 +518,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             )
         }
     }
-    
+
     // MARK: - 媒体加载与独立工程恢复
-    
+
     /// 加载音视频文件（优先从 ~/Library/Application Support/MacAboboo/Projects/ 独立工程文件瞬间读取）
     public func loadMedia(from url: URL) {
         let mediaURL = url.standardizedFileURL
@@ -509,9 +551,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         mediaSessionID = UUID()
         let sessionID = mediaSessionID
         seekGeneration &+= 1
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
         shadowingTask?.cancel()
         waveformTask?.cancel()
         sidecarTask?.cancel()
+        segmentationTask?.cancel()
+        segmentationRequestID = UUID()
+        isAITranscribing = false
+        aiTranscriptionProgress = 0
+        aiTranscriptionStatusText = ""
         activeBackend.pause()
         isShadowingPaused = false
         shadowingCountdownRemaining = 0
@@ -521,6 +570,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         pendingResumeTime = 0
         pendingResumePlayback = false
         lastErrorMessage = nil
+        segmentationWarningMessage = nil
         currentRepeatCount = 1
         segmentOrigin = .none
         segments = []
@@ -628,12 +678,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return nil
         }.value
     }
-    
+
     /// 自动检测并加载同名侧边字幕文件
     public func detectAndLoadSidecarSubtitle(for mediaUrl: URL) -> Bool {
         let base = mediaUrl.deletingPathExtension()
         let candidates = ["srt", "lrc", "vtt"]
-        
+
         for ext in candidates {
             let subURL = base.appendingPathExtension(ext)
             if FileManager.default.fileExists(atPath: subURL.path) {
@@ -645,13 +695,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         return false
     }
-    
+
     /// 异步提取波形数据（支持断点增量更新与取消保护）
     private func extractWaveform(from url: URL, sessionID: UUID) {
         waveformTask?.cancel()
         isExtractingWaveform = true
         waveformExtractionProgress = 0.0
-        
+
         waveformTask = WaveformExtractor.shared.extractWaveform(
             from: url,
             onProgress: { [weak self] progress, interimData in
@@ -660,7 +710,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                           sessionID == self.mediaSessionID,
                           self.currentMedia?.url.standardizedFileURL == url.standardizedFileURL else { return }
                     self.waveformExtractionProgress = progress
-                    self.waveformData = interimData
+                    if !interimData.isEmpty {
+                        self.waveformData = interimData
+                    }
                     if self.duration <= 0 && interimData.duration > 0 {
                         self.updateMediaDurationIfNeeded(interimData.duration)
                     }
@@ -679,11 +731,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         if data.duration > 0, self.duration <= 0 {
                             self.updateMediaDurationIfNeeded(data.duration)
                         }
-                        
+
                         if self.segments.isEmpty && self.segmentOrigin == .none {
                             self.performSmartSegmentation(using: data)
                         }
-                        
+
                         self.persistCurrentProject(includeWaveform: true)
                     case .failure(let error):
                         print("Waveform extraction failed: \(error.localizedDescription)")
@@ -699,83 +751,231 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         )
     }
-    
-    /// 执行智能语音停顿断句（基于 Silero VAD 毫秒级声学防吞音模型）
-    public func performSmartSegmentation(using data: WaveformData? = nil, config: SileroVADEngine.Config = .standard) {
-        let targetData = data ?? self.waveformData
-        guard !targetData.isEmpty else { return }
-        
-        let smartSegments = SileroVADEngine.shared.detectSegments(from: targetData, config: config)
-        if !smartSegments.isEmpty {
-            self.segments = normalizedSegments(smartSegments, duration: targetData.duration)
-            self.segmentOrigin = .vad
-            self.activeSegmentIndex = 0
-            persistCurrentProject()
-        }
+
+    /// 面向用户的三种断句预设入口。媒体切换或再次启动断句时，旧请求会被取消且不能回写结果。
+    public func performSegmentation(
+        preset: SpeechSegmentationPreset,
+        showProgress: Bool = true,
+        languageOverride: String? = nil
+    ) {
+        performSegmentation(
+            mode: internalMode(for: preset),
+            showProgress: showProgress,
+            languageOverride: languageOverride
+        )
     }
 
-    /// 执行智能语音停顿断句（兼容老配置）
-    public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config) {
-        let targetData = data ?? self.waveformData
-        guard !targetData.isEmpty else { return }
-        
-        let smartSegments = VADSegmenter.shared.detectSegments(from: targetData, config: config)
-        if !smartSegments.isEmpty {
-            self.segments = normalizedSegments(smartSegments, duration: targetData.duration)
-            self.segmentOrigin = .vad
-            self.activeSegmentIndex = 0
-            persistCurrentProject()
-        }
+    private func internalMode(for preset: SpeechSegmentationPreset) -> SpeechSegmentationMode {
+        preset.mode(for: segmentationSentenceLength)
     }
-    
-    /// 执行双引擎（Whisper / Speech.framework + Silero VAD）深度 AI 识别与断句，自动提取原文台词与防吞音时间轴
-    public func performDualEngineAISegmentation(locale: Locale = Locale(identifier: "en-US")) {
+
+    /// 六个内部 profile 的统一断句入口。兼容旧菜单与外部调用方。
+    public func performSegmentation(
+        mode: SpeechSegmentationMode,
+        showProgress: Bool = true,
+        languageOverride: String? = nil,
+        completion: (@MainActor ([SentenceSegment]) -> Void)? = nil
+    ) {
         guard let media = currentMedia else { return }
-        let targetData = self.waveformData
-        
-        isAITranscribing = true
-        aiTranscriptionProgress = 0.1
-        aiTranscriptionStatusText = LanguageManager.shared.currentLanguage == .zh ? "AI 语音识别中..." : "AI Transcribing..."
-        
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
+        let mediaURL = media.url.standardizedFileURL
+        let sessionID = mediaSessionID
+        let requestID = UUID()
+        segmentationRequestID = requestID
+        segmentationTask?.cancel()
+
+        let modelManager = WhisperModelManager.shared
+        let modelURL = mode.requiresTranscription
+            ? modelManager.modelFileURL(for: modelManager.selectedModelLevel)
+            : nil
+        let request = SpeechSegmentationRequest(
+            mediaURL: mediaURL,
+            mode: mode,
+            whisperModelURL: modelURL,
+            recognitionLanguage: languageOverride ?? speechRecognitionLanguage,
+            includeRecognizedText: autoGenerateSubtitles,
+            numberOfSpeakers: expectedSpeakerCount
+        )
+
+        if showProgress {
+            isAITranscribing = true
+            aiTranscriptionProgress = 0
+            aiTranscriptionStatusText = localizedSegmentationStatus(for: .decodingAudio(0), mode: mode)
+        }
+        lastErrorMessage = nil
+        segmentationWarningMessage = nil
+
+        segmentationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
-                let transcribedSentences = try await SpeechAlignmentEngine.shared.transcribeAudio(
-                    from: media.url,
-                    locale: locale
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.aiTranscriptionProgress = 0.1 + progress * 0.7
+                let output = try await SpeechSegmentationPipeline.shared.run(
+                    request: request,
+                    stageChanged: { [weak self] stage in
+                        Task { @MainActor [weak self] in
+                            guard let self,
+                                  sessionID == self.mediaSessionID,
+                                  requestID == self.segmentationRequestID,
+                                  self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+                            if showProgress {
+                                self.aiTranscriptionProgress = self.segmentationProgress(for: stage)
+                                self.aiTranscriptionStatusText = self.localizedSegmentationStatus(for: stage, mode: mode)
+                            }
+                        }
+                    },
+                    preview: { [weak self] previewSegments in
+                        Task { @MainActor [weak self] in
+                            guard let self,
+                                  !Task.isCancelled,
+                                  sessionID == self.mediaSessionID,
+                                  requestID == self.segmentationRequestID,
+                                  self.currentMedia?.url.standardizedFileURL == mediaURL,
+                                  !previewSegments.isEmpty else { return }
+                            let effectiveDuration = self.duration > 0
+                                ? self.duration
+                                : (previewSegments.last?.endTime ?? 0)
+                            self.segments = self.normalizedSegments(previewSegments, duration: effectiveDuration)
+                            self.segmentOrigin = .vad
+                            self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
+                        }
                     }
-                }
-                
-                self.aiTranscriptionProgress = 0.85
-                self.aiTranscriptionStatusText = LanguageManager.shared.currentLanguage == .zh ? "声学边界校准中..." : "Calibrating Boundaries..."
-                
-                let fusedSegments = DualEngineFusionSegmenter.shared.fuse(
-                    sentences: transcribedSentences,
-                    waveform: targetData
                 )
-                
-                self.segments = self.normalizedSegments(fusedSegments, duration: targetData.duration > 0 ? targetData.duration : self.duration)
-                self.segmentOrigin = .ai
+
+                try Task.checkCancellation()
+                guard sessionID == self.mediaSessionID,
+                      requestID == self.segmentationRequestID,
+                      self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+                let effectiveDuration = self.duration > 0
+                    ? self.duration
+                    : (output.segments.last?.endTime ?? 0)
+                self.segments = self.normalizedSegments(output.segments, duration: effectiveDuration)
+                self.segmentOrigin = mode.requiresTranscription ? .ai : .vad
                 self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
+                self.segmentationWarningMessage = output.warnings.first
                 self.persistCurrentProject()
-                
-                self.aiTranscriptionProgress = 1.0
-                self.isAITranscribing = false
-                self.aiTranscriptionStatusText = ""
+                completion?(self.segments)
+                if showProgress {
+                    self.aiTranscriptionProgress = 1
+                    self.isAITranscribing = false
+                    self.aiTranscriptionStatusText = ""
+                }
+            } catch is CancellationError {
+                guard requestID == self.segmentationRequestID else { return }
+                if showProgress {
+                    self.isAITranscribing = false
+                    self.aiTranscriptionStatusText = ""
+                }
             } catch {
-                // 若离线识别不可用，优雅降级为 Silero VAD 极速断句
-                self.performSmartSegmentation(using: targetData)
+                guard sessionID == self.mediaSessionID,
+                      requestID == self.segmentationRequestID,
+                      self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+                self.lastErrorMessage = error.localizedDescription
                 self.isAITranscribing = false
                 self.aiTranscriptionStatusText = ""
             }
         }
     }
-    
+
+    public func cancelSegmentation() {
+        segmentationTask?.cancel()
+        segmentationTask = nil
+        segmentationRequestID = UUID()
+        isAITranscribing = false
+        aiTranscriptionStatusText = ""
+        segmentationWarningMessage = nil
+    }
+
+    /// 兼容原菜单与调用方；配置仅用于映射到三种统一 Silero 模式。
+    public func performSmartSegmentation(
+        using data: WaveformData? = nil,
+        config: SileroVADEngine.Config = .standard,
+        showProgress: Bool = true
+    ) {
+        _ = data
+        let mode: SpeechSegmentationMode
+        switch config.minSilenceDuration {
+        case ..<0.28: mode = .vadSensitive
+        case 0.40...: mode = .vadRelaxed
+        default: mode = .vadStandard
+        }
+        performSegmentation(mode: mode, showProgress: showProgress)
+    }
+
+    /// 执行智能语音停顿断句（兼容老配置）
+    public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config) {
+        _ = data
+        let mode: SpeechSegmentationMode
+        switch config.minSilenceDuration {
+        case ..<0.28: mode = .vadSensitive
+        case 0.40...: mode = .vadRelaxed
+        default: mode = .vadStandard
+        }
+        performSegmentation(mode: mode, showProgress: true)
+    }
+
+    public func performDualEngineAISegmentation(locale: Locale? = nil) {
+        performSegmentation(
+            mode: .semanticAcousticFusion,
+            languageOverride: locale.flatMap(Self.whisperLanguageCode)
+        )
+    }
+
+    /// 兼容旧 profile：执行 Silero + Whisper 联合双模断句。
+    public func performSileroWhisperCascadeSegmentation(
+        vadConfig: SileroVADEngine.Config = .cascade,
+        locale: Locale? = nil
+    ) {
+        _ = vadConfig
+        performSegmentation(
+            mode: .sileroWhisperCascade,
+            languageOverride: locale.flatMap(Self.whisperLanguageCode)
+        )
+    }
+
+    /// 兼容旧 profile：执行纯 Whisper 独立高精断句。
+    public func performPureWhisperSegmentation(locale: Locale? = nil) {
+        performSegmentation(
+            mode: .whisperSemantic,
+            languageOverride: locale.flatMap(Self.whisperLanguageCode)
+        )
+    }
+
+    private static func whisperLanguageCode(for locale: Locale) -> String? {
+        locale.language.languageCode?.identifier
+    }
+
+    private func segmentationProgress(for stage: SpeechSegmentationStage) -> Double {
+        switch stage {
+        case .decodingAudio(let progress): return min(0.20, max(0, progress) * 0.20)
+        case .detectingVoice: return 0.22
+        case .diarizing(let progress): return 0.24 + min(1, max(0, progress)) * 0.12
+        case .transcribing(let progress): return 0.38 + min(1, max(0, progress)) * 0.50
+        case .optimizing: return 0.95
+        }
+    }
+
+    private func localizedSegmentationStatus(
+        for stage: SpeechSegmentationStage,
+        mode: SpeechSegmentationMode
+    ) -> String {
+        let chinese = LanguageManager.shared.currentLanguage == .zh
+        switch stage {
+        case .decodingAudio:
+            return chinese ? "正在统一解码为 16 kHz 音频…" : "Decoding unified 16 kHz audio…"
+        case .detectingVoice:
+            return chinese ? "Silero 正在检测真实人声与停顿…" : "Silero is detecting speech and pauses…"
+        case .diarizing:
+            return chinese ? "SpeakerKit 正在识别说话人与重叠语音…" : "SpeakerKit is identifying speakers and overlap…"
+        case .transcribing:
+            return chinese ? "Whisper 正在识别词级时间戳与语义…" : "Whisper is recognizing words and timestamps…"
+        case .optimizing:
+            if mode == .whisperSemantic {
+                return chinese ? "正在全局优化语义边界…" : "Optimizing semantic boundaries…"
+            }
+            return chinese ? "正在融合语义、停顿与声学边界…" : "Fusing semantic, pause, and acoustic boundaries…"
+        }
+    }
+
     // MARK: - 字幕导入与应用
-    
+
     public func importSubtitleItems(_ items: [ParsedSubtitleItem]) {
         applySubtitleItems(items, origin: .imported, persist: true)
     }
@@ -804,10 +1004,28 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.activeSegmentIndex = 0
         if persist { persistCurrentProject() }
     }
-    
+
     public func importPlainTextAndAlign(sentences: [String]) {
         guard !sentences.isEmpty else { return }
-        let vadSegments = segments.isEmpty ? VADSegmenter.shared.detectSegments(from: waveformData) : segments
+        guard !segments.isEmpty else {
+            guard currentMedia != nil else {
+                lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                    ? "请先打开音视频文件，再导入纯文本。"
+                    : "Open an audio or video file before importing plain text."
+                return
+            }
+            // Generate a real PCM + Silero/SpeakerKit timeline first. The old
+            // waveform-only compatibility detector is intentionally not used
+            // here because peak amplitude is not a VAD probability.
+            performSegmentation(mode: .vadStandard, showProgress: true) { [weak self] generated in
+                self?.alignImportedText(sentences, with: generated)
+            }
+            return
+        }
+        alignImportedText(sentences, with: segments)
+    }
+
+    private func alignImportedText(_ sentences: [String], with vadSegments: [SentenceSegment]) {
         let alignmentDuration = max(duration, vadSegments.last?.endTime ?? 0)
         guard alignmentDuration > 0, alignmentDuration >= Double(sentences.count) * 0.05 else {
             lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
@@ -821,12 +1039,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.activeSegmentIndex = 0
         persistCurrentProject()
     }
-    
+
     public func importPlainText(_ text: String) {
         let sentences = TextAlignmentEngine.shared.splitTextIntoSentences(text)
         importPlainTextAndAlign(sentences: sentences)
     }
-    
+
     public func previewInterval(start: Double, end: Double) {
         guard start.isFinite, end.isFinite, end > start else { return }
         previewEndTime = min(end, duration > 0 ? duration : end)
@@ -836,18 +1054,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     public func shiftAllTimeline(by offsetSeconds: Double) {
         shiftAllSegments(by: offsetSeconds)
     }
-    
+
     private func fallbackSegments(totalDuration: Double) -> [SentenceSegment] {
         guard totalDuration.isFinite, totalDuration > 0 else { return [] }
         var result = [SentenceSegment]()
         let step = min(6, max(3, totalDuration / 8))
         var current: Double = 0.0
         var idx = 1
-        
+
         while current < totalDuration {
             let end = min(totalDuration, current + step)
             result.append(SentenceSegment(
@@ -888,18 +1106,21 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 text: source.text,
                 translation: source.translation,
                 note: source.note,
-                isBookmarked: source.isBookmarked
+                isBookmarked: source.isBookmarked,
+                speakerID: source.speakerID,
+                speakerIDs: source.speakerIDs,
+                isSpeakerOverlap: source.isSpeakerOverlap
             ))
             previousEnd = end
         }
         return result
     }
-    
+
     // MARK: - 独立项目工程文件持久化存储
-    
+
     public func persistCurrentProject(includeWaveform: Bool = false) {
         guard let media = currentMedia else { return }
-        
+
         projectFileManager.saveProject(
             for: media.url,
             title: media.title,
@@ -916,9 +1137,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         persistCurrentProject()
         projectFileManager.flush()
     }
-    
+
     // MARK: - 播放控制与极速 Seek
-    
+
     public func togglePlayPause() {
         if isPlaying {
             pause()
@@ -926,7 +1147,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             play()
         }
     }
-    
+
     public func play() {
         guard currentMedia != nil else { return }
         shadowingTask?.cancel()
@@ -943,11 +1164,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             pendingResumePlayback = true
             return
         }
+        // A sentence selection starts an asynchronous seek. Starting the
+        // backend while that seek is still in flight can cancel AVPlayer's
+        // seek (especially for non-keyframe timestamps), leaving the player
+        // showing the target time but not advancing. Keep the user's play
+        // request as intent and resume only from the seek completion path.
+        guard !isSeeking else {
+            pendingResumeTime = currentTime
+            return
+        }
         activeBackend.playbackRate = playbackRate
         activeBackend.play()
         isPlaying = true
     }
-    
+
     public func pause() {
         shadowingTask?.cancel()
         isShadowingPaused = false
@@ -957,13 +1187,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = false
         if currentMedia != nil { scheduleDebouncedPersistence(delay: 0.2) }
     }
-    
+
     public func stop() {
         pause()
         previewEndTime = nil
         seek(to: 0.0)
     }
-    
+
     /// 毫秒级极速精准 Seek（实时刷新视频画面与音频时间戳）
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
         guard seconds.isFinite else {
@@ -972,7 +1202,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         let maximum = duration > 0 ? duration : max(0, seconds)
         let clampedTime = max(0, min(seconds, maximum))
-        
+
         self.currentTime = clampedTime
         updateActiveSegment(for: clampedTime)
 
@@ -982,7 +1212,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
 
+        // Keep playback intent while the asynchronous seek is in flight.
+        // `beginPlayback()` defers a Play request until this callback so it
+        // cannot cancel an AVPlayer seek at a non-keyframe timestamp.
         isSeeking = true
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
         seekGeneration &+= 1
         let generation = seekGeneration
         let sessionID = mediaSessionID
@@ -993,22 +1228,52 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                       let backend,
                       generation == self.seekGeneration,
                       sessionID == self.mediaSessionID,
-                      self.activeBackend === backend else { return }
+                      self.activeBackend === backend,
+                      self.isSeeking else { return }
+                self.seekTimeoutTask?.cancel()
+                self.seekTimeoutTask = nil
                 self.isSeeking = false
-                if self.isPlaying {
+                if self.wantsPlayback {
                     backend.playbackRate = self.playbackRate
+                    backend.play()
+                    self.isPlaying = true
                 }
                 completion?()
             }
         }
+
+        // Do not let a backend callback omission permanently block time
+        // updates. The normal callback wins; this path only runs when the
+        // current seek is still pending after a generous decoder window.
+        seekTimeoutTask = Task { @MainActor [weak self, weak backend] in
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                return
+            }
+            guard let self,
+                  let backend,
+                  generation == self.seekGeneration,
+                  sessionID == self.mediaSessionID,
+                  self.activeBackend === backend,
+                  self.isSeeking else { return }
+            self.seekTimeoutTask = nil
+            self.isSeeking = false
+            if self.wantsPlayback {
+                backend.playbackRate = self.playbackRate
+                backend.play()
+                self.isPlaying = true
+            }
+            completion?()
+        }
     }
-    
+
     public func seekBy(offset: Double) {
         seek(to: currentTime + offset)
     }
-    
+
     // MARK: - 智能复读、跟读停顿与断句边界判定
-    
+
     private func handlePlaybackBoundary(at time: Double) {
         if let previewEndTime, time >= previewEndTime {
             self.previewEndTime = nil
@@ -1020,13 +1285,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             updateActiveSegment(for: time)
             return
         }
-        
+
         let currentSeg = segments[activeIdx]
-        
+
         // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
         if time >= currentSeg.endTime - 0.005 && isPlaying && !isShadowingPaused {
             let needsRepeat = (repeatCountLimit == 0) || (currentRepeatCount < repeatCountLimit) || (loopMode == .singleSegment)
-            
+
             if needsRepeat {
                 triggerSentenceRepeat(for: currentSeg)
             } else {
@@ -1035,16 +1300,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
             return
         }
-        
+
         // 2. 如果还在当前句的时间区间内，无需做任何切换
         if currentSeg.contains(time: time) {
             return
         }
-        
+
         // 3. 游标在静音区间或外部时更新活跃句
         updateActiveSegment(for: time)
     }
-    
+
     private func triggerSentenceRepeat(for segment: SentenceSegment) {
         if shadowingPauseRatio > 0 {
             let pauseDuration = max(0.5, segment.duration * shadowingPauseRatio)
@@ -1062,24 +1327,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             seek(to: segment.startTime)
         }
     }
-    
+
     private func startShadowingPause(duration: Double, onFinished: @escaping @MainActor () -> Void) {
         activeBackend.pause()
         isShadowingPaused = true
         shadowingCountdownRemaining = duration
-        
+
         shadowingTask?.cancel()
         shadowingTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
             var remaining = duration
             let step = 0.1
-            
+
             while remaining > 0 && !Task.isCancelled {
                 self.shadowingCountdownRemaining = remaining
                 try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
                 remaining -= step
             }
-            
+
             if !Task.isCancelled {
                 self.isShadowingPaused = false
                 self.shadowingCountdownRemaining = 0
@@ -1087,11 +1352,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     private func advanceToNextSentence(from currentIndex: Int) {
         let candidateIndices = Array((currentIndex + 1)..<segments.count)
         var targetIndex: Int?
-        
+
         if onlyPlayBookmarked {
             targetIndex = candidateIndices.first(where: { segments[$0].isBookmarked })
             if targetIndex == nil && loopMode == .all {
@@ -1103,7 +1368,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 targetIndex = 0
             }
         }
-        
+
         if loopMode == .pauseAfterSegment {
             pause()
             if let nextIdx = targetIndex {
@@ -1113,22 +1378,27 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
             return
         }
-        
+
         if let nextIdx = targetIndex {
-            let isNaturalContinuation = !onlyPlayBookmarked && nextIdx == currentIndex + 1
-            if isNaturalContinuation {
-                // 正常连续播放不再在每个句界做 exact seek，消除音频咔顿和视频掉帧。
-                activeSegmentIndex = nextIdx
-                currentRepeatCount = 1
-                ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
-            } else {
+            if loopMode == .normal {
+                // 连续播放模式：断句1播放结束后直接跳至断句2的开始时间戳继续播放，跳过两句之间的非断句/空白内容
                 jumpToSegment(at: nextIdx)
+            } else {
+                let isNaturalContinuation = !onlyPlayBookmarked && nextIdx == currentIndex + 1
+                if isNaturalContinuation {
+                    // 全曲循环等模式下：按媒体真实时间流自然过渡
+                    activeSegmentIndex = nextIdx
+                    currentRepeatCount = 1
+                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
+                } else {
+                    jumpToSegment(at: nextIdx)
+                }
             }
         } else {
             pause()
         }
     }
-    
+
     public func updateActiveSegment(for time: Double) {
         guard time.isFinite else { return }
         if let index = segments.firstIndex(where: { $0.contains(time: time) }) {
@@ -1141,15 +1411,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             activeSegmentIndex = segments.count - 1
         }
     }
-    
+
     // MARK: - 断句快捷操作与难句收藏
-    
+
     /// 确保目标断句在主波形图视口内完整展现（若处于边缘或在视口外，自动平滑移动视口）
     public func ensureSegmentVisibleInPrimaryViewport(at index: Int) {
         guard index >= 0, index < segments.count else { return }
         let seg = segments[index]
         let span = max(1.0, primaryViewport.end - primaryViewport.start)
-        
+
         let padding = span * 0.1
         if seg.startTime < (primaryViewport.start + padding) || seg.endTime > (primaryViewport.end - padding) {
             let segCenter = (seg.startTime + seg.endTime) / 2.0
@@ -1162,7 +1432,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
         let seg = segments[index]
@@ -1177,12 +1447,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         jumpToSegment(at: idx)
     }
-    
+
     public func previousSegment() {
         guard !segments.isEmpty else { return }
         let current = activeSegmentIndex ?? 0
         let targetIndex: Int
-        
+
         if onlyPlayBookmarked {
             let prevIndices = Array(0..<current).reversed()
             targetIndex = prevIndices.first(where: { segments[$0].isBookmarked }) ?? current
@@ -1191,12 +1461,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         jumpToSegment(at: targetIndex)
     }
-    
+
     public func nextSegment() {
         guard !segments.isEmpty else { return }
         let current = activeSegmentIndex ?? 0
         let targetIndex: Int
-        
+
         if onlyPlayBookmarked {
             let nextIndices = Array((current + 1)..<segments.count)
             targetIndex = nextIndices.first(where: { segments[$0].isBookmarked }) ?? current
@@ -1205,7 +1475,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         jumpToSegment(at: targetIndex)
     }
-    
+
     public func repeatCurrentSegment() {
         guard let idx = activeSegmentIndex, idx >= 0, idx < segments.count else { return }
         currentRepeatCount = 1
@@ -1215,42 +1485,43 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
     }
-    
+
     public func toggleBookmark(for segmentId: UUID) {
         if let idx = segments.firstIndex(where: { $0.id == segmentId }) {
             segments[idx].isBookmarked.toggle()
             scheduleDebouncedPersistence()
         }
     }
-    
+
     public func updateSegmentAnchor(id: UUID, start: Double? = nil, end: Double? = nil) {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         var seg = segments[idx]
-        
+        let minimumDuration = 0.05
+
         if let s = start, s.isFinite {
-            let lowerBound = idx > 0 ? segments[idx - 1].startTime + 0.05 : 0
-            let adjusted = max(lowerBound, min(s, seg.endTime - 0.05))
+            // 起点只属于当前句。上一句的结束点是独立锚点，不能在这里被改写。
+            // 仍然限制起点不越过上一句结束点，避免产生重叠或倒序。
+            let lowerBound = idx > 0 ? segments[idx - 1].endTime : 0
+            let upperBound = seg.endTime - minimumDuration
+            guard lowerBound <= upperBound else { return }
+            let adjusted = max(lowerBound, min(s, upperBound))
             seg.startTime = adjusted
-            if idx > 0 {
-                // 相邻边界作为一个事务一起移动，且不允许把前一句压成负时长。
-                segments[idx - 1].endTime = adjusted
-            }
         }
         if let e = end, e.isFinite {
+            // 终点只属于当前句。下一句的起点保持原位，两个标线不再绑定移动。
             let mediaBound = duration > 0 ? duration : Double.greatestFiniteMagnitude
             let upperBound = idx < segments.count - 1
-                ? min(mediaBound, segments[idx + 1].endTime - 0.05)
+                ? min(mediaBound, segments[idx + 1].startTime)
                 : mediaBound
-            let adjusted = min(upperBound, max(e, seg.startTime + 0.05))
+            let lowerBound = seg.startTime + minimumDuration
+            guard lowerBound <= upperBound else { return }
+            let adjusted = min(upperBound, max(e, lowerBound))
             seg.endTime = adjusted
-            if idx < segments.count - 1 {
-                segments[idx + 1].startTime = adjusted
-            }
         }
         segments[idx] = seg
         scheduleDebouncedPersistence()
     }
-    
+
     public func addSegment(startTime: Double, endTime: Double) {
         guard startTime.isFinite, endTime.isFinite else { return }
         let start = max(0, startTime)
@@ -1277,7 +1548,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         activeSegmentIndex = segments.firstIndex(where: { $0.id == newSeg.id })
         persistCurrentProject()
     }
-    
+
     public func deleteSegment(at index: Int) {
         guard index >= 0 && index < segments.count else { return }
         segments.remove(at: index)
@@ -1294,7 +1565,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         deleteSegment(at: idx)
     }
-    
+
     public func splitSegment(at splitTime: Double) {
         var targetIndex = activeSegmentIndex
         if let idx = targetIndex, idx >= 0, idx < segments.count {
@@ -1308,7 +1579,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let idx = targetIndex, idx >= 0, idx < segments.count else { return }
         let current = segments[idx]
         guard splitTime > current.startTime + 0.05 && splitTime < current.endTime - 0.05 else { return }
-        
+
         let seg1 = SentenceSegment(
             id: current.id,
             index: current.index,
@@ -1317,18 +1588,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: current.text,
             translation: current.translation,
             note: current.note,
-            isBookmarked: current.isBookmarked
+            isBookmarked: current.isBookmarked,
+            speakerID: current.speakerID,
+            speakerIDs: current.speakerIDs,
+            isSpeakerOverlap: current.isSpeakerOverlap
         )
-        
+
         let seg2 = SentenceSegment(
             index: current.index + 1,
             startTime: splitTime,
             endTime: current.endTime,
             text: "",
             translation: "",
-            isBookmarked: false
+            isBookmarked: false,
+            speakerID: current.speakerID,
+            speakerIDs: current.speakerIDs,
+            isSpeakerOverlap: current.isSpeakerOverlap
         )
-        
+
         segments.remove(at: idx)
         segments.insert(contentsOf: [seg1, seg2], at: idx)
         reindexSegments()
@@ -1340,7 +1617,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         let current = segments[idx]
         guard splitTime > current.startTime + 0.05 && splitTime < current.endTime - 0.05 else { return }
-        
+
         let seg1 = SentenceSegment(
             id: current.id,
             index: current.index,
@@ -1349,30 +1626,36 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: current.text,
             translation: current.translation,
             note: current.note,
-            isBookmarked: current.isBookmarked
+            isBookmarked: current.isBookmarked,
+            speakerID: current.speakerID,
+            speakerIDs: current.speakerIDs,
+            isSpeakerOverlap: current.isSpeakerOverlap
         )
-        
+
         let seg2 = SentenceSegment(
             index: current.index + 1,
             startTime: splitTime,
             endTime: current.endTime,
             text: "",
             translation: "",
-            isBookmarked: false
+            isBookmarked: false,
+            speakerID: current.speakerID,
+            speakerIDs: current.speakerIDs,
+            isSpeakerOverlap: current.isSpeakerOverlap
         )
-        
+
         segments.remove(at: idx)
         segments.insert(contentsOf: [seg1, seg2], at: idx)
         reindexSegments()
         activeSegmentIndex = idx
         persistCurrentProject()
     }
-    
+
     public func mergeSegmentWithNext(at index: Int) {
         guard index >= 0 && index < segments.count - 1 else { return }
         let seg1 = segments[index]
         let seg2 = segments[index + 1]
-        
+
         let merged = SentenceSegment(
             id: seg1.id,
             index: seg1.index,
@@ -1381,9 +1664,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: [seg1.text, seg2.text].filter { !$0.isEmpty }.joined(separator: " "),
             translation: [seg1.translation, seg2.translation].filter { !$0.isEmpty }.joined(separator: " "),
             note: [seg1.note, seg2.note].filter { !$0.isEmpty }.joined(separator: "\n"),
-            isBookmarked: seg1.isBookmarked || seg2.isBookmarked
+            isBookmarked: seg1.isBookmarked || seg2.isBookmarked,
+            speakerID: nil,
+            speakerIDs: Array(Set(seg1.speakerIDs + seg2.speakerIDs)).sorted(),
+            isSpeakerOverlap: seg1.isSpeakerOverlap || seg2.isSpeakerOverlap
         )
-        
+
         segments.remove(at: index + 1)
         segments[index] = merged
         reindexSegments()
@@ -1395,7 +1681,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         mergeSegmentWithNext(at: idx)
     }
-    
+
     public func updateSegmentText(id: UUID, text: String, translation: String? = nil) {
         if let idx = segments.firstIndex(where: { $0.id == id }) {
             segments[idx].text = text
@@ -1405,7 +1691,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             scheduleDebouncedPersistence()
         }
     }
-    
+
     public func shiftAllSegments(by offsetSeconds: Double) {
         guard offsetSeconds.isFinite, offsetSeconds != 0, !segments.isEmpty else { return }
         segments = normalizedSegments(segments, duration: duration)
@@ -1422,7 +1708,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         persistCurrentProject()
     }
-    
+
     private func reindexSegments() {
         for i in 0..<segments.count {
             segments[i].index = i + 1

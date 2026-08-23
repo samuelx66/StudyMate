@@ -41,6 +41,7 @@ struct MacAbobooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
     @StateObject private var engine = PlaybackEngine.shared
+    @State private var isSettingsPresented = false
     
     init() {
         UserDefaults.standard.register(defaults: [
@@ -55,6 +56,10 @@ struct MacAbobooApp: App {
             MainContentView()
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
+                .sheet(isPresented: $isSettingsPresented) {
+                    IntensiveSettingsPopover(engine: engine)
+                        .frame(width: 390, height: 620)
+                }
                 .onOpenURL { url in
                     PlaybackEngine.shared.loadMedia(from: url)
                 }
@@ -64,6 +69,14 @@ struct MacAbobooApp: App {
         .windowToolbarStyle(.unified(showsTitle: false))
         .windowResizability(.contentMinSize)
         .commands {
+            // 应用菜单：将设置放在 MacAboboo 菜单下，并使用 macOS 标准快捷键 ⌘,
+            CommandGroup(after: .appInfo) {
+                Button(languageManager.text("设置", "Settings")) {
+                    isSettingsPresented = true
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
+
             // 文件菜单
             CommandGroup(replacing: .newItem) {
                 Button(languageManager.localized(.openFile)) {

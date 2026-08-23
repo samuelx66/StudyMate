@@ -118,6 +118,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
 
         loadGeneration &+= 1
         let generation = loadGeneration
+        seekGeneration &+= 1
         loadCancellationToken?.cancel()
         let cancellationToken = MPVCancellationToken()
         loadCancellationToken = cancellationToken
@@ -261,6 +262,23 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                 self.hostView.mpvLayer.setNeedsDisplay()
                 completion?()
             }
+        }
+
+        // A command queue or a torn-down handle must not leave polling
+        // disabled forever. Recover the backend-side seek state if its normal
+        // completion path is lost.
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                return
+            }
+            guard let self,
+                  generation == self.seekGeneration,
+                  self.isSeekingInternal else { return }
+            self.isSeekingInternal = false
+            self.hostView.mpvLayer.setNeedsDisplay()
+            completion?()
         }
     }
     

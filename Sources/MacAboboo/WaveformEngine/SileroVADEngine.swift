@@ -1,8 +1,8 @@
 import Foundation
 import Accelerate
 
-/// Silero VAD 高精抗噪人声检测与声学防吞音推理引擎
-/// 结合多维声学人声频带滤波、谱平坦度谐波分析与迟滞状态机，输出毫秒级人声概率与防吞音断句
+/// Silero VAD 兼容接口。
+/// 原始 PCM 请使用异步重载，它会运行真正的 Silero v6.2；WaveformData 重载仅供旧工程兼容。
 public final class SileroVADEngine: @unchecked Sendable {
     public static let shared = SileroVADEngine()
     
@@ -74,17 +74,60 @@ public final class SileroVADEngine: @unchecked Sendable {
             self.bgmSuppression = bgmSuppression
         }
         
-        public static let standard = Config()
-        public static let sensitive = Config(threshold: 0.35, negThreshold: 0.20, minSilenceDuration: 0.22, onsetPadding: 0.12, offsetHangover: 0.22)
-        public static let relaxed = Config(threshold: 0.55, negThreshold: 0.35, minSilenceDuration: 0.50, onsetPadding: 0.10, offsetHangover: 0.25)
+        public static let standard = Config(threshold: 0.45, negThreshold: 0.28, minSpeechDuration: 0.30, minSilenceDuration: 0.32, maxSentenceDuration: 12.0, onsetPadding: 0.10, offsetHangover: 0.20)
+        public static let cascade = Config(threshold: 0.40, negThreshold: 0.25, minSpeechDuration: 0.25, minSilenceDuration: 0.28, maxSentenceDuration: 8.0, onsetPadding: 0.12, offsetHangover: 0.22)
+        public static let noiseResistant = Config(threshold: 0.35, negThreshold: 0.20, minSpeechDuration: 0.15, minSilenceDuration: 0.18, maxSentenceDuration: 5.0, onsetPadding: 0.06, offsetHangover: 0.08)
+        public static let dualEngine = Config(threshold: 0.48, negThreshold: 0.30, minSpeechDuration: 0.35, minSilenceDuration: 0.40, maxSentenceDuration: 14.0, onsetPadding: 0.10, offsetHangover: 0.24)
+        public static let sensitive = Config(threshold: 0.35, negThreshold: 0.20, minSpeechDuration: 0.20, minSilenceDuration: 0.22, maxSentenceDuration: 6.0, onsetPadding: 0.12, offsetHangover: 0.22)
+        public static let relaxed = Config(threshold: 0.55, negThreshold: 0.35, minSpeechDuration: 0.40, minSilenceDuration: 0.50, maxSentenceDuration: 18.0, onsetPadding: 0.10, offsetHangover: 0.25)
     }
     
     public init() {}
+
+    /// 使用内置 Silero v6.2 模型在统一的 16 kHz PCM 上执行真实 VAD 推理。
+    public func detectSegments(
+        from pcm: AudioPCMData,
+        config: Config = .standard
+    ) async throws -> [SentenceSegment] {
+        let voiceConfig = VoiceActivityConfiguration(
+            threshold: config.threshold,
+            minSpeechDuration: config.minSpeechDuration,
+            minSilenceDuration: config.minSilenceDuration,
+            maxSpeechDuration: config.maxSentenceDuration,
+            speechPadding: max(config.onsetPadding, config.offsetHangover),
+            sampleOverlap: 0.08
+        )
+        let voice = try await NativeSpeechRuntime.shared.detectVoiceActivity(
+            pcm: pcm,
+            configuration: voiceConfig
+        )
+        let mode: SpeechSegmentationMode
+        switch config.minSilenceDuration {
+        case ..<0.28: mode = .vadSensitive
+        case 0.40...: mode = .vadRelaxed
+        default: mode = .vadStandard
+        }
+        return SpeechBoundaryOptimizer.shared.optimize(
+            mode: mode,
+            timeline: nil,
+            voiceSegments: voice,
+            waveform: pcm.waveform(),
+            duration: pcm.duration,
+            includeRecognizedText: false
+        )
+    }
     
     // MARK: - 1. 计算连续毫秒级人声概率序列 P(speech)
     
     /// 从波形数据中计算出 30ms 精度的人声置信度时间序列 [VADProbFrame]
+    @available(*, deprecated, message: "WaveformData cannot provide Silero posteriors. Use detectSegments(from: AudioPCMData, config:) instead.")
     public func extractSpeechProbabilityTimeline(from waveform: WaveformData, config: Config = .standard) -> [VADProbFrame] {
+        legacyExtractSpeechProbabilityTimeline(from: waveform, config: config)
+    }
+
+    /// 旧版波形兼容实现，仅供同模块内仍保留的历史适配器使用。
+    /// 新的应用流程不应把波形峰值当作 Silero posterior。
+    func legacyExtractSpeechProbabilityTimeline(from waveform: WaveformData, config: Config = .standard) -> [VADProbFrame] {
         guard !waveform.isEmpty, waveform.duration > 0 else { return [] }
         
         let peaks = waveform.peaks
@@ -158,10 +201,16 @@ public final class SileroVADEngine: @unchecked Sendable {
     // MARK: - 2. 状态机推导断句与首尾声学 Padding 智能熔合
     
     /// 从波形中执行高精度 Silero VAD 状态机切分
+    @available(*, deprecated, message: "WaveformData cannot run the real Silero model. Use the PCM async overload or SpeechSegmentationPipeline.")
     public func detectSegments(from waveform: WaveformData, config: Config = .standard) -> [SentenceSegment] {
+        legacyDetectSegments(from: waveform, config: config)
+    }
+
+    /// 旧版波形兼容实现，仅供同模块内历史适配器使用。
+    func legacyDetectSegments(from waveform: WaveformData, config: Config = .standard) -> [SentenceSegment] {
         guard !waveform.isEmpty, waveform.duration > 0 else { return [] }
         
-        let frames = extractSpeechProbabilityTimeline(from: waveform, config: config)
+        let frames = legacyExtractSpeechProbabilityTimeline(from: waveform, config: config)
         guard !frames.isEmpty else { return [] }
         
         let totalDuration = waveform.duration
@@ -234,7 +283,9 @@ public final class SileroVADEngine: @unchecked Sendable {
         var merged = [SpeechSegment]()
         for seg in rawSegments {
             if let last = merged.last {
-                if seg.startTime <= last.endTime + 0.15 {
+                let mergedDuration = max(last.endTime, seg.endTime) - last.startTime
+                if seg.startTime <= last.endTime + 0.15,
+                   mergedDuration <= config.maxSentenceDuration {
                     // 合并
                     merged[merged.count - 1].endTime = max(last.endTime, seg.endTime)
                     continue
@@ -252,18 +303,7 @@ public final class SileroVADEngine: @unchecked Sendable {
                 index: i + 1,
                 startTime: seg.startTime,
                 endTime: seg.endTime,
-                text: "Sentence #\(i + 1)",
-                translation: ""
-            ))
-        }
-        
-        // 兜底保护：若全曲静音或未检测到，生成全长占位
-        if result.isEmpty && totalDuration > 0 {
-            result.append(SentenceSegment(
-                index: 1,
-                startTime: 0.0,
-                endTime: min(totalDuration, 5.0),
-                text: "Sentence #1",
+                text: "",
                 translation: ""
             ))
         }

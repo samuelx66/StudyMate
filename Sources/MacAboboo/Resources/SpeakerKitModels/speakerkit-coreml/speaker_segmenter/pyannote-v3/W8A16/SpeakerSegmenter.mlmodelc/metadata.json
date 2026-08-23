@@ -1,0 +1,133 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Mixed (Float16, Palettized (8 bits))",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 21 × 589 × 3)",
+        "shortDescription" : "",
+        "shape" : "[21, 589, 3]",
+        "name" : "speaker_probs",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 21 × 589 × 3)",
+        "shortDescription" : "",
+        "shape" : "[21, 589, 3]",
+        "name" : "speaker_ids",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 21 × 3)",
+        "shortDescription" : "",
+        "shape" : "[21, 3]",
+        "name" : "speaker_activity",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 21 × 589)",
+        "shortDescription" : "",
+        "shape" : "[21, 589]",
+        "name" : "overlapped_speaker_activity",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1767)",
+        "shortDescription" : "",
+        "shape" : "[1767]",
+        "name" : "voice_activity",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 21 × 1 × 160000)",
+        "shortDescription" : "",
+        "shape" : "[21, 1, 160000]",
+        "name" : "sliding_window_waveform",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 8,
+    "mlProgramOperationTypeHistogram" : {
+      "Ios17.reduceArgmax" : 1,
+      "Ios16.maxPool" : 3,
+      "Ios17.slidingWindows" : 1,
+      "Ios17.instanceNorm" : 4,
+      "Ios17.exp" : 1,
+      "Ios16.softmax" : 1,
+      "Ios17.scatter" : 42,
+      "Ios17.transpose" : 2,
+      "Ios17.expandDims" : 1,
+      "Ios16.reduceMax" : 1,
+      "Ios17.add" : 40,
+      "Ios17.sliceByIndex" : 61,
+      "Ios16.reduceSum" : 2,
+      "Ios17.log" : 1,
+      "Ios17.conv" : 3,
+      "Ios17.lstm" : 4,
+      "Ios16.constexprLutToDense" : 22,
+      "OneHot" : 1,
+      "Ios17.cast" : 2,
+      "Ios17.linear" : 5,
+      "Ios17.leakyRelu" : 5,
+      "Ios17.abs" : 1,
+      "Ios17.realDiv" : 1,
+      "Ios17.greater" : 1
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "14.0",
+      "tvOS" : "17.0",
+      "visionOS" : "1.0",
+      "watchOS" : "10.0",
+      "iOS" : "17.0",
+      "macCatalyst" : "17.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "com.github.apple.coremltools.source" : "torch==2.5.1",
+      "com.github.apple.coremltools.version" : "8.1"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 480000)",
+        "shortDescription" : "",
+        "shape" : "[480000]",
+        "name" : "waveform",
+        "type" : "MultiArray"
+      }
+    ],
+    "generatedClassName" : "SpeakerSegmenter_8_bit",
+    "method" : "predict"
+  }
+]

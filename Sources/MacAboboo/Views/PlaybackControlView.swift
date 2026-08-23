@@ -6,8 +6,6 @@ public struct PlaybackControlView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
     
-    @State private var showSettingsPopover: Bool = false
-    
     // 快捷倍速预设
     private let speedPresets: [Float] = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0]
     
@@ -140,24 +138,7 @@ public struct PlaybackControlView: View {
                 
                 Spacer()
                 
-                // 4. 精听设置弹出按钮
-                Button(action: { showSettingsPopover.toggle() }) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.body)
-                        .foregroundColor(showSettingsPopover ? .blue : .primary)
-                }
-                .buttonStyle(.plain)
-                .help(lang.text(
-                    "精听复读参数设置（定次复读、跟读停顿、时间轴校准）",
-                    "Listening settings (repeat count, shadowing pause, timeline sync)"
-                ))
-                .popover(isPresented: $showSettingsPopover, arrowEdge: .top) {
-                    IntensiveSettingsPopover(engine: engine)
-                }
-                
-                Divider().frame(height: 20)
-                
-                // 5. 变速不变调调节区 (0.5x ~ 2.0x)
+                // 4. 变速不变调调节区 (0.5x ~ 2.0x)
                 HStack(spacing: 6) {
                     Image(systemName: "speedometer")
                         .font(.caption)

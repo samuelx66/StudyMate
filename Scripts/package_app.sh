@@ -11,6 +11,8 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 HELPERS_DIR="${CONTENTS_DIR}/Helpers"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+MODULE_BUNDLE_NAME="MacAboboo_MacAbobooKit.bundle"
+MODULE_BUNDLE_DEST="${RESOURCES_DIR}/${MODULE_BUNDLE_NAME}"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
@@ -23,13 +25,13 @@ require_tool() {
     }
 }
 
-for tool in swift otool install_name_tool codesign iconutil ditto lipo; do
+for tool in swift otool install_name_tool codesign actool ditto lipo; do
     require_tool "${tool}"
 done
 
 echo "=== 1. 编译 Release 二进制 ==="
-swift build -c release
-BUILD_DIR="$(swift build -c release --show-bin-path)"
+swift build -c release --disable-sandbox
+BUILD_DIR="$(swift build -c release --disable-sandbox --show-bin-path)"
 EXECUTABLE="${BUILD_DIR}/${APP_NAME}"
 test -x "${EXECUTABLE}" || { echo "未找到 Release 可执行文件：${EXECUTABLE}" >&2; exit 1; }
 APP_ARCHS="$(lipo -archs "${EXECUTABLE}")"
@@ -40,11 +42,44 @@ rm -rf "${APP_BUNDLE}"
 mkdir -p "${MACOS_DIR}" "${FRAMEWORKS_DIR}" "${HELPERS_DIR}" "${RESOURCES_DIR}"
 cp "${EXECUTABLE}" "${MACOS_DIR}/${APP_NAME}"
 chmod 755 "${MACOS_DIR}/${APP_NAME}"
+if ! otool -l "${MACOS_DIR}/${APP_NAME}" | grep -Fq '@executable_path/../Frameworks'; then
+    install_name_tool -add_rpath '@executable_path/../Frameworks' "${MACOS_DIR}/${APP_NAME}"
+fi
+while IFS= read -r development_rpath; do
+    case "${development_rpath}" in
+        /Applications/Xcode.app/*|/Users/*)
+            install_name_tool -delete_rpath "${development_rpath}" "${MACOS_DIR}/${APP_NAME}"
+            ;;
+    esac
+done < <(otool -l "${MACOS_DIR}/${APP_NAME}" | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { reading_rpath = 1; next }
+    reading_rpath && $1 == "path" { print $2; reading_rpath = 0 }
+')
 
 RESOURCE_BUNDLE="${BUILD_DIR}/MacAboboo_MacAbobooKit.bundle"
 if [[ -d "${RESOURCE_BUNDLE}" ]]; then
-    cp -R "${RESOURCE_BUNDLE}" "${RESOURCES_DIR}/"
+    # 资源包放在标准的 Contents/Resources，由 MacAbobooResourceBundle 显式加载。
+    # 不要把它放到 .app 根目录，否则 codesign 会将其视为未封装内容。
+    cp -R "${RESOURCE_BUNDLE}" "${MODULE_BUNDLE_DEST}"
+    # SwiftPM 的增量资源目录可能残留旧版 CLI/Metal 文件；新版仅使用进程内框架。
+    rm -f \
+        "${MODULE_BUNDLE_DEST}/whisper-cli" \
+        "${MODULE_BUNDLE_DEST}/ggml-metal.metal"
+else
+    echo "未找到 SwiftPM 资源包：${RESOURCE_BUNDLE}" >&2
+    exit 1
 fi
+test -d "${MODULE_BUNDLE_DEST}" || {
+    echo "资源包未放在 Bundle.module 需要的位置：${MODULE_BUNDLE_DEST}" >&2
+    exit 1
+}
+
+WHISPER_FRAMEWORK="${BUILD_DIR}/whisper.framework"
+[[ -d "${WHISPER_FRAMEWORK}" ]] || {
+    echo "未找到进程内 Whisper 运行框架：${WHISPER_FRAMEWORK}" >&2
+    exit 1
+}
+ditto "${WHISPER_FRAMEWORK}" "${FRAMEWORKS_DIR}/whisper.framework"
 
 resolve_dependency() {
     local dependency="$1"
@@ -163,14 +198,37 @@ while IFS= read -r -d '' binary; do
             exit 1
         fi
     fi
-done < <(find "${FRAMEWORKS_DIR}" "${HELPERS_DIR}" -type f -print0)
+done < <(find "${MACOS_DIR}" "${FRAMEWORKS_DIR}" "${HELPERS_DIR}" -type f -print0)
+
+otool -l "${MACOS_DIR}/${APP_NAME}" | grep -Fq '@executable_path/../Frameworks' || {
+    echo "主程序缺少内置 Frameworks 运行时搜索路径。" >&2
+    exit 1
+}
+if otool -l "${MACOS_DIR}/${APP_NAME}" | awk '
+    $1 == "cmd" && $2 == "LC_RPATH" { reading_rpath = 1; next }
+    reading_rpath && $1 == "path" { print $2; reading_rpath = 0 }
+' | grep -E '^(/Users/|/Applications/Xcode\.app/)' >/dev/null; then
+    echo "主程序仍包含本机开发环境的运行时搜索路径。" >&2
+    exit 1
+fi
 
 echo "=== 5. 生成图标与应用元数据 ==="
 ICON_TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${ICON_TEMP_DIR}"' EXIT
-ICONSET="${ICON_TEMP_DIR}/AppIcon.iconset"
-swift "${SCRIPT_DIR}/generate_icon.swift" "${ICONSET}"
-iconutil -c icns "${ICONSET}" -o "${RESOURCES_DIR}/AppIcon.icns"
+ACTOOL_OUTPUT="${ICON_TEMP_DIR}/compiled-assets"
+mkdir -p "${ACTOOL_OUTPUT}"
+actool \
+    --compile "${ACTOOL_OUTPUT}" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "${ICON_TEMP_DIR}/partial-info.plist" \
+    --platform macosx \
+    --minimum-deployment-target 14.0 \
+    "${ROOT_DIR}/Sources/MacAboboo/Resources/Assets.xcassets" >/dev/null
+test -f "${ACTOOL_OUTPUT}/AppIcon.icns" || {
+    echo "未生成应用图标：${ACTOOL_OUTPUT}/AppIcon.icns" >&2
+    exit 1
+}
+cp "${ACTOOL_OUTPUT}/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 
 cp "${ROOT_DIR}/Sources/MacAbobooApp/Info.plist" "${CONTENTS_DIR}/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
@@ -187,9 +245,18 @@ else
     echo "提示：未设置 CODESIGN_IDENTITY，本次生成的是本机测试用 ad-hoc 包。"
 fi
 while IFS= read -r -d '' nested; do
-    codesign "${SIGN_OPTIONS[@]}" "${nested}"
+    if file "${nested}" | grep -q 'Mach-O'; then
+        codesign "${SIGN_OPTIONS[@]}" "${nested}"
+    fi
 done < <(find "${FRAMEWORKS_DIR}" -type f -print0)
-codesign "${SIGN_OPTIONS[@]}" "${HELPERS_DIR}/ffmpeg"
+while IFS= read -r -d '' framework; do
+    codesign "${SIGN_OPTIONS[@]}" "${framework}"
+done < <(find "${FRAMEWORKS_DIR}" -type d -name '*.framework' -print0)
+while IFS= read -r -d '' helper; do
+    if file "${helper}" | grep -q 'Mach-O'; then
+        codesign "${SIGN_OPTIONS[@]}" "${helper}"
+    fi
+done < <(find "${HELPERS_DIR}" -type f -print0)
 codesign "${SIGN_OPTIONS[@]}" "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 

@@ -16,14 +16,14 @@ public final class DualEngineFusionSegmenter: @unchecked Sendable {
     public func fuse(
         sentences: [SpeechAlignmentEngine.TranscribedSentence],
         waveform: WaveformData,
-        vadConfig: SileroVADEngine.Config = .standard
+        vadConfig: SileroVADEngine.Config = .dualEngine
     ) -> [SentenceSegment] {
         guard !sentences.isEmpty else {
             // 若转写为空，自动回退到纯 Silero VAD 声学断句
-            return SileroVADEngine.shared.detectSegments(from: waveform, config: vadConfig)
+            return SileroVADEngine.shared.legacyDetectSegments(from: waveform, config: vadConfig)
         }
         
-        let frames = SileroVADEngine.shared.extractSpeechProbabilityTimeline(from: waveform, config: vadConfig)
+        let frames = SileroVADEngine.shared.legacyExtractSpeechProbabilityTimeline(from: waveform, config: vadConfig)
         let totalDuration = waveform.duration
         
         var refined = [SentenceSegment]()

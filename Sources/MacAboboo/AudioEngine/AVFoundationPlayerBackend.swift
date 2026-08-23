@@ -68,6 +68,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     public func load(url: URL, completion: @escaping (Bool) -> Void) {
         loadTask?.cancel()
         loadGeneration = UUID()
+        seekGeneration &+= 1
+        isSeekingInternal = false
         let generation = loadGeneration
         teardownItemObservations()
         setupTimeObserver()
@@ -222,14 +224,42 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         
         player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor [weak self] in
-                guard let self = self, finished, generation == self.seekGeneration else { return }
+                // AVPlayer calls the completion with `finished == false` when
+                // a seek is cancelled or cannot be completed.  The previous
+                // implementation returned in that case and left
+                // `isSeekingInternal` set forever, suppressing all time
+                // updates and making the selected sentence appear unplayable.
+                // Only ignore callbacks belonging to an older seek; the
+                // latest callback must always release the seeking lock.
+                guard let self = self, generation == self.seekGeneration else { return }
                 self.isSeekingInternal = false
                 self.currentTime = clamped
-                if self.isPlaying {
+                if finished, self.isPlaying {
                     self.player.rate = self.playbackRate
                 }
                 completion?()
             }
+        }
+
+        // Keep the backend-side time observer recoverable as well. The engine
+        // has its own guard, but without this fallback AVPlayer could remain
+        // in `isSeekingInternal` and suppress future time updates after a
+        // completely lost completion callback.
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                return
+            }
+            guard let self,
+                  generation == self.seekGeneration,
+                  self.isSeekingInternal else { return }
+            self.isSeekingInternal = false
+            self.currentTime = clamped
+            if self.isPlaying {
+                self.player.rate = self.playbackRate
+            }
+            completion?()
         }
     }
     
@@ -237,6 +267,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         loadTask?.cancel()
         loadTask = nil
         loadGeneration = UUID()
+        seekGeneration &+= 1
+        isSeekingInternal = false
         teardownItemObservations()
         player.pause()
         player.replaceCurrentItem(with: nil)

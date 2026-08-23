@@ -1,0 +1,69 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float32",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 64 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 64, 128]",
+        "name" : "plda_embeddings",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 7,
+    "mlProgramOperationTypeHistogram" : {
+      "Ios16.conv" : 2,
+      "Ios16.add" : 2,
+      "Ios16.mul" : 4,
+      "Ios16.rsqrt" : 2,
+      "Ios16.sub" : 2,
+      "Transpose" : 2,
+      "ExpandDims" : 1,
+      "Ios16.reduceMean" : 2,
+      "Squeeze" : 1,
+      "Ios16.cast" : 2
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "com.github.apple.coremltools.source" : "torch==2.5.0",
+      "com.github.apple.coremltools.version" : "8.3.0"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 64 × 256)",
+        "shortDescription" : "",
+        "shape" : "[1, 64, 256]",
+        "name" : "embeddings",
+        "type" : "MultiArray"
+      }
+    ],
+    "generatedClassName" : "PldaProjector",
+    "method" : "predict"
+  }
+]

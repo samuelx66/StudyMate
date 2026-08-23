@@ -21,7 +21,7 @@ final class SileroVADTests: XCTestCase {
             sampleRate: 50.0
         )
         
-        let timeline = SileroVADEngine.shared.extractSpeechProbabilityTimeline(from: waveform)
+        let timeline = SileroVADEngine.shared.legacyExtractSpeechProbabilityTimeline(from: waveform)
         XCTAssertEqual(timeline.count, 200)
         
         // 语音区概率应高，静音区概率应低
@@ -33,7 +33,7 @@ final class SileroVADTests: XCTestCase {
         XCTAssertLessThan(silenceProb, 0.4)
         XCTAssertGreaterThan(speechProb2, 0.6)
         
-        let segments = SileroVADEngine.shared.detectSegments(from: waveform)
+        let segments = SileroVADEngine.shared.legacyDetectSegments(from: waveform)
         XCTAssertGreaterThanOrEqual(segments.count, 1)
     }
 }

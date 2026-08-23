@@ -24,6 +24,8 @@ dist/
 # Logs & Temp
 *.log
 *_logs.txt
+AGENTS.md
+PROJECT_SPEC.md
 
 # macOS
 .DS_Store

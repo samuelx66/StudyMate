@@ -7,22 +7,39 @@ def generate_id():
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sources_dir = os.path.join(root_dir, 'Sources')
 
-# 收集所有 Swift 源文件与资源
+# 收集 Swift/C 源文件、桥接头与资源
 file_entries = []
 resource_entries = []
 for root, dirs, files in os.walk(sources_dir):
     if 'Assets.xcassets' in root:
         continue
+    # The Core ML model directory is copied as one folder reference. Do not
+    # flatten its nested .mlmodelc files into individual Xcode resources.
+    if 'SpeakerKitModels' in root.split(os.sep):
+        dirs[:] = []
+        continue
     for d in dirs:
         if d == 'Assets.xcassets':
             full_p = os.path.join(root, d)
             rel_p = os.path.relpath(full_p, root_dir)
-            resource_entries.append((d, rel_p))
+            resource_entries.append((d, rel_p, 'assetcatalog'))
+        elif d == 'SpeakerKitModels':
+            full_p = os.path.join(root, d)
+            rel_p = os.path.relpath(full_p, root_dir)
+            resource_entries.append((d, rel_p, 'folder'))
     for f in files:
-        if f.endswith('.swift') or f == 'Info.plist':
+        if f.endswith(('.swift', '.c', '.h')) or f == 'Info.plist' or f == 'ggml-silero-v6.2.0.bin' or f.endswith('-LICENSE.txt'):
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, root_dir)
-            file_entries.append((f, rel_p, f.endswith('.swift')))
+            if f.endswith(('.swift', '.c')):
+                kind = 'source'
+            elif f.endswith('.h'):
+                kind = 'header'
+            elif f.endswith('.bin') or f.endswith('-LICENSE.txt'):
+                kind = 'resource'
+            else:
+                kind = 'plist'
+            file_entries.append((f, rel_p, kind))
 
 # PBX IDs
 proj_id = generate_id()
@@ -34,39 +51,66 @@ app_product_id = generate_id()
 sources_build_phase_id = generate_id()
 frameworks_build_phase_id = generate_id()
 resources_build_phase_id = generate_id()
+embed_frameworks_build_phase_id = generate_id()
 proj_config_list_id = generate_id()
 target_config_list_id = generate_id()
 debug_config_id = generate_id()
 release_config_id = generate_id()
 target_debug_config_id = generate_id()
 target_release_config_id = generate_id()
+package_reference_id = generate_id()
+speakerkit_product_dependency_id = generate_id()
 
 pbx_file_refs = []
 pbx_build_files = []
 source_build_file_ids = []
 resource_build_file_ids = []
+framework_build_file_ids = []
+embed_framework_build_file_ids = []
 
-for name, path in resource_entries:
+for name, path, resource_kind in resource_entries:
     file_ref_id = generate_id()
-    pbx_file_refs.append(f'\t\t{file_ref_id} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "{path}"; sourceTree = "<group>"; }};')
+    file_type = 'folder.assetcatalog' if resource_kind == 'assetcatalog' else 'folder'
+    pbx_file_refs.append(f'\t\t{file_ref_id} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = {file_type}; path = "{path}"; sourceTree = "<group>"; }};')
     build_file_id = generate_id()
     pbx_build_files.append(f'\t\t{build_file_id} /* {name} in Resources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {name} */; }};')
     resource_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {name} in Resources */,')
 
-for filename, path, is_swift in file_entries:
+for filename, path, kind in file_entries:
     file_ref_id = generate_id()
-    file_type = "sourcecode.swift" if is_swift else "text.plist.xml"
+    file_types = {
+        'source': 'sourcecode.swift' if filename.endswith('.swift') else 'sourcecode.c.c',
+        'header': 'sourcecode.c.h',
+        'resource': 'archive' if filename.endswith('.bin') else 'text',
+        'plist': 'text.plist.xml',
+    }
+    file_type = file_types[kind]
     pbx_file_refs.append(f'\t\t{file_ref_id} /* {filename} */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = {file_type}; path = "{path}"; sourceTree = "<group>"; }};')
     
-    if is_swift:
+    if kind == 'source':
         build_file_id = generate_id()
         pbx_build_files.append(f'\t\t{build_file_id} /* {filename} in Sources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {filename} */; }};')
         source_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {filename} in Sources */,')
+    elif kind == 'resource':
+        build_file_id = generate_id()
+        pbx_build_files.append(f'\t\t{build_file_id} /* {filename} in Resources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {filename} */; }};')
+        resource_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {filename} in Resources */,')
+
+whisper_framework_ref_id = generate_id()
+whisper_framework_link_id = generate_id()
+whisper_framework_embed_id = generate_id()
+pbx_file_refs.append(f'\t\t{whisper_framework_ref_id} /* whisper.xcframework */ = {{isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; }};')
+pbx_build_files.append(f'\t\t{whisper_framework_link_id} /* whisper.xcframework in Frameworks */ = {{isa = PBXBuildFile; fileRef = {whisper_framework_ref_id} /* whisper.xcframework */; }};')
+pbx_build_files.append(f'\t\t{whisper_framework_embed_id} /* whisper.xcframework in Embed Frameworks */ = {{isa = PBXBuildFile; fileRef = {whisper_framework_ref_id} /* whisper.xcframework */; settings = {{ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }}; }};')
+framework_build_file_ids.append(f'\t\t\t\t{whisper_framework_link_id} /* whisper.xcframework in Frameworks */,')
+embed_framework_build_file_ids.append(f'\t\t\t\t{whisper_framework_embed_id} /* whisper.xcframework in Embed Frameworks */,')
 
 file_refs_str = "\n".join(pbx_file_refs)
 build_files_str = "\n".join(pbx_build_files)
 sources_phase_files_str = "\n".join(source_build_file_ids)
 resources_phase_files_str = "\n".join(resource_build_file_ids)
+frameworks_phase_files_str = "\n".join(framework_build_file_ids)
+embed_frameworks_phase_files_str = "\n".join(embed_framework_build_file_ids)
 
 # Group children
 group_children = []
@@ -77,6 +121,13 @@ for filename, path, _ in file_entries:
             fid = line.strip().split()[0]
             group_children.append(f'\t\t\t\t{fid} /* {filename} */,')
             break
+for name, path, _ in resource_entries:
+    for line in pbx_file_refs:
+        if f'/* {name} */' in line:
+            fid = line.strip().split()[0]
+            group_children.append(f'\t\t\t\t{fid} /* {name} */,')
+            break
+group_children.append(f'\t\t\t\t{whisper_framework_ref_id} /* whisper.xcframework */,')
 group_children_str = "\n".join(group_children)
 
 pbxproj_content = f"""// !$*UTF8*$!
@@ -96,11 +147,26 @@ pbxproj_content = f"""// !$*UTF8*$!
 {file_refs_str}
 /* End PBXFileReference section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+\t\t{embed_frameworks_build_phase_id} /* Embed Frameworks */ = {{
+\t\t\tisa = PBXCopyFilesBuildPhase;
+\t\t\tbuildActionMask = 2147483647;
+\t\t\tdstPath = "";
+\t\t\tdstSubfolderSpec = 10;
+\t\t\tfiles = (
+{embed_frameworks_phase_files_str}
+\t\t\t);
+\t\t\tname = "Embed Frameworks";
+\t\t\trunOnlyForDeploymentPostprocessing = 0;
+\t\t}};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFrameworksBuildPhase section */
 \t\t{frameworks_build_phase_id} /* Frameworks */ = {{
 \t\t\tisa = PBXFrameworksBuildPhase;
 \t\t\tbuildActionMask = 2147483647;
 \t\t\tfiles = (
+{frameworks_phase_files_str}
 \t\t\t);
 \t\t\trunOnlyForDeploymentPostprocessing = 0;
 \t\t}};
@@ -141,10 +207,14 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t{sources_build_phase_id} /* Sources */,
 \t\t\t\t{frameworks_build_phase_id} /* Frameworks */,
 \t\t\t\t{resources_build_phase_id} /* Resources */,
+\t\t\t\t{embed_frameworks_build_phase_id} /* Embed Frameworks */,
 \t\t\t);
 \t\t\tbuildRules = (
 \t\t\t);
 \t\t\tdependencies = (
+\t\t\t);
+\t\t\tpackageProductDependencies = (
+\t\t\t\t{speakerkit_product_dependency_id} /* SpeakerKit */,
 \t\t\t);
 \t\t\tname = MacAboboo;
 \t\t\tproductName = MacAboboo;
@@ -177,6 +247,9 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tzh_CN,
 \t\t\t);
 \t\t\tmainGroup = {main_group_id};
+\t\t\tpackageReferences = (
+\t\t\t\t{package_reference_id} /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+\t\t\t);
 \t\t\tproductRefGroup = {products_group_id} /* Products */;
 \t\t\tprojectDirPath = "";
 \t\t\tprojectRoot = "";
@@ -207,6 +280,25 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\trunOnlyForDeploymentPostprocessing = 0;
 \t\t}};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+\t\t{package_reference_id} /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
+\t\t\trequirement = {{
+\t\t\t\tkind = exactVersion;
+\t\t\t\tversion = 1.1.0;
+\t\t\t}};
+\t\t}};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+\t\t{speakerkit_product_dependency_id} /* SpeakerKit */ = {{
+\t\t\tisa = XCSwiftPackageProductDependency;
+\t\t\tpackage = {package_reference_id} /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+\t\t\tproductName = SpeakerKit;
+\t\t}};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 \t\t{debug_config_id} /* Debug */ = {{
@@ -286,6 +378,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
 \t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+\t\t\t\tHEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
@@ -294,6 +387,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";
+\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
 \t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t}};
 \t\t\tname = Debug;
@@ -308,6 +402,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
 \t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+\t\t\t\tHEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
@@ -315,6 +410,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tMARKETING_VERSION = 1.0.0;
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
+\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
 \t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t}};
 \t\t\tname = Release;

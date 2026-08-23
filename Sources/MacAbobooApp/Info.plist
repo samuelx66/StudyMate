@@ -36,6 +36,8 @@
     <string>NSApplication</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MacAboboo 需要麦克风权限以支持开口跟读与发音对比评测。</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

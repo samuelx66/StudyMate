@@ -11,7 +11,9 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     private(set) var seekCount = 0
     private(set) var loadCount = 0
     var automaticallyCompletesLoads: Bool
+    var automaticallyCompletesSeeks: Bool
     private var pendingLoads: [(URL, (Bool) -> Void)] = []
+    private var pendingSeekCompletions: [(@Sendable () -> Void)?] = []
     var playbackRate: Float = 1
     var volume: Float = 1
     let playerView = NSView()
@@ -20,9 +22,14 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     var onFinished: (() -> Void)?
     var onError: ((Error) -> Void)?
 
-    init(duration: Double = 60, automaticallyCompletesLoads: Bool = true) {
+    init(
+        duration: Double = 60,
+        automaticallyCompletesLoads: Bool = true,
+        automaticallyCompletesSeeks: Bool = true
+    ) {
         self.duration = duration
         self.automaticallyCompletesLoads = automaticallyCompletesLoads
+        self.automaticallyCompletesSeeks = automaticallyCompletesSeeks
     }
 
     func load(url: URL, completion: @escaping (Bool) -> Void) {
@@ -54,7 +61,11 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     func seek(to seconds: Double, completion: (@Sendable () -> Void)?) {
         seekCount += 1
         currentTime = max(0, min(seconds, duration))
-        completion?()
+        if automaticallyCompletesSeeks {
+            completion?()
+        } else {
+            pendingSeekCompletions.append(completion)
+        }
     }
 
     func teardown() {
@@ -68,6 +79,12 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
         let load = pendingLoads[index]
         if success { loadedURL = load.0 }
         load.1(success)
+    }
+
+    func completeNextSeek() {
+        guard !pendingSeekCompletions.isEmpty else { return }
+        let completion = pendingSeekCompletions.removeFirst()
+        completion?()
     }
 
     func emitTime(_ time: Double) {

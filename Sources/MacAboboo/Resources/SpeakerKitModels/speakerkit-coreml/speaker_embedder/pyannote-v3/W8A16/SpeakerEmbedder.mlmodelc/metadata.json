@@ -1,0 +1,87 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Mixed (Float16, Palettized (8 bits))",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 64 × 256)",
+        "shortDescription" : "",
+        "shape" : "[1, 64, 256]",
+        "name" : "speaker_embeddings",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 7,
+    "mlProgramOperationTypeHistogram" : {
+      "Concat" : 64,
+      "Ios16.mul" : 256,
+      "SliceByIndex" : 64,
+      "Ios16.constexprLutToDense" : 35,
+      "Transpose" : 1,
+      "Ios16.sub" : 128,
+      "Ios16.sqrt" : 64,
+      "Stack" : 1,
+      "UpsampleNearestNeighbor" : 1,
+      "Ios16.conv" : 36,
+      "Ios16.add" : 144,
+      "Squeeze" : 1,
+      "Ios16.relu" : 33,
+      "Ios16.realDiv" : 192,
+      "Ios16.reduceSum" : 256,
+      "ExpandDims" : 130,
+      "Ios16.linear" : 1,
+      "Ios16.reshape" : 1
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "com.github.apple.coremltools.version" : "8.2",
+      "com.github.apple.coremltools.source" : "torch==2.6.0"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 2998 × 80)",
+        "shortDescription" : "",
+        "shape" : "[1, 2998, 80]",
+        "name" : "preprocessor_output_1",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 64 × 1767)",
+        "shortDescription" : "",
+        "shape" : "[1, 64, 1767]",
+        "name" : "speaker_masks",
+        "type" : "MultiArray"
+      }
+    ],
+    "generatedClassName" : "SpeakerEmbedding_8_bit",
+    "method" : "predict"
+  }
+]

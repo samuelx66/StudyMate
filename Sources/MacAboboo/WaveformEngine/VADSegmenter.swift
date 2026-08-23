@@ -44,6 +44,7 @@ public final class VADSegmenter {
     ///   - waveform: 波形数据
     ///   - config: 灵敏度配置
     /// - Returns: 断句列表
+    @available(*, deprecated, message: "Use SpeechSegmentationPipeline with AudioPCMData instead of waveform-only segmentation.")
     public func detectSegments(from waveform: WaveformData, config: Config = .normal) -> [SentenceSegment] {
         guard !waveform.isEmpty, waveform.duration > 0 else {
             return []
@@ -58,7 +59,7 @@ public final class VADSegmenter {
             onsetPadding: config.paddingDuration,
             offsetHangover: max(0.15, config.paddingDuration * 2.0)
         )
-        let raw = SileroVADEngine.shared.detectSegments(from: waveform, config: sileroConfig)
+        let raw = SileroVADEngine.shared.legacyDetectSegments(from: waveform, config: sileroConfig)
         guard !raw.isEmpty else { return [] }
         
         var seamless = [SentenceSegment]()
@@ -70,7 +71,8 @@ public final class VADSegmenter {
                 index: i + 1,
                 startTime: start,
                 endTime: max(start + 0.1, end),
-                text: "Sentence #\(i + 1)"
+                text: "",
+                translation: ""
             ))
         }
         return seamless
