@@ -40,9 +40,13 @@ public final class SpeechAlignmentEngine: @unchecked Sendable {
         locale: Locale = Locale(identifier: "und"),
         progressHandler: (@Sendable (Double) -> Void)? = nil
     ) async throws -> [TranscribedSentence] {
-        let manager = WhisperModelManager.shared
-        let modelURL = manager.modelFileURL(for: manager.selectedModelLevel)
-        guard manager.isModelDownloaded(manager.selectedModelLevel) else {
+        let modelInfo = await MainActor.run {
+            let manager = WhisperModelManager.shared
+            let level = manager.selectedModelLevel
+            return (manager.modelFileURL(for: level), manager.isModelDownloaded(level))
+        }
+        let modelURL = modelInfo.0
+        guard modelInfo.1 else {
             throw SpeechSegmentationPipelineError.whisperModelMissing
         }
 

@@ -20,11 +20,37 @@ private enum WaveformRenderCache {
         end: Double,
         count: Int
     ) -> [(min: Float, max: Float)] {
+        guard count > 0,
+              start.isFinite,
+              end.isFinite,
+              waveform.duration.isFinite,
+              waveform.duration > 0 else { return [] }
+
+        let clampedStart = max(0, min(start, waveform.duration))
+        let clampedEnd = max(clampedStart, min(end, waveform.duration))
+        let visibleSpan = max(0.001, clampedEnd - clampedStart)
+        // One cache bucket corresponds to roughly one rendered bar.  Playback
+        // and dragging can move a viewport by fractions of a bar; reusing the
+        // same bucket avoids resampling for visually indistinguishable ranges.
+        let timePerBar = visibleSpan / Double(count)
+        let grid = max(timePerBar, 1.0 / max(waveform.sampleRate, 1.0))
+        let startBucket = Int64(floor(clampedStart / grid))
+        let endBucket = Int64(ceil(clampedEnd / grid))
+        let quantizedStart = Double(startBucket) * grid
+        let quantizedEnd = min(
+            waveform.duration,
+            max(quantizedStart, Double(endBucket) * grid)
+        )
+
         let middle = waveform.peaks.isEmpty ? 0 : waveform.peaks[waveform.peaks.count / 2]
         let signature = "\(waveform.peaks.first ?? 0)|\(middle)|\(waveform.peaks.last ?? 0)"
-        let key = "\(waveform.peaks.count)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(start)|\(end)|\(count)" as NSString
+        let key = "\(waveform.peaks.count)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(grid.bitPattern)|\(startBucket)|\(endBucket)|\(count)" as NSString
         if let cached = cache.object(forKey: key) { return cached.peaks }
-        let result = waveform.resample(startTime: start, endTime: end, targetCount: count)
+        let result = waveform.resample(
+            startTime: quantizedStart,
+            endTime: quantizedEnd,
+            targetCount: count
+        )
         cache.setObject(Box(result), forKey: key)
         return result
     }
@@ -115,29 +141,34 @@ public struct WaveformSentenceSegmentsOverlay: View {
     
     public var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
-        
-        ForEach(visibleSegments) { seg in
-            let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
-            let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
-            let segW = max(2, segX2 - segX1)
-            let isActive = engine.activeSegmentIndex == (seg.index - 1)
 
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(
-                        isActive
-                            ? Color.blue.opacity(0.24)
-                            : (seg.index % 2 == 0 ? Color.primary.opacity(0.025) : Color.primary.opacity(0.05))
-                    )
-                
+        let segments = Array(visibleSegments)
+        Canvas { context, size in
+            for seg in segments {
+                let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
+                let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
+                let segW = max(2, segX2 - segX1)
+                let rect = CGRect(x: segX1, y: 0, width: segW, height: height)
+                let isActive = engine.activeSegmentIndex == (seg.index - 1)
+                let fillColor = isActive
+                    ? Color.blue.opacity(0.24)
+                    : (seg.index % 2 == 0 ? Color.primary.opacity(0.025) : Color.primary.opacity(0.05))
+
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: 4),
+                    with: .color(fillColor)
+                )
                 if isActive {
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.blue.opacity(0.75), lineWidth: 1.5)
+                    context.stroke(
+                        Path(roundedRect: rect, cornerRadius: 4),
+                        with: .color(Color.blue.opacity(0.75)),
+                        lineWidth: 1.5
+                    )
                 }
             }
-            .frame(width: segW, height: height)
-            .position(x: segX1 + segW / 2.0, y: height / 2.0)
         }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
     }
 
     private var visibleSegments: ArraySlice<SentenceSegment> {

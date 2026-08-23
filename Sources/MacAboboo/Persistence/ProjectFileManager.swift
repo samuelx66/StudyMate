@@ -2,9 +2,10 @@ import Foundation
 import CryptoKit
 
 /// 单个媒体的工程元数据。schema 1 的旧文件仍可直接读取；schema 2 将大体积波形拆分为二进制缓存；
-/// schema 3 明确记录断句是否已经完成，避免把“正确的空结果”误判为从未断句。
+/// schema 3 明确记录断句是否已经完成，schema 4 保存声学/说话人边界证据，
+/// 避免工程重载后只能退回到局部波形谷值吸附。
 public struct MediaProjectFile: Codable, Sendable {
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     public let schemaVersion: Int
     public let mediaPath: String
@@ -17,6 +18,7 @@ public struct MediaProjectFile: Codable, Sendable {
     public let mediaFileSize: Int64?
     public let mediaModificationDate: Date?
     public let hasCompletedSegmentation: Bool
+    public let acousticBoundaryTimes: [Double]
     public let updatedAt: Date
 
     public init(
@@ -31,6 +33,7 @@ public struct MediaProjectFile: Codable, Sendable {
         mediaFileSize: Int64? = nil,
         mediaModificationDate: Date? = nil,
         hasCompletedSegmentation: Bool? = nil,
+        acousticBoundaryTimes: [Double] = [],
         updatedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
@@ -44,6 +47,7 @@ public struct MediaProjectFile: Codable, Sendable {
         self.mediaFileSize = mediaFileSize
         self.mediaModificationDate = mediaModificationDate
         self.hasCompletedSegmentation = hasCompletedSegmentation ?? !segments.isEmpty
+        self.acousticBoundaryTimes = Self.normalizedAcousticBoundaryTimes(acousticBoundaryTimes)
         self.updatedAt = updatedAt
     }
 
@@ -59,6 +63,7 @@ public struct MediaProjectFile: Codable, Sendable {
         case mediaFileSize
         case mediaModificationDate
         case hasCompletedSegmentation
+        case acousticBoundaryTimes
         case updatedAt
     }
 
@@ -78,6 +83,9 @@ public struct MediaProjectFile: Codable, Sendable {
         mediaModificationDate = try container.decodeIfPresent(Date.self, forKey: .mediaModificationDate)
         hasCompletedSegmentation = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedSegmentation)
             ?? !segments.isEmpty
+        acousticBoundaryTimes = Self.normalizedAcousticBoundaryTimes(
+            try container.decodeIfPresent([Double].self, forKey: .acousticBoundaryTimes) ?? []
+        )
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
     }
 
@@ -94,7 +102,18 @@ public struct MediaProjectFile: Codable, Sendable {
         try container.encodeIfPresent(mediaFileSize, forKey: .mediaFileSize)
         try container.encodeIfPresent(mediaModificationDate, forKey: .mediaModificationDate)
         try container.encode(hasCompletedSegmentation, forKey: .hasCompletedSegmentation)
+        try container.encode(acousticBoundaryTimes, forKey: .acousticBoundaryTimes)
         try container.encode(updatedAt, forKey: .updatedAt)
+    }
+
+    private static func normalizedAcousticBoundaryTimes(_ values: [Double]) -> [Double] {
+        let sorted = values.filter { $0.isFinite && $0 >= 0 }.sorted()
+        var result: [Double] = []
+        result.reserveCapacity(sorted.count)
+        for value in sorted where result.last.map({ abs($0 - value) <= 0.000001 }) != true {
+            result.append(value)
+        }
+        return result
     }
 
     /// 防止同一路径上的媒体被替换后仍套用旧波形和断句。
@@ -137,6 +156,34 @@ public final class ProjectFileManager: @unchecked Sendable {
         let fileSize: Int64?
         let modificationDate: Date?
         let hasCompletedSegmentation: Bool
+        let acousticBoundaryTimes: [Double]
+    }
+
+    /// Saves are frequently requested by more than one UI event (for example,
+    /// a text-field blur followed by a focus change).  Comparing this small
+    /// metadata snapshot lets the pending queue drop an identical request
+    /// without comparing or copying waveform samples.
+    private func hasSameMetadata(_ lhs: SaveRequest, _ rhs: SaveRequest) -> Bool {
+        lhs.mediaURL == rhs.mediaURL
+            && lhs.title == rhs.title
+            && lhs.duration == rhs.duration
+            && lhs.lastPosition == rhs.lastPosition
+            && lhs.segments == rhs.segments
+            && lhs.fileSize == rhs.fileSize
+            && datesMatch(lhs.modificationDate, rhs.modificationDate)
+            && lhs.hasCompletedSegmentation == rhs.hasCompletedSegmentation
+            && lhs.acousticBoundaryTimes == rhs.acousticBoundaryTimes
+    }
+
+    private func datesMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        switch (lhs, rhs) {
+        case let (left?, right?):
+            return abs(left.timeIntervalSince(right)) <= 1.0
+        case (nil, nil):
+            return true
+        default:
+            return false
+        }
     }
 
     /// 注入目录主要用于测试隔离；默认仍保存到 Application Support。
@@ -180,7 +227,8 @@ public final class ProjectFileManager: @unchecked Sendable {
         segments: [SentenceSegment],
         waveformData: WaveformData? = nil,
         persistWaveform: Bool = false,
-        hasCompletedSegmentation: Bool? = nil
+        hasCompletedSegmentation: Bool? = nil,
+        acousticBoundaryTimes: [Double] = []
     ) {
         let standardizedURL = mediaURL.standardizedFileURL
         let attributes = try? FileManager.default.attributesOfItem(atPath: standardizedURL.path)
@@ -197,9 +245,19 @@ public final class ProjectFileManager: @unchecked Sendable {
             persistWaveform: persistWaveform,
             fileSize: fileSize,
             modificationDate: modificationDate,
-            hasCompletedSegmentation: hasCompletedSegmentation ?? !segments.isEmpty
+            hasCompletedSegmentation: hasCompletedSegmentation ?? !segments.isEmpty,
+            acousticBoundaryTimes: acousticBoundaryTimes
         )
         pendingLock.lock()
+        if let existing = pendingSaves[standardizedURL.path],
+           !request.persistWaveform,
+           hasSameMetadata(existing, request) {
+            // The pending request already contains the exact metadata that
+            // this call would write.  Keep any pending waveform persistence
+            // and avoid scheduling another utility-queue write.
+            pendingLock.unlock()
+            return
+        }
         if let existing = pendingSaves[standardizedURL.path],
            existing.persistWaveform,
            !request.persistWaveform {
@@ -215,7 +273,8 @@ public final class ProjectFileManager: @unchecked Sendable {
                 persistWaveform: true,
                 fileSize: request.fileSize,
                 modificationDate: request.modificationDate,
-                hasCompletedSegmentation: request.hasCompletedSegmentation
+                hasCompletedSegmentation: request.hasCompletedSegmentation,
+                acousticBoundaryTimes: request.acousticBoundaryTimes
             )
         } else {
             pendingSaves[standardizedURL.path] = request
@@ -253,20 +312,25 @@ public final class ProjectFileManager: @unchecked Sendable {
         let metadataURL = projectFileURL(for: request.mediaURL)
         let waveformURL = waveformFileURL(for: request.mediaURL)
         do {
-            var existingMetadataIsCompatible = false
+            var existingMetadata: MediaProjectFile?
             if let existingData = try? Data(contentsOf: metadataURL) {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
-                existingMetadataIsCompatible = (try? decoder.decode(MediaProjectFile.self, from: existingData))?
-                    .isCompatible(with: request.mediaURL) == true
+                existingMetadata = try? decoder.decode(MediaProjectFile.self, from: existingData)
             }
+            let existingMetadataIsCompatible = existingMetadata?.isCompatible(with: request.mediaURL) == true
             var hasWaveformCache = existingMetadataIsCompatible
                 && FileManager.default.fileExists(atPath: waveformURL.path)
+            var waveformCacheChanged = false
             if request.persistWaveform,
                let waveformData = request.waveformData,
                !waveformData.isEmpty {
                 let cacheData = encodeWaveformCache(waveformData)
-                try cacheData.write(to: waveformURL, options: .atomic)
+                let existingCacheData = try? Data(contentsOf: waveformURL)
+                if existingCacheData != cacheData {
+                    try cacheData.write(to: waveformURL, options: .atomic)
+                    waveformCacheChanged = true
+                }
                 hasWaveformCache = true
             }
 
@@ -281,8 +345,22 @@ public final class ProjectFileManager: @unchecked Sendable {
                 mediaFileSize: request.fileSize,
                 mediaModificationDate: request.modificationDate,
                 hasCompletedSegmentation: request.hasCompletedSegmentation,
+                acousticBoundaryTimes: request.acousticBoundaryTimes,
                 updatedAt: Date()
             )
+
+            // `updatedAt` is deliberately excluded from this comparison.  It
+            // is an audit timestamp, not project content; rewriting the JSON
+            // solely to advance it defeats save coalescing.  A changed
+            // waveform cache still forces a metadata write so its presence is
+            // recorded atomically with the latest project snapshot.
+            if !waveformCacheChanged,
+               let existingMetadata,
+               existingMetadataIsCompatible,
+               metadataMatches(existingMetadata, project, datesMatch: datesMatch) {
+                return
+            }
+
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(project)
@@ -291,6 +369,25 @@ public final class ProjectFileManager: @unchecked Sendable {
         } catch {
             print("Failed to save project file: \(error)")
         }
+    }
+
+    private func metadataMatches(
+        _ existing: MediaProjectFile,
+        _ desired: MediaProjectFile,
+        datesMatch: (Date?, Date?) -> Bool
+    ) -> Bool {
+        existing.schemaVersion == desired.schemaVersion
+            && existing.mediaPath == desired.mediaPath
+            && existing.mediaTitle == desired.mediaTitle
+            && abs(existing.duration - desired.duration) <= 0.000001
+            && abs(existing.lastPosition - desired.lastPosition) <= 0.000001
+            && existing.segments == desired.segments
+            && existing.waveformData == desired.waveformData
+            && existing.waveformCacheFile == desired.waveformCacheFile
+            && existing.mediaFileSize == desired.mediaFileSize
+            && datesMatch(existing.mediaModificationDate, desired.mediaModificationDate)
+            && existing.hasCompletedSegmentation == desired.hasCompletedSegmentation
+            && existing.acousticBoundaryTimes == desired.acousticBoundaryTimes
     }
 
     public func loadProjectAsync(for mediaURL: URL) async -> MediaProjectFile? {
@@ -391,6 +488,7 @@ public final class ProjectFileManager: @unchecked Sendable {
                 mediaFileSize: metadata.mediaFileSize,
                 mediaModificationDate: metadata.mediaModificationDate,
                 hasCompletedSegmentation: metadata.hasCompletedSegmentation,
+                acousticBoundaryTimes: metadata.acousticBoundaryTimes,
                 updatedAt: metadata.updatedAt
             )
         } catch {

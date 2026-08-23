@@ -85,15 +85,21 @@ public struct SpeechSegmentationOutput: Sendable {
     public var segments: [SentenceSegment]
     public var detectedLanguage: String
     public var warnings: [String]
+    /// High-confidence acoustic/turn boundaries that may be used by the
+    /// editor's optional snap assist. They do not alter the generated
+    /// sentence timeline.
+    public var acousticBoundaryTimes: [Double]
 
     public init(
         segments: [SentenceSegment],
         detectedLanguage: String,
-        warnings: [String] = []
+        warnings: [String] = [],
+        acousticBoundaryTimes: [Double] = []
     ) {
         self.segments = segments
         self.detectedLanguage = detectedLanguage
         self.warnings = warnings
+        self.acousticBoundaryTimes = acousticBoundaryTimes
     }
 }
 
@@ -150,6 +156,11 @@ public actor SpeechSegmentationPipeline {
         )
         let voiceSegments = detection.voiceSegments
         let speakerTimeline = detection.speakerTimeline
+        let acousticBoundaryTimes = Self.boundaryTimes(
+            voiceSegments: voiceSegments,
+            speakerSegments: speakerTimeline.segments,
+            duration: pcm.duration
+        )
         var warnings = detection.warnings
         try Task.checkCancellation()
         // Waveform bins are only needed by the optimizer. Build them after the
@@ -175,7 +186,8 @@ public actor SpeechSegmentationPipeline {
             return SpeechSegmentationOutput(
                 segments: initialSegments,
                 detectedLanguage: "",
-                warnings: warnings
+                warnings: warnings,
+                acousticBoundaryTimes: acousticBoundaryTimes
             )
         }
         let speechWindows = transcriptionWindows(
@@ -187,7 +199,8 @@ public actor SpeechSegmentationPipeline {
             return SpeechSegmentationOutput(
                 segments: [],
                 detectedLanguage: "",
-                warnings: warnings
+                warnings: warnings,
+                acousticBoundaryTimes: acousticBoundaryTimes
             )
         }
         guard let modelURL = request.whisperModelURL,
@@ -248,7 +261,8 @@ public actor SpeechSegmentationPipeline {
         return SpeechSegmentationOutput(
             segments: finalSegments,
             detectedLanguage: timeline.detectedLanguage,
-            warnings: warnings
+            warnings: warnings,
+            acousticBoundaryTimes: acousticBoundaryTimes
         )
     }
 
@@ -434,6 +448,29 @@ public actor SpeechSegmentationPipeline {
             hasher.combine(Int((Double(window.confidence) * 1_000).rounded()))
         }
         return String(hasher.finalize(), radix: 16)
+    }
+
+    private static func boundaryTimes(
+        voiceSegments: [VoiceActivitySegment],
+        speakerSegments: [SpeakerDiarizationSegment],
+        duration: Double
+    ) -> [Double] {
+        guard duration.isFinite, duration > 0 else { return [] }
+        let rawTimes = voiceSegments.flatMap { [$0.startTime, $0.endTime] }
+            + speakerSegments.flatMap { [$0.startTime, $0.endTime] }
+        let sorted = rawTimes
+            .filter { $0.isFinite && $0 > 0 && $0 < duration }
+            .map { min(duration, max(0, $0)) }
+            .sorted()
+
+        var result: [Double] = []
+        for time in sorted {
+            if let last = result.last, abs(time - last) < 0.015 {
+                continue
+            }
+            result.append(time)
+        }
+        return result
     }
 
     private static func mediaFingerprint(for url: URL) -> String {

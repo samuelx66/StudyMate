@@ -58,6 +58,13 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)?) {
         backend?.seek(to: seconds, completion: completion)
     }
+    public func previewSeek(to seconds: Double) {
+        // Do not resolve the backend just for a slider preview.  The wrapper
+        // is intentionally lazy, but once MPV has been loaded the preview
+        // path must reach MPV's non-exact seek implementation instead of the
+        // protocol's exact-seek fallback.
+        backend?.previewSeek(to: seconds)
+    }
     public func stop() { backend?.stop() }
 
     public func teardown() {

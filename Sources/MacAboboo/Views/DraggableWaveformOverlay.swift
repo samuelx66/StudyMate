@@ -36,87 +36,31 @@ public struct DraggableWaveformOverlay: View {
     }
     
     public var body: some View {
-        let span = max(0.001, viewportEnd - viewportStart)
+        let visible = Array(visibleSegments)
         
         ZStack(alignment: .topLeading) {
-            // 1. 经典视觉渲染层：绿色 S# 置顶、橙色 E# 置底，两端对齐绝不遮挡
-            ZStack {
-                ForEach(visibleSegments) { seg in
-                        let isActive = (engine.activeSegmentIndex == (seg.index - 1))
-                        
-                        if !isSecondaryView || isActive {
-                            let startX = CGFloat((seg.startTime - viewportStart) / span) * width
-                            let endX = CGFloat((seg.endTime - viewportStart) / span) * width
-                            let lineWidth: CGFloat = 2.0
-                            
-                            // 🟢 绿色起始线 + 【顶部】S# 胶囊徽章 (左边线紧靠在 startX，向右延伸，中心在 startX + lineWidth/2)
-                            ZStack(alignment: .top) {
-                                Rectangle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [Color(nsColor: .systemGreen), Color(nsColor: .systemGreen).opacity(0.85)],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        )
-                                    )
-                                    .frame(width: lineWidth, height: height)
-                                    .shadow(color: Color(nsColor: .systemGreen).opacity(0.4), radius: 1)
-                                
-                                HStack(spacing: 2) {
-                                    Image(systemName: "arrowtriangle.right.fill")
-                                        .font(.system(size: 6))
-                                    Text("S#\(seg.index)")
-                                        .font(.system(size: 9, weight: .black, design: .rounded))
-                                }
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule()
-                                        .fill(Color(nsColor: .systemGreen))
-                                        .shadow(color: Color.black.opacity(0.35), radius: 2, y: 1)
-                                )
-                                .foregroundColor(.white)
-                                .fixedSize()
-                                .offset(y: 2)
-                            }
-                            .frame(width: 44, height: height)
-                            .position(x: startX + lineWidth / 2.0, y: height / 2.0)
-                            
-                            // 🟠 橙色结束线 + 【底部】E# 胶囊徽章 (右边线紧靠在 endX，向左延伸，中心在 endX - lineWidth/2)
-                            ZStack(alignment: .bottom) {
-                                Rectangle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [Color(nsColor: .systemOrange), Color(nsColor: .systemOrange).opacity(0.85)],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        )
-                                    )
-                                    .frame(width: lineWidth, height: height)
-                                    .shadow(color: Color(nsColor: .systemOrange).opacity(0.4), radius: 1)
-                                
-                                HStack(spacing: 2) {
-                                    Text("E#\(seg.index)")
-                                        .font(.system(size: 9, weight: .black, design: .rounded))
-                                    Image(systemName: "arrowtriangle.left.fill")
-                                        .font(.system(size: 6))
-                                }
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule()
-                                        .fill(Color(nsColor: .systemOrange))
-                                        .shadow(color: Color.black.opacity(0.35), radius: 2, y: 1)
-                                )
-                                .foregroundColor(.white)
-                                .fixedSize()
-                                .offset(y: -2)
-                            }
-                            .frame(width: 44, height: height)
-                            .position(x: endX - lineWidth / 2.0, y: height / 2.0)
-                        }
-                }
-            }
+            // 静态标线一次性批量绘制；只有 S#/E# 徽章保留 SwiftUI 视图。
+            WaveformBoundaryCanvas(
+                segments: visible,
+                activeSegmentIndex: engine.activeSegmentIndex,
+                viewportStart: viewportStart,
+                viewportEnd: viewportEnd,
+                width: width,
+                height: height,
+                isSecondaryView: isSecondaryView
+            )
+            .frame(width: width, height: height)
+            .allowsHitTesting(false)
+
+            WaveformBoundaryLabels(
+                segments: visible,
+                activeSegmentIndex: engine.activeSegmentIndex,
+                viewportStart: viewportStart,
+                viewportEnd: viewportEnd,
+                width: width,
+                height: height,
+                isSecondaryView: isSecondaryView
+            )
             .frame(width: width, height: height)
             .allowsHitTesting(false)
             
@@ -139,6 +83,9 @@ public struct DraggableWaveformOverlay: View {
                 },
                 onUpdateEndAnchor: { id, newEnd in
                     engine.updateSegmentAnchor(id: id, end: newEnd)
+                },
+                onSnapBoundary: { id, proposedTime, isStart in
+                    engine.snappedBoundaryTime(id: id, proposed: proposedTime, isStart: isStart)
                 },
                 onLeftClickEmpty: { time in
                     handleCtrlLeftClick(at: time)
@@ -189,6 +136,115 @@ public struct DraggableWaveformOverlay: View {
     }
 }
 
+/// The non-interactive marker lines are drawn in one Canvas pass.  This keeps
+/// panning inexpensive while the AppKit layer below still owns hit testing.
+private struct WaveformBoundaryCanvas: View {
+    let segments: [SentenceSegment]
+    let activeSegmentIndex: Int?
+    let viewportStart: Double
+    let viewportEnd: Double
+    let width: CGFloat
+    let height: CGFloat
+    let isSecondaryView: Bool
+
+    var body: some View {
+        let span = max(0.001, viewportEnd - viewportStart)
+        Canvas { context, _ in
+            for segment in segments {
+                let isActive = activeSegmentIndex == (segment.index - 1)
+                guard !isSecondaryView || isActive else { continue }
+                let startX = CGFloat((segment.startTime - viewportStart) / span) * width + 1
+                let endX = CGFloat((segment.endTime - viewportStart) / span) * width - 1
+
+                var startPath = Path()
+                startPath.move(to: CGPoint(x: startX, y: 0))
+                startPath.addLine(to: CGPoint(x: startX, y: height))
+                context.stroke(
+                    startPath,
+                    with: .color(Color(nsColor: .systemGreen)),
+                    lineWidth: 2
+                )
+
+                var endPath = Path()
+                endPath.move(to: CGPoint(x: endX, y: 0))
+                endPath.addLine(to: CGPoint(x: endX, y: height))
+                context.stroke(
+                    endPath,
+                    with: .color(Color(nsColor: .systemOrange)),
+                    lineWidth: 2
+                )
+            }
+        }
+    }
+}
+
+/// Text badges remain native SwiftUI views for crisp text and accessibility;
+/// they are not part of the hit-testing path.
+private struct WaveformBoundaryLabels: View {
+    let segments: [SentenceSegment]
+    let activeSegmentIndex: Int?
+    let viewportStart: Double
+    let viewportEnd: Double
+    let width: CGFloat
+    let height: CGFloat
+    let isSecondaryView: Bool
+
+    var body: some View {
+        let span = max(0.001, viewportEnd - viewportStart)
+        ZStack(alignment: .topLeading) {
+            ForEach(segments) { segment in
+                let isActive = activeSegmentIndex == (segment.index - 1)
+                if !isSecondaryView || isActive {
+                    let startX = CGFloat((segment.startTime - viewportStart) / span) * width
+                    let endX = CGFloat((segment.endTime - viewportStart) / span) * width
+                    BoundaryBadge(
+                        label: "S#\(segment.index)",
+                        icon: "arrowtriangle.right.fill",
+                        color: Color(nsColor: .systemGreen)
+                    )
+                    .position(x: startX + 22, y: 11)
+
+                    BoundaryBadge(
+                        label: "E#\(segment.index)",
+                        icon: "arrowtriangle.left.fill",
+                        color: Color(nsColor: .systemOrange)
+                    )
+                    .position(x: endX - 22, y: max(11, height - 11))
+                }
+            }
+        }
+    }
+}
+
+private struct BoundaryBadge: View {
+    let label: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if icon == "arrowtriangle.left.fill" {
+                Text(label)
+            }
+            Image(systemName: icon)
+                .font(.system(size: 6))
+            if icon == "arrowtriangle.right.fill" {
+                Text(label)
+            }
+        }
+        .font(.system(size: 9, weight: .black, design: .rounded))
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(
+            Capsule()
+                .fill(color)
+                .shadow(color: Color.black.opacity(0.35), radius: 2, y: 1)
+        )
+        .foregroundColor(.white)
+        .fixedSize()
+    }
+}
+
 // MARK: - AppKit 原生高性能手势与拖拽交互控制器
 
 public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
@@ -205,6 +261,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
     let onSelectSegment: (UUID) -> Void
     let onUpdateStartAnchor: (UUID, Double) -> Void
     let onUpdateEndAnchor: (UUID, Double) -> Void
+    let onSnapBoundary: ((UUID, Double, Bool) -> Double)?
     let onLeftClickEmpty: (Double) -> Void
     let onRightClickEmpty: (Double) -> Void
     
@@ -231,6 +288,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         view.onSelectSegment = onSelectSegment
         view.onUpdateStartAnchor = onUpdateStartAnchor
         view.onUpdateEndAnchor = onUpdateEndAnchor
+        view.onSnapBoundary = onSnapBoundary
         view.onLeftClickEmpty = onLeftClickEmpty
         view.onRightClickEmpty = onRightClickEmpty
     }
@@ -249,13 +307,14 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         var onSelectSegment: ((UUID) -> Void)?
         var onUpdateStartAnchor: ((UUID, Double) -> Void)?
         var onUpdateEndAnchor: ((UUID, Double) -> Void)?
+        var onSnapBoundary: ((UUID, Double, Bool) -> Double)?
         var onLeftClickEmpty: ((Double) -> Void)?
         var onRightClickEmpty: ((Double) -> Void)?
         
         private var trackingArea: NSTrackingArea?
         
         // 正在拖拽的目标类型
-        private enum ActiveDrag {
+        enum ActiveDrag: Equatable {
             case start(id: UUID)
             case end(id: UUID)
             case emptyLeft
@@ -445,7 +504,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             })
         }
 
-        private func handle(at loc: NSPoint) -> ActiveDrag? {
+        func handle(at loc: NSPoint) -> ActiveDrag? {
             let span = max(0.001, viewportEnd - viewportStart)
             let width = bounds.width
             let height = bounds.height
@@ -455,37 +514,44 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
 
             // 1. 顶部区域 (y <= 24) -> 优先抓取绿色起始标线 (S#)
             if loc.y <= 24 {
-                for seg in candidateSegments where !isSecondaryView || activeSegmentIndex == (seg.index - 1) {
+                let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
+                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
                     let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
-                    if abs(loc.x - startX) <= 22 {
-                        return .start(id: seg.id)
-                    }
+                    let distance = abs(loc.x - startX)
+                    return distance <= 22 ? (.start(id: seg.id), distance) : nil
+                }
+                if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
+                    return nearest.drag
                 }
             }
 
             // 2. 底部区域 (y >= height - 24) -> 优先抓取橙色结束标线 (E#)
             if loc.y >= (height - 24) {
-                for seg in candidateSegments where !isSecondaryView || activeSegmentIndex == (seg.index - 1) {
+                let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
+                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
                     let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
-                    if abs(loc.x - endX) <= 22 {
-                        return .end(id: seg.id)
-                    }
+                    let distance = abs(loc.x - endX)
+                    return distance <= 22 ? (.end(id: seg.id), distance) : nil
+                }
+                if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
+                    return nearest.drag
                 }
             }
 
             // 3. 标线垂直中间区域
-            for seg in candidateSegments where !isSecondaryView || activeSegmentIndex == (seg.index - 1) {
+            let middleCandidates = candidateSegments.flatMap { seg -> [(drag: ActiveDrag, distance: CGFloat)] in
+                guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return [] }
                 let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
                 let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
-                
                 let distStart = abs(loc.x - startX)
                 let distEnd = abs(loc.x - endX)
-                
-                if distStart <= 10 && distStart <= distEnd {
-                    return .start(id: seg.id)
-                } else if distEnd <= 10 {
-                    return .end(id: seg.id)
-                }
+                var result: [(drag: ActiveDrag, distance: CGFloat)] = []
+                if distStart <= 10 { result.append((.start(id: seg.id), distStart)) }
+                if distEnd <= 10 { result.append((.end(id: seg.id), distEnd)) }
+                return result
+            }
+            if let nearest = middleCandidates.min(by: { $0.distance < $1.distance }) {
+                return nearest.drag
             }
 
             return nil
@@ -499,14 +565,14 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                 NSCursor.resizeLeftRight.set()
                 if let seg = segments.first(where: { $0.id == id }) {
                     let clamped = max(0, min(newTime, seg.endTime - 0.05))
-                    onUpdateStartAnchor?(id, clamped)
+                    onUpdateStartAnchor?(id, onSnapBoundary?(id, clamped, true) ?? clamped)
                 }
             case .end(let id):
                 NSCursor.resizeLeftRight.set()
                 if let seg = segments.first(where: { $0.id == id }) {
                     let maxBound = duration > 0 ? duration : 999999.0
                     let clamped = min(maxBound, max(seg.startTime + 0.05, newTime))
-                    onUpdateEndAnchor?(id, clamped)
+                    onUpdateEndAnchor?(id, onSnapBoundary?(id, clamped, false) ?? clamped)
                 }
             case .emptyLeft:
                 onLeftClickEmpty?(newTime)

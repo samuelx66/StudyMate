@@ -2,6 +2,35 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Pure state machine for the list's playback-follow behavior.  Keeping the
+/// suppression rules outside the view makes the user-scroll/programmatic-scroll
+/// boundary deterministic and directly testable without constructing SwiftUI.
+struct SegmentListFollowState: Equatable {
+    private(set) var followsPlayback = true
+    private(set) var isUserScrollSuppressed = false
+
+    var shouldFollow: Bool {
+        followsPlayback && !isUserScrollSuppressed
+    }
+
+    mutating func toggle() {
+        followsPlayback.toggle()
+        if !followsPlayback {
+            isUserScrollSuppressed = false
+        }
+    }
+
+    mutating func markUserScroll() {
+        guard followsPlayback else { return }
+        isUserScrollSuppressed = true
+    }
+
+    mutating func resumeFollowing() {
+        guard followsPlayback else { return }
+        isUserScrollSuppressed = false
+    }
+}
+
 /// 断句列表区视图（支持字幕导入、选句媒体导出、星标过滤、文本编辑与快捷切分）
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
@@ -18,6 +47,8 @@ public struct SegmentListView: View {
     @State private var isAddingToLibrary: Bool = false
     @State private var exportNotice: SegmentExportNotice?
     @State private var cachedDisplayedSegments: [SentenceSegment] = []
+    @State private var followState = SegmentListFollowState()
+    @State private var scrollSuppressionToken = UUID()
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -45,6 +76,25 @@ public struct SegmentListView: View {
                 }
 
                 Spacer()
+
+                Button(action: {
+                    followState.toggle()
+                }) {
+                    Image(systemName: followState.shouldFollow
+                        ? "arrow.down.to.line"
+                        : "pause.circle.fill")
+                        .foregroundColor(followState.shouldFollow ? .blue : .secondary)
+                        .help(lang.text(
+                            followState.shouldFollow
+                                ? "播放时自动跟随当前句"
+                                : "已暂停自动跟随，点击恢复",
+                            followState.shouldFollow
+                                ? "Follow the active sentence during playback"
+                                : "Automatic following is paused; click to resume"
+                        ))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
 
                 // 难句过滤筛选开关
                 Button(action: { filterBookmarkedOnly.toggle() }) {
@@ -303,11 +353,19 @@ public struct SegmentListView: View {
                         }
                         .padding(.vertical, 4)
                         .padding(.horizontal, 6)
+                        .background(
+                            ScrollViewInteractionObserver {
+                                markUserScroll()
+                            }
+                            .frame(width: 1, height: 1)
+                        )
                     }
                     .onChange(of: engine.activeSegmentIndex) { _, newIndex in
+                        guard followState.shouldFollow else { return }
                         if let idx = newIndex, idx >= 0, idx < engine.segments.count {
                             let targetId = engine.segments[idx].id
                             DispatchQueue.main.async {
+                                guard self.followState.shouldFollow else { return }
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     proxy.scrollTo(targetId, anchor: nil)
                                 }
@@ -346,6 +404,17 @@ public struct SegmentListView: View {
         }
         cachedDisplayedSegments = list
         selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
+    }
+
+    private func markUserScroll() {
+        guard followState.followsPlayback else { return }
+        followState.markUserScroll()
+        let token = UUID()
+        scrollSuppressionToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            guard token == scrollSuppressionToken, followState.followsPlayback else { return }
+            followState.resumeFollowing()
+        }
     }
 
     private var selectedSegments: [SentenceSegment] {
@@ -442,6 +511,125 @@ public struct SegmentListView: View {
                 )
             }
         }
+    }
+}
+
+/// Detects trackpad/mouse scrolling without replacing SwiftUI's ScrollView.
+/// `willStartLiveScroll` is emitted for user scrolling, not for the list's
+/// programmatic `scrollTo`, so playback following can be paused safely.
+private struct ScrollViewInteractionObserver: NSViewRepresentable {
+    let onUserScroll: () -> Void
+
+    func makeNSView(context: Context) -> ScrollInteractionNSView {
+        let view = ScrollInteractionNSView()
+        view.onUserScroll = onUserScroll
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollInteractionNSView, context: Context) {
+        nsView.onUserScroll = onUserScroll
+    }
+}
+
+private final class ScrollInteractionNSView: NSView {
+    var onUserScroll: (() -> Void)?
+    private weak var observedScrollView: NSScrollView?
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var isLiveScrolling = false
+    private var liveScrollResetWorkItem: DispatchWorkItem?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            removeObservers()
+        } else {
+            attachToEnclosingScrollViewIfNeeded()
+        }
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if superview == nil {
+            removeObservers()
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.attachToEnclosingScrollViewIfNeeded()
+        }
+    }
+
+    private func attachToEnclosingScrollViewIfNeeded() {
+        var ancestor: NSView? = superview
+        while let view = ancestor, !(view is NSScrollView) {
+            ancestor = view.superview
+        }
+        guard let scrollView = ancestor as? NSScrollView else { return }
+        guard observedScrollView !== scrollView else { return }
+
+        removeObservers()
+        observedScrollView = scrollView
+        let center = NotificationCenter.default
+        notificationTokens = [
+            center.addObserver(
+                forName: NSScrollView.willStartLiveScrollNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, !self.isLiveScrolling else { return }
+                self.isLiveScrolling = true
+                self.onUserScroll?()
+                self.scheduleLiveScrollReset()
+            },
+            center.addObserver(
+                forName: NSScrollView.didLiveScrollNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                // A live-scroll notification can arrive without a matching
+                // willStart event when a trackpad gesture begins during view
+                // reparenting.  Treat that first event as user intent too,
+                // but never fire repeatedly for every scroll tick.
+                guard let self else { return }
+                if !self.isLiveScrolling {
+                    self.isLiveScrolling = true
+                    self.onUserScroll?()
+                }
+                self.scheduleLiveScrollReset()
+            },
+            center.addObserver(
+                forName: NSScrollView.didEndLiveScrollNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.liveScrollResetWorkItem?.cancel()
+                self.liveScrollResetWorkItem = nil
+                self.isLiveScrolling = false
+            }
+        ]
+    }
+
+    private func scheduleLiveScrollReset() {
+        liveScrollResetWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.isLiveScrolling = false
+        }
+        liveScrollResetWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    private func removeObservers() {
+        let center = NotificationCenter.default
+        notificationTokens.forEach(center.removeObserver)
+        notificationTokens.removeAll(keepingCapacity: true)
+        liveScrollResetWorkItem?.cancel()
+        liveScrollResetWorkItem = nil
+        observedScrollView = nil
+        isLiveScrolling = false
+    }
+
+    deinit {
+        removeObservers()
     }
 }
 

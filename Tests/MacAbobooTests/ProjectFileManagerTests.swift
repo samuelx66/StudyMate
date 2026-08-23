@@ -72,6 +72,7 @@ final class ProjectFileManagerTests: XCTestCase {
             duration: 10.0,
             sampleRate: 100
         )
+        let acousticBoundaries = [9.0, 4.5, 4.5, -1.0, .infinity]
         
         manager.saveProject(
             for: dummyMediaURL,
@@ -80,7 +81,8 @@ final class ProjectFileManagerTests: XCTestCase {
             lastPosition: 4.5,
             segments: segments,
             waveformData: waveform,
-            persistWaveform: true
+            persistWaveform: true,
+            acousticBoundaryTimes: acousticBoundaries
         )
         manager.flush()
 
@@ -97,9 +99,30 @@ final class ProjectFileManagerTests: XCTestCase {
         XCTAssertFalse(metadata?.contains("\"peaks\"") ?? true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: manager.waveformFileURL(for: dummyMediaURL).path))
         XCTAssertTrue(loaded?.isCompatible(with: dummyMediaURL) ?? false)
+        XCTAssertEqual(loaded?.acousticBoundaryTimes, [4.5, 9.0])
 
         try? Data("changed media contents".utf8).write(to: dummyMediaURL, options: .atomic)
         XCTAssertFalse(loaded?.isCompatible(with: dummyMediaURL) ?? true)
+    }
+
+    func testLegacyProjectWithoutAcousticBoundariesLoadsWithEmptyEvidence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LegacyProjectTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let mediaURL = directory.appendingPathComponent("legacy.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let metadataURL = manager.projectFileURL(for: mediaURL)
+        let legacyJSON = """
+        {"schemaVersion":3,"mediaPath":"\(mediaURL.path)","mediaTitle":"legacy","duration":5,"lastPosition":0,"segments":[],"hasCompletedSegmentation":true,"updatedAt":"1970-01-01T00:00:00Z"}
+        """
+        try Data(legacyJSON.utf8).write(to: metadataURL)
+
+        let loaded = try XCTUnwrap(manager.loadProject(for: mediaURL))
+        XCTAssertEqual(loaded.schemaVersion, 3)
+        XCTAssertTrue(loaded.acousticBoundaryTimes.isEmpty)
+        XCTAssertTrue(loaded.hasCompletedSegmentation)
     }
 
     func testRapidSavesPersistLatestMetadataSnapshot() throws {
@@ -124,6 +147,40 @@ final class ProjectFileManagerTests: XCTestCase {
         let loaded = manager.loadProject(for: mediaURL)
         XCTAssertEqual(loaded?.lastPosition, 99)
         XCTAssertEqual(loaded?.segments.first?.endTime, 100)
+    }
+
+    func testIdenticalSnapshotDoesNotRewriteProjectMetadata() throws {
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-SnapshotSkipTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let manager = ProjectFileManager(baseDirectory: testDirectory)
+        let mediaURL = testDirectory.appendingPathComponent("lesson.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let segment = SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "Hello")
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Lesson",
+            duration: 3,
+            lastPosition: 1.25,
+            segments: [segment],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+        let firstData = try Data(contentsOf: manager.projectFileURL(for: mediaURL))
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Lesson",
+            duration: 3,
+            lastPosition: 1.25,
+            segments: [segment],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+        let secondData = try Data(contentsOf: manager.projectFileURL(for: mediaURL))
+
+        XCTAssertEqual(secondData, firstData)
     }
 
     func testLightweightSaveDoesNotDropPendingWaveformPersistence() throws {

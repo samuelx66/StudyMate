@@ -311,7 +311,52 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
             completion?()
         }
     }
-    
+
+    /// Best-effort preview seek for timeline scrubbing.  Unlike the exact
+    /// sentence seek above it does not wait for mpv's clock to converge; a
+    /// newer preview or the final exact seek supersedes this request.
+    public func previewSeek(to seconds: Double) {
+        guard let handle = mpvHandle, loadedURL != nil else { return }
+        let clamped = max(0, min(seconds, max(0.1, duration)))
+        seekCancellationToken?.cancel()
+        let cancellationToken = MPVCancellationToken()
+        seekCancellationToken = cancellationToken
+        isSeekingInternal = true
+        currentTime = clamped
+        seekGeneration &+= 1
+        let generation = seekGeneration
+        let handleBits = UInt(bitPattern: handle)
+
+        commandQueue.async { [weak self] in
+            guard !cancellationToken.isCancelled,
+                  let h = OpaquePointer(bitPattern: handleBits) else { return }
+            _ = MPVClient.shared.command(h, args: ["seek", "\(clamped)", "absolute"])
+            let position = MPVClient.shared.getPropertyDouble(h, name: "time-pos")
+            DispatchQueue.main.async {
+                guard let self,
+                      generation == self.seekGeneration,
+                      !cancellationToken.isCancelled else { return }
+                self.seekCancellationToken = nil
+                self.isSeekingInternal = false
+                if let position, position.isFinite, position >= 0 {
+                    self.currentTime = position
+                }
+                self.hostView.mpvLayer.setNeedsDisplay()
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self,
+                  generation == self.seekGeneration,
+                  self.isSeekingInternal else { return }
+            self.seekCancellationToken?.cancel()
+            self.seekCancellationToken = nil
+            self.isSeekingInternal = false
+            self.hostView.mpvLayer.setNeedsDisplay()
+        }
+    }
+
     public func teardown() {
         loadGeneration &+= 1
         loadCancellationToken?.cancel()

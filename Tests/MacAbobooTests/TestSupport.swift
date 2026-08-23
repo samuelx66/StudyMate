@@ -9,6 +9,7 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     private(set) var currentTime = 0.0
     private(set) var duration: Double
     private(set) var seekCount = 0
+    private(set) var previewSeekCount = 0
     private(set) var loadCount = 0
     var automaticallyCompletesLoads: Bool
     var automaticallyCompletesSeeks: Bool
@@ -67,6 +68,11 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
         } else {
             pendingSeekCompletions.append(completion)
         }
+    }
+
+    func previewSeek(to seconds: Double) {
+        previewSeekCount += 1
+        currentTime = max(0, min(seconds, duration))
     }
 
     func teardown() {

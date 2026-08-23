@@ -27,10 +27,20 @@ public struct SubtitleEditView: View {
         }
         return engine.segments[idx]
     }
+
+    /// 输入框聚焦期间固定显示正在编辑的句子；播放指针跨句不能替换输入内容。
+    private var displayedSegment: SentenceSegment? {
+        if focusedField != nil,
+           let currentSegmentId,
+           let editing = engine.segments.first(where: { $0.id == currentSegmentId }) {
+            return editing
+        }
+        return activeSegment
+    }
     
     public var body: some View {
         VStack(spacing: 6) {
-            if let seg = activeSegment {
+            if let seg = displayedSegment {
                 // 原文输入行
                 HStack(spacing: 8) {
                     Text(lang.text("原文", "Original"))
@@ -100,6 +110,7 @@ public struct SubtitleEditView: View {
             loadActiveSegment()
         }
         .onChange(of: activeSegment?.id) { _, _ in
+            guard focusedField == nil else { return }
             saveCurrentSegment()
             loadActiveSegment()
         }

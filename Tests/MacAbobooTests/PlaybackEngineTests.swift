@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import MacAbobooKit
 
@@ -166,6 +167,38 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 2)
     }
 
+    func testSilentGapDoesNotRepublishUnchangedActiveSegment() {
+        let engine = makeTestPlaybackEngine()
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 2.0, endTime: 4.0),
+            SentenceSegment(index: 2, startTime: 6.0, endTime: 8.0)
+        ]
+
+        engine.updateActiveSegment(for: 1.0)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        var publications: [Int?] = []
+        let cancellable = engine.$activeSegmentIndex
+            .dropFirst()
+            .sink { publications.append($0) }
+
+        engine.updateActiveSegment(for: 1.1)
+        engine.updateActiveSegment(for: 1.5)
+        engine.updateActiveSegment(for: 1.9)
+        XCTAssertTrue(publications.isEmpty)
+
+        engine.updateActiveSegment(for: 5.0)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(publications.count, 1)
+
+        publications.removeAll()
+        engine.updateActiveSegment(for: 5.1)
+        engine.updateActiveSegment(for: 5.5)
+        engine.updateActiveSegment(for: 5.9)
+        XCTAssertTrue(publications.isEmpty)
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testExplicitAdjacentSentenceSelectionSurvivesFrameEarlySeekResult() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -223,6 +256,38 @@ final class PlaybackEngineTests: XCTestCase {
         engine.endBoundaryDrag()
         XCTAssertFalse(engine.isBoundaryDragging)
         XCTAssertNil(engine.boundaryDragSource)
+    }
+
+    func testVideoTimelinePreviewUsesFastSeekAndResumesOnRelease() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("preview.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        XCTAssertFalse(engine.isMediaLoading)
+
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        engine.beginPreviewSeek()
+        XCTAssertFalse(engine.isPlaying)
+
+        engine.previewSeek(to: 4)
+        await Task.yield()
+        XCTAssertGreaterThanOrEqual(native.previewSeekCount, 1)
+        XCTAssertEqual(native.seekCount, 0)
+
+        engine.endPreviewSeek()
+        engine.seek(to: 8)
+        await Task.yield()
+        XCTAssertEqual(native.seekCount, 1)
+        XCTAssertTrue(native.isPlaying)
     }
 
     func testDecoderEngineModeSwitching() {
@@ -575,12 +640,14 @@ final class PlaybackEngineTests: XCTestCase {
         let mediaURL = directory.appendingPathComponent("resume.mp3")
         try Data("media".utf8).write(to: mediaURL)
         let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let savedSegment = SentenceSegment(index: 1, startTime: 0, endTime: 10)
         manager.saveProject(
             for: mediaURL,
             title: "Resume",
             duration: 10,
             lastPosition: 4.5,
-            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 10)]
+            segments: [savedSegment],
+            acousticBoundaryTimes: [4.5]
         )
         manager.flush()
         let native = TestMediaPlayerBackend(duration: 10)
@@ -597,6 +664,11 @@ final class PlaybackEngineTests: XCTestCase {
         }
         XCTAssertEqual(engine.currentTime, 4.5, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(native.seekCount, 1)
+        XCTAssertEqual(
+            engine.snappedBoundaryTime(id: savedSegment.id, proposed: 4.49, isStart: false),
+            4.5,
+            accuracy: 0.001
+        )
     }
 
     func testPlayRequestWaitsForPendingSeekAndResumesAfterCompletion() async throws {
@@ -676,6 +748,29 @@ final class PlaybackEngineTests: XCTestCase {
 
         engine.autoGenerateSubtitles = false
         XCTAssertFalse(engine.autoGenerateSubtitles)
+    }
+
+    func testBoundarySnapHapticFeedbackDefaultsOnAndPersists() {
+        let key = "MacAboboo.BoundarySnapHapticFeedback"
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+
+        UserDefaults.standard.removeObject(forKey: key)
+        let defaultEngine = makeTestPlaybackEngine()
+        XCTAssertTrue(defaultEngine.boundarySnapHapticFeedback)
+
+        defaultEngine.boundarySnapHapticFeedback = false
+        XCTAssertFalse(defaultEngine.boundarySnapHapticFeedback)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: key))
+
+        let restoredEngine = makeTestPlaybackEngine()
+        XCTAssertFalse(restoredEngine.boundarySnapHapticFeedback)
     }
 
     func testSameNameSidecarOverridesSavedProjectSegmentsAndReusesWaveform() async throws {

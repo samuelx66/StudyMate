@@ -60,7 +60,8 @@ public enum WhisperModelStatus: Equatable, Sendable {
 }
 
 /// Whisper 模型文件与下载生命周期管理器
-public final class WhisperModelManager: NSObject, ObservableObject, URLSessionDownloadDelegate, @unchecked Sendable {
+@MainActor
+public final class WhisperModelManager: NSObject, ObservableObject, @preconcurrency URLSessionDownloadDelegate {
     public static let shared = WhisperModelManager()
     
     private let userDefaultsKey = "MacAboboo.SelectedWhisperModelLevel"

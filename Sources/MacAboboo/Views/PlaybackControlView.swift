@@ -19,6 +19,10 @@ public struct PlaybackControlView: View {
             PlaybackTimelineControl(
                 clock: engine.clock,
                 duration: engine.duration,
+                previewEnabled: engine.currentMedia?.isVideo == true,
+                onPreviewBegan: { engine.beginPreviewSeek() },
+                onPreviewSeek: { engine.previewSeek(to: $0) },
+                onPreviewEnded: { engine.endPreviewSeek() },
                 onSeek: { engine.seek(to: $0) }
             )
             
@@ -211,6 +215,10 @@ public struct PlaybackControlView: View {
 private struct PlaybackTimelineControl: View {
     @ObservedObject var clock: PlaybackClock
     let duration: Double
+    let previewEnabled: Bool
+    let onPreviewBegan: () -> Void
+    let onPreviewSeek: (Double) -> Void
+    let onPreviewEnded: () -> Void
     let onSeek: (Double) -> Void
 
     @State private var isScrubbing = false
@@ -229,7 +237,11 @@ private struct PlaybackTimelineControl: View {
                     get: { isScrubbing ? scrubTime : min(clock.currentTime, max(0.1, duration)) },
                     set: { newTime in
                         scrubTime = newTime
-                        if !isScrubbing { onSeek(newTime) }
+                        if isScrubbing {
+                            if previewEnabled { onPreviewSeek(newTime) }
+                        } else {
+                            onSeek(newTime)
+                        }
                     }
                 ),
                 in: 0...max(0.1, duration),
@@ -237,7 +249,9 @@ private struct PlaybackTimelineControl: View {
                     isScrubbing = editing
                     if editing {
                         scrubTime = min(clock.currentTime, max(0.1, duration))
+                        if previewEnabled { onPreviewBegan() }
                     } else {
+                        if previewEnabled { onPreviewEnded() }
                         onSeek(scrubTime)
                     }
                 }

@@ -1,6 +1,7 @@
 import XCTest
 @testable import MacAbobooKit
 
+@MainActor
 final class WhisperModelManagerTests: XCTestCase {
     func testModelLevelsAndFilenames() {
         XCTAssertEqual(WhisperModelLevel.tiny.filename, "ggml-tiny.bin")

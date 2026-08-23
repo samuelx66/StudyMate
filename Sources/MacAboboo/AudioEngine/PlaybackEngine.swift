@@ -94,6 +94,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private let speechRecognitionLanguageKey = "MacAboboo.SpeechRecognitionLanguage"
     private let expectedSpeakerCountKey = "MacAboboo.ExpectedSpeakerCount"
     private let segmentationSentenceLengthKey = "MacAboboo.SegmentationSentenceLength"
+    private let boundarySnapHapticFeedbackKey = "MacAboboo.BoundarySnapHapticFeedback"
     @Published public var autoGenerateSubtitles: Bool {
         didSet {
             UserDefaults.standard.set(autoGenerateSubtitles, forKey: autoGenerateSubtitlesKey)
@@ -116,6 +117,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var segmentationSentenceLength: SpeechSentenceLength {
         didSet {
             UserDefaults.standard.set(segmentationSentenceLength.rawValue, forKey: segmentationSentenceLengthKey)
+        }
+    }
+    /// 在边界吸附成功时提供 macOS 触觉反馈；默认开启，可在设置中关闭。
+    @Published public var boundarySnapHapticFeedback: Bool {
+        didSet {
+            UserDefaults.standard.set(boundarySnapHapticFeedback, forKey: boundarySnapHapticFeedbackKey)
         }
     }
 
@@ -164,6 +171,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var sidecarTask: Task<Void, Never>?
     private var segmentationTask: Task<Void, Never>?
     private var modelIdleUnloadTask: Task<Void, Never>?
+    private var previewSeekTask: Task<Void, Never>?
+    private var pendingPreviewSeekTime: Double?
     private var segmentationRequestID = UUID()
     private var mediaSessionID = UUID()
     private var seekGeneration: UInt64 = 0
@@ -171,6 +180,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// occasionally lose its callback while switching sentences quickly. A
     /// bounded fallback keeps the engine from remaining in `isSeeking` forever.
     private var seekTimeoutTask: Task<Void, Never>?
+    private struct BoundarySnapMarker: Equatable {
+        let segmentID: UUID
+        let isStart: Bool
+        let timeMilliseconds: Int64
+    }
+    private var acousticBoundaryTimes: [Double] = []
+    private var activeBoundarySnapMarker: BoundarySnapMarker?
     private struct ExplicitSegmentSelection {
         let segmentID: UUID
         var hasCompletedSeek: Bool
@@ -238,6 +254,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.expectedSpeakerCount = (2...8).contains(savedSpeakerCount) ? savedSpeakerCount : nil
         self.segmentationSentenceLength = UserDefaults.standard.string(forKey: segmentationSentenceLengthKey)
             .flatMap(SpeechSentenceLength.init(rawValue:)) ?? .standard
+        self.boundarySnapHapticFeedback = (UserDefaults.standard.object(forKey: boundarySnapHapticFeedbackKey) as? Bool) ?? true
         super.init()
         self.nativeBackend.volume = self.volume
         self.nativeBackend.playbackRate = self.playbackRate
@@ -440,6 +457,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func endBoundaryDrag() {
         isBoundaryDragging = false
         boundaryDragSource = nil
+        activeBoundarySnapMarker = nil
         debouncedSaveTask?.cancel()
         persistCurrentProject()
     }
@@ -575,6 +593,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         seekGeneration &+= 1
         seekTimeoutTask?.cancel()
         seekTimeoutTask = nil
+        previewSeekTask?.cancel()
+        previewSeekTask = nil
+        pendingPreviewSeekTime = nil
         shadowingTask?.cancel()
         waveformTask?.cancel()
         sidecarTask?.cancel()
@@ -596,6 +617,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         currentRepeatCount = 1
         segmentOrigin = .none
         hasCompletedSegmentation = false
+        acousticBoundaryTimes = []
+        activeBoundarySnapMarker = nil
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
@@ -688,6 +711,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         hasCompletedSegmentation = project.hasCompletedSegmentation
         if duration <= 0 { updateMediaDurationIfNeeded(project.duration) }
         let effectiveDuration = duration > 0 ? duration : project.duration
+        acousticBoundaryTimes = project.acousticBoundaryTimes.filter { boundary in
+            boundary.isFinite
+                && boundary >= 0
+                && (effectiveDuration <= 0 || boundary <= effectiveDuration)
+        }
+        activeBoundarySnapMarker = nil
         segments = normalizedSegments(project.segments, duration: effectiveDuration)
 
         let restoredPosition = min(max(0, project.lastPosition), effectiveDuration)
@@ -825,6 +854,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentationRequestID = requestID
         segmentationTask?.cancel()
         modelIdleUnloadTask?.cancel()
+        acousticBoundaryTimes = []
+        activeBoundarySnapMarker = nil
 
         let modelManager = WhisperModelManager.shared
         let modelURL = mode.requiresTranscription
@@ -893,6 +924,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.segments = self.normalizedSegments(output.segments, duration: effectiveDuration)
                 self.segmentOrigin = mode.requiresTranscription ? .ai : .vad
                 self.hasCompletedSegmentation = true
+                self.acousticBoundaryTimes = output.acousticBoundaryTimes
+                self.activeBoundarySnapMarker = nil
                 self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
                 self.segmentationWarningMessage = output.warnings.first
                 self.persistCurrentProject()
@@ -1065,6 +1098,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments = normalizedSegments(replacement, duration: duration)
         segmentOrigin = .imported
         hasCompletedSegmentation = true
+        acousticBoundaryTimes = []
+        activeBoundarySnapMarker = nil
         activeSegmentIndex = segments.isEmpty ? nil : 0
         persistCurrentProject()
     }
@@ -1083,6 +1118,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.segments = normalizedSegments(newSegments, duration: duration)
         self.segmentOrigin = origin
         self.hasCompletedSegmentation = true
+        self.acousticBoundaryTimes = []
+        self.activeBoundarySnapMarker = nil
         self.activeSegmentIndex = 0
         if persist { persistCurrentProject() }
     }
@@ -1190,7 +1227,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segments: self.segments,
             waveformData: includeWaveform ? self.waveformData : nil,
             persistWaveform: includeWaveform,
-            hasCompletedSegmentation: hasCompletedSegmentation
+            hasCompletedSegmentation: hasCompletedSegmentation,
+            acousticBoundaryTimes: acousticBoundaryTimes
         )
     }
 
@@ -1279,6 +1317,121 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
         explicitSegmentSelection = nil
         performSeek(to: seconds, completion: completion)
+    }
+
+    /// Pauses active playback for the duration of a video timeline preview,
+    /// while preserving `wantsPlayback` so the final exact seek can resume it.
+    public func beginPreviewSeek() {
+        previewSeekTask?.cancel()
+        previewSeekTask = nil
+        pendingPreviewSeekTime = nil
+        guard isBackendReady else { return }
+        if isPlaying || wantsPlayback {
+            activeBackend.pause()
+            isPlaying = false
+        }
+    }
+
+    /// Sends the newest scrub target at most 30 times per second.  The
+    /// backend's preview path is intentionally separate from exact sentence
+    /// seeking and does not update the active segment or persistence state.
+    public func previewSeek(to seconds: Double) {
+        guard isBackendReady, seconds.isFinite else { return }
+        let maximum = duration > 0 ? duration : max(0, seconds)
+        pendingPreviewSeekTime = max(0, min(seconds, maximum))
+        guard previewSeekTask == nil else { return }
+
+        previewSeekTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                guard let target = self.pendingPreviewSeekTime else { break }
+                self.pendingPreviewSeekTime = nil
+                self.activeBackend.previewSeek(to: target)
+                do {
+                    try await Task.sleep(nanoseconds: 33_000_000)
+                } catch {
+                    break
+                }
+            }
+            self?.previewSeekTask = nil
+        }
+    }
+
+    public func endPreviewSeek() {
+        pendingPreviewSeekTime = nil
+        previewSeekTask?.cancel()
+        previewSeekTask = nil
+    }
+
+    /// Returns a nearby high-confidence acoustic boundary, or the original
+    /// target when no safe snap exists.  Snapping is deliberately constrained
+    /// by the same non-overlap bounds used by `updateSegmentAnchor`.
+    public func snappedBoundaryTime(id: UUID, proposed: Double, isStart: Bool) -> Double {
+        guard proposed.isFinite,
+              let idx = segments.firstIndex(where: { $0.id == id }) else { return proposed }
+        let segment = segments[idx]
+        let lowerBound = isStart
+            ? (idx > 0 ? segments[idx - 1].endTime : 0)
+            : segment.startTime + 0.05
+        let upperBound = isStart
+            ? segment.endTime - 0.05
+            : (idx < segments.count - 1
+                ? min(duration > 0 ? duration : Double.greatestFiniteMagnitude, segments[idx + 1].startTime)
+                : (duration > 0 ? duration : Double.greatestFiniteMagnitude))
+        guard lowerBound <= upperBound else { return proposed }
+        let clamped = max(lowerBound, min(proposed, upperBound))
+        let snapWindow = 0.03
+
+        let acousticCandidate = acousticBoundaryTimes
+            .filter { abs($0 - clamped) <= snapWindow }
+            .min { abs($0 - clamped) < abs($1 - clamped) }
+        let candidate = acousticCandidate ?? localWaveformValley(near: clamped, window: snapWindow)
+        guard let candidate,
+              abs(candidate - clamped) <= snapWindow else {
+            activeBoundarySnapMarker = nil
+            return clamped
+        }
+
+        let snapped = max(lowerBound, min(candidate, upperBound))
+        guard abs(snapped - clamped) <= snapWindow else {
+            activeBoundarySnapMarker = nil
+            return clamped
+        }
+
+        let marker = BoundarySnapMarker(
+            segmentID: id,
+            isStart: isStart,
+            timeMilliseconds: Int64((snapped * 1000).rounded())
+        )
+        if activeBoundarySnapMarker != marker {
+            activeBoundarySnapMarker = marker
+            if boundarySnapHapticFeedback {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            }
+        }
+        return snapped
+    }
+
+    private func localWaveformValley(near time: Double, window: Double) -> Double? {
+        guard !waveformData.isEmpty,
+              waveformData.sampleRate.isFinite,
+              waveformData.sampleRate > 0,
+              time.isFinite else { return nil }
+        let peaks = waveformData.peaks
+        guard peaks.count >= 5 else { return nil }
+        let center = Int((time * waveformData.sampleRate).rounded())
+        let radius = max(1, Int((window * waveformData.sampleRate).rounded(.up)))
+        let lower = max(1, center - radius)
+        let upper = min(peaks.count - 2, center + radius)
+        guard lower <= upper else { return nil }
+        let index = (lower...upper).min { peaks[$0] < peaks[$1] }
+        guard let index else { return nil }
+        let flankRadius = max(2, radius)
+        let left = peaks[max(0, index - flankRadius)]
+        let right = peaks[min(peaks.count - 1, index + flankRadius)]
+        let flank = max(left, right)
+        let energy = peaks[index]
+        guard energy <= 0.20 || energy <= flank * 0.72 else { return nil }
+        return Double(index) / waveformData.sampleRate
     }
 
     private func seekToExplicitlySelectedSegment(
@@ -1406,6 +1559,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         // 2. 如果还在当前句的时间区间内，无需做任何切换
         if currentSeg.contains(time: time) {
+            return
+        }
+
+        // 间隙中沿用既有的“预选下一句”状态，避免每个时钟 Tick 再进入查找。
+        if isSilenceImmediatelyBeforeActiveSegment(time: time, index: activeIdx) {
             return
         }
 
@@ -1578,6 +1736,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         if let current = activeSegmentIndex, segments.indices.contains(current) {
             if segments[current].contains(time: time) { return }
+            // 保持“静音间隙预选下一句”的既有语义，但一旦已经选中正确的
+            // 下一句，就不再每个播放时钟 Tick 重复二分查找和发布相同索引。
+            if isSilenceImmediatelyBeforeActiveSegment(time: time, index: current) { return }
             let next = current + 1
             if segments.indices.contains(next), segments[next].contains(time: time) {
                 activeSegmentIndex = next
@@ -1603,7 +1764,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 lower = middle + 1
             }
         }
-        activeSegmentIndex = lower < segments.count ? lower : segments.count - 1
+        let resolvedIndex = lower < segments.count ? lower : segments.count - 1
+        if activeSegmentIndex != resolvedIndex {
+            activeSegmentIndex = resolvedIndex
+        }
+    }
+
+    private func isSilenceImmediatelyBeforeActiveSegment(time: Double, index: Int) -> Bool {
+        guard segments.indices.contains(index), time >= 0, time < segments[index].startTime else {
+            return false
+        }
+        return index == 0 || time >= segments[index - 1].endTime
     }
 
     // MARK: - 断句快捷操作与难句收藏

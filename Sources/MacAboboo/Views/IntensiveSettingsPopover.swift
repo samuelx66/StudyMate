@@ -124,7 +124,28 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 5. 解码引擎切换
+                // 5. 边界吸附触觉反馈
+                Toggle(isOn: $engine.boundarySnapHapticFeedback) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "hand.tap")
+                            .foregroundColor(.blue)
+                            .font(.caption)
+                        Text(lang.text("边界吸附触觉反馈", "Boundary Snap Haptic Feedback"))
+                            .font(.caption.bold())
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Text(lang.text(
+                    "拖动橙色或绿色标线吸附到声学边界时提供触摸反馈。",
+                    "Provides haptic feedback when an orange or green marker snaps to an acoustic boundary."
+                ))
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+
+                Divider()
+
+                // 6. 解码引擎切换
                 VStack(alignment: .leading, spacing: 6) {
                     Label(lang.localized(.decoderEngine), systemImage: "cpu")
                         .font(.caption.bold())
@@ -147,7 +168,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 6. AI 语音识别与 Whisper 模型管理
+                // 7. AI 语音识别与 Whisper 模型管理
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Label(lang.text("Whisper AI 离线模型", "Whisper AI Offline Model"), systemImage: "waveform.badge.magnifyingglass")

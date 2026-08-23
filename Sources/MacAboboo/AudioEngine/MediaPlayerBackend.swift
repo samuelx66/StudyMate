@@ -22,11 +22,18 @@ public protocol MediaPlayerBackend: AnyObject {
     func play()
     func pause()
     func seek(to seconds: Double, completion: (@Sendable () -> Void)?)
+    /// Fast, best-effort seek used while a timeline slider is being dragged.
+    /// It must not be treated as an exact sentence-boundary seek.
+    func previewSeek(to seconds: Double)
     func stop()
     func teardown()
     func setHighFrequencyPresentationEnabled(_ enabled: Bool)
 }
 
 public extension MediaPlayerBackend {
+    func previewSeek(to seconds: Double) {
+        seek(to: seconds, completion: nil)
+    }
+
     func setHighFrequencyPresentationEnabled(_ enabled: Bool) {}
 }

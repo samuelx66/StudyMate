@@ -300,6 +300,33 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         }
     }
 
+    /// Lightweight timeline preview.  It deliberately skips the exact-seek
+    /// recovery chain: another preview or the final exact seek will supersede
+    /// it, which keeps rapid slider movement from building a seek backlog.
+    public func previewSeek(to seconds: Double) {
+        guard player.currentItem?.status == .readyToPlay else { return }
+        let clamped = max(0, min(seconds, max(0.1, duration)))
+        let targetTime = CMTime(seconds: clamped, preferredTimescale: 600)
+
+        seekRecoveryTask?.cancel()
+        seekRecoveryTask = nil
+        isSeekingInternal = true
+        seekGeneration &+= 1
+        let generation = seekGeneration
+        player.seek(
+            to: targetTime,
+            toleranceBefore: CMTime(seconds: 0.08, preferredTimescale: 600),
+            toleranceAfter: CMTime(seconds: 0.08, preferredTimescale: 600)
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.seekGeneration else { return }
+                self.isSeekingInternal = false
+                let actualTime = CMTimeGetSeconds(self.player.currentTime())
+                self.currentTime = actualTime.isFinite && actualTime >= 0 ? actualTime : clamped
+            }
+        }
+    }
+
     private func beginSeekFallback(
         generation: UInt64,
         target: CMTime,

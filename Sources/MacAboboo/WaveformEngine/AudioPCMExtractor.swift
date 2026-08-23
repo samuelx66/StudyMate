@@ -428,6 +428,9 @@ public actor AudioPCMExtractor {
         if estimatedCount > 0 {
             samples.reserveCapacity(estimatedCount)
         }
+        // 非连续 CMBlockBuffer 的兜底复制会复用这块临时内存，避免每个
+        // sample buffer 都重新分配和释放一个 [Float]。
+        var decodeScratch: [Float] = []
         var lastProgress = 0.0
 
         while reader.status == .reading {
@@ -436,7 +439,7 @@ public actor AudioPCMExtractor {
                 throw CancellationError()
             }
             guard let sampleBuffer = output.copyNextSampleBuffer() else { break }
-            try appendSamples(from: sampleBuffer, to: &samples)
+            try appendSamples(from: sampleBuffer, to: &samples, scratch: &decodeScratch)
 
             if duration.isFinite, duration > 0 {
                 let decodedDuration = Double(samples.count) / Double(AudioPCMData.requiredSampleRate)
@@ -457,7 +460,11 @@ public actor AudioPCMExtractor {
         return AudioPCMData(uncheckedSamples: samples)
     }
 
-    private static func appendSamples(from sampleBuffer: CMSampleBuffer, to samples: inout [Float]) throws {
+    private static func appendSamples(
+        from sampleBuffer: CMSampleBuffer,
+        to samples: inout [Float],
+        scratch: inout [Float]
+    ) throws {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
             throw PCMExtractionError.decoderFailed
         }
@@ -485,8 +492,12 @@ public actor AudioPCMExtractor {
             return
         }
 
-        var decoded = [Float](repeating: 0, count: floatCount)
-        let status = decoded.withUnsafeMutableBytes { bytes -> OSStatus in
+        if scratch.capacity < floatCount {
+            scratch.reserveCapacity(floatCount)
+        }
+        scratch.removeAll(keepingCapacity: true)
+        scratch.append(contentsOf: repeatElement(0, count: floatCount))
+        let status = scratch.withUnsafeMutableBytes { bytes -> OSStatus in
             guard let baseAddress = bytes.baseAddress else { return kCMBlockBufferBadPointerParameterErr }
             return CMBlockBufferCopyDataBytes(
                 blockBuffer,
@@ -496,7 +507,7 @@ public actor AudioPCMExtractor {
             )
         }
         guard status == kCMBlockBufferNoErr else { throw PCMExtractionError.decoderFailed }
-        samples.append(contentsOf: decoded)
+        samples.append(contentsOf: scratch)
     }
 
     private static func extractWithFFmpeg(
