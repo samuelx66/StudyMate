@@ -66,7 +66,7 @@ public struct MainContentView: View {
             // 右侧断句侧边栏
             if isSidebarVisible {
                 SegmentListView(engine: engine)
-                    .frame(minWidth: 260, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                    .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
             }
 
         }
@@ -77,6 +77,7 @@ public struct MainContentView: View {
             playlistOverlay
         }
         .onAppear {
+            engine.restoreLastOpenedMediaIfNeeded()
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
         }
         .onChange(of: isWaveformsVisible) { _, visible in

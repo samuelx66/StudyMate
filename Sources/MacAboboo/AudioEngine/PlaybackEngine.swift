@@ -207,6 +207,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var securityScopedMediaURL: URL?
     private let projectFileManager: ProjectFileManager
     private let playbackHistoryStore: PlaybackHistoryStore?
+    /// Prevents repeated scene/view appearance callbacks from starting a
+    /// second automatic restore, and also marks an explicit open as taking
+    /// precedence over startup recovery.
+    private var didAttemptAutomaticStartupRestore = false
     private var suppressCurrentProjectPersistence = false
     private var hasCompletedSegmentation = false
 
@@ -560,8 +564,33 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - 媒体加载与独立工程恢复
 
+    /// 在应用首次显示主窗口时恢复上次实际打开的媒体。
+    ///
+    /// 仅从播放历史中选择文件仍然存在且可读取的条目；空播放列表、首次
+    /// 启动或原文件已被移走时保持空界面，不会创建虚假的媒体工程。
+    /// 该操作只尝试一次，避免 SwiftUI 多次触发 `onAppear` 时重复加载。
+    public func restoreLastOpenedMediaIfNeeded() {
+        guard !didAttemptAutomaticStartupRestore else { return }
+        didAttemptAutomaticStartupRestore = true
+        guard currentMedia == nil,
+              let historyStore = playbackHistoryStore,
+              !historyStore.entries.isEmpty,
+              let mediaURL = historyStore.lastOpenedMediaURL else { return }
+
+        let values = try? mediaURL.resourceValues(forKeys: [.isRegularFileKey, .isReadableKey])
+        guard mediaURL.isFileURL,
+              FileManager.default.fileExists(atPath: mediaURL.path),
+              values?.isRegularFile == true,
+              values?.isReadable != false else { return }
+
+        loadMedia(from: mediaURL)
+    }
+
     /// 加载音视频文件（优先从 ~/Library/Application Support/MacAboboo/Projects/ 独立工程文件瞬间读取）
     public func loadMedia(from url: URL) {
+        // An explicit open (including a URL supplied by Finder) always wins
+        // over a pending startup restore, even when the URL is invalid.
+        didAttemptAutomaticStartupRestore = true
         let mediaURL = url.standardizedFileURL
         let isAlreadyScoped = securityScopedMediaURL?.standardizedFileURL == mediaURL
         let didStartSecurityScope = !isAlreadyScoped && mediaURL.startAccessingSecurityScopedResource()

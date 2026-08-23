@@ -4,11 +4,46 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
     public let id: UUID
     public let mediaPath: String
     public let addedAt: Date
+    /// The last time this entry was successfully loaded for playback.
+    /// Manually added entries leave this nil; tracked entries are preferred
+    /// when selecting the automatic startup restore target.
+    public let lastOpenedAt: Date?
 
-    public init(id: UUID = UUID(), mediaPath: String, addedAt: Date = Date()) {
+    public init(
+        id: UUID = UUID(),
+        mediaPath: String,
+        addedAt: Date = Date(),
+        lastOpenedAt: Date? = nil
+    ) {
         self.id = id
         self.mediaPath = URL(fileURLWithPath: mediaPath).standardizedFileURL.path
         self.addedAt = addedAt
+        self.lastOpenedAt = lastOpenedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case mediaPath
+        case addedAt
+        case lastOpenedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        let rawPath = try container.decode(String.self, forKey: .mediaPath)
+        mediaPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        addedAt = try container.decodeIfPresent(Date.self, forKey: .addedAt) ?? .distantPast
+        // Older history files do not contain this key and remain readable.
+        lastOpenedAt = try container.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(mediaPath, forKey: .mediaPath)
+        try container.encode(addedAt, forKey: .addedAt)
+        try container.encodeIfPresent(lastOpenedAt, forKey: .lastOpenedAt)
     }
 
     public var mediaURL: URL {
@@ -47,7 +82,40 @@ public final class PlaybackHistoryStore: ObservableObject {
     }
 
     public func recordPlayed(_ mediaURL: URL) {
-        appendIfNeeded(mediaURL)
+        let standardizedURL = mediaURL.standardizedFileURL
+        guard standardizedURL.isFileURL,
+              FileManager.default.fileExists(atPath: standardizedURL.path) else { return }
+
+        let openedAt = Date()
+        if let index = entries.firstIndex(where: { $0.mediaPath == standardizedURL.path }) {
+            let existing = entries[index]
+            entries[index] = PlaybackHistoryEntry(
+                id: existing.id,
+                mediaPath: existing.mediaPath,
+                addedAt: existing.addedAt,
+                lastOpenedAt: openedAt
+            )
+        } else {
+            entries.append(PlaybackHistoryEntry(
+                mediaPath: standardizedURL.path,
+                lastOpenedAt: openedAt
+            ))
+        }
+        persist()
+    }
+
+    /// The most recently opened media, with a legacy fallback to the last
+    /// history entry created before `lastOpenedAt` was introduced.
+    public var lastOpenedMediaURL: URL? {
+        if let latest = entries
+            .compactMap({ entry -> (Date, URL)? in
+                guard let lastOpenedAt = entry.lastOpenedAt else { return nil }
+                return (lastOpenedAt, entry.mediaURL)
+            })
+            .max(by: { $0.0 < $1.0 }) {
+            return latest.1
+        }
+        return entries.last?.mediaURL
     }
 
     public func add(_ mediaURLs: [URL]) {
@@ -69,10 +137,6 @@ public final class PlaybackHistoryStore: ObservableObject {
         let previousCount = entries.count
         entries.removeAll { $0.mediaPath == path }
         if entries.count != previousCount { persist() }
-    }
-
-    private func appendIfNeeded(_ mediaURL: URL) {
-        add([mediaURL])
     }
 
     private func persist() {

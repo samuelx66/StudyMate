@@ -4,6 +4,66 @@ import XCTest
 
 @MainActor
 final class PlaybackEngineTests: XCTestCase {
+    func testStartupRestoresMostRecentlyOpenedReadableMedia() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.mp3")
+        let secondURL = directory.appendingPathComponent("second.mp4")
+        try Data("first".utf8).write(to: firstURL)
+        try Data("second".utf8).write(to: secondURL)
+
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        history.recordPlayed(firstURL)
+        history.recordPlayed(secondURL)
+        history.flush()
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")),
+            playbackHistoryStore: history
+        )
+        engine.setDecoderMode(.system)
+
+        engine.restoreLastOpenedMediaIfNeeded()
+
+        XCTAssertEqual(engine.currentMedia?.url, secondURL.standardizedFileURL)
+        XCTAssertEqual(native.loadedURL, secondURL.standardizedFileURL)
+        history.flush()
+    }
+
+    func testStartupRestoreLeavesEmptyOrMissingHistoryBlank() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(),
+            mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")),
+            playbackHistoryStore: history
+        )
+
+        engine.restoreLastOpenedMediaIfNeeded()
+        XCTAssertNil(engine.currentMedia)
+
+        let missingURL = directory.appendingPathComponent("missing.mp3")
+        try Data("temporary".utf8).write(to: missingURL)
+        let historyDirectory = directory.appendingPathComponent("missing-history")
+        let persistedHistory = PlaybackHistoryStore(storageDirectory: historyDirectory)
+        persistedHistory.recordPlayed(missingURL)
+        persistedHistory.flush()
+        try FileManager.default.removeItem(at: missingURL)
+        let reloadedHistory = PlaybackHistoryStore(storageDirectory: historyDirectory)
+        let missingEngine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(),
+            mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("missing-projects")),
+            playbackHistoryStore: reloadedHistory
+        )
+        missingEngine.restoreLastOpenedMediaIfNeeded()
+        XCTAssertNil(missingEngine.currentMedia)
+    }
+
     func testFailedBackendLoadDoesNotEnterPlaybackHistory() throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
