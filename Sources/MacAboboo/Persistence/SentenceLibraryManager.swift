@@ -26,16 +26,20 @@ public final class SentenceLibraryManager: ObservableObject {
     ) {
         self.store = store
         self.defaults = defaults
-        reloadLibraries(createDefaultIfNeeded: true)
+        Task { [weak self] in
+            await self?.reloadLibraries(createDefaultIfNeeded: true)
+        }
     }
 
     public var currentLibrary: SentenceLibraryDescriptor? {
         libraries.first { $0.id == currentLibraryID }
     }
 
-    public func createLibrary(name: String) throws {
-        let descriptor = try store.createLibrary(name: name)
-        reloadLibraries(createDefaultIfNeeded: false)
+    public func createLibrary(name: String) async throws {
+        let descriptor = try await Task.detached(priority: .utility) { [store] in
+            try store.createLibrary(name: name)
+        }.value
+        await reloadLibraries(createDefaultIfNeeded: false)
         selectLibrary(descriptor.id)
     }
 
@@ -137,7 +141,7 @@ public final class SentenceLibraryManager: ObservableObject {
         try await Task.detached(priority: .utility) { [store] in
             try store.add(entries: prepared.0, previewData: prepared.1, to: libraryID)
         }.value
-        reloadLibraries(createDefaultIfNeeded: false)
+        await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
         return prepared.0.count
     }
@@ -149,7 +153,7 @@ public final class SentenceLibraryManager: ObservableObject {
         try await Task.detached(priority: .utility) { [store] in
             try store.deleteEntries(ids: ids, from: libraryID)
         }.value
-        reloadLibraries(createDefaultIfNeeded: false)
+        await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
     }
 
@@ -168,15 +172,17 @@ public final class SentenceLibraryManager: ObservableObject {
         let descriptor = try await Task.detached(priority: .utility) { [store] in
             try store.importLibrary(from: sourceURL)
         }.value
-        reloadLibraries(createDefaultIfNeeded: false)
+        await reloadLibraries(createDefaultIfNeeded: false)
         selectLibrary(descriptor.id)
     }
 
-    public func deleteCurrentLibrary() throws {
+    public func deleteCurrentLibrary() async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        try store.deleteLibrary(id: libraryID)
+        try await Task.detached(priority: .utility) { [store] in
+            try store.deleteLibrary(id: libraryID)
+        }.value
         currentLibraryID = nil
-        reloadLibraries(createDefaultIfNeeded: true)
+        await reloadLibraries(createDefaultIfNeeded: true)
     }
 
     public func previewURL(for entry: SentenceLibraryEntry) -> URL? {
@@ -184,12 +190,15 @@ public final class SentenceLibraryManager: ObservableObject {
         return store.previewURL(for: entry, libraryID: libraryID)
     }
 
-    private func reloadLibraries(createDefaultIfNeeded: Bool) {
-        var available = store.listLibraries()
-        if available.isEmpty, createDefaultIfNeeded,
-           let created = try? store.createLibrary(name: "默认句库") {
-            available = [created]
-        }
+    private func reloadLibraries(createDefaultIfNeeded: Bool) async {
+        let available = await Task.detached(priority: .utility) { [store] in
+            var result = store.listLibraries()
+            if result.isEmpty, createDefaultIfNeeded,
+               let created = try? store.createLibrary(name: "默认句库") {
+                result = [created]
+            }
+            return result
+        }.value
         libraries = available
         let savedID = defaults.string(forKey: currentLibraryKey).flatMap(UUID.init(uuidString:))
         if let currentLibraryID, available.contains(where: { $0.id == currentLibraryID }) {

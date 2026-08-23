@@ -7,6 +7,7 @@ public struct PlaybackListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var historyStore: PlaybackHistoryStore
     @ObservedObject private var lang = LanguageManager.shared
+    @State private var fileExistence: [String: Bool] = [:]
 
     public init(engine: PlaybackEngine, historyStore: PlaybackHistoryStore) {
         self.engine = engine
@@ -57,11 +58,19 @@ public struct PlaybackListView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+        .task(id: historyStore.entries.map(\.mediaPath)) {
+            let paths = historyStore.entries.map(\.mediaPath)
+            let result = await Task.detached(priority: .utility) {
+                Dictionary(uniqueKeysWithValues: paths.map { ($0, FileManager.default.fileExists(atPath: $0)) })
+            }.value
+            guard !Task.isCancelled else { return }
+            fileExistence = result
+        }
     }
 
     private func playbackRow(_ entry: PlaybackHistoryEntry) -> some View {
         let isCurrent = engine.currentMedia?.url.standardizedFileURL == entry.mediaURL
-        let exists = FileManager.default.fileExists(atPath: entry.mediaPath)
+        let exists = fileExistence[entry.mediaPath] ?? true
 
         return Button {
             engine.loadMedia(from: entry.mediaURL)
@@ -106,7 +115,7 @@ public struct PlaybackListView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(role: .destructive) {
-                engine.removeFromPlaybackHistory(entry.mediaURL)
+                Task { await engine.removeFromPlaybackHistory(entry.mediaURL) }
             } label: {
                 Label(lang.text("删除", "Delete"), systemImage: "trash")
             }

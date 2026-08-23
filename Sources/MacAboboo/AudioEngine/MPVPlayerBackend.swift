@@ -53,6 +53,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private var isSeekingInternal = false
     private var isPollingActive = false
     private var pollTick: UInt64 = 0
+    private var timerTick: UInt64 = 0
+    private var highFrequencyPresentationEnabled = true
     private var loadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
     private let commandQueue = DispatchQueue(label: "com.macaboboo.mpv.commands", qos: .userInitiated)
@@ -349,6 +351,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     }
     
     private func pollPlaybackState() {
+        timerTick &+= 1
+        if !highFrequencyPresentationEnabled, timerTick % 4 != 0 { return }
         guard !isSeekingInternal, !isPollingActive, let handle = mpvHandle else { return }
         isPollingActive = true
         pollTick &+= 1
@@ -390,6 +394,10 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                 }
             }
         }
+    }
+
+    public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
+        highFrequencyPresentationEnabled = enabled
     }
     
     deinit {

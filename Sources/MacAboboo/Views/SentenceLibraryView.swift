@@ -182,10 +182,12 @@ public struct SentenceLibraryView: View {
         }
         .sheet(isPresented: $showCreateSheet) {
             SentenceLibraryCreationSheet { name in
-                do {
-                    try manager.createLibrary(name: name)
-                } catch {
-                    notice = SentenceLibraryNotice(title: lang.text("无法新建句库", "Unable to Create Library"), message: error.localizedDescription)
+                Task {
+                    do {
+                        try await manager.createLibrary(name: name)
+                    } catch {
+                        notice = SentenceLibraryNotice(title: lang.text("无法新建句库", "Unable to Create Library"), message: error.localizedDescription)
+                    }
                 }
             }
         }
@@ -198,10 +200,12 @@ public struct SentenceLibraryView: View {
             titleVisibility: .visible
         ) {
             Button(lang.text("删除句库", "Delete Library"), role: .destructive) {
-                do {
-                    try manager.deleteCurrentLibrary()
-                } catch {
-                    notice = SentenceLibraryNotice(title: lang.text("删除失败", "Delete Failed"), message: error.localizedDescription)
+                Task {
+                    do {
+                        try await manager.deleteCurrentLibrary()
+                    } catch {
+                        notice = SentenceLibraryNotice(title: lang.text("删除失败", "Delete Failed"), message: error.localizedDescription)
+                    }
                 }
             }
         } message: {

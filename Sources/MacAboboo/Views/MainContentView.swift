@@ -7,6 +7,7 @@ public struct MainContentView: View {
     @StateObject private var engine = PlaybackEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
+    @Environment(\.scenePhase) private var scenePhase
     
     @State private var isSidebarVisible: Bool = true
     @State private var isPlaylistVisible: Bool = false
@@ -74,6 +75,15 @@ public struct MainContentView: View {
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {
             playlistOverlay
+        }
+        .onAppear {
+            engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
+        }
+        .onChange(of: isWaveformsVisible) { _, visible in
+            engine.setHighFrequencyPresentationEnabled(visible && scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && phase == .active)
         }
         // 顶部工具栏 (紧凑型设计)
         .toolbar {

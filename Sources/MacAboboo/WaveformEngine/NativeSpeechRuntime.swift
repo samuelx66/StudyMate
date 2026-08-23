@@ -59,7 +59,13 @@ public actor NativeSpeechRuntime {
 
     /// Release model contexts under system memory pressure. They are loaded
     /// lazily with the same configuration on the next segmentation request.
-    public func unloadModels() {
+    public func unloadModels() async {
+        try? await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+            await self.unloadModelsLocked()
+        }
+    }
+
+    private func unloadModelsLocked() {
         mab_whisper_free(whisperContext)
         whisperContext = nil
         loadedWhisperModelPath = nil

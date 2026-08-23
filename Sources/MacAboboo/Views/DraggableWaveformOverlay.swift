@@ -41,8 +41,7 @@ public struct DraggableWaveformOverlay: View {
         ZStack(alignment: .topLeading) {
             // 1. 经典视觉渲染层：绿色 S# 置顶、橙色 E# 置底，两端对齐绝不遮挡
             ZStack {
-                ForEach(engine.segments) { seg in
-                    if seg.endTime >= viewportStart && seg.startTime <= viewportEnd {
+                ForEach(visibleSegments) { seg in
                         let isActive = (engine.activeSegmentIndex == (seg.index - 1))
                         
                         if !isSecondaryView || isActive {
@@ -116,7 +115,6 @@ public struct DraggableWaveformOverlay: View {
                             .frame(width: 44, height: height)
                             .position(x: endX - lineWidth / 2.0, y: height / 2.0)
                         }
-                    }
                 }
             }
             .frame(width: width, height: height)
@@ -152,6 +150,21 @@ public struct DraggableWaveformOverlay: View {
             .frame(width: width, height: height)
         }
         .frame(width: width, height: height)
+    }
+
+    private var visibleSegments: ArraySlice<SentenceSegment> {
+        let segments = engine.segments
+        guard !segments.isEmpty else { return [] }
+        var lower = 0
+        var upper = segments.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if segments[middle].endTime >= viewportStart { upper = middle }
+            else { lower = middle + 1 }
+        }
+        var end = lower
+        while end < segments.count, segments[end].startTime <= viewportEnd { end += 1 }
+        return segments[lower..<end]
     }
     
     // 按住 Ctrl + 鼠标左键：设置断句起点

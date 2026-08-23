@@ -2,6 +2,31 @@ import XCTest
 @testable import MacAbobooKit
 
 final class ProjectFileManagerTests: XCTestCase {
+    func testCompletedEmptySegmentationStatePersists() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-EmptyProjectTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("silence.wav")
+        try Data("media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "silence",
+            duration: 8,
+            lastPosition: 0,
+            segments: [],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+
+        let restored = try XCTUnwrap(manager.loadProject(for: mediaURL))
+        XCTAssertTrue(restored.segments.isEmpty)
+        XCTAssertTrue(restored.hasCompletedSegmentation)
+        XCTAssertEqual(restored.schemaVersion, MediaProjectFile.currentSchemaVersion)
+    }
+
     func testDeleteProjectRemovesMetadataAndWaveformRecords() throws {
         let testDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacAboboo-ProjectDeletionTests-\(UUID().uuidString)", isDirectory: true)

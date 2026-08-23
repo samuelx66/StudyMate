@@ -19,11 +19,13 @@ final class PlaybackHistoryStoreTests: XCTestCase {
         store.add([second, first])
 
         XCTAssertEqual(store.entries.map(\.mediaPath), [first.path, second.path])
+        store.flush()
 
         let reloaded = PlaybackHistoryStore(storageDirectory: directory)
         XCTAssertEqual(reloaded.entries.map(\.mediaPath), [first.path, second.path])
 
         reloaded.remove(first)
+        reloaded.flush()
         let afterRemoval = PlaybackHistoryStore(storageDirectory: directory)
         XCTAssertEqual(afterRemoval.entries.map(\.mediaPath), [second.path])
     }

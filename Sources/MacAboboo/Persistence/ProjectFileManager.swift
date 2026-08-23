@@ -1,9 +1,10 @@
 import Foundation
 import CryptoKit
 
-/// 单个媒体的工程元数据。schema 1 的旧文件仍可直接读取；schema 2 将大体积波形拆分为二进制缓存。
+/// 单个媒体的工程元数据。schema 1 的旧文件仍可直接读取；schema 2 将大体积波形拆分为二进制缓存；
+/// schema 3 明确记录断句是否已经完成，避免把“正确的空结果”误判为从未断句。
 public struct MediaProjectFile: Codable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public let schemaVersion: Int
     public let mediaPath: String
@@ -15,6 +16,7 @@ public struct MediaProjectFile: Codable, Sendable {
     public let waveformCacheFile: String?
     public let mediaFileSize: Int64?
     public let mediaModificationDate: Date?
+    public let hasCompletedSegmentation: Bool
     public let updatedAt: Date
 
     public init(
@@ -28,6 +30,7 @@ public struct MediaProjectFile: Codable, Sendable {
         waveformCacheFile: String? = nil,
         mediaFileSize: Int64? = nil,
         mediaModificationDate: Date? = nil,
+        hasCompletedSegmentation: Bool? = nil,
         updatedAt: Date = Date()
     ) {
         self.schemaVersion = schemaVersion
@@ -40,6 +43,7 @@ public struct MediaProjectFile: Codable, Sendable {
         self.waveformCacheFile = waveformCacheFile
         self.mediaFileSize = mediaFileSize
         self.mediaModificationDate = mediaModificationDate
+        self.hasCompletedSegmentation = hasCompletedSegmentation ?? !segments.isEmpty
         self.updatedAt = updatedAt
     }
 
@@ -54,6 +58,7 @@ public struct MediaProjectFile: Codable, Sendable {
         case waveformCacheFile
         case mediaFileSize
         case mediaModificationDate
+        case hasCompletedSegmentation
         case updatedAt
     }
 
@@ -71,6 +76,8 @@ public struct MediaProjectFile: Codable, Sendable {
         waveformCacheFile = try container.decodeIfPresent(String.self, forKey: .waveformCacheFile)
         mediaFileSize = try container.decodeIfPresent(Int64.self, forKey: .mediaFileSize)
         mediaModificationDate = try container.decodeIfPresent(Date.self, forKey: .mediaModificationDate)
+        hasCompletedSegmentation = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedSegmentation)
+            ?? !segments.isEmpty
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
     }
 
@@ -86,6 +93,7 @@ public struct MediaProjectFile: Codable, Sendable {
         try container.encodeIfPresent(waveformCacheFile, forKey: .waveformCacheFile)
         try container.encodeIfPresent(mediaFileSize, forKey: .mediaFileSize)
         try container.encodeIfPresent(mediaModificationDate, forKey: .mediaModificationDate)
+        try container.encode(hasCompletedSegmentation, forKey: .hasCompletedSegmentation)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
 
@@ -128,6 +136,7 @@ public final class ProjectFileManager: @unchecked Sendable {
         let persistWaveform: Bool
         let fileSize: Int64?
         let modificationDate: Date?
+        let hasCompletedSegmentation: Bool
     }
 
     /// 注入目录主要用于测试隔离；默认仍保存到 Application Support。
@@ -170,7 +179,8 @@ public final class ProjectFileManager: @unchecked Sendable {
         lastPosition: Double,
         segments: [SentenceSegment],
         waveformData: WaveformData? = nil,
-        persistWaveform: Bool = false
+        persistWaveform: Bool = false,
+        hasCompletedSegmentation: Bool? = nil
     ) {
         let standardizedURL = mediaURL.standardizedFileURL
         let attributes = try? FileManager.default.attributesOfItem(atPath: standardizedURL.path)
@@ -186,7 +196,8 @@ public final class ProjectFileManager: @unchecked Sendable {
             waveformData: waveformData,
             persistWaveform: persistWaveform,
             fileSize: fileSize,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            hasCompletedSegmentation: hasCompletedSegmentation ?? !segments.isEmpty
         )
         pendingLock.lock()
         if let existing = pendingSaves[standardizedURL.path],
@@ -203,7 +214,8 @@ public final class ProjectFileManager: @unchecked Sendable {
                 waveformData: existing.waveformData,
                 persistWaveform: true,
                 fileSize: request.fileSize,
-                modificationDate: request.modificationDate
+                modificationDate: request.modificationDate,
+                hasCompletedSegmentation: request.hasCompletedSegmentation
             )
         } else {
             pendingSaves[standardizedURL.path] = request
@@ -268,6 +280,7 @@ public final class ProjectFileManager: @unchecked Sendable {
                 waveformCacheFile: hasWaveformCache ? waveformURL.lastPathComponent : nil,
                 mediaFileSize: request.fileSize,
                 mediaModificationDate: request.modificationDate,
+                hasCompletedSegmentation: request.hasCompletedSegmentation,
                 updatedAt: Date()
             )
             let encoder = JSONEncoder()
@@ -303,17 +316,43 @@ public final class ProjectFileManager: @unchecked Sendable {
         pendingLock.unlock()
 
         try fileQueue.sync {
-            let baseName = projectBaseName(for: standardizedURL)
-            let relatedFiles = try FileManager.default.contentsOfDirectory(
-                at: projectsDirectory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ).filter { url in
-                url.lastPathComponent == baseName || url.lastPathComponent.hasPrefix(baseName + ".")
+            try deleteProjectFilesDirect(for: standardizedURL)
+        }
+    }
+
+    public func deleteProjectAsync(for mediaURL: URL) async throws {
+        let standardizedURL = mediaURL.standardizedFileURL
+        cancelPendingSave(for: standardizedURL)
+
+        try await withCheckedThrowingContinuation { continuation in
+            fileQueue.async {
+                do {
+                    try self.deleteProjectFilesDirect(for: standardizedURL)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
-            for url in relatedFiles {
-                try FileManager.default.removeItem(at: url)
-            }
+        }
+    }
+
+    private func cancelPendingSave(for standardizedURL: URL) {
+        pendingLock.lock()
+        pendingSaves.removeValue(forKey: standardizedURL.path)
+        pendingLock.unlock()
+    }
+
+    private func deleteProjectFilesDirect(for standardizedURL: URL) throws {
+        let baseName = projectBaseName(for: standardizedURL)
+        let relatedFiles = try FileManager.default.contentsOfDirectory(
+            at: projectsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            url.lastPathComponent == baseName || url.lastPathComponent.hasPrefix(baseName + ".")
+        }
+        for url in relatedFiles {
+            try FileManager.default.removeItem(at: url)
         }
     }
 
@@ -351,6 +390,7 @@ public final class ProjectFileManager: @unchecked Sendable {
                 waveformCacheFile: metadata.waveformCacheFile,
                 mediaFileSize: metadata.mediaFileSize,
                 mediaModificationDate: metadata.mediaModificationDate,
+                hasCompletedSegmentation: metadata.hasCompletedSegmentation,
                 updatedAt: metadata.updatedAt
             )
         } catch {

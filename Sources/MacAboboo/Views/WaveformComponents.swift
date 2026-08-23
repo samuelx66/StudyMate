@@ -1,6 +1,35 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+private enum WaveformRenderCache {
+    final class Box: NSObject {
+        let peaks: [(min: Float, max: Float)]
+        init(_ peaks: [(min: Float, max: Float)]) { self.peaks = peaks }
+    }
+
+    static let cache: NSCache<NSString, Box> = {
+        let cache = NSCache<NSString, Box>()
+        cache.countLimit = 64
+        return cache
+    }()
+
+    static func peaks(
+        waveform: WaveformData,
+        start: Double,
+        end: Double,
+        count: Int
+    ) -> [(min: Float, max: Float)] {
+        let middle = waveform.peaks.isEmpty ? 0 : waveform.peaks[waveform.peaks.count / 2]
+        let signature = "\(waveform.peaks.first ?? 0)|\(middle)|\(waveform.peaks.last ?? 0)"
+        let key = "\(waveform.peaks.count)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(start)|\(end)|\(count)" as NSString
+        if let cached = cache.object(forKey: key) { return cached.peaks }
+        let result = waveform.resample(startTime: start, endTime: end, targetCount: count)
+        cache.setObject(Box(result), forKey: key)
+        return result
+    }
+}
+
 /// 高性能波形绘制 Canvas
 public struct WaveformCanvas: View {
     let waveformData: WaveformData
@@ -32,15 +61,17 @@ public struct WaveformCanvas: View {
             let totalBarSlot = barWidth + spacing
             let barCount = Int(size.width / totalBarSlot)
             
-            let resampled = waveformData.resample(
-                startTime: startTime,
-                endTime: endTime,
-                targetCount: barCount
+            let resampled = WaveformRenderCache.peaks(
+                waveform: waveformData,
+                start: startTime,
+                end: endTime,
+                count: barCount
             )
             
             let centerY = size.height / 2.0
             let maxBarHeight = (size.height / 2.0) * 0.92
             
+            var path = Path()
             for (i, peak) in resampled.enumerated() {
                 let x = CGFloat(i) * totalBarSlot
                 let amplitude = CGFloat(max(0.03, max(abs(peak.min), abs(peak.max))))
@@ -53,9 +84,9 @@ public struct WaveformCanvas: View {
                     height: max(2, barH * 2)
                 )
                 
-                let path = Path(roundedRect: rect, cornerRadius: 1)
-                context.fill(path, with: .color(Color.primary.opacity(0.35)))
+                path.addRoundedRect(in: rect, cornerSize: CGSize(width: 1, height: 1))
             }
+            context.fill(path, with: .color(Color.primary.opacity(0.35)))
         }
     }
 }

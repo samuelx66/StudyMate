@@ -62,6 +62,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     /// time is not a key frame.
     private var seekFallbackAttempt = 0
     private var seekRecoveryTask: Task<Void, Never>?
+    private var highFrequencyPresentationEnabled = true
+    private var presentationTick: UInt64 = 0
     
     public override init() {
         super.init()
@@ -386,6 +388,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self = self, !self.isSeekingInternal else { return }
+                self.presentationTick &+= 1
+                if !self.highFrequencyPresentationEnabled, self.presentationTick % 4 != 0 { return }
                 let current = CMTimeGetSeconds(time)
                 if current >= 0, !current.isNaN {
                     self.currentTime = current
@@ -394,6 +398,10 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
                 }
             }
         }
+    }
+
+    public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
+        highFrequencyPresentationEnabled = enabled
     }
 
     private func setupTimeControlObservation() {

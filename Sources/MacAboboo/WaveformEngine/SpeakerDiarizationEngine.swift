@@ -130,6 +130,12 @@ public actor SpeakerDiarizationEngine {
     }
 
     public func unloadModels() async {
+        try? await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+            await self.unloadModelsLocked()
+        }
+    }
+
+    private func unloadModelsLocked() async {
         await speakerKit?.unloadModels()
         speakerKit = nil
         loadedModelFolder = nil

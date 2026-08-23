@@ -31,7 +31,7 @@ public actor AudioPCMExtractor {
         var isCompleted: Bool
     }
 
-    private static let cacheMagic = Data("MABPCM01".utf8)
+    private static let cacheMagic = Data("MABPCM02".utf8)
     private static let cacheHeaderSize = cacheMagic.count + MemoryLayout<UInt32>.size + MemoryLayout<UInt64>.size
     private static let maxCachedSampleCount: UInt64 = 1_000_000_000
 
@@ -80,13 +80,13 @@ public actor AudioPCMExtractor {
 
         if let cacheURL = descriptor.fileURL,
            let cached = Self.readDiskCache(from: cacheURL) {
-            memoryCache.setObject(Self.PCMCacheBox(value: cached), forKey: memoryKey, cost: Self.cacheCost(for: cached))
+            cacheInMemoryIfReasonable(cached, key: memoryKey)
             progress?(1)
             return cached
         }
         if let legacyURL = descriptor.legacyFileURL,
            let cached = Self.readDiskCache(from: legacyURL) {
-            memoryCache.setObject(Self.PCMCacheBox(value: cached), forKey: memoryKey, cost: Self.cacheCost(for: cached))
+            cacheInMemoryIfReasonable(cached, key: memoryKey)
             if let cacheURL = descriptor.fileURL {
                 _ = Self.scheduleDiskWrite(cached, to: cacheURL)
             }
@@ -132,7 +132,7 @@ public actor AudioPCMExtractor {
             removeWaiter(waiterID, for: descriptor.key, flightID: flightID)
             try Task.checkCancellation()
 
-            memoryCache.setObject(Self.PCMCacheBox(value: pcm), forKey: memoryKey, cost: Self.cacheCost(for: pcm))
+            cacheInMemoryIfReasonable(pcm, key: memoryKey)
             let shouldFinalize = markFlightCompleted(for: descriptor.key, flightID: flightID)
             if shouldFinalize, let cacheURL = descriptor.fileURL {
                 let writeTask = Self.scheduleDiskWrite(pcm, to: cacheURL)
@@ -189,6 +189,17 @@ public actor AudioPCMExtractor {
         return pcm.samples.count * MemoryLayout<Float>.size
     }
 
+    private func cacheInMemoryIfReasonable(_ pcm: AudioPCMData, key: NSString) {
+        let cost = Self.cacheCost(for: pcm)
+        // 长录音由当前任务持有并保存在磁盘缓存，不再额外常驻一份大数组。
+        guard cost <= 128 * 1024 * 1024 else { return }
+        memoryCache.setObject(Self.PCMCacheBox(value: pcm), forKey: key, cost: cost)
+    }
+
+    public func purgeMemoryCache() {
+        memoryCache.removeAllObjects()
+    }
+
     private static func readDiskCache(from url: URL) -> AudioPCMData? {
         guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
               data.count >= cacheHeaderSize,
@@ -223,11 +234,8 @@ public actor AudioPCMExtractor {
             }
         }
 
-        for index in samples.indices {
-            let value = samples[index]
-            guard value.isFinite else { return nil }
-            samples[index] = min(1, max(-1, value))
-        }
+        // v2 缓存只由本应用的 Float32 解码器原子写入；头部和长度已经完整校验，
+        // 不再在每次冷启动时逐样本扫描整份长录音。
         return AudioPCMData(uncheckedSamples: samples)
     }
 
@@ -533,20 +541,29 @@ public actor AudioPCMExtractor {
             guard let data = try pipe.fileHandleForReading.read(upToCount: 512 * 1024), !data.isEmpty else {
                 break
             }
-            pending.append(data)
-            let floatCount = pending.count / MemoryLayout<Float>.size
+            let combined: Data
+            if pending.isEmpty {
+                combined = data
+            } else {
+                var joined = pending
+                joined.append(data)
+                combined = joined
+            }
+            let floatCount = combined.count / MemoryLayout<Float>.size
             if floatCount > 0 {
                 let byteCount = floatCount * MemoryLayout<Float>.size
-                var decoded = [Float](repeating: 0, count: floatCount)
-                _ = decoded.withUnsafeMutableBytes { destination in
-                    pending.copyBytes(
-                        to: destination,
-                        from: pending.startIndex..<(pending.startIndex + byteCount)
-                    )
+                let oldCount = samples.count
+                samples.append(contentsOf: repeatElement(0, count: floatCount))
+                samples.withUnsafeMutableBytes { destination in
+                    combined.withUnsafeBytes { source in
+                        guard let destinationBase = destination.baseAddress,
+                              let sourceBase = source.baseAddress else { return }
+                        destinationBase.advanced(by: oldCount * MemoryLayout<Float>.size)
+                            .copyMemory(from: sourceBase, byteCount: byteCount)
+                    }
                 }
-                pending.removeFirst(byteCount)
-                samples.append(contentsOf: decoded)
             }
+            pending = Data(combined.suffix(combined.count - floatCount * MemoryLayout<Float>.size))
 
             if duration.isFinite, duration > 0 {
                 let value = min(0.99, Double(samples.count) / Double(AudioPCMData.requiredSampleRate) / duration)

@@ -19,6 +19,10 @@ public final class WaveformExtractor: @unchecked Sendable {
         cache.totalCostLimit = 96 * 1024 * 1024
     }
 
+    public func purgeMemoryCache() {
+        cache.removeAllObjects()
+    }
+
     /// 异步提取波形数据。音频解码由 `AudioPCMExtractor` 统一完成并共享缓存。
     @discardableResult
     public func extractWaveform(

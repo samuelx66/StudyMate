@@ -163,6 +163,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var waveformTask: Task<Void, Never>?
     private var sidecarTask: Task<Void, Never>?
     private var segmentationTask: Task<Void, Never>?
+    private var modelIdleUnloadTask: Task<Void, Never>?
     private var segmentationRequestID = UUID()
     private var mediaSessionID = UUID()
     private var seekGeneration: UInt64 = 0
@@ -191,6 +192,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private let projectFileManager: ProjectFileManager
     private let playbackHistoryStore: PlaybackHistoryStore?
     private var suppressCurrentProjectPersistence = false
+    private var hasCompletedSegmentation = false
 
     private enum SegmentOrigin {
         case none
@@ -213,7 +215,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public override convenience init() {
         self.init(
             nativeBackend: AVFoundationPlayerBackend(),
-            mpvBackend: MPVPlayerBackend(),
+            mpvBackend: LazyMPVPlayerBackend(),
             projectFileManager: .shared,
             playbackHistoryStore: .shared
         )
@@ -364,6 +366,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if success, backend.loadedURL?.standardizedFileURL == url.standardizedFileURL {
                 self.isBackendReady = true
                 self.isMediaLoading = false
+                self.playbackHistoryStore?.recordPlayed(url)
                 self.updateMediaDurationIfNeeded(backend.duration)
                 self.applyPendingPlaybackRestore()
                 return
@@ -532,6 +535,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
+        nativeBackend.setHighFrequencyPresentationEnabled(enabled)
+        mpvBackend.setHighFrequencyPresentationEnabled(enabled)
+    }
+
     // MARK: - 媒体加载与独立工程恢复
 
     /// 加载音视频文件（优先从 ~/Library/Application Support/MacAboboo/Projects/ 独立工程文件瞬间读取）
@@ -557,8 +565,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         suppressCurrentProjectPersistence = false
-        playbackHistoryStore?.recordPlayed(mediaURL)
-
         if !isAlreadyScoped {
             securityScopedMediaURL?.stopAccessingSecurityScopedResource()
             securityScopedMediaURL = didStartSecurityScope ? mediaURL : nil
@@ -589,6 +595,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentationWarningMessage = nil
         currentRepeatCount = 1
         segmentOrigin = .none
+        hasCompletedSegmentation = false
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
@@ -662,7 +669,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.waveformData = savedWaveform
                     self.waveformExtractionProgress = 1
                     if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
-                    if self.segments.isEmpty {
+                    if self.segments.isEmpty && !self.hasCompletedSegmentation {
                         self.performSmartSegmentation(using: savedWaveform)
                     }
                     if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
@@ -678,6 +685,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     private func restoreProject(_ project: MediaProjectFile, for mediaURL: URL) {
         segmentOrigin = .project
+        hasCompletedSegmentation = project.hasCompletedSegmentation
         if duration <= 0 { updateMediaDurationIfNeeded(project.duration) }
         let effectiveDuration = duration > 0 ? duration : project.duration
         segments = normalizedSegments(project.segments, duration: effectiveDuration)
@@ -778,12 +786,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     case .failure(let error):
                         print("Waveform extraction failed: \(error.localizedDescription)")
                         self.lastErrorMessage = error.localizedDescription
-                        if self.segments.isEmpty, self.duration > 0 {
-                            self.segments = self.fallbackSegments(totalDuration: self.duration)
-                            self.segmentOrigin = .fallback
-                            self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
-                            self.persistCurrentProject()
-                        }
+                        // 备用解码器也失败时保留真实的空时间轴，禁止伪造固定时长断句。
                     }
                 }
             }
@@ -821,6 +824,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let requestID = UUID()
         segmentationRequestID = requestID
         segmentationTask?.cancel()
+        modelIdleUnloadTask?.cancel()
 
         let modelManager = WhisperModelManager.shared
         let modelURL = mode.requiresTranscription
@@ -888,6 +892,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     : (output.segments.last?.endTime ?? 0)
                 self.segments = self.normalizedSegments(output.segments, duration: effectiveDuration)
                 self.segmentOrigin = mode.requiresTranscription ? .ai : .vad
+                self.hasCompletedSegmentation = true
                 self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
                 self.segmentationWarningMessage = output.warnings.first
                 self.persistCurrentProject()
@@ -897,12 +902,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.isAITranscribing = false
                     self.aiTranscriptionStatusText = ""
                 }
+                self.scheduleIdleModelRelease()
             } catch is CancellationError {
                 guard requestID == self.segmentationRequestID else { return }
                 if showProgress {
                     self.isAITranscribing = false
                     self.aiTranscriptionStatusText = ""
                 }
+                self.scheduleIdleModelRelease()
             } catch {
                 guard sessionID == self.mediaSessionID,
                       requestID == self.segmentationRequestID,
@@ -910,6 +917,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.lastErrorMessage = error.localizedDescription
                 self.isAITranscribing = false
                 self.aiTranscriptionStatusText = ""
+                self.scheduleIdleModelRelease()
             }
         }
     }
@@ -921,6 +929,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isAITranscribing = false
         aiTranscriptionStatusText = ""
         segmentationWarningMessage = nil
+        scheduleIdleModelRelease()
+    }
+
+    private func scheduleIdleModelRelease() {
+        modelIdleUnloadTask?.cancel()
+        modelIdleUnloadTask = Task(priority: .background) {
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            guard !Task.isCancelled else { return }
+            await SpeechSegmentationPipeline.shared.clearCaches()
+            await AudioPCMExtractor.shared.purgeMemoryCache()
+            WaveformExtractor.shared.purgeMemoryCache()
+            await SpeakerDiarizationEngine.shared.unloadModels()
+            await NativeSpeechRuntime.shared.unloadModels()
+        }
     }
 
     /// 兼容原菜单与调用方；配置仅用于映射到三种统一 Silero 模式。
@@ -1034,6 +1056,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments = []
         activeSegmentIndex = nil
         segmentOrigin = .none
+        hasCompletedSegmentation = false
         applySubtitleItems(mappedItems, origin: .imported, persist: true)
     }
 
@@ -1041,6 +1064,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func replaceSegmentsForUndo(_ replacement: [SentenceSegment]) {
         segments = normalizedSegments(replacement, duration: duration)
         segmentOrigin = .imported
+        hasCompletedSegmentation = true
         activeSegmentIndex = segments.isEmpty ? nil : 0
         persistCurrentProject()
     }
@@ -1058,6 +1082,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         self.segments = normalizedSegments(newSegments, duration: duration)
         self.segmentOrigin = origin
+        self.hasCompletedSegmentation = true
         self.activeSegmentIndex = 0
         if persist { persistCurrentProject() }
     }
@@ -1093,6 +1118,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let aligned = TextAlignmentEngine.shared.alignSentences(sentences, with: vadSegments, totalDuration: alignmentDuration)
         self.segments = normalizedSegments(aligned, duration: duration)
         self.segmentOrigin = .imported
+        self.hasCompletedSegmentation = true
         self.activeSegmentIndex = 0
         persistCurrentProject()
     }
@@ -1114,28 +1140,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func shiftAllTimeline(by offsetSeconds: Double) {
         shiftAllSegments(by: offsetSeconds)
-    }
-
-    private func fallbackSegments(totalDuration: Double) -> [SentenceSegment] {
-        guard totalDuration.isFinite, totalDuration > 0 else { return [] }
-        var result = [SentenceSegment]()
-        let step = min(6, max(3, totalDuration / 8))
-        var current: Double = 0.0
-        var idx = 1
-
-        while current < totalDuration {
-            let end = min(totalDuration, current + step)
-            result.append(SentenceSegment(
-                index: idx,
-                startTime: current,
-                endTime: end,
-                text: LanguageManager.shared.currentLanguage == .zh ? "第 \(idx) 句" : "Sentence \(idx)",
-                translation: ""
-            ))
-            current = end
-            idx += 1
-        }
-        return result
     }
 
     /// 对来自旧工程或外部字幕的时间轴做一次原子清洗，避免 NaN、越界、倒序和重叠导致播放状态失控。
@@ -1185,7 +1189,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             lastPosition: self.currentTime,
             segments: self.segments,
             waveformData: includeWaveform ? self.waveformData : nil,
-            persistWaveform: includeWaveform
+            persistWaveform: includeWaveform,
+            hasCompletedSegmentation: hasCompletedSegmentation
         )
     }
 
@@ -1193,10 +1198,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         debouncedSaveTask?.cancel()
         persistCurrentProject()
         projectFileManager.flush()
+        playbackHistoryStore?.flush()
     }
 
     /// 从播放列表移除媒体并清理其工程记录；原始音视频文件保持不变。
-    public func removeFromPlaybackHistory(_ mediaURL: URL) {
+    public func removeFromPlaybackHistory(_ mediaURL: URL) async {
         let standardizedURL = mediaURL.standardizedFileURL
         if currentMedia?.url.standardizedFileURL == standardizedURL {
             debouncedSaveTask?.cancel()
@@ -1204,7 +1210,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         playbackHistoryStore?.remove(standardizedURL)
         do {
-            try projectFileManager.deleteProject(for: standardizedURL)
+            try await projectFileManager.deleteProjectAsync(for: standardizedURL)
         } catch {
             lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
                 ? "删除该文件的工程记录失败：\(error.localizedDescription)"
@@ -1755,6 +1761,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 : "Sentence \(segments.count + 1)"
         )
         segments.append(newSeg)
+        hasCompletedSegmentation = true
         segments.sort { $0.startTime < $1.startTime }
         reindexSegments()
         activeSegmentIndex = segments.firstIndex(where: { $0.id == newSeg.id })
@@ -1767,6 +1774,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         reindexSegments()
         if segments.isEmpty {
             activeSegmentIndex = nil
+            hasCompletedSegmentation = true
         } else {
             activeSegmentIndex = min(index, segments.count - 1)
         }

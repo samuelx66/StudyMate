@@ -368,6 +368,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     }
 
     private func createSchema(in db: OpaquePointer) throws {
+        var versionStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &versionStatement, nil) == SQLITE_OK else {
+            throw databaseError(db)
+        }
+        defer { sqlite3_finalize(versionStatement) }
+        if sqlite3_step(versionStatement) == SQLITE_ROW,
+           sqlite3_column_int(versionStatement, 0) >= 1 {
+            return
+        }
         try execute("PRAGMA journal_mode=DELETE;", in: db)
         try execute("""
         CREATE TABLE IF NOT EXISTS entries (

@@ -24,4 +24,9 @@ public protocol MediaPlayerBackend: AnyObject {
     func seek(to seconds: Double, completion: (@Sendable () -> Void)?)
     func stop()
     func teardown()
+    func setHighFrequencyPresentationEnabled(_ enabled: Bool)
+}
+
+public extension MediaPlayerBackend {
+    func setHighFrequencyPresentationEnabled(_ enabled: Bool) {}
 }

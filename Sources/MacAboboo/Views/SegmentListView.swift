@@ -17,23 +17,14 @@ public struct SegmentListView: View {
     @State private var isExporting: Bool = false
     @State private var isAddingToLibrary: Bool = false
     @State private var exportNotice: SegmentExportNotice?
+    @State private var cachedDisplayedSegments: [SentenceSegment] = []
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
     }
 
     private var displayedSegments: [SentenceSegment] {
-        var list = engine.segments
-        if filterBookmarkedOnly {
-            list = list.filter { $0.isBookmarked }
-        }
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            list = list.filter {
-                $0.text.localizedCaseInsensitiveContains(searchText) ||
-                $0.translation.localizedCaseInsensitiveContains(searchText)
-            }
-        }
-        return list
+        cachedDisplayedSegments
     }
 
     public var body: some View {
@@ -330,9 +321,10 @@ public struct SegmentListView: View {
         .sheet(isPresented: $showImportSheet) {
             SubtitleImportSheet(engine: engine)
         }
-        .onChange(of: engine.segments.map(\.id)) { _, currentIDs in
-            selectedSegmentIDs.formIntersection(currentIDs)
-        }
+        .onAppear { refreshDisplayedSegments() }
+        .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
+        .onChange(of: searchText) { _, _ in refreshDisplayedSegments() }
+        .onChange(of: filterBookmarkedOnly) { _, _ in refreshDisplayedSegments() }
         .alert(item: $exportNotice) { notice in
             Alert(
                 title: Text(notice.title),
@@ -340,6 +332,20 @@ public struct SegmentListView: View {
                 dismissButton: .default(Text(lang.text("好", "OK")))
             )
         }
+    }
+
+    private func refreshDisplayedSegments() {
+        var list = engine.segments
+        if filterBookmarkedOnly { list = list.filter(\.isBookmarked) }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            list = list.filter {
+                $0.text.localizedCaseInsensitiveContains(query) ||
+                $0.translation.localizedCaseInsensitiveContains(query)
+            }
+        }
+        cachedDisplayedSegments = list
+        selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
     }
 
     private var selectedSegments: [SentenceSegment] {

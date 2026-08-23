@@ -3,7 +3,28 @@ import XCTest
 
 @MainActor
 final class PlaybackEngineTests: XCTestCase {
-    func testOpeningAndRemovingMediaUpdatesPlaylistAndSuppressesProjectRecreation() throws {
+    func testFailedBackendLoadDoesNotEnterPlaybackHistory() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("broken.mp4")
+        try Data("broken".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(automaticallyCompletesLoads: false)
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")),
+            playbackHistoryStore: history
+        )
+        engine.setDecoderMode(.system)
+
+        engine.loadMedia(from: mediaURL)
+        XCTAssertTrue(history.entries.isEmpty)
+        native.completeLoad(at: 0, success: false)
+        XCTAssertTrue(history.entries.isEmpty)
+    }
+
+    func testOpeningAndRemovingMediaUpdatesPlaylistAndSuppressesProjectRecreation() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let mediaURL = directory.appendingPathComponent("history.mp3")
@@ -23,7 +44,7 @@ final class PlaybackEngineTests: XCTestCase {
         projects.flush()
         XCTAssertTrue(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
 
-        engine.removeFromPlaybackHistory(mediaURL)
+        await engine.removeFromPlaybackHistory(mediaURL)
         XCTAssertTrue(history.entries.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
 

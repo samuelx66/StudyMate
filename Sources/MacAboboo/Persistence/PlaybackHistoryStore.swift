@@ -28,6 +28,7 @@ public final class PlaybackHistoryStore: ObservableObject {
     @Published public private(set) var entries: [PlaybackHistoryEntry] = []
 
     private let storageURL: URL
+    private let ioQueue = DispatchQueue(label: "com.macaboboo.playback-history", qos: .utility)
 
     /// 注入目录仅用于测试；正式数据保存在 Application Support/MacAboboo。
     public init(storageDirectory: URL? = nil) {
@@ -75,6 +76,19 @@ public final class PlaybackHistoryStore: ObservableObject {
     }
 
     private func persist() {
+        let snapshot = entries
+        let destination = storageURL
+        ioQueue.async {
+            Self.persist(snapshot, to: destination)
+        }
+    }
+
+    /// 用于退出和测试等待已排队的历史记录写入；普通界面操作不调用。
+    public func flush() {
+        ioQueue.sync {}
+    }
+
+    private nonisolated static func persist(_ entries: [PlaybackHistoryEntry], to storageURL: URL) {
         do {
             try FileManager.default.createDirectory(
                 at: storageURL.deletingLastPathComponent(),

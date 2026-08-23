@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         source.setEventHandler {
             Task {
                 await SpeechSegmentationPipeline.shared.clearCaches()
+                await AudioPCMExtractor.shared.purgeMemoryCache()
+                WaveformExtractor.shared.purgeMemoryCache()
                 await SpeakerDiarizationEngine.shared.unloadModels()
                 await NativeSpeechRuntime.shared.unloadModels()
             }
