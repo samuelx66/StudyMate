@@ -224,16 +224,17 @@ public struct FloatingVideoOSDView: View {
                         value: Binding(
                             get: { Double(engine.playbackRate) },
                             set: {
-                                let newRate = Float($0)
+                                let stepped = round($0 / 0.05) * 0.05
+                                let newRate = Float(max(0.5, min(2.0, stepped)))
                                 engine.playbackRate = newRate
                                 if abs(newRate - 1.0) > 0.001 {
                                     lastCustomSpeed = newRate
                                 }
                             }
                         ),
-                        in: 0.5...2.0,
-                        step: 0.05
+                        in: 0.5...2.0
                     )
+                    .labelsHidden()
                     .frame(width: 70)
                 }
             }
