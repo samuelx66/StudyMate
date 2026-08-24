@@ -50,6 +50,56 @@ public struct SpeakerDiarizationTimeline: Equatable, Sendable {
     public var isEmpty: Bool { segments.isEmpty }
 }
 
+/// Shared interpretation of SpeakerKit output. Only confident, exclusive and
+/// near-adjacent speaker turns are hard boundaries; overlap regions remain
+/// soft evidence for the sentence optimizer.
+enum SpeakerTurnAnalysis {
+    static func reliableBoundaries(
+        in input: [SpeakerDiarizationSegment],
+        duration: Double
+    ) -> [Double] {
+        guard duration.isFinite, duration > 0 else { return [] }
+        let exclusive = input.compactMap { segment -> SpeakerDiarizationSegment? in
+            let start = min(duration, max(0, segment.startTime))
+            let end = min(duration, max(start, segment.endTime))
+            guard end - start >= 0.08,
+                  segment.confidence >= 0.35,
+                  segment.speakerIDs.count == 1,
+                  !segment.isOverlap else { return nil }
+            return SpeakerDiarizationSegment(
+                startTime: start,
+                endTime: end,
+                speakerIDs: segment.speakerIDs,
+                confidence: segment.confidence
+            )
+        }.sorted {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }
+        guard exclusive.count > 1 else { return [] }
+
+        var boundaries: [Double] = []
+        var previous = exclusive[0]
+        for current in exclusive.dropFirst() {
+            defer { previous = current }
+            guard previous.primarySpeakerID != current.primarySpeakerID else { continue }
+
+            // A material overlap is not a clean turn boundary. Long silence is
+            // already separated by VAD and does not need a speaker hard split.
+            let gap = current.startTime - previous.endTime
+            guard gap >= -0.04, gap <= 1.20 else { continue }
+            let boundary = min(duration, max(0, (previous.endTime + current.startTime) / 2))
+            guard boundary > 0.01, boundary < duration - 0.01 else { continue }
+            if let last = boundaries.last, abs(last - boundary) < 0.04 {
+                boundaries[boundaries.count - 1] = (last + boundary) / 2
+            } else {
+                boundaries.append(boundary)
+            }
+        }
+        return boundaries
+    }
+}
+
 /// SpeakerKit 的本地模型加载与推理封装。
 ///
 /// 模型默认从应用资源中读取，不依赖首次启动联网下载。模型目录必须保留

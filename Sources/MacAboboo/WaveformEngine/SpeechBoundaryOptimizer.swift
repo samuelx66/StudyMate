@@ -36,9 +36,22 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
     ) -> [SentenceSegment] {
         let safeDuration = duration.isFinite ? max(0, duration) : 0
         guard safeDuration > 0 else { return [] }
-        let profile = mode.profile
         let normalizedVoice = normalizeVoiceSegments(voiceSegments, duration: safeDuration)
         let normalizedSpeakers = normalizeSpeakerSegments(speakerSegments, duration: safeDuration)
+        let semanticSpeakers: [SpeakerDiarizationSegment]
+        if normalizedSpeakers.isEmpty, let timeline {
+            semanticSpeakers = normalizeSpeakerSegments(
+                timeline.speakerSegments,
+                duration: safeDuration
+            )
+        } else {
+            semanticSpeakers = normalizedSpeakers
+        }
+        let profile = effectiveProfile(
+            mode: mode,
+            speakerSegments: semanticSpeakers,
+            duration: safeDuration
+        )
         let acousticSegments = optimizeVoiceActivity(
             voiceSegments: normalizedVoice,
             waveform: waveform,
@@ -57,9 +70,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 // but those windows are model chunks rather than reliable
                 // sentence boundaries for noisy multi-speaker recordings.
                 voiceSegments: normalizedVoice,
-                speakerSegments: normalizedSpeakers.isEmpty
-                    ? normalizeSpeakerSegments(timeline.speakerSegments, duration: safeDuration)
-                    : normalizedSpeakers,
+                speakerSegments: semanticSpeakers,
                 acousticSegments: acousticSegments,
                 profile: profile,
                 duration: safeDuration,
@@ -69,6 +80,26 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         }
 
         return acousticSegments
+    }
+
+    /// Single-speaker material has no turn-change score. Strengthen its pause
+    /// and semantic evidence only when SpeakerKit contains no reliable turn;
+    /// fast profiles are intentionally unchanged because they do not run the
+    /// semantic dynamic-programming path.
+    func effectiveProfile(
+        mode: SpeechSegmentationMode,
+        speakerSegments: [SpeakerDiarizationSegment],
+        duration: Double
+    ) -> SpeechSegmentationProfile {
+        var profile = mode.profile
+        guard mode.requiresTranscription,
+              SpeakerTurnAnalysis.reliableBoundaries(
+                in: speakerSegments,
+                duration: duration
+              ).isEmpty else { return profile }
+        profile.pauseWeight = max(profile.pauseWeight, 1.20)
+        profile.semanticWeight = max(profile.semanticWeight, 1.40)
+        return profile
     }
 
     // MARK: - Semantic + acoustic local fusion

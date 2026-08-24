@@ -5,6 +5,7 @@ import Foundation
 /// 1. 第一阶段：Silero VAD 声学物理初筛粗切（毫秒级锁定人声发声岛屿，强力滤除纯 BGM 音乐与环境底噪）
 /// 2. 第二阶段：Whisper / Speech AI 逐句语义精确校准与英文台词生成（根据单词时间戳重构标准语法句子边界）
 /// 3. 第三阶段：首尾声学 Padding 智能微调（前推 80~120ms 防吞音，后延 180~250ms 防掐尾音）
+@available(*, deprecated, message: "Compatibility-only implementation; production segmentation uses SpeechSegmentationPipeline.")
 public final class SileroWhisperCascadeSegmenter: @unchecked Sendable {
     public static let shared = SileroWhisperCascadeSegmenter()
     

@@ -144,7 +144,10 @@ public enum SpeechSegmentationMode: String, CaseIterable, Codable, Sendable {
                 vad: .init(threshold: 0.58, minSpeechDuration: 0.38, minSilenceDuration: 0.50, maxSpeechDuration: 18, speechPadding: 0.10, sampleOverlap: 0.10),
                 minimumSentenceDuration: 0.80,
                 preferredSentenceDuration: 8.0,
-                maximumSentenceDuration: 18,
+                // Keep the relaxed VAD window wide enough to avoid fragmenting
+                // continuous speech, while keeping the final practice sentence
+                // short enough to repeat comfortably.
+                maximumSentenceDuration: 12,
                 mergeGap: 0.32,
                 onsetPadding: 0.08,
                 offsetPadding: 0.18,

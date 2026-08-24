@@ -2,6 +2,7 @@ import Foundation
 
 /// Silero VAD + Whisper 双引擎智能锚点熔合器
 /// 将语义级识别句子（Whisper / Speech.framework）与物理级声学概率曲线（Silero VAD）在毫秒级微调熔合
+@available(*, deprecated, message: "Compatibility-only implementation; production segmentation uses SpeechSegmentationPipeline.")
 public final class DualEngineFusionSegmenter: @unchecked Sendable {
     public static let shared = DualEngineFusionSegmenter()
     

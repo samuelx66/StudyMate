@@ -375,6 +375,87 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(signatures.count, 6)
     }
 
+    func testRelaxedVADKeepsWideDetectionWindowButCapsFinalSentenceAtTwelveSeconds() {
+        let profile = SpeechSegmentationMode.vadRelaxed.profile
+        XCTAssertEqual(profile.vad.maxSpeechDuration, 18, accuracy: 0.001)
+        XCTAssertEqual(profile.maximumSentenceDuration, 12, accuracy: 0.001)
+
+        var peaks = [Float](repeating: 0.8, count: 1_700)
+        for index in 790...810 { peaks[index] = 0.01 }
+        let result = SpeechBoundaryOptimizer.shared.optimize(
+            mode: .vadRelaxed,
+            timeline: nil,
+            voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 17)],
+            waveform: WaveformData(peaks: peaks, duration: 17, sampleRate: 100),
+            duration: 17,
+            includeRecognizedText: false
+        )
+
+        XCTAssertGreaterThan(result.count, 1)
+        XCTAssertTrue(result.allSatisfy { $0.duration <= 12.001 })
+    }
+
+    func testSingleSpeakerAIProfileStrengthensSemanticAndPauseEvidence() {
+        let speakers = [
+            SpeakerDiarizationSegment(startTime: 0, endTime: 8, speakerIDs: [0], confidence: 0.9)
+        ]
+        let profile = SpeechBoundaryOptimizer.shared.effectiveProfile(
+            mode: .sileroWhisperCascade,
+            speakerSegments: speakers,
+            duration: 8
+        )
+
+        XCTAssertEqual(profile.semanticWeight, 1.40, accuracy: 0.001)
+        XCTAssertEqual(profile.pauseWeight, 1.20, accuracy: 0.001)
+    }
+
+    func testReliableSpeakerTurnKeepsMultiSpeakerProfileUnchanged() {
+        let speakers = [
+            SpeakerDiarizationSegment(startTime: 0, endTime: 1, speakerIDs: [0], confidence: 0.9),
+            SpeakerDiarizationSegment(startTime: 1, endTime: 2, speakerIDs: [1], confidence: 0.9)
+        ]
+        let profile = SpeechBoundaryOptimizer.shared.effectiveProfile(
+            mode: .sileroWhisperCascade,
+            speakerSegments: speakers,
+            duration: 2
+        )
+
+        XCTAssertEqual(profile, SpeechSegmentationMode.sileroWhisperCascade.profile)
+    }
+
+    func testTranscriptionPlanPreservesReliableSpeakerTurnInsideContinuousVoice() {
+        let plan = SpeechSegmentationPipeline.transcriptionWindowPlan(
+            voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 2)],
+            speakerSegments: [
+                SpeakerDiarizationSegment(startTime: 0, endTime: 1, speakerIDs: [0], confidence: 0.9),
+                SpeakerDiarizationSegment(startTime: 1, endTime: 2, speakerIDs: [1], confidence: 0.9)
+            ],
+            duration: 2
+        )
+
+        XCTAssertEqual(plan.hardBoundaries.count, 1)
+        XCTAssertEqual(plan.hardBoundaries[0], 1, accuracy: 0.001)
+        XCTAssertEqual(plan.windows.count, 2)
+        XCTAssertEqual(plan.windows[0].endTime, 1, accuracy: 0.001)
+        XCTAssertEqual(plan.windows[1].startTime, 1, accuracy: 0.001)
+    }
+
+    func testWhisperRangeBuilderDoesNotReMergeAcrossSpeakerTurn() {
+        let ranges = NativeSpeechRuntime.transcriptionRanges(
+            [
+                VoiceActivitySegment(startTime: 0, endTime: 1),
+                VoiceActivitySegment(startTime: 1, endTime: 2)
+            ],
+            duration: 2,
+            sampleCount: 32_000,
+            hardBoundaries: [1]
+        )
+
+        XCTAssertEqual(ranges.count, 2)
+        XCTAssertLessThanOrEqual(ranges[0].end, 17_280)
+        XCTAssertGreaterThanOrEqual(ranges[1].start, 14_720)
+    }
+
     func testUserPresetsMapToExpectedInternalProfiles() {
         XCTAssertEqual(SpeechSegmentationPreset.allCases.count, 3)
         XCTAssertEqual(SpeechSentenceLength.allCases.count, 3)

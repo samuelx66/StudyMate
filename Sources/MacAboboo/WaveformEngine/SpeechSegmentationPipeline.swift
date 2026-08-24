@@ -190,11 +190,12 @@ public actor SpeechSegmentationPipeline {
                 acousticBoundaryTimes: acousticBoundaryTimes
             )
         }
-        let speechWindows = transcriptionWindows(
+        let windowPlan = Self.transcriptionWindowPlan(
             voiceSegments: voiceSegments,
             speakerSegments: speakerTimeline.segments,
             duration: pcm.duration
         )
+        let speechWindows = windowPlan.windows
         guard !speechWindows.isEmpty else {
             return SpeechSegmentationOutput(
                 segments: [],
@@ -209,12 +210,12 @@ public actor SpeechSegmentationPipeline {
         }
 
         emitStage(.transcribing(0))
-        let windowFingerprint = Self.windowFingerprint(speechWindows)
+        let windowFingerprint = Self.windowFingerprint(windowPlan)
         // The external windows are part of the cache identity. The internal
         // profile name is intentionally absent because with external VAD the
         // Whisper C API receives the same configuration and PCM windows;
         // switching presets can therefore reuse the exact token timeline.
-        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v3"
+        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v4"
         var timeline: SpeechRecognitionTimeline
         if let cached = transcriptionCache[transcriptionKey] {
             touch(transcriptionKey, in: &transcriptionCacheOrder)
@@ -227,7 +228,8 @@ public actor SpeechSegmentationPipeline {
                 language: request.recognitionLanguage,
                 configuration: profile.vad,
                 useInternalVAD: false,
-                speechWindows: speechWindows
+                speechWindows: speechWindows,
+                hardWindowBoundaries: windowPlan.hardBoundaries
             ) { progress in
                 emitStage(.transcribing(progress))
             }
@@ -266,11 +268,20 @@ public actor SpeechSegmentationPipeline {
         )
     }
 
-    private func transcriptionWindows(
+    struct TranscriptionWindowPlan: Sendable {
+        var windows: [VoiceActivitySegment]
+        var hardBoundaries: [Double]
+    }
+
+    static func transcriptionWindowPlan(
         voiceSegments: [VoiceActivitySegment],
         speakerSegments: [SpeakerDiarizationSegment],
         duration: Double
-    ) -> [VoiceActivitySegment] {
+    ) -> TranscriptionWindowPlan {
+        let hardBoundaries = SpeakerTurnAnalysis.reliableBoundaries(
+            in: speakerSegments,
+            duration: duration
+        )
         let speakerWindows = speakerSegments.map {
             VoiceActivitySegment(
                 startTime: $0.startTime,
@@ -278,8 +289,27 @@ public actor SpeechSegmentationPipeline {
                 confidence: $0.confidence
             )
         }
-        let combined = (voiceSegments + speakerWindows).sorted { $0.startTime < $1.startTime }
-        guard !combined.isEmpty else { return [] }
+        let combined = (voiceSegments + speakerWindows).flatMap { segment -> [VoiceActivitySegment] in
+            let start = min(duration, max(0, segment.startTime))
+            let end = min(duration, max(start, segment.endTime))
+            guard end - start >= 0.04 else { return [] }
+            let splits = hardBoundaries.filter { $0 > start + 0.01 && $0 < end - 0.01 }
+            let edges = [start] + splits + [end]
+            return zip(edges, edges.dropFirst()).compactMap { lower, upper in
+                guard upper - lower >= 0.04 else { return nil }
+                return VoiceActivitySegment(
+                    startTime: lower,
+                    endTime: upper,
+                    confidence: segment.confidence
+                )
+            }
+        }.sorted {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }
+        guard !combined.isEmpty else {
+            return TranscriptionWindowPlan(windows: [], hardBoundaries: hardBoundaries)
+        }
         var merged: [VoiceActivitySegment] = []
         for segment in combined {
             let start = min(duration, max(0, segment.startTime))
@@ -289,14 +319,17 @@ public actor SpeechSegmentationPipeline {
                 merged.append(VoiceActivitySegment(startTime: start, endTime: end, confidence: segment.confidence))
                 continue
             }
-            if start <= last.endTime + 0.35 {
+            let crossesHardBoundary = hardBoundaries.contains {
+                $0 >= last.endTime - 0.015 && $0 <= start + 0.015
+            }
+            if !crossesHardBoundary, start <= last.endTime + 0.20 {
                 merged[merged.count - 1].endTime = max(last.endTime, end)
                 merged[merged.count - 1].confidence = max(last.confidence, segment.confidence)
             } else {
                 merged.append(VoiceActivitySegment(startTime: start, endTime: end, confidence: segment.confidence))
             }
         }
-        return merged
+        return TranscriptionWindowPlan(windows: merged, hardBoundaries: hardBoundaries)
     }
 
     private func detectVoiceAndSpeakers(
@@ -439,13 +472,18 @@ public actor SpeechSegmentationPipeline {
         return candidate
     }
 
-    private static func windowFingerprint(_ windows: [VoiceActivitySegment]) -> String {
+    private static func windowFingerprint(_ plan: TranscriptionWindowPlan) -> String {
         var hasher = Hasher()
+        let windows = plan.windows
         hasher.combine(windows.count)
         for window in windows {
             hasher.combine(Int((window.startTime * 10_000).rounded()))
             hasher.combine(Int((window.endTime * 10_000).rounded()))
             hasher.combine(Int((Double(window.confidence) * 1_000).rounded()))
+        }
+        hasher.combine(plan.hardBoundaries.count)
+        for boundary in plan.hardBoundaries {
+            hasher.combine(Int((boundary * 10_000).rounded()))
         }
         return String(hasher.finalize(), radix: 16)
     }

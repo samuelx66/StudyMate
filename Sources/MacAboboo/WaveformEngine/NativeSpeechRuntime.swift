@@ -135,6 +135,7 @@ public actor NativeSpeechRuntime {
         configuration: VoiceActivityConfiguration,
         useInternalVAD: Bool = true,
         speechWindows: [VoiceActivitySegment] = [],
+        hardWindowBoundaries: [Double] = [],
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> SpeechRecognitionTimeline {
         guard pcm.sampleRate == AudioPCMData.requiredSampleRate, !pcm.isEmpty else {
@@ -149,6 +150,7 @@ public actor NativeSpeechRuntime {
                     configuration: configuration,
                     useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
+                    hardWindowBoundaries: hardWindowBoundaries,
                     progress: progress,
                     forceCPU: false
                 )
@@ -165,6 +167,7 @@ public actor NativeSpeechRuntime {
                     configuration: configuration,
                     useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
+                    hardWindowBoundaries: hardWindowBoundaries,
                     progress: progress,
                     forceCPU: true
                 )
@@ -179,6 +182,7 @@ public actor NativeSpeechRuntime {
         configuration: VoiceActivityConfiguration,
         useInternalVAD: Bool,
         speechWindows: [VoiceActivitySegment],
+        hardWindowBoundaries: [Double],
         progress: @escaping @Sendable (Double) -> Void,
         forceCPU: Bool
     ) async throws -> SpeechRecognitionTimeline {
@@ -207,7 +211,8 @@ public actor NativeSpeechRuntime {
                 : Self.transcriptionRanges(
                     speechWindows,
                     duration: pcm.duration,
-                    sampleCount: pcm.samples.count
+                    sampleCount: pcm.samples.count,
+                    hardBoundaries: hardWindowBoundaries
                 )
             guard !ranges.isEmpty else {
                 return SpeechRecognitionTimeline(tokens: [], voiceSegments: [], detectedLanguage: "")
@@ -326,15 +331,16 @@ public actor NativeSpeechRuntime {
             }
     }
 
-    private struct SampleRange: Sendable {
+    struct SampleRange: Sendable {
         var start: Int
         var end: Int
     }
 
-    private static func transcriptionRanges(
+    static func transcriptionRanges(
         _ input: [VoiceActivitySegment],
         duration: Double,
-        sampleCount: Int
+        sampleCount: Int,
+        hardBoundaries: [Double] = []
     ) -> [SampleRange] {
         guard duration > 0, sampleCount > 0 else { return [] }
         let normalized = input.compactMap { segment -> (start: Double, end: Double)? in
@@ -348,7 +354,7 @@ public actor NativeSpeechRuntime {
         // Merge nearby speech islands first so Whisper sees enough context for
         // connected words, but cap each inference window to keep timestamps
         // stable and memory bounded on long recordings.
-        let mergeGap = 0.65
+        let mergeGap = 0.20
         let context = 0.35
         let maximumWindow = 24.0
         var merged: [(start: Double, end: Double)] = []
@@ -357,7 +363,11 @@ public actor NativeSpeechRuntime {
                 merged.append(interval)
                 continue
             }
-            if interval.start - last.end <= mergeGap,
+            let crossesHardBoundary = hardBoundaries.contains {
+                $0 >= last.end - 0.015 && $0 <= interval.start + 0.015
+            }
+            if !crossesHardBoundary,
+               interval.start - last.end <= mergeGap,
                interval.end - last.start <= maximumWindow {
                 merged[merged.count - 1].end = interval.end
             } else {
@@ -367,8 +377,16 @@ public actor NativeSpeechRuntime {
 
         var ranges: [SampleRange] = []
         for interval in merged {
-            let expandedStart = max(0, interval.start - context)
-            let expandedEnd = min(duration, interval.end + context)
+            var expandedStart = max(0, interval.start - context)
+            var expandedEnd = min(duration, interval.end + context)
+            // Keep a small amount of phonetic context across a reliable turn,
+            // but never let expansion recreate one large multi-speaker window.
+            if let previousBoundary = hardBoundaries.last(where: { $0 <= interval.start + 0.015 }) {
+                expandedStart = max(expandedStart, previousBoundary - 0.08)
+            }
+            if let nextBoundary = hardBoundaries.first(where: { $0 >= interval.end - 0.015 }) {
+                expandedEnd = min(expandedEnd, nextBoundary + 0.08)
+            }
             var cursor = expandedStart
             while cursor < expandedEnd - 0.01 {
                 let end = min(expandedEnd, cursor + maximumWindow)
