@@ -146,14 +146,30 @@ public struct MainContentView: View {
                 }
                 .help(lang.text("调节播放语速", "Playback rate"))
                 
-                // 3. 显示/隐藏视图开关组（采用原生 NSSegmentedControl 多选，与 4 种播放模式选中底色完全一致）
-                ToolbarWorkspaceTogglesView(
-                    isPlaylistVisible: $isPlaylistVisible,
-                    isWaveformsVisible: $isWaveformsVisible,
-                    isSubtitleEditVisible: $isSubtitleEditVisible,
-                    isSidebarVisible: $isSidebarVisible,
-                    lang: lang
-                )
+                // 3. 工作区视图显示/隐藏开关（macOS HIG 原生工具栏切换项）
+                Toggle(isOn: $isPlaylistVisible) {
+                    Image(systemName: "music.note.list")
+                }
+                .help(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
+                
+                Toggle(isOn: $isWaveformsVisible) {
+                    Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
+                }
+                .help(isWaveformsVisible
+                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
+                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
+                
+                Toggle(isOn: $isSubtitleEditVisible) {
+                    Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
+                }
+                .help(isSubtitleEditVisible
+                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
+                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
+                
+                Toggle(isOn: $isSidebarVisible) {
+                    Image(systemName: "sidebar.right")
+                }
+                .help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"))
             }
         }
         // 支持直接拖拽音视频文件到窗口
@@ -276,93 +292,6 @@ public struct MainContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             engine.loadMedia(from: url)
         }
-    }
-}
-
-/// 工具栏工作区多选开关组（采用与断句列表“自动跟随当前句”完全一致的软圆角选中底色）
-public struct ToolbarWorkspaceTogglesView: View {
-    @Binding var isPlaylistVisible: Bool
-    @Binding var isWaveformsVisible: Bool
-    @Binding var isSubtitleEditVisible: Bool
-    @Binding var isSidebarVisible: Bool
-    
-    @ObservedObject var lang: LanguageManager
-    
-    public var body: some View {
-        HStack(spacing: 4) {
-            // 1. 播放列表
-            toggleButton(
-                icon: "music.note.list",
-                isSelected: isPlaylistVisible,
-                helpText: lang.text("显示或隐藏播放列表", "Show or hide playlist")
-            ) {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    isPlaylistVisible.toggle()
-                }
-            }
-            
-            // 2. 波形图 (⌥W)
-            toggleButton(
-                icon: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash",
-                isSelected: isWaveformsVisible,
-                helpText: isWaveformsVisible
-                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
-                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)")
-            ) {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    isWaveformsVisible.toggle()
-                }
-            }
-            
-            // 3. 字幕编辑区 (⌥S)
-            toggleButton(
-                icon: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble",
-                isSelected: isSubtitleEditVisible,
-                helpText: isSubtitleEditVisible
-                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
-                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)")
-            ) {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    isSubtitleEditVisible.toggle()
-                }
-            }
-            
-            // 4. 断句列表
-            toggleButton(
-                icon: "sidebar.right",
-                isSelected: isSidebarVisible,
-                helpText: lang.text("显示或隐藏断句列表", "Show or hide sentence list")
-            ) {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    isSidebarVisible.toggle()
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private func toggleButton(
-        icon: String,
-        isSelected: Bool,
-        helpText: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? .primary : .secondary)
-                .frame(width: 26, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(isSelected ? Color.primary.opacity(0.16) : Color.clear, lineWidth: 0.8)
-                )
-        }
-        .buttonStyle(.plain)
-        .help(helpText)
     }
 }
 

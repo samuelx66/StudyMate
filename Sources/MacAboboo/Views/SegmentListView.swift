@@ -77,33 +77,25 @@ public struct SegmentListView: View {
 
                 Spacer()
 
+                // 播放时自动跟随当前句开关
                 Button(action: {
                     followState.toggle()
                 }) {
                     Image(systemName: followState.shouldFollow
-                        ? "book.pages"
+                        ? "book.pages.fill"
                         : "book.closed")
-                        .font(.system(size: 11, weight: followState.shouldFollow ? .semibold : .regular))
                         .foregroundColor(followState.shouldFollow ? .primary : .secondary)
-                        .frame(width: 24, height: 20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(followState.shouldFollow ? Color.primary.opacity(0.12) : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(followState.shouldFollow ? Color.primary.opacity(0.16) : Color.clear, lineWidth: 0.8)
-                        )
+                        .help(lang.text(
+                            followState.shouldFollow
+                                ? "播放时自动跟随当前句"
+                                : "已暂停自动跟随，点击恢复",
+                            followState.shouldFollow
+                                ? "Follow the active sentence during playback"
+                                : "Automatic following is paused; click to resume"
+                        ))
                 }
                 .buttonStyle(.plain)
-                .help(lang.text(
-                    followState.shouldFollow
-                        ? "播放时自动跟随当前句"
-                        : "已暂停自动跟随，点击恢复",
-                    followState.shouldFollow
-                        ? "Follow the active sentence during playback"
-                        : "Automatic following is paused; click to resume"
-                ))
+                .focusable(false)
 
                 // 难句过滤筛选开关
                 Button(action: { filterBookmarkedOnly.toggle() }) {
