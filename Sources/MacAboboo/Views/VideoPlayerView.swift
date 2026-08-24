@@ -5,8 +5,6 @@ import AppKit
 public struct VideoPlayerView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var lang = LanguageManager.shared
-    @Binding var isWaveformsVisible: Bool
-    @Binding var isSubtitleEditVisible: Bool
     
     @State private var isHovering: Bool = false
     @State private var isScrubbing: Bool = false
@@ -15,14 +13,8 @@ public struct VideoPlayerView: View {
     @State private var positionOffset: CGSize = .zero
     @State private var dragTranslation: CGSize = .zero
     
-    public init(
-        engine: PlaybackEngine,
-        isWaveformsVisible: Binding<Bool> = .constant(true),
-        isSubtitleEditVisible: Binding<Bool> = .constant(false)
-    ) {
+    public init(engine: PlaybackEngine) {
         self.engine = engine
-        self._isWaveformsVisible = isWaveformsVisible
-        self._isSubtitleEditVisible = isSubtitleEditVisible
     }
     
     private var shouldShowOverlay: Bool {
@@ -87,9 +79,7 @@ public struct VideoPlayerView: View {
                         Spacer()
                         FloatingVideoOSDView(
                             engine: engine,
-                            isScrubbing: $isScrubbing,
-                            isWaveformsVisible: $isWaveformsVisible,
-                            isSubtitleEditVisible: $isSubtitleEditVisible
+                            isScrubbing: $isScrubbing
                         )
                             .padding(.horizontal, 16)
                             .padding(.bottom, 14)

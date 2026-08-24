@@ -1,26 +1,20 @@
 import SwiftUI
 import AppKit
 
-/// 悬浮式播放控制面板（包含第1行核心播放控制与第2行纯图标功能切换区 + 变速）
+/// 悬浮式播放控制面板（包含第1行核心播放控制与第2行四种播放模式 + 变速）
 public struct FloatingVideoOSDView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var lang = LanguageManager.shared
     @Binding var isScrubbing: Bool
-    @Binding var isWaveformsVisible: Bool
-    @Binding var isSubtitleEditVisible: Bool
     
     private let speedPresets: [Float] = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0]
     
     public init(
         engine: PlaybackEngine,
-        isScrubbing: Binding<Bool>,
-        isWaveformsVisible: Binding<Bool>,
-        isSubtitleEditVisible: Binding<Bool>
+        isScrubbing: Binding<Bool>
     ) {
         self.engine = engine
         self._isScrubbing = isScrubbing
-        self._isWaveformsVisible = isWaveformsVisible
-        self._isSubtitleEditVisible = isSubtitleEditVisible
     }
     
     public var body: some View {
@@ -130,47 +124,27 @@ public struct FloatingVideoOSDView: View {
                 .padding(.trailing, 2)
             }
             
-            // 第 2 行：功能视图快捷图标区（左侧图标，右侧变速控制右对齐）
+            // 第 2 行：左侧 4 种播放模式（左对齐），右侧变速控制（右对齐）
             HStack(spacing: 8) {
-                // 1. 显示/隐藏波形图按钮（纯图标）
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isWaveformsVisible.toggle()
+                // 四种播放模式按钮 (左对齐)
+                ForEach(PlaybackLoopMode.allCases) { mode in
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            engine.loopMode = mode
+                        }
+                    }) {
+                        Image(systemName: mode.iconName)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(engine.loopMode == mode ? .accentColor : .primary)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                Circle()
+                                    .fill(engine.loopMode == mode ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
+                            )
                     }
-                }) {
-                    Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(isWaveformsVisible ? .accentColor : .primary)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            Circle()
-                                .fill(isWaveformsVisible ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
-                        )
+                    .buttonStyle(.plain)
+                    .help(mode.localized(with: lang))
                 }
-                .buttonStyle(.plain)
-                .help(isWaveformsVisible
-                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
-                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
-                
-                // 2. 显示/隐藏字幕编辑区按钮（纯图标）
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isSubtitleEditVisible.toggle()
-                    }
-                }) {
-                    Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(isSubtitleEditVisible ? .accentColor : .primary)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            Circle()
-                                .fill(isSubtitleEditVisible ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
-                .help(isSubtitleEditVisible
-                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
-                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
                 
                 Spacer()
                 

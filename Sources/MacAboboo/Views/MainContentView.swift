@@ -39,11 +39,7 @@ public struct MainContentView: View {
                 }
                 
                 // 2. 中间：音视频播放视窗（波形图/字幕区折叠时自适应最大化填满全部可用纵向空间）
-                VideoPlayerView(
-                    engine: engine,
-                    isWaveformsVisible: $isWaveformsVisible,
-                    isSubtitleEditVisible: $isSubtitleEditVisible
-                )
+                VideoPlayerView(engine: engine)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
                 // 2.5 字幕编辑区（原文 + 译文双行输入，支持折叠/展开动画，焦点离开时自动保存）
@@ -138,13 +134,40 @@ public struct MainContentView: View {
                 }
                 .help(lang.text("显示或隐藏播放列表", "Show or hide the playlist"))
                 
-                // 侧边栏折叠开关
+                // 显示/隐藏波形工作区开关 (⌥W)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isWaveformsVisible.toggle()
+                    }
+                }) {
+                    Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
+                        .foregroundStyle(isWaveformsVisible ? Color.blue : Color.primary)
+                }
+                .help(isWaveformsVisible
+                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
+                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
+                
+                // 显示/隐藏字幕编辑区开关 (⌥S)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isSubtitleEditVisible.toggle()
+                    }
+                }) {
+                    Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
+                        .foregroundStyle(isSubtitleEditVisible ? Color.blue : Color.primary)
+                }
+                .help(isSubtitleEditVisible
+                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
+                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
+                
+                // 侧边栏折叠开关（显示/隐藏断句列表）
                 Button(action: {
                     withAnimation {
                         isSidebarVisible.toggle()
                     }
                 }) {
                     Image(systemName: "sidebar.right")
+                        .foregroundStyle(isSidebarVisible ? Color.blue : Color.primary)
                 }
                 .help(lang.text("显示或隐藏断句列表", "Show or hide the sentence list"))
             }
