@@ -132,6 +132,10 @@ pbx_build_files.append(f'\t\t{whisper_framework_embed_id} /* whisper.xcframework
 framework_build_file_ids.append(f'\t\t\t\t{whisper_framework_link_id} /* whisper.xcframework in Frameworks */,')
 embed_framework_build_file_ids.append(f'\t\t\t\t{whisper_framework_embed_id} /* whisper.xcframework in Embed Frameworks */,')
 
+speakerkit_build_file_id = generate_id("BUILD_DEP_SpeakerKit")
+pbx_build_files.append(f'\t\t{speakerkit_build_file_id} /* SpeakerKit in Frameworks */ = {{isa = PBXBuildFile; productRef = {speakerkit_product_dependency_id} /* SpeakerKit */; }};')
+framework_build_file_ids.append(f'\t\t\t\t{speakerkit_build_file_id} /* SpeakerKit in Frameworks */,')
+
 file_refs_str = "\n".join(pbx_file_refs)
 build_files_str = "\n".join(pbx_build_files)
 sources_phase_files_str = "\n".join(source_build_file_ids)
