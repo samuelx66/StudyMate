@@ -52,9 +52,11 @@ public struct SubtitleEditView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                         .focused($focusedField, equals: .original)
+                        .onKeyPress(.tab) {
+                            moveSubtitleFocus(from: .original)
+                        }
                         .onSubmit {
-                            saveCurrentSegment()
-                            focusedField = .translation
+                            submitAndSelectNextSegment()
                         }
                     
                     Text("#\(seg.index)")
@@ -77,9 +79,11 @@ public struct SubtitleEditView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                         .focused($focusedField, equals: .translation)
+                        .onKeyPress(.tab) {
+                            moveSubtitleFocus(from: .translation)
+                        }
                         .onSubmit {
-                            saveCurrentSegment()
-                            focusedField = nil
+                            submitAndSelectNextSegment()
                         }
                     
                     Text(seg.formattedDuration)
@@ -145,5 +149,36 @@ public struct SubtitleEditView: View {
     private func saveCurrentSegment() {
         guard let id = currentSegmentId else { return }
         engine.updateSegmentText(id: id, text: originalText, translation: translationText)
+    }
+
+    private func moveSubtitleFocus(from field: FocusField) -> KeyPress.Result {
+        let nextField = field == .original ? FocusField.translation : .original
+        focusedField = nextField
+        return .handled
+    }
+
+    private func submitAndSelectNextSegment() {
+        saveCurrentSegment()
+
+        guard let currentID = currentSegmentId,
+              let currentIndex = engine.segments.firstIndex(where: { $0.id == currentID }),
+              currentIndex + 1 < engine.segments.count else {
+            focusedField = nil
+            return
+        }
+
+        let nextIndex = currentIndex + 1
+        let nextID = engine.segments[nextIndex].id
+        // 先释放当前输入框焦点，让 activeSegment 变化时正常载入下一句，
+        // 再把焦点落到下一句原文输入框，形成连续编辑流程。
+        focusedField = nil
+        engine.jumpToSegment(at: nextIndex)
+        DispatchQueue.main.async {
+            guard engine.activeSegmentIndex == nextIndex,
+                  engine.segments.indices.contains(nextIndex),
+                  engine.segments[nextIndex].id == nextID else { return }
+            loadActiveSegment()
+            focusedField = .original
+        }
     }
 }

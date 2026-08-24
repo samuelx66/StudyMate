@@ -71,7 +71,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }()
 
     // MARK: - 智能精听与复读系统状态
-    /// 单句定次复读上限 (1, 2, 3, 5, 10，0 表示无限单句循环)
+    /// 单句定次重复上限 (1, 2, 3, 5, 10，0 表示无限单句重复)
     @Published public var repeatCountLimit: Int = 1
     /// 当前句已播放/复读次数
     @Published public var currentRepeatCount: Int = 1
@@ -194,6 +194,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 该状态只在自然结束时保留；用户主动暂停/停止后必须清除，避免
     /// 普通的暂停状态在点击断句时意外自动播放。
     private var canResumePlaybackFromSegmentSelection = false
+    /// 最后一句自然结束后，后端偶尔还会发出一个滞后的时间回调。
+    /// 在用户明确执行新的播放/Seek/选句操作前，冻结波形相关的播放状态，
+    /// 避免主波形跟随到尾部或次波形被切换到错误的断句。
+    private var isWaveformFrozenAtNaturalEnd = false
     private var pendingResumeTime: Double = 0
     private var pendingResumePlayback = false
     private var previewEndTime: Double?
@@ -265,6 +269,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                   self.activeBackend === backend,
                   self.isBackendReady,
                   !self.isSeeking else { return }
+            // AVFoundation/libmpv 在 pause 或 finished 后可能再送出一帧
+            // 滞后的时间。自然结束时保持最后一句的波形视口与活动句不变。
+            guard !self.isWaveformFrozenAtNaturalEnd else { return }
             self.updateMediaDurationIfNeeded(total)
             self.currentTime = current
             self.handlePlaybackBoundary(at: current)
@@ -294,6 +301,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 // 如果用户在结束回调前已经主动暂停，不能把普通暂停误判为自然结束。
                 if hadPlaybackIntent {
                     self.canResumePlaybackFromSegmentSelection = true
+                    // 只在时间确实已经到达最后一条字幕末尾时兜底冻结。
+                    // 这样用户刚点击其它句子、旧的 finished 回调随后到达时，
+                    // 不会把新的播放状态错误冻结。
+                    let finalSegmentEnd = self.segments.last?.endTime ?? 0
+                    let backendTime = backend?.currentTime ?? self.currentTime
+                    if finalSegmentEnd > 0,
+                       max(self.currentTime, backendTime) >= finalSegmentEnd - 0.05 {
+                        self.isWaveformFrozenAtNaturalEnd = true
+                    }
                 }
             }
         }
@@ -505,7 +521,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 播放时主波形图自动跟随平移（当游标接近右侧或在视口外时，视口平滑向右推进）
     public func followPlaybackIfNeeded(at current: Double) {
-        guard isPlaying, !isBoundaryDragging, duration > 0 else { return }
+        guard isPlaying,
+              !isWaveformFrozenAtNaturalEnd,
+              !isBoundaryDragging,
+              duration > 0 else { return }
         let span = primaryViewport.end - primaryViewport.start
         guard span > 0, span < duration else { return }
 
@@ -642,6 +661,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
+        isWaveformFrozenAtNaturalEnd = false
         waveformData = .empty
         isExtractingWaveform = false
         waveformExtractionProgress = 0
@@ -1150,6 +1170,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 text: source.text,
                 translation: source.translation,
                 note: source.note,
+                isNavigationBookmarked: source.isNavigationBookmarked,
                 isBookmarked: source.isBookmarked,
                 speakerID: source.speakerID,
                 speakerIDs: source.speakerIDs,
@@ -1214,6 +1235,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func play() {
         guard currentMedia != nil else { return }
+        isWaveformFrozenAtNaturalEnd = false
         shadowingTask?.cancel()
         isShadowingPaused = false
         previewEndTime = nil
@@ -1243,6 +1265,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func pause() {
+        isWaveformFrozenAtNaturalEnd = false
         shadowingTask?.cancel()
         isShadowingPaused = false
         pendingResumePlayback = false
@@ -1261,6 +1284,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 毫秒级极速精准 Seek（实时刷新视频画面与音频时间戳）
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
+        isWaveformFrozenAtNaturalEnd = false
         explicitSegmentSelection = nil
         performSeek(to: seconds, completion: completion)
     }
@@ -1477,6 +1501,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     // MARK: - 智能复读、跟读停顿与断句边界判定
 
     private func handlePlaybackBoundary(at time: Double) {
+        guard !isWaveformFrozenAtNaturalEnd else { return }
+
         if let previewEndTime, time >= previewEndTime {
             self.previewEndTime = nil
             pause()
@@ -1636,7 +1662,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             } else {
                 let isNaturalContinuation = !onlyPlayBookmarked && nextIdx == currentIndex + 1
                 if isNaturalContinuation {
-                    // 全曲循环等模式下：按媒体真实时间流自然过渡
+                    // 全篇循环等模式下：按媒体真实时间流自然过渡
                     activeSegmentIndex = nextIdx
                     currentRepeatCount = 1
                     ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
@@ -1657,6 +1683,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 触发的恢复意图。这样列表点击不会改变普通暂停的行为，同时可以
     /// 从最后一句结束后的任意断句重新开始播放。
     private func finishPlaybackAtNaturalEnd() {
+        // 在暂停后端之前设置冻结标记，因为部分后端会从 pause() 同步发出
+        // 一次状态或时间回调。
+        isWaveformFrozenAtNaturalEnd = true
         shadowingTask?.cancel()
         isShadowingPaused = false
         pendingResumePlayback = false
@@ -1733,7 +1762,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         return index == 0 || time >= segments[index - 1].endTime
     }
 
-    // MARK: - 断句快捷操作与难句收藏
+    // MARK: - 断句快捷操作、难句收藏与书签
 
     /// 确保目标断句在主波形图视口内完整展现（若处于边缘或在视口外，自动平滑移动视口）
     public func ensureSegmentVisibleInPrimaryViewport(at index: Int) {
@@ -1756,6 +1785,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
+        isWaveformFrozenAtNaturalEnd = false
         let seg = segments[index]
         let resumeAfterNaturalEnd = canResumePlaybackFromSegmentSelection
         if resumeAfterNaturalEnd {
@@ -1834,6 +1864,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func toggleBookmark(for segmentId: UUID) {
         if let idx = segments.firstIndex(where: { $0.id == segmentId }) {
             segments[idx].isBookmarked.toggle()
+            scheduleDebouncedPersistence()
+        }
+    }
+
+    /// 切换用于“显示 > 书签”快速跳转的独立书签。
+    /// 它与难句收藏星标分开保存，避免改变既有的复读筛选语义。
+    public func toggleNavigationBookmark(for segmentId: UUID) {
+        if let idx = segments.firstIndex(where: { $0.id == segmentId }) {
+            segments[idx].isNavigationBookmarked.toggle()
             scheduleDebouncedPersistence()
         }
     }
@@ -1935,6 +1974,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: current.text,
             translation: current.translation,
             note: current.note,
+            isNavigationBookmarked: current.isNavigationBookmarked,
             isBookmarked: current.isBookmarked,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
@@ -1945,8 +1985,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             index: current.index + 1,
             startTime: splitTime,
             endTime: current.endTime,
-            text: "",
-            translation: "",
+            text: current.text,
+            translation: current.translation,
             isBookmarked: false,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
@@ -1973,6 +2013,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: current.text,
             translation: current.translation,
             note: current.note,
+            isNavigationBookmarked: current.isNavigationBookmarked,
             isBookmarked: current.isBookmarked,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
@@ -1983,8 +2024,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             index: current.index + 1,
             startTime: splitTime,
             endTime: current.endTime,
-            text: "",
-            translation: "",
+            text: current.text,
+            translation: current.translation,
             isBookmarked: false,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
@@ -2011,6 +2052,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             text: [seg1.text, seg2.text].filter { !$0.isEmpty }.joined(separator: " "),
             translation: [seg1.translation, seg2.translation].filter { !$0.isEmpty }.joined(separator: " "),
             note: [seg1.note, seg2.note].filter { !$0.isEmpty }.joined(separator: "\n"),
+            isNavigationBookmarked: seg1.isNavigationBookmarked || seg2.isNavigationBookmarked,
             isBookmarked: seg1.isBookmarked || seg2.isBookmarked,
             speakerID: nil,
             speakerIDs: Array(Set(seg1.speakerIDs + seg2.speakerIDs)).sorted(),
@@ -2027,6 +2069,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func mergeSegmentWithNext(id: UUID) {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         mergeSegmentWithNext(at: idx)
+    }
+
+    public func mergeSegmentWithPrevious(at index: Int) {
+        guard index > 0 && index < segments.count else { return }
+        mergeSegmentWithNext(at: index - 1)
+    }
+
+    public func mergeSegmentWithPrevious(id: UUID) {
+        guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
+        mergeSegmentWithPrevious(at: idx)
     }
 
     public func updateSegmentText(id: UUID, text: String, translation: String? = nil) {

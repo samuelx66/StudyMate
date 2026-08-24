@@ -208,18 +208,6 @@ public struct SegmentListView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-
-                // 添加断句
-                Button(action: {
-                    let cur = engine.currentTime
-                    engine.addSegment(startTime: cur, endTime: min(engine.duration > 0 ? engine.duration : 9999.0, cur + 3.0))
-                }) {
-                    Image(systemName: "plus")
-                        .foregroundColor(.secondary)
-                        .help(lang.localized(.addSegment))
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -329,8 +317,14 @@ public struct SegmentListView: View {
                                     onToggleBookmark: {
                                         engine.toggleBookmark(for: seg.id)
                                     },
+                                    onToggleNavigationBookmark: {
+                                        engine.toggleNavigationBookmark(for: seg.id)
+                                    },
                                     onSplit: {
                                         engine.splitSegment(id: seg.id, at: (seg.startTime + seg.endTime) / 2.0)
+                                    },
+                                    onMergePrevious: {
+                                        engine.mergeSegmentWithPrevious(id: seg.id)
                                     },
                                     onMergeNext: {
                                         engine.mergeSegmentWithNext(id: seg.id)
@@ -643,6 +637,7 @@ struct SegmentRowView: View {
     private enum EditField: Hashable {
         case original
         case translation
+        case done
     }
 
     let seg: SentenceSegment
@@ -651,7 +646,9 @@ struct SegmentRowView: View {
     let onToggleExportSelection: () -> Void
     let onSelect: () -> Void
     let onToggleBookmark: () -> Void
+    let onToggleNavigationBookmark: () -> Void
     let onSplit: () -> Void
+    let onMergePrevious: () -> Void
     let onMergeNext: () -> Void
     let onDelete: () -> Void
     let onSaveText: (String, String) -> Void
@@ -740,7 +737,13 @@ struct SegmentRowView: View {
                                 tempOriginalText = seg.text
                                 tempTranslationText = seg.translation
                                 isEditing = true
-                                focusedField = .original
+                                focusedField = nil
+                                // 编辑区域在下一次布局后才会出现，延迟设置焦点
+                                // 可确保点击编辑按钮后始终落入原文输入框。
+                                DispatchQueue.main.async {
+                                    guard isEditing else { return }
+                                    focusedField = .original
+                                }
                             }) {
                                 Image(systemName: "pencil")
                                     .font(.system(size: 9))
@@ -757,12 +760,35 @@ struct SegmentRowView: View {
                             .help(lang.text("在中间拆分此句", "Split this sentence at its midpoint"))
                             .allowsHitTesting(isHovering)
 
+                            Button(action: onMergePrevious) {
+                                Image(systemName: "arrow.triangle.merge")
+                                    .font(.system(size: 9))
+                                    .scaleEffect(x: -1, y: 1)
+                            }
+                            .buttonStyle(.plain)
+                            .help(lang.text("合并上一句", "Merge with previous sentence"))
+                            .disabled(seg.index <= 1)
+                            .allowsHitTesting(isHovering && seg.index > 1)
+
                             Button(action: onMergeNext) {
                                 Image(systemName: "arrow.triangle.merge")
                                     .font(.system(size: 9))
+                                    .rotationEffect(.degrees(180))
                             }
                             .buttonStyle(.plain)
                             .help(lang.localized(.mergeSegment))
+                            .allowsHitTesting(isHovering)
+
+                            Button(action: onToggleNavigationBookmark) {
+                                Image(systemName: seg.isNavigationBookmarked ? "bookmark.fill" : "bookmark")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(seg.isNavigationBookmarked ? .blue : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help(lang.text(
+                                seg.isNavigationBookmarked ? "移出书签" : "加入书签",
+                                seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
+                            ))
                             .allowsHitTesting(isHovering)
 
                             Button(action: onDelete) {
@@ -827,6 +853,9 @@ struct SegmentRowView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
                 .focused($focusedField, equals: .original)
+                .onKeyPress(.tab) {
+                    moveEditFocus(from: .original)
+                }
                 .onSubmit {
                     focusedField = .translation
                 }
@@ -835,12 +864,20 @@ struct SegmentRowView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
                 .focused($focusedField, equals: .translation)
+                .onKeyPress(.tab) {
+                    moveEditFocus(from: .translation)
+                }
                 .onSubmit {
                     finishEditing()
                 }
 
             Button(lang.text("完成", "Done"), action: finishEditing)
                 .controlSize(.mini)
+                .focusable(true)
+                .focused($focusedField, equals: .done)
+                .onKeyPress(.tab) {
+                    moveEditFocus(from: .done)
+                }
         }
         .onChange(of: focusedField) { oldField, newField in
             if oldField != nil, newField == nil {
@@ -854,6 +891,14 @@ struct SegmentRowView: View {
         onSaveText(tempOriginalText, tempTranslationText)
         isEditing = false
         focusedField = nil
+    }
+
+    private func moveEditFocus(from field: EditField) -> KeyPress.Result {
+        let order: [EditField] = [.original, .translation, .done]
+        guard let currentIndex = order.firstIndex(of: field) else { return .ignored }
+        let nextIndex = (currentIndex + 1) % order.count
+        focusedField = order[nextIndex]
+        return .handled
     }
 }
 

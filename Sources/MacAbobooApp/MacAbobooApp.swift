@@ -123,6 +123,28 @@ struct MacAbobooApp: App {
                         }
                     }
                 }
+
+                Menu {
+                    if navigationBookmarks.isEmpty {
+                        Text(languageManager.text("暂无书签", "No bookmarks"))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(navigationBookmarks) { segment in
+                            Button {
+                                engine.jumpToSegment(id: segment.id)
+                            } label: {
+                                Label("#\(segment.index)", systemImage: "bookmark.fill")
+                            }
+                        }
+                    }
+                } label: {
+                    Label(languageManager.text("书签", "Bookmarks"), systemImage: "bookmark")
+                }
+            }
+
+            // 移除系统默认的“进入全屏幕”命令，保留最小化和缩放命令。
+            CommandGroup(replacing: .sidebar) {
+                EmptyView()
             }
             
             // 播放与复读控制菜单
@@ -170,44 +192,6 @@ struct MacAbobooApp: App {
                 .keyboardShortcut("0", modifiers: [.command])
             }
             
-            // 解码引擎设置菜单
-            CommandMenu(languageManager.localized(.decoderEngine)) {
-                Button(action: {
-                    engine.setDecoderMode(.system)
-                }) {
-                    HStack {
-                        Text(languageManager.localized(.decoderModeSystem))
-                        if engine.decoderMode == .system {
-                            Text("✓")
-                        }
-                    }
-                }
-                .keyboardShortcut("1", modifiers: [.option, .command])
-                
-                Button(action: {
-                    engine.setDecoderMode(.mpv)
-                }) {
-                    HStack {
-                        Text(languageManager.localized(.decoderModeMPV))
-                        if engine.decoderMode == .mpv {
-                            Text("✓")
-                        }
-                    }
-                }
-                .keyboardShortcut("2", modifiers: [.option, .command])
-                
-                Button(action: {
-                    engine.setDecoderMode(.hybrid)
-                }) {
-                    HStack {
-                        Text(languageManager.localized(.decoderModeHybrid))
-                        if engine.decoderMode == .hybrid {
-                            Text("✓")
-                        }
-                    }
-                }
-                .keyboardShortcut("3", modifiers: [.option, .command])
-            }
         }
 
         // 独立设置窗口：不使用 sheet，允许设置窗口与主窗口并行存在，
@@ -227,6 +211,10 @@ struct MacAbobooApp: App {
         .defaultSize(width: 980, height: 680)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
+    }
+
+    private var navigationBookmarks: [SentenceSegment] {
+        engine.segments.filter(\.isNavigationBookmarked)
     }
     
     private func openFileAction() {

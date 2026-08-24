@@ -37,9 +37,9 @@ public struct MediaItem: Identifiable, Equatable {
 /// 播放与复读循环模式
 public enum PlaybackLoopMode: String, CaseIterable, Identifiable {
     case normal = "normal"               // 连续播放
-    case singleSegment = "singleSegment" // 单句循环 (AB复读)
+    case singleSegment = "singleSegment" // 单句重复 (AB复读)
     case pauseAfterSegment = "pauseAfter" // 播放完当前句后自动暂停
-    case all = "all"                     // 全曲循环
+    case all = "all"                     // 全篇循环
     
     public var id: String { rawValue }
     

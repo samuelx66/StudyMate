@@ -9,6 +9,9 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
     public var text: String
     public var translation: String
     public var note: String
+    /// 独立于“难句收藏”星标的列表导航书签。
+    /// 该标记只用于在“显示 > 书签”中快速定位句子。
+    public var isNavigationBookmarked: Bool
     public var isBookmarked: Bool
     /// Speaker labels that participate in this sentence. The list may contain
     /// multiple speakers who took turns; `isSpeakerOverlap` is reserved for
@@ -25,6 +28,7 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
         text: String = "",
         translation: String = "",
         note: String = "",
+        isNavigationBookmarked: Bool = false,
         isBookmarked: Bool = false,
         speakerID: Int? = nil,
         speakerIDs: [Int] = [],
@@ -39,6 +43,7 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
         self.text = text
         self.translation = translation
         self.note = note
+        self.isNavigationBookmarked = isNavigationBookmarked
         self.isBookmarked = isBookmarked
         var normalizedSpeakerIDs = Set(speakerIDs)
         if let speakerID { normalizedSpeakerIDs.insert(speakerID) }
@@ -50,7 +55,7 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, index, startTime, endTime, text, translation, note, isBookmarked,
+        case id, index, startTime, endTime, text, translation, note, isNavigationBookmarked, isBookmarked,
              speakerID, speakerIDs, isSpeakerOverlap
     }
 
@@ -64,6 +69,7 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
             text: try container.decodeIfPresent(String.self, forKey: .text) ?? "",
             translation: try container.decodeIfPresent(String.self, forKey: .translation) ?? "",
             note: try container.decodeIfPresent(String.self, forKey: .note) ?? "",
+            isNavigationBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isNavigationBookmarked) ?? false,
             isBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isBookmarked) ?? false,
             speakerID: try container.decodeIfPresent(Int.self, forKey: .speakerID),
             speakerIDs: try container.decodeIfPresent([Int].self, forKey: .speakerIDs) ?? [],

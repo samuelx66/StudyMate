@@ -36,6 +36,7 @@ public struct MainContentView: View {
     @StateObject private var engine = PlaybackEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var isSidebarVisible: Bool = true
@@ -117,6 +118,15 @@ public struct MainContentView: View {
         // 顶部工具栏 (紧凑型设计)
         .toolbar {
             ToolbarItem(placement: .navigation) {
+                Button {
+                    openWindow(id: "sentence-library")
+                } label: {
+                    Label(lang.text("句库", "Sentence Library"), systemImage: "books.vertical")
+                }
+                .help(lang.text("打开句库", "Open sentence library"))
+            }
+
+            ToolbarItem(placement: .navigation) {
                 // 打开文件按钮
                 Button(action: openFileDialog) {
                     Label(lang.localized(.openFile), systemImage: "folder.badge.plus")
@@ -150,11 +160,16 @@ public struct MainContentView: View {
                 Picker("", selection: $engine.loopMode) {
                     ForEach(PlaybackLoopMode.allCases) { mode in
                         Image(systemName: mode.iconName)
+                            .help(mode.localized(with: lang))
+                            .accessibilityLabel(mode.localized(with: lang))
                             .tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
-                .help(lang.text("切换播放循环模式（普通 / 单句复读 / 句后停顿 / 全篇循环）", "Playback loop mode"))
+                .help(lang.text(
+                    "播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环",
+                    "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File"
+                ))
                 
                 // 2. 播放倍速切换下拉菜单
                 Menu {
@@ -432,6 +447,11 @@ private struct PlaybackStatusBar: View {
     var body: some View {
         HStack(spacing: 10) {
             Label(currentSegmentText, systemImage: "number")
+
+            Divider()
+                .frame(height: 14)
+            Label(engine.loopMode.localized(with: lang), systemImage: engine.loopMode.iconName)
+                .accessibilityLabel(engine.loopMode.localized(with: lang))
 
             if abs(engine.playbackRate - 1.0) > 0.001 {
                 Divider()

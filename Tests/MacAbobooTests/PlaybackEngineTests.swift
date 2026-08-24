@@ -425,7 +425,7 @@ final class PlaybackEngineTests: XCTestCase {
         // ID 删除
         engine.deleteSegment(id: seg3.id)
         XCTAssertEqual(engine.segments.count, 2)
-        XCTAssertEqual(engine.segments.map { $0.text }, ["First", "Second"])
+        XCTAssertEqual(engine.segments.map { $0.text }, ["First", "Second Second"])
     }
 
     func testContinuousPlaybackSkipsGapBetweenSegments() async throws {
@@ -507,16 +507,34 @@ final class PlaybackEngineTests: XCTestCase {
         engine.loadMedia(from: mediaURL)
         engine.loopMode = .normal
         engine.segments = [
-            SentenceSegment(index: 1, startTime: 0, endTime: 3)
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
         ]
-        engine.activeSegmentIndex = 0
+        engine.activeSegmentIndex = 1
         engine.play()
 
-        // 唯一句播放完毕后，应自动暂停
-        native.emitTime(3.0)
+        // 最后一条句子播放完毕后，应自动暂停并保留两个波形的当前状态。
+        native.emitTime(8.0)
         await Task.yield()
 
         XCTAssertFalse(engine.isPlaying)
+
+        let frozenPrimaryViewport = engine.primaryViewport
+        let frozenSecondaryViewport = engine.secondaryViewport
+        let frozenActiveIndex = engine.activeSegmentIndex
+        let frozenTime = engine.currentTime
+
+        // 后端在暂停/结束后可能补发一条滞后的时间回调；它不应让活动句、
+        // 次波形视口或主波形游标跳回其它位置。
+        native.emitTime(1.0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, frozenActiveIndex)
+        XCTAssertEqual(engine.primaryViewport.start, frozenPrimaryViewport.start, accuracy: 0.0001)
+        XCTAssertEqual(engine.primaryViewport.end, frozenPrimaryViewport.end, accuracy: 0.0001)
+        XCTAssertEqual(engine.secondaryViewport.start, frozenSecondaryViewport.start, accuracy: 0.0001)
+        XCTAssertEqual(engine.secondaryViewport.end, frozenSecondaryViewport.end, accuracy: 0.0001)
+        XCTAssertEqual(engine.currentTime, frozenTime, accuracy: 0.0001)
     }
 
     func testSelectingSegmentAfterLastSegmentResumesPlayback() async throws {
@@ -603,7 +621,7 @@ final class PlaybackEngineTests: XCTestCase {
         engine.activeSegmentIndex = 0
         engine.play()
 
-        // 句末暂停模式：句1播完后暂停并定位在句2开始
+        // 句后停顿模式：句1播完后暂停并定位在句2开始
         native.emitTime(3.0)
         await Task.yield()
 
@@ -633,7 +651,7 @@ final class PlaybackEngineTests: XCTestCase {
         engine.activeSegmentIndex = 0
         engine.play()
 
-        // 单句循环模式：句1播完后循环回到句1起点 1.0
+        // 单句重复模式：句1播完后循环回到句1起点 1.0
         native.emitTime(4.0)
         await Task.yield()
 
