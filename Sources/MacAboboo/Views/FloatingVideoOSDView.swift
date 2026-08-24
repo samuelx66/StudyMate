@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// 悬浮式播放控制面板（包含第1行核心播放控制与第2行四种播放模式、复读/跟读状态 + 变速）
+/// 悬浮式播放控制面板（包含第1行核心播放控制与第2行四种播放模式 + 变速）
 public struct FloatingVideoOSDView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var lang = LanguageManager.shared
@@ -43,7 +43,7 @@ public struct FloatingVideoOSDView: View {
                 .buttonStyle(.plain)
                 .help(lang.localized(.previousSentence))
                 
-                // 3. 播放 / 暂停 大按钮
+                // 3. 播放 / 暂停 大按钮（实心强调色背景 + 白色图标）
                 Button(action: { engine.togglePlayPause() }) {
                     ZStack {
                         Circle()
@@ -124,75 +124,36 @@ public struct FloatingVideoOSDView: View {
                 .padding(.trailing, 2)
             }
             
-            // 第 2 行：左侧 4 种播放模式与状态指示（左对齐），右侧变速控制（右对齐）
+            // 第 2 行：左侧 4 种播放模式（左对齐），右侧变速控制（右对齐）
             HStack(spacing: 6) {
-                // 四种播放模式按钮 (左对齐)
+                // 四种播放模式按钮 (左对齐，选中状态与播放/暂停风格一致：实心强调色背景 + 白色图标)
                 ForEach(PlaybackLoopMode.allCases) { mode in
+                    let isSelected = engine.loopMode == mode
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.15)) {
                             engine.loopMode = mode
                         }
                     }) {
-                        Image(systemName: mode.iconName)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(engine.loopMode == mode ? .accentColor : .primary)
-                            .frame(width: 24, height: 24)
-                            .background(
+                        ZStack {
+                            if isSelected {
                                 Circle()
-                                    .fill(engine.loopMode == mode ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
-                            )
+                                    .fill(Color.accentColor)
+                                    .frame(width: 24, height: 24)
+                                    .shadow(color: Color.accentColor.opacity(0.28), radius: 3, x: 0, y: 1)
+                            } else {
+                                Circle()
+                                    .fill(Color.primary.opacity(0.06))
+                                    .frame(width: 24, height: 24)
+                            }
+                            
+                            Image(systemName: mode.iconName)
+                                .font(.system(size: 11, weight: isSelected ? .bold : .semibold))
+                                .foregroundColor(isSelected ? .white : .primary)
+                        }
+                        .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
                     .help(mode.localized(with: lang))
-                }
-                
-                // 单句复读次数显示标签
-                if engine.repeatCountLimit > 1 || engine.repeatCountLimit == 0 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "repeat")
-                            .font(.system(size: 8.5))
-                        Text(engine.repeatCountLimit == 0 ? "[\(engine.currentRepeatCount)/∞]" : "[\(engine.currentRepeatCount)/\(engine.repeatCountLimit)]")
-                            .font(.system(size: 9.5, weight: .bold).monospacedDigit())
-                    }
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2.5)
-                    .background(Color.purple.opacity(0.15))
-                    .foregroundColor(.purple)
-                    .cornerRadius(4)
-                }
-                
-                // 句末开口跟读倒计时指示
-                if engine.isShadowingPaused {
-                    HStack(spacing: 3) {
-                        Image(systemName: "mic.fill")
-                            .foregroundColor(.green)
-                            .font(.system(size: 9))
-                        Text(String(
-                            format: lang.text("跟读中 %.1f 秒", "Shadowing %.1fs"),
-                            engine.shadowingCountdownRemaining
-                        ))
-                            .font(.system(size: 9.5, weight: .bold).monospacedDigit())
-                            .foregroundColor(.green)
-                    }
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2.5)
-                    .background(Color.green.opacity(0.15))
-                    .cornerRadius(4)
-                }
-                
-                // 难句专练状态指示
-                if engine.onlyPlayBookmarked {
-                    HStack(spacing: 2) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 8.5))
-                        Text(lang.text("难句专练", "Bookmarks"))
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2.5)
-                    .background(Color.yellow.opacity(0.2))
-                    .foregroundColor(.orange)
-                    .cornerRadius(3)
                 }
                 
                 Spacer()
