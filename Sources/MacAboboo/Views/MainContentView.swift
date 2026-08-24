@@ -57,6 +57,10 @@ public struct MainContentView: View {
             if isSidebarVisible {
                 SegmentListView(engine: engine)
                     .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
 
         }
@@ -249,13 +253,14 @@ public struct MainContentView: View {
                     .onTapGesture {
                         hidePlaylist()
                     }
+                    .transition(.opacity)
 
                 playlistPanel
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
-            .transition(.asymmetric(
-                insertion: .move(edge: .trailing).combined(with: .opacity),
-                removal: .move(edge: .trailing).combined(with: .opacity)
-            ))
         }
     }
 
@@ -273,7 +278,7 @@ public struct MainContentView: View {
     }
 
     private func hidePlaylist() {
-        withAnimation(.easeInOut(duration: 0.24)) {
+        withAnimation(.easeInOut(duration: 0.22)) {
             isPlaylistVisible = false
         }
     }
