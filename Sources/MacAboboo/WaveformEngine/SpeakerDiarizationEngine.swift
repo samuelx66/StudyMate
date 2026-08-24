@@ -9,6 +9,10 @@ public struct SpeakerDiarizationSegment: Equatable, Sendable {
     public var endTime: Double
     public var speakerIDs: [Int]
     public var confidence: Float
+    /// SpeakerKit currently exposes timestamps and labels but no calibrated
+    /// per-segment posterior. Keep that distinction explicit so an unknown
+    /// confidence is not mistaken for a failed or unreliable segment.
+    public var hasCalibratedConfidence: Bool
     public var isOverlap: Bool
 
     public init(
@@ -16,12 +20,14 @@ public struct SpeakerDiarizationSegment: Equatable, Sendable {
         endTime: Double,
         speakerIDs: [Int],
         confidence: Float = 1,
+        hasCalibratedConfidence: Bool = true,
         isOverlap: Bool = false
     ) {
         self.startTime = max(0, startTime)
         self.endTime = max(self.startTime, endTime)
         self.speakerIDs = Array(Set(speakerIDs)).sorted()
         self.confidence = min(1, max(0, confidence))
+        self.hasCalibratedConfidence = hasCalibratedConfidence
         self.isOverlap = isOverlap || self.speakerIDs.count > 1
     }
 
@@ -62,15 +68,20 @@ enum SpeakerTurnAnalysis {
         let exclusive = input.compactMap { segment -> SpeakerDiarizationSegment? in
             let start = min(duration, max(0, segment.startTime))
             let end = min(duration, max(start, segment.endTime))
-            guard end - start >= 0.08,
-                  segment.confidence >= 0.35,
+            // When the provider has a calibrated posterior, retain the
+            // confidence gate. SpeakerKit 1.1 has no such value, so rely on a
+            // stable exclusive interval instead of rejecting every real turn
+            // merely because its confidence is represented as unknown.
+            guard end - start >= 0.18,
+                  (!segment.hasCalibratedConfidence || segment.confidence >= 0.35),
                   segment.speakerIDs.count == 1,
                   !segment.isOverlap else { return nil }
             return SpeakerDiarizationSegment(
                 startTime: start,
                 endTime: end,
                 speakerIDs: segment.speakerIDs,
-                confidence: segment.confidence
+                confidence: segment.confidence,
+                hasCalibratedConfidence: segment.hasCalibratedConfidence
             )
         }.sorted {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
@@ -79,10 +90,33 @@ enum SpeakerTurnAnalysis {
         guard exclusive.count > 1 else { return [] }
 
         var boundaries: [Double] = []
-        var previous = exclusive[0]
-        for current in exclusive.dropFirst() {
-            defer { previous = current }
+        for index in 1..<exclusive.count {
+            let previous = exclusive[index - 1]
+            let current = exclusive[index]
             guard previous.primarySpeakerID != current.primarySpeakerID else { continue }
+
+            // SpeakerKit 1.1 does not expose a calibrated posterior. Require
+            // both sides of an unknown-confidence turn to persist long enough
+            // to reject frame-level label flicker. Calibrated providers may
+            // use a shorter persistence gate because confidence is available.
+            let minimumPersistence = (previous.hasCalibratedConfidence && current.hasCalibratedConfidence)
+                ? 0.25
+                : 0.55
+            guard previous.duration >= minimumPersistence,
+                  current.duration >= minimumPersistence else { continue }
+
+            // A -> brief B -> A is commonly identity flicker in music/noise.
+            // Keep it as soft evidence in the optimizer, but never make both
+            // edges mandatory Whisper window boundaries.
+            let next = index + 1 < exclusive.count ? exclusive[index + 1] : nil
+            let previousPrevious = index >= 2 ? exclusive[index - 2] : nil
+            let entersShortReturn = current.duration < 1.0
+                && next?.primarySpeakerID == previous.primarySpeakerID
+                && (next?.startTime ?? .greatestFiniteMagnitude) - current.endTime <= 0.16
+            let leavesShortReturn = previous.duration < 1.0
+                && previousPrevious?.primarySpeakerID == current.primarySpeakerID
+                && previous.startTime - (previousPrevious?.endTime ?? -Double.greatestFiniteMagnitude) <= 0.16
+            guard !entersShortReturn, !leavesShortReturn else { continue }
 
             // A material overlap is not a clean turn boundary. Long silence is
             // already separated by VAD and does not need a speaker hard split.
@@ -255,6 +289,7 @@ public actor SpeakerDiarizationEngine {
                 // Zero means "unknown", not "certain"; callers must apply
                 // temporal/acoustic gating instead of treating this as 1.0.
                 confidence: 0,
+                hasCalibratedConfidence: false,
                 isOverlap: ids.count > 1
             )
         }

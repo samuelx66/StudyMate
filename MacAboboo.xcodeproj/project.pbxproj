@@ -29,7 +29,6 @@
 		6310B7691C0C4E73A955A1D8 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C22B82D7CC4B71B4205A86 /* WhisperModelManager.swift */; };
 		89A6873BA6204BEF8B64D2E6 /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C052ACC41A141ED808043F4 /* SpeechAlignmentEngine.swift */; };
 		E609006EA08F48588A8C28C4 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1926607B66404818BFD9DAE8 /* SpeechSegmentationPipeline.swift */; };
-		80620A876A9241E3A390131E /* DualEngineFusionSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE24E2673102430C9B870B44 /* DualEngineFusionSegmenter.swift */; };
 		50875E46584C40BFB5E33289 /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99D4CA76EE5340558DB93462 /* WaveformExtractor.swift */; };
 		44E2720492DE4F59A2400BE4 /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AD6EDD775CD4201B259ABAA /* SpeakerDiarizationEngine.swift */; };
 		A02F8C95086E401EABA3C9E4 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7807A1BEB3B24E06A9F8C3DB /* SpeechSegmentationModels.swift */; };
@@ -37,10 +36,8 @@
 		E64C45AF77EF428D87A448D0 /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67F2E0E02904BA0B908AD87 /* NativeSpeechRuntime.swift */; };
 		648DB8F282A145ED8171D4FC /* SileroVADEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81EBA803E40C4939BDDBCDA8 /* SileroVADEngine.swift */; };
 		57CF89C5D13B4F34A500103F /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 460A1B94CDF84A84A3B6D942 /* AudioPCMExtractor.swift */; };
-		446815037C274A918A6C3AE5 /* WhisperPureSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE3F3ED6F52D49F08AD9D32B /* WhisperPureSegmenter.swift */; };
 		7F3F499EA79948579A18E81C /* VADSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A8825EBC4B4445B41D0B5B /* VADSegmenter.swift */; };
 		BB151DC721AC4C9AA855E1E3 /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01F7576E4EF429B9BF51621 /* SpeechBoundaryOptimizer.swift */; };
-		63E5C649D9F14A7A92B6EFDA /* SileroWhisperCascadeSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69D8E65E1542402289B3A93E /* SileroWhisperCascadeSegmenter.swift */; };
 		ECAD945CE23D44BC8B14E468 /* SubtitleExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6326B15047BF46F29B288DE9 /* SubtitleExporter.swift */; };
 		6D09D9E8F12F460B8C99B938 /* TextAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9B3D870B7A46CE93222512 /* TextAlignmentEngine.swift */; };
 		C20913250B544F03B8FD4FEA /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0F12BAC772C41F1BF3BB4AB /* SubtitleParser.swift */; };
@@ -96,7 +93,6 @@
 		B7C22B82D7CC4B71B4205A86 /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
 		3C052ACC41A141ED808043F4 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
 		1926607B66404818BFD9DAE8 /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
-		FE24E2673102430C9B870B44 /* DualEngineFusionSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/DualEngineFusionSegmenter.swift"; sourceTree = "<group>"; };
 		99D4CA76EE5340558DB93462 /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
 		8AD6EDD775CD4201B259ABAA /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
 		7807A1BEB3B24E06A9F8C3DB /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
@@ -104,10 +100,8 @@
 		E67F2E0E02904BA0B908AD87 /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
 		81EBA803E40C4939BDDBCDA8 /* SileroVADEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SileroVADEngine.swift"; sourceTree = "<group>"; };
 		460A1B94CDF84A84A3B6D942 /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
-		BE3F3ED6F52D49F08AD9D32B /* WhisperPureSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperPureSegmenter.swift"; sourceTree = "<group>"; };
 		F7A8825EBC4B4445B41D0B5B /* VADSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/VADSegmenter.swift"; sourceTree = "<group>"; };
 		F01F7576E4EF429B9BF51621 /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
-		69D8E65E1542402289B3A93E /* SileroWhisperCascadeSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SileroWhisperCascadeSegmenter.swift"; sourceTree = "<group>"; };
 		6326B15047BF46F29B288DE9 /* SubtitleExporter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleExporter.swift"; sourceTree = "<group>"; };
 		BE9B3D870B7A46CE93222512 /* TextAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/TextAlignmentEngine.swift"; sourceTree = "<group>"; };
 		A0F12BAC772C41F1BF3BB4AB /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
@@ -196,7 +190,6 @@
 				B7C22B82D7CC4B71B4205A86 /* WhisperModelManager.swift */,
 				3C052ACC41A141ED808043F4 /* SpeechAlignmentEngine.swift */,
 				1926607B66404818BFD9DAE8 /* SpeechSegmentationPipeline.swift */,
-				FE24E2673102430C9B870B44 /* DualEngineFusionSegmenter.swift */,
 				99D4CA76EE5340558DB93462 /* WaveformExtractor.swift */,
 				8AD6EDD775CD4201B259ABAA /* SpeakerDiarizationEngine.swift */,
 				7807A1BEB3B24E06A9F8C3DB /* SpeechSegmentationModels.swift */,
@@ -204,10 +197,8 @@
 				E67F2E0E02904BA0B908AD87 /* NativeSpeechRuntime.swift */,
 				81EBA803E40C4939BDDBCDA8 /* SileroVADEngine.swift */,
 				460A1B94CDF84A84A3B6D942 /* AudioPCMExtractor.swift */,
-				BE3F3ED6F52D49F08AD9D32B /* WhisperPureSegmenter.swift */,
 				F7A8825EBC4B4445B41D0B5B /* VADSegmenter.swift */,
 				F01F7576E4EF429B9BF51621 /* SpeechBoundaryOptimizer.swift */,
-				69D8E65E1542402289B3A93E /* SileroWhisperCascadeSegmenter.swift */,
 				6326B15047BF46F29B288DE9 /* SubtitleExporter.swift */,
 				BE9B3D870B7A46CE93222512 /* TextAlignmentEngine.swift */,
 				A0F12BAC772C41F1BF3BB4AB /* SubtitleParser.swift */,
@@ -348,7 +339,6 @@
 				6310B7691C0C4E73A955A1D8 /* WhisperModelManager.swift in Sources */,
 				89A6873BA6204BEF8B64D2E6 /* SpeechAlignmentEngine.swift in Sources */,
 				E609006EA08F48588A8C28C4 /* SpeechSegmentationPipeline.swift in Sources */,
-				80620A876A9241E3A390131E /* DualEngineFusionSegmenter.swift in Sources */,
 				50875E46584C40BFB5E33289 /* WaveformExtractor.swift in Sources */,
 				44E2720492DE4F59A2400BE4 /* SpeakerDiarizationEngine.swift in Sources */,
 				A02F8C95086E401EABA3C9E4 /* SpeechSegmentationModels.swift in Sources */,
@@ -356,10 +346,8 @@
 				E64C45AF77EF428D87A448D0 /* NativeSpeechRuntime.swift in Sources */,
 				648DB8F282A145ED8171D4FC /* SileroVADEngine.swift in Sources */,
 				57CF89C5D13B4F34A500103F /* AudioPCMExtractor.swift in Sources */,
-				446815037C274A918A6C3AE5 /* WhisperPureSegmenter.swift in Sources */,
 				7F3F499EA79948579A18E81C /* VADSegmenter.swift in Sources */,
 				BB151DC721AC4C9AA855E1E3 /* SpeechBoundaryOptimizer.swift in Sources */,
-				63E5C649D9F14A7A92B6EFDA /* SileroWhisperCascadeSegmenter.swift in Sources */,
 				ECAD945CE23D44BC8B14E468 /* SubtitleExporter.swift in Sources */,
 				6D09D9E8F12F460B8C99B938 /* TextAlignmentEngine.swift in Sources */,
 				C20913250B544F03B8FD4FEA /* SubtitleParser.swift in Sources */,
@@ -482,7 +470,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 44;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -492,7 +480,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.34;
+				MARKETING_VERSION = 1.0.43;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -507,7 +495,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 44;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -516,7 +504,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.34;
+				MARKETING_VERSION = 1.0.43;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

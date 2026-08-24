@@ -101,14 +101,8 @@ public final class SileroVADEngine: @unchecked Sendable {
             pcm: pcm,
             configuration: voiceConfig
         )
-        let mode: SpeechSegmentationMode
-        switch config.minSilenceDuration {
-        case ..<0.28: mode = .vadSensitive
-        case 0.40...: mode = .vadRelaxed
-        default: mode = .vadStandard
-        }
         return SpeechBoundaryOptimizer.shared.optimize(
-            mode: mode,
+            mode: .fast,
             timeline: nil,
             voiceSegments: voice,
             waveform: pcm.waveform(),

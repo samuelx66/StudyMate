@@ -93,7 +93,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private let autoGenerateSubtitlesKey = "MacAboboo.AutoGenerateSubtitles"
     private let speechRecognitionLanguageKey = "MacAboboo.SpeechRecognitionLanguage"
     private let expectedSpeakerCountKey = "MacAboboo.ExpectedSpeakerCount"
-    private let segmentationSentenceLengthKey = "MacAboboo.SegmentationSentenceLength"
     private let boundarySnapHapticFeedbackKey = "MacAboboo.BoundarySnapHapticFeedback"
     @Published public var autoGenerateSubtitles: Bool {
         didSet {
@@ -111,12 +110,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var expectedSpeakerCount: Int? {
         didSet {
             UserDefaults.standard.set(expectedSpeakerCount ?? 0, forKey: expectedSpeakerCountKey)
-        }
-    }
-    /// 用户界面使用三种预设，内部仍映射到六个成熟 profile。
-    @Published public var segmentationSentenceLength: SpeechSentenceLength {
-        didSet {
-            UserDefaults.standard.set(segmentationSentenceLength.rawValue, forKey: segmentationSentenceLengthKey)
         }
     }
     /// 在边界吸附成功时提供 macOS 触觉反馈；默认开启，可在设置中关闭。
@@ -256,8 +249,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.speechRecognitionLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
         let savedSpeakerCount = UserDefaults.standard.integer(forKey: expectedSpeakerCountKey)
         self.expectedSpeakerCount = (2...8).contains(savedSpeakerCount) ? savedSpeakerCount : nil
-        self.segmentationSentenceLength = UserDefaults.standard.string(forKey: segmentationSentenceLengthKey)
-            .flatMap(SpeechSentenceLength.init(rawValue:)) ?? .standard
         self.boundarySnapHapticFeedback = (UserDefaults.standard.object(forKey: boundarySnapHapticFeedbackKey) as? Bool) ?? true
         super.init()
         self.nativeBackend.volume = self.volume
@@ -722,7 +713,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.waveformExtractionProgress = 1
                     if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
                     if self.segments.isEmpty && !self.hasCompletedSegmentation {
-                        self.performSmartSegmentation(using: savedWaveform)
+                        self.performSegmentation(
+                            mode: .fast,
+                            showProgress: true,
+                            waveformData: savedWaveform
+                        )
                     }
                     if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
                         self.persistCurrentProject(includeWaveform: true)
@@ -837,7 +832,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         }
 
                         if self.segments.isEmpty && self.segmentOrigin == .none {
-                            self.performSmartSegmentation(using: data)
+                            self.performSegmentation(
+                                mode: .fast,
+                                showProgress: true,
+                                waveformData: data
+                            )
                         }
 
                         self.persistCurrentProject(includeWaveform: true)
@@ -851,24 +850,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         )
     }
 
-    /// 面向用户的三种断句预设入口。媒体切换或再次启动断句时，旧请求会被取消且不能回写结果。
-    public func performSegmentation(
-        preset: SpeechSegmentationPreset,
-        showProgress: Bool = true,
-        languageOverride: String? = nil
-    ) {
-        performSegmentation(
-            mode: internalMode(for: preset),
-            showProgress: showProgress,
-            languageOverride: languageOverride
-        )
-    }
-
-    private func internalMode(for preset: SpeechSegmentationPreset) -> SpeechSegmentationMode {
-        preset.mode(for: segmentationSentenceLength)
-    }
-
-    /// 六个内部 profile 的统一断句入口。兼容旧菜单与外部调用方。
+    /// 快速与智能两种模式的统一断句入口。媒体切换或再次启动断句时，
+    /// 旧请求会被取消且不能回写结果。
     public func performSegmentation(
         mode: SpeechSegmentationMode,
         showProgress: Bool = true,
@@ -1007,71 +990,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    /// 兼容原菜单与调用方；配置仅用于映射到三种统一 Silero 模式。
-    public func performSmartSegmentation(
-        using data: WaveformData? = nil,
-        config: SileroVADEngine.Config = .standard,
-        showProgress: Bool = true
-    ) {
-        let mode: SpeechSegmentationMode
-        switch config.minSilenceDuration {
-        case ..<0.28: mode = .vadSensitive
-        case 0.40...: mode = .vadRelaxed
-        default: mode = .vadStandard
-        }
-        performSegmentation(
-            mode: mode,
-            showProgress: showProgress,
-            waveformData: data
-        )
-    }
-
-    /// 执行智能语音停顿断句（兼容老配置）
-    public func performSmartSegmentation(using data: WaveformData? = nil, config: VADSegmenter.Config) {
-        let mode: SpeechSegmentationMode
-        switch config.minSilenceDuration {
-        case ..<0.28: mode = .vadSensitive
-        case 0.40...: mode = .vadRelaxed
-        default: mode = .vadStandard
-        }
-        performSegmentation(
-            mode: mode,
-            showProgress: true,
-            waveformData: data
-        )
-    }
-
-    public func performDualEngineAISegmentation(locale: Locale? = nil) {
-        performSegmentation(
-            mode: .semanticAcousticFusion,
-            languageOverride: locale.flatMap(Self.whisperLanguageCode)
-        )
-    }
-
-    /// 兼容旧 profile：执行 Silero + Whisper 联合双模断句。
-    public func performSileroWhisperCascadeSegmentation(
-        vadConfig: SileroVADEngine.Config = .cascade,
-        locale: Locale? = nil
-    ) {
-        _ = vadConfig
-        performSegmentation(
-            mode: .sileroWhisperCascade,
-            languageOverride: locale.flatMap(Self.whisperLanguageCode)
-        )
-    }
-
-    /// 兼容旧 profile：执行纯 Whisper 独立高精断句。
-    public func performPureWhisperSegmentation(locale: Locale? = nil) {
-        performSegmentation(
-            mode: .whisperSemantic,
-            languageOverride: locale.flatMap(Self.whisperLanguageCode)
-        )
-    }
-
-    private static func whisperLanguageCode(for locale: Locale) -> String? {
-        locale.language.languageCode?.identifier
-    }
-
     private func segmentationProgress(for stage: SpeechSegmentationStage) -> Double {
         switch stage {
         case .decodingAudio(let progress): return min(0.20, max(0, progress) * 0.20)
@@ -1097,10 +1015,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         case .transcribing:
             return chinese ? "Whisper 正在识别词级时间戳与语义…" : "Whisper is recognizing words and timestamps…"
         case .optimizing:
-            if mode == .whisperSemantic {
-                return chinese ? "正在全局优化语义边界…" : "Optimizing semantic boundaries…"
-            }
-            return chinese ? "正在融合语义、停顿与声学边界…" : "Fusing semantic, pause, and acoustic boundaries…"
+            return mode == .intelligent
+                ? (chinese ? "正在自适应融合语义、说话人与声学边界…" : "Adaptively fusing semantic, speaker, and acoustic boundaries…")
+                : (chinese ? "正在优化语音与停顿边界…" : "Optimizing speech and pause boundaries…")
         }
     }
 
@@ -1165,7 +1082,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             // Generate a real PCM + Silero/SpeakerKit timeline first. The old
             // waveform-only compatibility detector is intentionally not used
             // here because peak amplitude is not a VAD probability.
-            performSegmentation(mode: .vadStandard, showProgress: true) { [weak self] generated in
+            performSegmentation(mode: .fast, showProgress: true) { [weak self] generated in
                 self?.alignImportedText(sentences, with: generated)
             }
             return

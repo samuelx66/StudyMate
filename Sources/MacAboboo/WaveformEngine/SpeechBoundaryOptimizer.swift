@@ -32,7 +32,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         waveform: WaveformData,
         duration: Double,
         includeRecognizedText: Bool,
-        speakerSegments: [SpeakerDiarizationSegment] = []
+        speakerSegments: [SpeakerDiarizationSegment] = [],
+        vadProbabilities: [VADProbabilityFrame] = []
     ) -> [SentenceSegment] {
         let safeDuration = duration.isFinite ? max(0, duration) : 0
         guard safeDuration > 0 else { return [] }
@@ -50,6 +51,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         let profile = effectiveProfile(
             mode: mode,
             speakerSegments: semanticSpeakers,
+            tokens: timeline?.tokens ?? [],
+            voiceSegments: normalizedVoice,
             duration: safeDuration
         )
         let acousticSegments = optimizeVoiceActivity(
@@ -57,7 +60,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             waveform: waveform,
             profile: profile,
             duration: safeDuration,
-            speakerSegments: normalizedSpeakers
+            speakerSegments: normalizedSpeakers,
+            stableSpeakerBoundariesOnly: mode == .intelligent
         )
 
         if mode.requiresTranscription,
@@ -74,7 +78,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 acousticSegments: acousticSegments,
                 profile: profile,
                 duration: safeDuration,
-                includeRecognizedText: includeRecognizedText
+                includeRecognizedText: includeRecognizedText,
+                vadProbabilities: vadProbabilities
             )
             if !result.isEmpty { return result }
         }
@@ -82,24 +87,110 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         return acousticSegments
     }
 
-    /// Single-speaker material has no turn-change score. Strengthen its pause
-    /// and semantic evidence only when SpeakerKit contains no reliable turn;
-    /// fast profiles are intentionally unchanged because they do not run the
-    /// semantic dynamic-programming path.
+    /// Derive one stable content baseline before local candidate scoring. This
+    /// is not a user-selected sentence length: it measures actual turn rate,
+    /// overlap, speech rate, pause density and Whisper reliability.
     func effectiveProfile(
         mode: SpeechSegmentationMode,
         speakerSegments: [SpeakerDiarizationSegment],
+        tokens: [SpeechToken] = [],
+        voiceSegments: [VoiceActivitySegment] = [],
         duration: Double
     ) -> SpeechSegmentationProfile {
         var profile = mode.profile
-        guard mode.requiresTranscription,
-              SpeakerTurnAnalysis.reliableBoundaries(
-                in: speakerSegments,
-                duration: duration
-              ).isEmpty else { return profile }
-        profile.pauseWeight = max(profile.pauseWeight, 1.20)
-        profile.semanticWeight = max(profile.semanticWeight, 1.40)
+        guard mode == .intelligent, duration > 0 else { return profile }
+
+        let reliableTurns = SpeakerTurnAnalysis.reliableBoundaries(
+            in: speakerSegments,
+            duration: duration
+        )
+        let minutes = max(1.0 / 60.0, duration / 60.0)
+        let turnsPerMinute = Double(reliableTurns.count) / minutes
+        let overlapDuration = speakerSegments
+            .filter(\.isOverlap)
+            .reduce(0.0) { partial, segment in
+                partial + max(0, min(duration, segment.endTime) - max(0, segment.startTime))
+            }
+        let overlapRatio = min(1, overlapDuration / duration)
+
+        let usableTokens = tokens.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.endTime > $0.startTime
+        }
+        let averageTokenConfidence = usableTokens.isEmpty
+            ? 1.0
+            : usableTokens.reduce(0.0) { $0 + Double($1.confidence) } / Double(usableTokens.count)
+        let speechDuration = max(0.01, voiceSegments.reduce(0.0) { $0 + $1.duration })
+        let tokensPerSecond = Double(usableTokens.count) / speechDuration
+        let meaningfulPauses = zip(voiceSegments, voiceSegments.dropFirst()).filter {
+            $1.startTime - $0.endTime >= 0.18
+        }.count
+        let pausesPerMinute = Double(meaningfulPauses) / minutes
+
+        // Interpolate between monologue and dialogue instead of switching at
+        // one turn-rate threshold. Nearly identical recordings therefore do
+        // not jump to a different segmentation personality.
+        let dialogue = smoothRamp(turnsPerMinute, lower: 1.5, upper: 6.0)
+        profile.minimumSentenceDuration = interpolate(0.45, 0.30, dialogue)
+        profile.preferredSentenceDuration = interpolate(5.0, 3.8, dialogue)
+        profile.semanticWeight = interpolate(1.55, 1.30, dialogue)
+        profile.pauseWeight = interpolate(1.15, 0.85, dialogue)
+        profile.speakerWeight = interpolate(1.25, 1.80, dialogue)
+        profile.splitPenalty = interpolate(0.80, 0.68, dialogue)
+
+        if !usableTokens.isEmpty {
+            let fastSpeech = smoothRamp(tokensPerSecond, lower: 2.4, upper: 4.0)
+            let slowSpeech = 1 - smoothRamp(tokensPerSecond, lower: 0.9, upper: 1.8)
+            profile.preferredSentenceDuration = interpolate(
+                profile.preferredSentenceDuration,
+                min(profile.preferredSentenceDuration, 3.55),
+                fastSpeech
+            )
+            profile.minimumSentenceDuration = interpolate(
+                profile.minimumSentenceDuration,
+                min(profile.minimumSentenceDuration, 0.30),
+                fastSpeech
+            )
+            profile.preferredSentenceDuration = interpolate(
+                profile.preferredSentenceDuration,
+                max(profile.preferredSentenceDuration, 5.6),
+                slowSpeech
+            )
+        }
+
+        let pauseRichness = smoothRamp(pausesPerMinute, lower: 2.0, upper: 10.0)
+        profile.pauseWeight = interpolate(profile.pauseWeight, max(profile.pauseWeight, 1.22), pauseRichness)
+        profile.mergeGap = interpolate(0.18, 0.14, pauseRichness)
+        profile.semanticWeight = interpolate(max(profile.semanticWeight, 1.50), profile.semanticWeight, pauseRichness)
+
+        // Whisper remains valuable in noise, but its influence decreases
+        // gradually as the actual token confidence weakens.
+        let recognitionReliability = smoothRamp(averageTokenConfidence, lower: 0.30, upper: 0.68)
+        profile.semanticWeight *= interpolate(0.62, 1.0, recognitionReliability)
+        profile.pauseWeight = interpolate(max(profile.pauseWeight, 1.22), profile.pauseWeight, recognitionReliability)
+        profile.acousticWeight = interpolate(max(profile.acousticWeight, 1.18), profile.acousticWeight, recognitionReliability)
+
+        // During simultaneous speech a label transition is not a clean
+        // subtitle boundary. Attenuate it continuously as overlap grows.
+        let overlap = smoothRamp(overlapRatio, lower: 0.02, upper: 0.16)
+        profile.speakerWeight *= interpolate(1.0, 0.68, overlap)
+        profile.semanticWeight = interpolate(profile.semanticWeight, max(profile.semanticWeight, 1.45), overlap)
+        profile.pauseWeight = interpolate(profile.pauseWeight, max(profile.pauseWeight, 1.05), overlap)
+
+        // Learning sentences may be naturally short, but never allow adaptive
+        // tuning to weaken the hard maximum used by final safety enforcement.
+        profile.maximumSentenceDuration = 12
         return profile
+    }
+
+    private func smoothRamp(_ value: Double, lower: Double, upper: Double) -> Double {
+        guard upper > lower else { return value >= upper ? 1 : 0 }
+        let normalized = min(1, max(0, (value - lower) / (upper - lower)))
+        return normalized * normalized * (3 - 2 * normalized)
+    }
+
+    private func interpolate(_ from: Double, _ to: Double, _ amount: Double) -> Double {
+        from + (to - from) * min(1, max(0, amount))
     }
 
     // MARK: - Semantic + acoustic local fusion
@@ -117,6 +208,14 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         var isFinal: Bool
     }
 
+    private struct AdaptiveBoundaryPolicy {
+        var semanticWeight: Double
+        var pauseWeight: Double
+        var acousticWeight: Double
+        var speakerWeight: Double
+        var splitPenalty: Double
+    }
+
     private func optimizeSemanticTimeline(
         tokens inputTokens: [SpeechToken],
         voiceSegments: [VoiceActivitySegment],
@@ -124,7 +223,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         acousticSegments: [SentenceSegment],
         profile: SpeechSegmentationProfile,
         duration: Double,
-        includeRecognizedText: Bool
+        includeRecognizedText: Bool,
+        vadProbabilities: [VADProbabilityFrame]
     ) -> [SentenceSegment] {
         guard !acousticSegments.isEmpty else { return [] }
         let constrainedTokens = constrainTokensToSpeech(
@@ -141,7 +241,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             voiceSegments: voiceSegments,
             acousticSegments: acousticSegments,
             speakerSegments: speakerSegments,
-            profile: profile
+            profile: profile,
+            vadProbabilities: vadProbabilities
         )
         guard candidates.count == tokens.count + 1 else { return [] }
 
@@ -196,7 +297,9 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                     tokenCount: endIndex - startIndex,
                     profile: profile,
                     isFirst: startIndex == 0,
-                    isFinal: endIndex == count
+                    isFinal: endIndex == count,
+                    allowsShortReply: endIndex < count
+                        && candidates[endIndex].isHardSpeakerBoundary
                 )
                 let tokenCount = endIndex - startIndex
                 let averageConfidence = (confidencePrefix[endIndex] - confidencePrefix[startIndex])
@@ -207,17 +310,18 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 }
                 if endIndex < count {
                     let candidate = candidates[endIndex]
-                    score += candidate.semanticStrength * profile.semanticWeight
-                    score += candidate.pauseStrength * profile.pauseWeight
-                    score += candidate.acousticStrength * profile.acousticWeight
-                    score += candidate.speakerStrength * profile.speakerWeight
-                    score -= profile.splitPenalty
+                    let policy = adaptiveBoundaryPolicy(for: candidate, profile: profile)
+                    score += candidate.semanticStrength * policy.semanticWeight
+                    score += candidate.pauseStrength * policy.pauseWeight
+                    score += candidate.acousticStrength * policy.acousticWeight
+                    score += candidate.speakerStrength * policy.speakerWeight
+                    score -= policy.splitPenalty
                     if !candidate.isNaturalBoundary {
                         // Do not let a token/window boundary win merely
                         // because the transcript happens to contain many
                         // short tokens. A split needs punctuation, a real
                         // pause/acoustic edge, or an exclusive speaker turn.
-                        score -= profile.splitPenalty * 1.8
+                        score -= policy.splitPenalty * 1.8
                     }
                     if speechDuration < profile.minimumSentenceDuration,
                        !candidate.isNaturalBoundary {
@@ -249,15 +353,20 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 speechStart: first.startTime,
                 voiceSegments: voiceSegments,
                 profile: profile,
-                duration: duration
+                duration: duration,
+                vadProbabilities: vadProbabilities
             )
             let end = calibratedEnd(
                 speechEnd: last.endTime,
                 voiceSegments: voiceSegments,
                 profile: profile,
-                duration: duration
+                duration: duration,
+                vadProbabilities: vadProbabilities
             )
-            let text = includeRecognizedText ? joinTokenText(Array(tokens[range])) : ""
+            // Keep recognized text internally through post-processing even
+            // when the user disabled subtitle saving. Boundary decisions must
+            // be identical for both toggle states; clear it only at the end.
+            let text = joinTokenText(Array(tokens[range]))
             let speakerIDs = Array(Set(tokens[range].flatMap(\.speakerIDs))).sorted()
             let speakerOverlap = !speakerOverlapIDs(
                 in: first.startTime...last.endTime,
@@ -291,12 +400,89 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             naturalBoundaries: &naturalBoundaries,
             profile: profile
         )
+        mergeSemanticFragments(
+            segments: &segments,
+            speakerSegments: speakerSegments,
+            profile: profile,
+            duration: duration,
+            protectedBoundaries: candidates
+                .filter { $0.speakerStrength >= 0.75 }
+                .map(\.time)
+        )
         enforceMaximumDuration(
             segments: &segments,
             maximum: profile.maximumSentenceDuration,
             duration: duration
         )
-        return reindexed(segments)
+        let reindexedSegments = reindexed(segments)
+        guard !includeRecognizedText else { return reindexedSegments }
+        return reindexedSegments.map { segment in
+            var copy = segment
+            copy.text = ""
+            return copy
+        }
+    }
+
+    /// Repair timestamp-level fragments left by Whisper around window edges or
+    /// noisy short words. This is deliberately conservative: a complete
+    /// terminal sentence or a stable SpeakerKit turn is never merged merely
+    /// because it is short.
+    private func mergeSemanticFragments(
+        segments: inout [SentenceSegment],
+        speakerSegments: [SpeakerDiarizationSegment],
+        profile: SpeechSegmentationProfile,
+        duration: Double,
+        protectedBoundaries: [Double]
+    ) {
+        guard segments.count > 1 else { return }
+        let hardTurns = SpeakerTurnAnalysis.reliableBoundaries(
+            in: speakerSegments,
+            duration: duration
+        )
+        var index = 0
+        while index + 1 < segments.count {
+            let current = segments[index]
+            let next = segments[index + 1]
+            let gap = max(0, next.startTime - current.endTime)
+            let text = current.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let punctuationOnly = !text.isEmpty && text.allSatisfy {
+                $0.isPunctuation || $0.isWhitespace || $0.isSymbol
+            }
+            let endsTerminal = text.last.map { ".?!。？！…؟｡．".contains($0) } ?? false
+            let endsSoftPunctuation = text.last.map { ",，、;:；：".contains($0) } ?? false
+            let implausiblyShort = current.duration < 0.25
+            let incompleteShortPhrase = current.duration < 1.25 && !endsTerminal
+            let softClause = current.duration < 2.0 && endsSoftPunctuation
+            let stableTurn = (hardTurns + protectedBoundaries).contains {
+                abs($0 - (current.endTime + next.startTime) / 2) <= 0.20
+            }
+            let combinedSpan = next.endTime - current.startTime
+            guard gap <= 0.55,
+                  (!stableTurn || implausiblyShort),
+                  combinedSpan <= profile.maximumSentenceDuration + 0.001,
+                  punctuationOnly || implausiblyShort || incompleteShortPhrase || softClause else {
+                index += 1
+                continue
+            }
+
+            segments[index].endTime = next.endTime
+            segments[index].text = joinSegmentTexts(current.text, next.text)
+            segments[index].translation = joinSegmentTexts(current.translation, next.translation)
+            let ids = Array(Set(current.speakerIDs + next.speakerIDs)).sorted()
+            segments[index].speakerIDs = ids
+            segments[index].speakerID = ids.count == 1 ? ids[0] : nil
+            segments[index].isSpeakerOverlap = current.isSpeakerOverlap || next.isSpeakerOverlap
+            segments.remove(at: index + 1)
+        }
+    }
+
+    private func joinSegmentTexts(_ left: String, _ right: String) -> String {
+        let lhs = left.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rhs = right.trimmingCharacters(in: .whitespacesAndNewlines)
+        if lhs.isEmpty { return rhs }
+        if rhs.isEmpty { return lhs }
+        let noLeadingSpace = rhs.first.map { $0.isPunctuation || $0.isSymbol } ?? false
+        return noLeadingSpace ? lhs + rhs : lhs + " " + rhs
     }
 
     /// Whisper can emit very short token groups around a noisy turn. Keep a
@@ -483,9 +669,14 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         voiceSegments: [VoiceActivitySegment],
         acousticSegments: [SentenceSegment],
         speakerSegments: [SpeakerDiarizationSegment],
-        profile: SpeechSegmentationProfile
+        profile: SpeechSegmentationProfile,
+        vadProbabilities: [VADProbabilityFrame]
     ) -> [BoundaryCandidate] {
         var result: [BoundaryCandidate] = []
+        let reliableSpeakerBoundaries = SpeakerTurnAnalysis.reliableBoundaries(
+            in: speakerSegments,
+            duration: max(tokens.last?.endTime ?? 0, voiceSegments.last?.endTime ?? 0)
+        )
         result.reserveCapacity(tokens.count + 1)
         result.append(BoundaryCandidate(
             tokenEndIndex: 0,
@@ -517,31 +708,45 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 voiceSegments: voiceSegments,
                 snapWindow: profile.snapWindow
             )
+            let posteriorStrength = vadPosteriorBoundaryStrength(
+                at: time,
+                probabilities: vadProbabilities,
+                window: min(0.22, profile.snapWindow)
+            )
             let acousticAnchorStrength = acousticSentenceBoundaryStrength(
                 time: time,
                 acousticSegments: acousticSegments,
                 snapWindow: profile.snapWindow
             )
-            let acoustic = max(acousticVoiceStrength * 0.65, acousticAnchorStrength)
+            let acoustic = max(
+                posteriorStrength,
+                max(acousticVoiceStrength * 0.65, acousticAnchorStrength)
+            )
             let currentSpeakerIDs = Set(token.speakerIDs)
             let nextSpeakerIDs = Set(next?.speakerIDs ?? [])
             let speakerChanged = !currentSpeakerIDs.isEmpty
                 && !nextSpeakerIDs.isEmpty
                 && currentSpeakerIDs.isDisjoint(with: nextSpeakerIDs)
+            let nearStableSpeakerTurn = reliableSpeakerBoundaries.contains {
+                abs($0 - time) <= 0.20
+            }
             let reliableSpeakerChange = speakerChanged
                 && !token.speakerOverlap
                 && !(next?.speakerOverlap ?? false)
                 && token.speakerConfidence >= 0.35
                 && (next?.speakerConfidence ?? 0) >= 0.35
+                && nearStableSpeakerTurn
             // A diarization change inside an overlap is useful context, but it
             // is not a safe place to force a subtitle split. Treat it as a
             // weak signal and reserve the full score for an exclusive turn.
             let exclusiveSpeakerChange = !token.speakerOverlap
                 && !(next?.speakerOverlap ?? false)
-            let speakerStrength: Double =
-                (token.speakerTurnAfter || speakerChanged)
-                    ? (exclusiveSpeakerChange ? 1 : 0.28)
-                    : 0
+            let speakerStrength: Double = {
+                if token.speakerTurnAfter { return 1 }
+                guard speakerChanged else { return 0 }
+                guard exclusiveSpeakerChange else { return 0.22 }
+                return nearStableSpeakerTurn ? 1 : 0.16
+            }()
             // Whisper's recognition segment index often changes at an
             // inference-window boundary. Only retain a small semantic hint
             // when that change is corroborated by an actual pause or acoustic
@@ -612,6 +817,41 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         return max(0, 1 - distance / snapWindow)
     }
 
+    /// Score a boundary from the real Silero posterior curve. A convincing
+    /// boundary is both locally quiet and visibly lower than the speech on
+    /// either side. This stays useful in background music where waveform
+    /// energy never reaches a clean valley.
+    private func vadPosteriorBoundaryStrength(
+        at time: Double,
+        probabilities: [VADProbabilityFrame],
+        window: Double
+    ) -> Double {
+        guard !probabilities.isEmpty, window > 0 else { return 0 }
+        let nearby = probabilities.filter { abs($0.time - time) <= window }
+        guard !nearby.isEmpty else { return 0 }
+        let centerRadius = min(0.055, window * 0.35)
+        let center = nearby.filter { abs($0.time - time) <= centerRadius }
+        let left = nearby.filter { $0.time < time - centerRadius }
+        let right = nearby.filter { $0.time > time + centerRadius }
+        let centerMinimum = Double((center.isEmpty ? nearby : center).map(\.probability).min() ?? 1)
+        let centerAverage = averageProbability(center.isEmpty ? nearby : center)
+        let leftAverage = averageProbability(left)
+        let rightAverage = averageProbability(right)
+        let flankFloor = min(leftAverage, rightAverage)
+        let valleyDepth = max(0, flankFloor - centerAverage)
+        let quietStrength = max(0, min(1, (0.58 - centerMinimum) / 0.50))
+        let valleyStrength = max(0, min(1, valleyDepth / 0.42))
+        // A low posterior alone is meaningful for an actual token gap, while
+        // the flank comparison prevents isolated low frames inside speech
+        // from becoming overly attractive split points.
+        return min(1, quietStrength * 0.62 + valleyStrength * 0.72)
+    }
+
+    private func averageProbability(_ frames: [VADProbabilityFrame]) -> Double {
+        guard !frames.isEmpty else { return 0 }
+        return frames.reduce(0.0) { $0 + Double($1.probability) } / Double(frames.count)
+    }
+
     /// Sentence ranges produced by the acoustic path are low-energy anchors,
     /// not mandatory cuts. A Whisper boundary close to one of these anchors
     /// receives a strong local score; this lets reliable semantic punctuation
@@ -636,12 +876,25 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         tokenCount: Int,
         profile: SpeechSegmentationProfile,
         isFirst: Bool,
-        isFinal: Bool
+        isFinal: Bool,
+        allowsShortReply: Bool
     ) -> Double {
-        var score = -0.16 * abs(duration - profile.preferredSentenceDuration)
-            / max(0.5, profile.preferredSentenceDuration)
-        if duration < profile.minimumSentenceDuration {
-            let ratio = (profile.minimumSentenceDuration - duration) / profile.minimumSentenceDuration
+        let tokenRate = Double(tokenCount) / max(0.10, duration)
+        let preferredDuration: Double
+        if tokenRate >= 3.2 {
+            preferredDuration = max(2.8, profile.preferredSentenceDuration * 0.82)
+        } else if tokenRate <= 1.25 {
+            preferredDuration = min(6.2, profile.preferredSentenceDuration * 1.15)
+        } else {
+            preferredDuration = profile.preferredSentenceDuration
+        }
+        let minimumDuration = allowsShortReply
+            ? min(0.20, profile.minimumSentenceDuration)
+            : profile.minimumSentenceDuration
+        var score = -0.16 * abs(duration - preferredDuration)
+            / max(0.5, preferredDuration)
+        if duration < minimumDuration {
+            let ratio = (minimumDuration - duration) / minimumDuration
             score -= (isFirst || isFinal ? 1.2 : 2.8) * ratio
         }
         if duration > profile.maximumSentenceDuration {
@@ -652,6 +905,49 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         }
         if tokenCount == 1 && duration < 0.30 && !isFinal { score -= 1.4 }
         return score
+    }
+
+    private func adaptiveBoundaryPolicy(
+        for candidate: BoundaryCandidate,
+        profile: SpeechSegmentationProfile
+    ) -> AdaptiveBoundaryPolicy {
+        var policy = AdaptiveBoundaryPolicy(
+            semanticWeight: profile.semanticWeight,
+            pauseWeight: profile.pauseWeight,
+            acousticWeight: profile.acousticWeight,
+            speakerWeight: profile.speakerWeight,
+            splitPenalty: profile.splitPenalty
+        )
+
+        if candidate.isHardSpeakerBoundary {
+            policy.speakerWeight = max(policy.speakerWeight, 1.95)
+            policy.splitPenalty *= 0.45
+        } else if candidate.speakerStrength > 0, candidate.speakerStrength < 0.70 {
+            // Overlap/flicker remains useful context but cannot dominate a
+            // clean semantic or acoustic boundary.
+            policy.speakerWeight *= 0.55
+        }
+
+        if candidate.semanticStrength >= 0.65 {
+            policy.semanticWeight = max(policy.semanticWeight, 1.70)
+            policy.splitPenalty *= 0.78
+        }
+        if candidate.pauseStrength >= 0.65, candidate.acousticStrength >= 0.45 {
+            policy.pauseWeight = max(policy.pauseWeight, 1.25)
+            policy.acousticWeight = max(policy.acousticWeight, 1.10)
+            policy.splitPenalty *= 0.72
+        }
+
+        let strongestEvidence = max(
+            candidate.semanticStrength,
+            candidate.pauseStrength,
+            candidate.acousticStrength,
+            candidate.speakerStrength
+        )
+        if strongestEvidence < 0.35 {
+            policy.splitPenalty *= 1.30
+        }
+        return policy
     }
 
     private func recoverTokenRanges(previous: [Int], tokenCount: Int) -> [Range<Int>] {
@@ -674,24 +970,70 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         speechStart: Double,
         voiceSegments: [VoiceActivitySegment],
         profile: SpeechSegmentationProfile,
-        duration: Double
+        duration: Double,
+        vadProbabilities: [VADProbabilityFrame]
     ) -> Double {
         let candidate = voiceSegments
             .filter { $0.startTime <= speechStart + 0.08 && abs($0.startTime - speechStart) <= profile.snapWindow }
             .min { abs($0.startTime - speechStart) < abs($1.startTime - speechStart) }
-        return min(duration, max(0, candidate?.startTime ?? speechStart - profile.onsetPadding))
+        let fallback = candidate?.startTime ?? speechStart - profile.onsetPadding
+        guard let voiceStart = candidate?.startTime,
+              let refined = posteriorOnset(near: voiceStart, probabilities: vadProbabilities) else {
+            return min(duration, max(0, fallback))
+        }
+        return min(duration, max(0, refined))
     }
 
     private func calibratedEnd(
         speechEnd: Double,
         voiceSegments: [VoiceActivitySegment],
         profile: SpeechSegmentationProfile,
-        duration: Double
+        duration: Double,
+        vadProbabilities: [VADProbabilityFrame]
     ) -> Double {
         let candidate = voiceSegments
             .filter { $0.endTime >= speechEnd - 0.08 && abs($0.endTime - speechEnd) <= profile.snapWindow }
             .min { abs($0.endTime - speechEnd) < abs($1.endTime - speechEnd) }
-        return min(duration, max(0, candidate?.endTime ?? speechEnd + profile.offsetPadding))
+        let fallback = candidate?.endTime ?? speechEnd + profile.offsetPadding
+        guard let voiceEnd = candidate?.endTime,
+              let refined = posteriorOffset(near: voiceEnd, probabilities: vadProbabilities) else {
+            return min(duration, max(0, fallback))
+        }
+        return min(duration, max(0, refined))
+    }
+
+    private func posteriorOnset(
+        near boundary: Double,
+        probabilities: [VADProbabilityFrame]
+    ) -> Double? {
+        let local = probabilities.filter { $0.time >= boundary - 0.14 && $0.time <= boundary + 0.24 }
+        guard local.count >= 2 else { return nil }
+        guard let onsetIndex = local.indices.first(where: { index in
+            local[index].probability >= 0.30
+                && index + 1 < local.count
+                && local[index + 1].probability >= 0.30
+        }) else { return nil }
+        var index = onsetIndex
+        while index > 0, local[index - 1].probability >= 0.10 { index -= 1 }
+        let frameStep = local.count > 1 ? local[1].time - local[0].time : 0.032
+        return local[index].time - max(0.032, frameStep * 1.5)
+    }
+
+    private func posteriorOffset(
+        near boundary: Double,
+        probabilities: [VADProbabilityFrame]
+    ) -> Double? {
+        let local = probabilities.filter { $0.time >= boundary - 0.24 && $0.time <= boundary + 0.16 }
+        guard local.count >= 2 else { return nil }
+        guard let offsetIndex = local.indices.reversed().first(where: { index in
+            local[index].probability >= 0.20
+                && index > 0
+                && local[index - 1].probability >= 0.20
+        }) else { return nil }
+        var index = offsetIndex
+        while index + 1 < local.count, local[index + 1].probability >= 0.08 { index += 1 }
+        let frameStep = local.count > 1 ? local[1].time - local[0].time : 0.032
+        return local[index].time + max(0.048, frameStep * 1.75)
     }
 
     private func resolveSemanticBoundaries(
@@ -788,7 +1130,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         waveform: WaveformData,
         profile: SpeechSegmentationProfile,
         duration: Double,
-        speakerSegments: [SpeakerDiarizationSegment]
+        speakerSegments: [SpeakerDiarizationSegment],
+        stableSpeakerBoundariesOnly: Bool
     ) -> [SentenceSegment] {
         // SpeakerKit can recover speech that Silero misses under heavy noise.
         // Use its coverage as a fallback (and union it with VAD coverage when
@@ -822,7 +1165,9 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                     start: segment.startTime,
                     end: segment.endTime,
                     speakerSegments: speakerSegments,
-                    mergeGap: profile.mergeGap
+                    mergeGap: profile.mergeGap,
+                    stableOnly: stableSpeakerBoundariesOnly,
+                    duration: duration
                 )
             for range in baseRanges {
                 ranges.append(contentsOf: splitLongVoiceSegment(
@@ -954,13 +1299,29 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         start: Double,
         end: Double,
         speakerSegments: [SpeakerDiarizationSegment],
-        mergeGap: Double
+        mergeGap: Double,
+        stableOnly: Bool,
+        duration: Double
     ) -> [(start: Double, end: Double)] {
         guard end - start >= 0.02 else { return [] }
         var breakpoints = [start, end]
-        for speaker in speakerSegments where speaker.endTime > start && speaker.startTime < end {
-            breakpoints.append(min(end, max(start, speaker.startTime)))
-            breakpoints.append(min(end, max(start, speaker.endTime)))
+        if stableOnly {
+            breakpoints.append(contentsOf: SpeakerTurnAnalysis.reliableBoundaries(
+                in: speakerSegments,
+                duration: duration
+            ).filter { $0 > start && $0 < end })
+            // Simultaneous speech remains a distinct acoustic condition even
+            // when its labels are not a stable exclusive turn.
+            for speaker in speakerSegments where speaker.isOverlap
+                && speaker.endTime > start && speaker.startTime < end {
+                breakpoints.append(min(end, max(start, speaker.startTime)))
+                breakpoints.append(min(end, max(start, speaker.endTime)))
+            }
+        } else {
+            for speaker in speakerSegments where speaker.endTime > start && speaker.startTime < end {
+                breakpoints.append(min(end, max(start, speaker.startTime)))
+                breakpoints.append(min(end, max(start, speaker.endTime)))
+            }
         }
         let points = Array(Set(breakpoints)).sorted()
         guard points.count >= 2 else { return [(start, end)] }
@@ -1045,6 +1406,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 endTime: end,
                 speakerIDs: ids,
                 confidence: segment.confidence,
+                hasCalibratedConfidence: segment.hasCalibratedConfidence,
                 isOverlap: ids.count > 1
             )
         }.sorted {
@@ -1064,6 +1426,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                segment.startTime - last.endTime <= 0.08 {
                 smoothed[smoothed.count - 1].endTime = max(last.endTime, segment.endTime)
                 smoothed[smoothed.count - 1].confidence = max(last.confidence, segment.confidence)
+                smoothed[smoothed.count - 1].hasCalibratedConfidence =
+                    last.hasCalibratedConfidence && segment.hasCalibratedConfidence
                 smoothed[smoothed.count - 1].isOverlap = last.isOverlap || segment.isOverlap
             } else {
                 smoothed.append(segment)

@@ -19,7 +19,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -45,7 +45,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         let timeline = SpeechRecognitionTimeline(tokens: tokens, voiceSegments: voice, detectedLanguage: "en")
 
         let withText = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .sileroWhisperCascade,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: voice,
             waveform: .empty,
@@ -53,7 +53,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
             includeRecognizedText: true
         )
         let withoutText = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .sileroWhisperCascade,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: voice,
             waveform: .empty,
@@ -86,7 +86,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: externalVoice,
             waveform: .empty,
@@ -116,7 +116,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -141,7 +141,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -165,7 +165,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -175,7 +175,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
 
         XCTAssertFalse(result.isEmpty)
         XCTAssertTrue(result.allSatisfy {
-            $0.duration >= SpeechSegmentationMode.whisperSemantic.profile.minimumSentenceDuration - 0.001
+            $0.duration >= SpeechSegmentationMode.intelligent.profile.minimumSentenceDuration - 0.001
         })
     }
 
@@ -191,7 +191,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
             detectedLanguage: "en"
         )
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .semanticAcousticFusion,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -222,7 +222,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: voice,
             waveform: .empty,
@@ -242,7 +242,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
             SpeakerDiarizationSegment(startTime: 1.15, endTime: 1.45, speakerIDs: [1])
         ]
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .vadSensitive,
+            mode: .fast,
             timeline: nil,
             voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 2.4)],
             waveform: .empty,
@@ -281,7 +281,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: .empty,
@@ -292,13 +292,13 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(result.count, 1)
         XCTAssertLessThanOrEqual(
             result[0].duration,
-            SpeechSegmentationMode.whisperSemantic.profile.maximumSentenceDuration + 0.001
+            SpeechSegmentationMode.intelligent.profile.maximumSentenceDuration + 0.001
         )
     }
 
     func testSpeakerKitCoverageRecoversWhenSileroMissesSpeech() {
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .vadStandard,
+            mode: .fast,
             timeline: nil,
             voiceSegments: [],
             waveform: .empty,
@@ -324,7 +324,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         }
         let waveform = WaveformData(peaks: peaks, duration: 25, sampleRate: 100)
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .vadStandard,
+            mode: .fast,
             timeline: nil,
             voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 25)],
             waveform: waveform,
@@ -333,7 +333,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         )
 
         XCTAssertGreaterThan(result.count, 2)
-        XCTAssertTrue(result.allSatisfy { $0.duration <= SpeechSegmentationMode.vadStandard.profile.maximumSentenceDuration + 0.001 })
+        XCTAssertTrue(result.allSatisfy { $0.duration <= SpeechSegmentationMode.fast.profile.maximumSentenceDuration + 0.001 })
         for index in 0..<(result.count - 1) {
             XCTAssertLessThanOrEqual(result[index].endTime, result[index + 1].startTime)
         }
@@ -341,7 +341,7 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
 
     func testSilenceDoesNotProducePlaceholderSentence() {
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .vadSensitive,
+            mode: .fast,
             timeline: nil,
             voiceSegments: [],
             waveform: WaveformData(peaks: [Float](repeating: 0, count: 100), duration: 1, sampleRate: 100),
@@ -353,11 +353,14 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
 
     func testBundledSileroModelLoadsAndRejectsSilence() async throws {
         let pcm = AudioPCMData(samples: [Float](repeating: 0, count: 16_000))
-        let segments = try await NativeSpeechRuntime.shared.detectVoiceActivity(
+        let analysis = try await NativeSpeechRuntime.shared.detectVoiceActivityAnalysis(
             pcm: pcm,
-            configuration: SpeechSegmentationMode.vadStandard.profile.vad
+            configuration: SpeechSegmentationMode.fast.profile.vad
         )
-        XCTAssertTrue(segments.isEmpty)
+        XCTAssertTrue(analysis.segments.isEmpty)
+        XCTAssertGreaterThan(analysis.probabilities.count, 20)
+        XCTAssertTrue(analysis.probabilities.allSatisfy { $0.probability < 0.10 })
+        XCTAssertEqual(analysis.frameDuration, 1.0 / Double(analysis.probabilities.count), accuracy: 0.0001)
     }
 
     func testBundledSpeakerKitModelsLoadAndRejectSilence() async throws {
@@ -366,24 +369,26 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertTrue(timeline.isEmpty)
     }
 
-    func testAllSixModesHaveDistinctProfiles() {
-        XCTAssertEqual(SpeechSegmentationMode.allCases.count, 6)
+    func testFastAndIntelligentModesHaveDistinctProfiles() {
+        XCTAssertEqual(SpeechSegmentationMode.allCases.count, 2)
         let signatures = Set(SpeechSegmentationMode.allCases.map { mode in
             let profile = mode.profile
             return "\(profile.vad.threshold)-\(profile.vad.minSilenceDuration)-\(profile.semanticWeight)-\(profile.maximumSentenceDuration)"
         })
-        XCTAssertEqual(signatures.count, 6)
+        XCTAssertEqual(signatures.count, 2)
+        XCTAssertFalse(SpeechSegmentationMode.fast.requiresTranscription)
+        XCTAssertTrue(SpeechSegmentationMode.intelligent.requiresTranscription)
     }
 
-    func testRelaxedVADKeepsWideDetectionWindowButCapsFinalSentenceAtTwelveSeconds() {
-        let profile = SpeechSegmentationMode.vadRelaxed.profile
-        XCTAssertEqual(profile.vad.maxSpeechDuration, 18, accuracy: 0.001)
+    func testFastModeCapsFinalSentenceAtTwelveSeconds() {
+        let profile = SpeechSegmentationMode.fast.profile
+        XCTAssertEqual(profile.vad.maxSpeechDuration, 12, accuracy: 0.001)
         XCTAssertEqual(profile.maximumSentenceDuration, 12, accuracy: 0.001)
 
         var peaks = [Float](repeating: 0.8, count: 1_700)
         for index in 790...810 { peaks[index] = 0.01 }
         let result = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .vadRelaxed,
+            mode: .fast,
             timeline: nil,
             voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 17)],
             waveform: WaveformData(peaks: peaks, duration: 17, sampleRate: 100),
@@ -400,27 +405,48 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
             SpeakerDiarizationSegment(startTime: 0, endTime: 8, speakerIDs: [0], confidence: 0.9)
         ]
         let profile = SpeechBoundaryOptimizer.shared.effectiveProfile(
-            mode: .sileroWhisperCascade,
+            mode: .intelligent,
             speakerSegments: speakers,
             duration: 8
         )
 
-        XCTAssertEqual(profile.semanticWeight, 1.40, accuracy: 0.001)
-        XCTAssertEqual(profile.pauseWeight, 1.20, accuracy: 0.001)
+        XCTAssertEqual(profile.semanticWeight, 1.55, accuracy: 0.001)
+        XCTAssertEqual(profile.pauseWeight, 1.15, accuracy: 0.001)
     }
 
-    func testReliableSpeakerTurnKeepsMultiSpeakerProfileUnchanged() {
+    func testFrequentReliableTurnsAdaptIntelligentModeForDialogue() {
         let speakers = [
             SpeakerDiarizationSegment(startTime: 0, endTime: 1, speakerIDs: [0], confidence: 0.9),
             SpeakerDiarizationSegment(startTime: 1, endTime: 2, speakerIDs: [1], confidence: 0.9)
         ]
         let profile = SpeechBoundaryOptimizer.shared.effectiveProfile(
-            mode: .sileroWhisperCascade,
+            mode: .intelligent,
             speakerSegments: speakers,
             duration: 2
         )
 
-        XCTAssertEqual(profile, SpeechSegmentationMode.sileroWhisperCascade.profile)
+        XCTAssertEqual(profile.minimumSentenceDuration, 0.30, accuracy: 0.001)
+        XCTAssertEqual(profile.preferredSentenceDuration, 3.8, accuracy: 0.001)
+        XCTAssertEqual(profile.speakerWeight, 1.80, accuracy: 0.001)
+        XCTAssertLessThan(profile.splitPenalty, SpeechSegmentationMode.intelligent.profile.splitPenalty)
+    }
+
+    func testLowConfidenceRecognitionShiftsIntelligentModeTowardAcousticEvidence() {
+        let tokens = [
+            SpeechToken(text: " uncertain", startTime: 0, endTime: 0.5, confidence: 0.2),
+            SpeechToken(text: " words", startTime: 0.6, endTime: 1.0, confidence: 0.3)
+        ]
+        let profile = SpeechBoundaryOptimizer.shared.effectiveProfile(
+            mode: .intelligent,
+            speakerSegments: [],
+            tokens: tokens,
+            voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 1)],
+            duration: 1
+        )
+
+        XCTAssertLessThan(profile.semanticWeight, SpeechSegmentationMode.intelligent.profile.semanticWeight)
+        XCTAssertGreaterThanOrEqual(profile.acousticWeight, 1.15)
+        XCTAssertGreaterThanOrEqual(profile.pauseWeight, 1.20)
     }
 
     func testTranscriptionPlanPreservesReliableSpeakerTurnInsideContinuousVoice() {
@@ -440,6 +466,96 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(plan.windows[1].startTime, 1, accuracy: 0.001)
     }
 
+    func testSpeakerKitUnknownConfidenceStillPreservesStableTurn() {
+        let plan = SpeechSegmentationPipeline.transcriptionWindowPlan(
+            voiceSegments: [VoiceActivitySegment(startTime: 0, endTime: 2)],
+            speakerSegments: [
+                SpeakerDiarizationSegment(
+                    startTime: 0,
+                    endTime: 1,
+                    speakerIDs: [0],
+                    confidence: 0,
+                    hasCalibratedConfidence: false
+                ),
+                SpeakerDiarizationSegment(
+                    startTime: 1,
+                    endTime: 2,
+                    speakerIDs: [1],
+                    confidence: 0,
+                    hasCalibratedConfidence: false
+                )
+            ],
+            duration: 2
+        )
+
+        XCTAssertEqual(plan.hardBoundaries, [1])
+        XCTAssertEqual(plan.windows.count, 2)
+    }
+
+    func testCalibratedLowConfidenceSpeakerTurnRemainsSoftEvidence() {
+        let boundaries = SpeakerTurnAnalysis.reliableBoundaries(
+            in: [
+                SpeakerDiarizationSegment(startTime: 0, endTime: 1, speakerIDs: [0], confidence: 0.2),
+                SpeakerDiarizationSegment(startTime: 1, endTime: 2, speakerIDs: [1], confidence: 0.2)
+            ],
+            duration: 2
+        )
+
+        XCTAssertTrue(boundaries.isEmpty)
+    }
+
+    func testUnknownConfidenceShortSpeakerReturnIsNotAHardBoundary() {
+        let boundaries = SpeakerTurnAnalysis.reliableBoundaries(
+            in: [
+                SpeakerDiarizationSegment(startTime: 0, endTime: 1.4, speakerIDs: [0], confidence: 0, hasCalibratedConfidence: false),
+                SpeakerDiarizationSegment(startTime: 1.4, endTime: 2.0, speakerIDs: [1], confidence: 0, hasCalibratedConfidence: false),
+                SpeakerDiarizationSegment(startTime: 2.0, endTime: 3.2, speakerIDs: [0], confidence: 0, hasCalibratedConfidence: false)
+            ],
+            duration: 3.2
+        )
+
+        XCTAssertTrue(boundaries.isEmpty)
+    }
+
+    func testWhisperWindowDeduplicationAlignsPunctuationAndTokenization() {
+        let tokens = [
+            SpeechToken(text: " New", startTime: 1.00, endTime: 1.18, confidence: 0.8),
+            SpeechToken(text: " York,", startTime: 1.18, endTime: 1.48, confidence: 0.8),
+            SpeechToken(
+                text: " New York",
+                startTime: 1.02,
+                endTime: 1.50,
+                confidence: 0.9,
+                recognitionSegmentIndex: 1_000_000
+            ),
+            SpeechToken(
+                text: " today",
+                startTime: 1.50,
+                endTime: 1.80,
+                confidence: 0.9,
+                recognitionSegmentIndex: 1_000_001
+            )
+        ]
+
+        let result = NativeSpeechRuntime.deduplicateWindowTokens(tokens)
+
+        XCTAssertEqual(result.map(\.text), [" New", " York,", " today"])
+    }
+
+    func testWhisperWindowDeduplicationKeepsIntentionalRepeatedWords() {
+        let tokens = [
+            SpeechToken(text: " no", startTime: 1.0, endTime: 1.2),
+            SpeechToken(
+                text: " no",
+                startTime: 1.35,
+                endTime: 1.55,
+                recognitionSegmentIndex: 1_000_000
+            )
+        ]
+
+        XCTAssertEqual(NativeSpeechRuntime.deduplicateWindowTokens(tokens).count, 2)
+    }
+
     func testWhisperRangeBuilderDoesNotReMergeAcrossSpeakerTurn() {
         let ranges = NativeSpeechRuntime.transcriptionRanges(
             [
@@ -456,41 +572,31 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ranges[1].start, 14_720)
     }
 
-    func testUserPresetsMapToExpectedInternalProfiles() {
-        XCTAssertEqual(SpeechSegmentationPreset.allCases.count, 3)
-        XCTAssertEqual(SpeechSentenceLength.allCases.count, 3)
+    func testWhisperContextResetsAtReliableSpeakerTurnButNotOrdinaryOverlap() {
+        let previous = NativeSpeechRuntime.SampleRange(start: 0, end: 17_280)
+        let current = NativeSpeechRuntime.SampleRange(start: 14_720, end: 32_000)
 
-        XCTAssertEqual(
-            SpeechSegmentationPreset.highPrecision.mode(for: .short).rawValue,
-            SpeechSegmentationMode.whisperSemantic.rawValue
-        )
-        XCTAssertEqual(
-            SpeechSegmentationPreset.highPrecision.mode(for: .standard).rawValue,
-            SpeechSegmentationMode.sileroWhisperCascade.rawValue
-        )
-        XCTAssertEqual(
-            SpeechSegmentationPreset.highPrecision.mode(for: .long).rawValue,
-            SpeechSegmentationMode.semanticAcousticFusion.rawValue
-        )
-
-        XCTAssertEqual(
-            SpeechSegmentationPreset.fast.mode(for: .short).rawValue,
-            SpeechSegmentationMode.vadSensitive.rawValue
-        )
-        XCTAssertEqual(
-            SpeechSegmentationPreset.fast.mode(for: .standard).rawValue,
-            SpeechSegmentationMode.vadStandard.rawValue
-        )
-        XCTAssertEqual(
-            SpeechSegmentationPreset.fast.mode(for: .long).rawValue,
-            SpeechSegmentationMode.vadRelaxed.rawValue
-        )
-
-        XCTAssertEqual(
-            SpeechSegmentationPreset.semantic.mode(for: .short).rawValue,
-            SpeechSegmentationPreset.semantic.mode(for: .long).rawValue
-        )
-        XCTAssertTrue(SpeechSegmentationPreset.highPrecision.mode(for: .standard).requiresTranscription)
-        XCTAssertFalse(SpeechSegmentationPreset.fast.mode(for: .standard).requiresTranscription)
+        XCTAssertTrue(NativeSpeechRuntime.shouldResetWhisperContext(
+            windowIndex: 1,
+            range: current,
+            previousRange: previous,
+            hardBoundaries: [1.0]
+        ))
+        XCTAssertFalse(NativeSpeechRuntime.shouldResetWhisperContext(
+            windowIndex: 1,
+            range: current,
+            previousRange: previous,
+            hardBoundaries: []
+        ))
     }
+
+    func testWhisperContextResetsAfterLongRealSilence() {
+        XCTAssertTrue(NativeSpeechRuntime.shouldResetWhisperContext(
+            windowIndex: 1,
+            range: .init(start: 32_000, end: 48_000),
+            previousRange: .init(start: 0, end: 16_000),
+            hardBoundaries: []
+        ))
+    }
+
 }

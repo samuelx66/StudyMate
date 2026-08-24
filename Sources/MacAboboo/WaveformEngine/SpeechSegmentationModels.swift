@@ -1,113 +1,38 @@
 import Accelerate
 import Foundation
 
-/// 面向普通用户的三种断句预设。内部六个 profile 仍保留，用于精细调参与兼容旧调用方。
-public enum SpeechSegmentationPreset: String, CaseIterable, Codable, Sendable {
-    /// Whisper + Silero + SpeakerKit，适合嘈杂背景和多人对话。
-    case highPrecision
-    /// Silero + SpeakerKit，不启动 Whisper，优先速度和资源占用。
-    case fast
-    /// Whisper 语义优先，适合停顿不明显或背景音乐较强的内容。
-    case semantic
-
-    /// 将用户可见预设映射到同一流水线中的内部 profile。
-    /// 句子长度只影响需要长度调节的高精度/快速预设，语义预设始终保持语义优先。
-    public func mode(for sentenceLength: SpeechSentenceLength) -> SpeechSegmentationMode {
-        switch self {
-        case .highPrecision:
-            switch sentenceLength {
-            case .short: return .whisperSemantic
-            case .standard: return .sileroWhisperCascade
-            case .long: return .semanticAcousticFusion
-            }
-        case .fast:
-            switch sentenceLength {
-            case .short: return .vadSensitive
-            case .standard: return .vadStandard
-            case .long: return .vadRelaxed
-            }
-        case .semantic:
-            return .whisperSemantic
-        }
-    }
-}
-
-/// 高级设置中的句子长度偏好。它只选择同一流水线的 profile，不改变算法架构。
-public enum SpeechSentenceLength: String, CaseIterable, Codable, Sendable {
-    case short
-    case standard
-    case long
-}
-
-/// 六个内部 profile 对应的统一断句策略。profile 只改变权重与阈值，不再各自维护一套算法。
+/// 用户可见、内部也实际执行的两种断句模式。
 public enum SpeechSegmentationMode: String, CaseIterable, Codable, Sendable {
-    case sileroWhisperCascade
-    case whisperSemantic
-    case semanticAcousticFusion
-    case vadStandard
-    case vadSensitive
-    case vadRelaxed
+    /// Silero + SpeakerKit，不启动 Whisper，优先速度与较低资源占用。
+    case fast
+    /// Silero + SpeakerKit + Whisper，按内容和局部证据自适应融合。
+    case intelligent
 
     public var requiresTranscription: Bool {
-        switch self {
-        case .sileroWhisperCascade, .whisperSemantic, .semanticAcousticFusion:
-            return true
-        case .vadStandard, .vadSensitive, .vadRelaxed:
-            return false
-        }
+        self == .intelligent
     }
 
+    /// 模式的稳定基础参数。智能模式的最终权重和软时长目标会由
+    /// `SpeechBoundaryOptimizer` 根据内容统计及每个候选边界继续调整。
     public var profile: SpeechSegmentationProfile {
         switch self {
-        case .sileroWhisperCascade:
+        case .intelligent:
             return SpeechSegmentationProfile(
-                vad: .init(threshold: 0.42, minSpeechDuration: 0.22, minSilenceDuration: 0.28, maxSpeechDuration: 14, speechPadding: 0.08, sampleOverlap: 0.10),
-                minimumSentenceDuration: 0.55,
-                preferredSentenceDuration: 4.5,
-                maximumSentenceDuration: 10,
+                vad: .init(threshold: 0.44, minSpeechDuration: 0.20, minSilenceDuration: 0.26, maxSpeechDuration: 16, speechPadding: 0.08, sampleOverlap: 0.10),
+                minimumSentenceDuration: 0.45,
+                preferredSentenceDuration: 4.6,
+                maximumSentenceDuration: 12,
                 mergeGap: 0.16,
                 onsetPadding: 0.08,
-                offsetPadding: 0.14,
+                offsetPadding: 0.15,
                 snapWindow: 0.36,
-                semanticWeight: 1.25,
-                pauseWeight: 0.90,
+                semanticWeight: 1.35,
+                pauseWeight: 0.95,
                 acousticWeight: 0.75,
-                speakerWeight: 1.40,
-                splitPenalty: 0.78
-            )
-        case .whisperSemantic:
-            return SpeechSegmentationProfile(
-                vad: .init(threshold: 0.48, minSpeechDuration: 0.18, minSilenceDuration: 0.22, maxSpeechDuration: 14, speechPadding: 0.05, sampleOverlap: 0.08),
-                minimumSentenceDuration: 0.45,
-                preferredSentenceDuration: 4.0,
-                maximumSentenceDuration: 9,
-                mergeGap: 0.12,
-                onsetPadding: 0.05,
-                offsetPadding: 0.10,
-                snapWindow: 0.24,
-                semanticWeight: 1.60,
-                pauseWeight: 0.58,
-                acousticWeight: 0.22,
-                speakerWeight: 1.55,
-                splitPenalty: 0.82
-            )
-        case .semanticAcousticFusion:
-            return SpeechSegmentationProfile(
-                vad: .init(threshold: 0.50, minSpeechDuration: 0.25, minSilenceDuration: 0.36, maxSpeechDuration: 16, speechPadding: 0.09, sampleOverlap: 0.10),
-                minimumSentenceDuration: 0.60,
-                preferredSentenceDuration: 5.2,
-                maximumSentenceDuration: 12,
-                mergeGap: 0.18,
-                onsetPadding: 0.09,
-                offsetPadding: 0.17,
-                snapWindow: 0.42,
-                semanticWeight: 1.05,
-                pauseWeight: 1.10,
-                acousticWeight: 1.25,
-                speakerWeight: 1.45,
+                speakerWeight: 1.50,
                 splitPenalty: 0.80
             )
-        case .vadStandard:
+        case .fast:
             return SpeechSegmentationProfile(
                 vad: .init(threshold: 0.50, minSpeechDuration: 0.28, minSilenceDuration: 0.32, maxSpeechDuration: 12, speechPadding: 0.10, sampleOverlap: 0.08),
                 minimumSentenceDuration: 0.55,
@@ -117,41 +42,6 @@ public enum SpeechSegmentationMode: String, CaseIterable, Codable, Sendable {
                 onsetPadding: 0.08,
                 offsetPadding: 0.14,
                 snapWindow: 0.30,
-                semanticWeight: 0,
-                pauseWeight: 1,
-                acousticWeight: 1,
-                speakerWeight: 0,
-                splitPenalty: 0
-            )
-        case .vadSensitive:
-            return SpeechSegmentationProfile(
-                vad: .init(threshold: 0.38, minSpeechDuration: 0.18, minSilenceDuration: 0.22, maxSpeechDuration: 7, speechPadding: 0.11, sampleOverlap: 0.08),
-                minimumSentenceDuration: 0.35,
-                preferredSentenceDuration: 3.2,
-                maximumSentenceDuration: 7,
-                mergeGap: 0.10,
-                onsetPadding: 0.10,
-                offsetPadding: 0.16,
-                snapWindow: 0.28,
-                semanticWeight: 0,
-                pauseWeight: 1,
-                acousticWeight: 1,
-                speakerWeight: 0,
-                splitPenalty: 0
-            )
-        case .vadRelaxed:
-            return SpeechSegmentationProfile(
-                vad: .init(threshold: 0.58, minSpeechDuration: 0.38, minSilenceDuration: 0.50, maxSpeechDuration: 18, speechPadding: 0.10, sampleOverlap: 0.10),
-                minimumSentenceDuration: 0.80,
-                preferredSentenceDuration: 8.0,
-                // Keep the relaxed VAD window wide enough to avoid fragmenting
-                // continuous speech, while keeping the final practice sentence
-                // short enough to repeat comfortably.
-                maximumSentenceDuration: 12,
-                mergeGap: 0.32,
-                onsetPadding: 0.08,
-                offsetPadding: 0.18,
-                snapWindow: 0.40,
                 semanticWeight: 0,
                 pauseWeight: 1,
                 acousticWeight: 1,
@@ -472,6 +362,36 @@ public struct VoiceActivitySegment: Equatable, Sendable {
     }
 
     public var duration: Double { max(0, endTime - startTime) }
+}
+
+/// One posterior emitted by the bundled Silero model. `time` is the center of
+/// the model frame on the original media timeline, not a waveform-energy
+/// estimate. Keeping this evidence separate from final VAD intervals lets the
+/// boundary optimizer measure valley depth and onset/offset slopes directly.
+public struct VADProbabilityFrame: Equatable, Sendable {
+    public var time: Double
+    public var probability: Float
+
+    public init(time: Double, probability: Float) {
+        self.time = max(0, time)
+        self.probability = min(1, max(0, probability))
+    }
+}
+
+public struct VoiceActivityAnalysis: Equatable, Sendable {
+    public var segments: [VoiceActivitySegment]
+    public var probabilities: [VADProbabilityFrame]
+    public var frameDuration: Double
+
+    public init(
+        segments: [VoiceActivitySegment],
+        probabilities: [VADProbabilityFrame],
+        frameDuration: Double
+    ) {
+        self.segments = segments
+        self.probabilities = probabilities
+        self.frameDuration = max(0, frameDuration)
+    }
 }
 
 public struct SpeechRecognitionTimeline: Sendable {

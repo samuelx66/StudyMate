@@ -103,7 +103,7 @@ public struct SpeechSegmentationOutput: Sendable {
     }
 }
 
-/// 三种用户预设共用的唯一断句编排入口；内部仍接受六个 profile。
+/// 快速与智能两种模式共用的唯一断句编排入口。
 public actor SpeechSegmentationPipeline {
     public static let shared = SpeechSegmentationPipeline()
 
@@ -111,7 +111,7 @@ public actor SpeechSegmentationPipeline {
     private let runtime: NativeSpeechRuntime
     private let optimizer: SpeechBoundaryOptimizer
     private let speakerDiarizer: SpeakerDiarizationEngine
-    private var voiceCache: [String: [VoiceActivitySegment]] = [:]
+    private var voiceCache: [String: VoiceActivityAnalysis] = [:]
     private var diarizationCache: [String: SpeakerDiarizationTimeline] = [:]
     private var transcriptionCache: [String: SpeechRecognitionTimeline] = [:]
     private var voiceCacheOrder: [String] = []
@@ -155,6 +155,7 @@ public actor SpeechSegmentationPipeline {
             stageChanged: emitStage
         )
         let voiceSegments = detection.voiceSegments
+        let vadProbabilities = detection.vadProbabilities
         let speakerTimeline = detection.speakerTimeline
         let acousticBoundaryTimes = Self.boundaryTimes(
             voiceSegments: voiceSegments,
@@ -178,7 +179,8 @@ public actor SpeechSegmentationPipeline {
             waveform: waveform,
             duration: pcm.duration,
             includeRecognizedText: false,
-            speakerSegments: speakerTimeline.segments
+            speakerSegments: speakerTimeline.segments,
+            vadProbabilities: vadProbabilities
         )
         preview(initialSegments)
 
@@ -215,7 +217,7 @@ public actor SpeechSegmentationPipeline {
         // profile name is intentionally absent because with external VAD the
         // Whisper C API receives the same configuration and PCM windows;
         // switching presets can therefore reuse the exact token timeline.
-        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v4"
+        let transcriptionKey = "\(mediaKey)|whisper|\(modelURL.standardizedFileURL.path)|\(request.recognitionLanguage)|external-vad|\(windowFingerprint)|windowed-v5-whisper192"
         var timeline: SpeechRecognitionTimeline
         if let cached = transcriptionCache[transcriptionKey] {
             touch(transcriptionKey, in: &transcriptionCacheOrder)
@@ -255,7 +257,8 @@ public actor SpeechSegmentationPipeline {
             waveform: waveform,
             duration: pcm.duration,
             includeRecognizedText: request.includeRecognizedText,
-            speakerSegments: speakerTimeline.segments
+            speakerSegments: speakerTimeline.segments,
+            vadProbabilities: vadProbabilities
         )
         if timeline.tokens.isEmpty, !finalSegments.isEmpty {
             warnings.append("Whisper 未返回可用的词级时间戳，已使用声学边界完成断句。")
@@ -340,6 +343,7 @@ public actor SpeechSegmentationPipeline {
         stageChanged: @escaping @Sendable (SpeechSegmentationStage) -> Void
     ) async throws -> (
         voiceSegments: [VoiceActivitySegment],
+        vadProbabilities: [VADProbabilityFrame],
         speakerTimeline: SpeakerDiarizationTimeline,
         warnings: [String]
     ) {
@@ -357,14 +361,15 @@ public actor SpeechSegmentationPipeline {
             stageChanged(.diarizing(cachedDiarization == nil ? 0 : 1))
         }
 
-        // The two models operate on independent actor instances. Start them
-        // together so SpeakerKit's relatively expensive embedding pass does
-        // not add the full Silero VAD latency to every first-open operation.
+        // Queue both independent jobs together so cached results can complete
+        // immediately. Uncached model inference still passes through the
+        // shared exclusive scheduler, deliberately avoiding a simultaneous
+        // Silero CPU spike and SpeakerKit Core ML allocation on long media.
         let runtime = self.runtime
         let speakerDiarizer = self.speakerDiarizer
-        let voiceTask: Task<[VoiceActivitySegment], Error>? = cachedVoice == nil
+        let voiceTask: Task<VoiceActivityAnalysis, Error>? = cachedVoice == nil
             ? Task {
-                try await runtime.detectVoiceActivity(
+                try await runtime.detectVoiceActivityAnalysis(
                     pcm: pcm,
                     configuration: profile.vad
                 )
@@ -388,13 +393,14 @@ public actor SpeechSegmentationPipeline {
             diarizationTask?.cancel()
         }
 
-        let voiceSegments: [VoiceActivitySegment]
+        let voiceAnalysis: VoiceActivityAnalysis
         if let cachedVoice {
-            voiceSegments = cachedVoice
+            voiceAnalysis = cachedVoice
         } else {
             do {
-                voiceSegments = try await voiceTask?.value ?? []
-                insert(voiceSegments, into: &voiceCache, order: &voiceCacheOrder, key: voiceKey)
+                voiceAnalysis = try await voiceTask?.value
+                    ?? VoiceActivityAnalysis(segments: [], probabilities: [], frameDuration: 0)
+                insert(voiceAnalysis, into: &voiceCache, order: &voiceCacheOrder, key: voiceKey)
             } catch {
                 diarizationTask?.cancel()
                 throw error
@@ -425,7 +431,7 @@ public actor SpeechSegmentationPipeline {
         if request.enableSpeakerDiarization {
             stageChanged(.diarizing(1))
         }
-        return (voiceSegments, speakerTimeline, warnings)
+        return (voiceAnalysis.segments, voiceAnalysis.probabilities, speakerTimeline, warnings)
     }
 
     private func insert<Value>(
@@ -526,7 +532,7 @@ public enum SpeechSegmentationPipelineError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .whisperModelMissing:
-            return "所选 Whisper 模型尚未下载。请先在设置中下载模型，或改用快速断句预设。"
+            return "所选 Whisper 模型尚未下载。请先在设置中下载模型，或改用快速断句。"
         }
     }
 }

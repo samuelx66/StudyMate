@@ -154,8 +154,6 @@ extern "C" {
         bool buffer_from_host_ptr;
         // event synchronization
         bool events;
-        // mmap is supported for loading
-        bool mmap_support;
     };
 
     // all the device properties

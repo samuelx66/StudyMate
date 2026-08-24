@@ -339,23 +339,9 @@ public struct IntensiveSettingsPopover: View {
                         .frame(width: 90)
                     }
 
-                    HStack {
-                        Text(lang.text("句子长度", "Sentence Length"))
-                            .font(.caption.bold())
-                        Spacer()
-                        Picker("", selection: $engine.segmentationSentenceLength) {
-                            Text(lang.text("短句", "Short")).tag(SpeechSentenceLength.short)
-                            Text(lang.text("标准", "Standard")).tag(SpeechSentenceLength.standard)
-                            Text(lang.text("长句", "Long")).tag(SpeechSentenceLength.long)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 150)
-                    }
-
                     Text(lang.text(
-                        "已知人数可减少嘈杂多人录音中的错误聚类；句子长度主要影响高精度和快速预设。",
-                        "A known speaker count reduces clustering errors; sentence length mainly affects the high-precision and fast presets."
+                        "已知人数可减少嘈杂多人录音中的错误聚类；智能断句会自动分析语速、停顿、语义和说话人变化。",
+                        "A known speaker count reduces clustering errors; intelligent segmentation automatically analyzes speech rate, pauses, semantics, and speaker turns."
                     ))
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
@@ -366,8 +352,8 @@ public struct IntensiveSettingsPopover: View {
                             Text(lang.text("保存 AI 识别原文字幕", "Save AI transcript as subtitles"))
                                 .font(.caption.bold())
                             Text(lang.text(
-                                "关闭后不保存识别文字，但高精度和纯语义预设仍会用 Whisper 优化边界；快速预设不运行 Whisper。",
-                                "When off, text is not saved, but high-precision and semantic presets still use Whisper for boundaries; the fast preset skips Whisper."
+                                "关闭后不保存识别文字，但智能断句仍会用 Whisper 优化边界；快速断句不运行 Whisper。",
+                                "When off, text is not saved, but intelligent segmentation still uses Whisper for boundaries; fast segmentation skips Whisper."
                             ))
                                 .font(.system(size: 9))
                                 .foregroundColor(.secondary)

@@ -55,7 +55,7 @@ public final class SpeechAlignmentEngine: @unchecked Sendable {
         }
         try Task.checkCancellation()
         let languageCode = Self.languageCode(for: locale)
-        let profile = SpeechSegmentationMode.whisperSemantic.profile
+        let profile = SpeechSegmentationMode.intelligent.profile
         let timeline = try await NativeSpeechRuntime.shared.transcribe(
             pcm: pcm,
             modelURL: modelURL,
@@ -67,7 +67,7 @@ public final class SpeechAlignmentEngine: @unchecked Sendable {
         try Task.checkCancellation()
 
         let segments = SpeechBoundaryOptimizer.shared.optimize(
-            mode: .whisperSemantic,
+            mode: .intelligent,
             timeline: timeline,
             voiceSegments: timeline.voiceSegments,
             waveform: pcm.waveform(),

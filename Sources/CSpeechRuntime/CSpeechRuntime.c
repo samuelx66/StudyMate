@@ -201,7 +201,10 @@ int32_t mab_whisper_transcribe(
     struct whisper_full_params params = whisper_full_default_params(strategy);
     params.n_threads = config.thread_count > 0 ? config.thread_count : 4;
     params.translate = false;
-    params.no_context = false;
+    // A model context is cached across media to avoid a costly reload. Clear
+    // its rolling text prompt for the first window of every new request, then
+    // allow later windows from that same request to share linguistic context.
+    params.no_context = config.reset_context;
     params.no_timestamps = false;
     params.single_segment = false;
     params.print_special = false;
@@ -270,8 +273,13 @@ int32_t mab_whisper_transcribe(
         for (int token_index = 0; token_index < segment_token_count; ++token_index) {
             whisper_token token_id = whisper_full_get_token_id(context->value, segment_index, token_index);
             const char *text = whisper_full_get_token_text(context->value, segment_index, token_index);
-            int64_t t0 = whisper_full_get_token_t0(context->value, segment_index, token_index);
-            int64_t t1 = whisper_full_get_token_t1(context->value, segment_index, token_index);
+            whisper_token_data token_data = whisper_full_get_token_data(
+                context->value,
+                segment_index,
+                token_index
+            );
+            int64_t t0 = token_data.t0;
+            int64_t t1 = token_data.t1;
             if (token_id >= end_of_text || text == NULL || text[0] == '\0' || t0 < 0 || t1 < t0) {
                 continue;
             }
@@ -295,27 +303,6 @@ int32_t mab_whisper_transcribe(
         }
     }
     result->token_count = output_index;
-
-    int vad_segment_count = whisper_full_n_vad_segments(context->value);
-    if (vad_segment_count > 0) {
-        result->voice_segments = (MABVoiceActivitySegment *) calloc(
-            (size_t) vad_segment_count,
-            sizeof(MABVoiceActivitySegment)
-        );
-        if (result->voice_segments == NULL) {
-            mab_transcription_result_free(result);
-            mab_set_error(error_buffer, error_capacity, "Unable to allocate VAD results");
-            return -3;
-        }
-        for (int index = 0; index < vad_segment_count; ++index) {
-            result->voice_segments[index].start_time =
-                (double) whisper_full_get_vad_segment_t0(context->value, index) / 100.0;
-            result->voice_segments[index].end_time =
-                (double) whisper_full_get_vad_segment_t1(context->value, index) / 100.0;
-            result->voice_segments[index].confidence = 1.0f;
-        }
-        result->voice_segment_count = vad_segment_count;
-    }
 
     const char *detected_language = whisper_lang_str(whisper_full_lang_id(context->value));
     result->detected_language = mab_copy_string(detected_language == NULL ? "" : detected_language);
@@ -375,15 +362,22 @@ int32_t mab_vad_detect(
     MABCancellationToken *cancellation_token,
     MABVoiceActivitySegment **segments,
     int32_t *segment_count,
+    float **probabilities,
+    int32_t *probability_count,
+    double *probability_frame_duration,
     char *error_buffer,
     size_t error_capacity
 ) {
-    if (segments == NULL || segment_count == NULL) {
+    if (segments == NULL || segment_count == NULL || probabilities == NULL
+        || probability_count == NULL || probability_frame_duration == NULL) {
         mab_set_error(error_buffer, error_capacity, "VAD result pointer is null");
         return -1;
     }
     *segments = NULL;
     *segment_count = 0;
+    *probabilities = NULL;
+    *probability_count = 0;
+    *probability_frame_duration = 0.0;
     if (context == NULL || context->value == NULL || samples == NULL || sample_count <= 0) {
         mab_set_error(error_buffer, error_capacity, "Invalid VAD input");
         return -1;
@@ -393,19 +387,45 @@ int32_t mab_vad_detect(
         return -2;
     }
 
-    struct whisper_vad_segments *raw_segments = whisper_vad_segments_from_samples(
+    if (!whisper_vad_detect_speech(context->value, samples, sample_count)) {
+        mab_set_error(error_buffer, error_capacity, "Silero VAD inference failed");
+        return -3;
+    }
+    int raw_probability_count = whisper_vad_n_probs(context->value);
+    float *raw_probabilities = whisper_vad_probs(context->value);
+    if (raw_probability_count <= 0 || raw_probabilities == NULL) {
+        mab_set_error(error_buffer, error_capacity, "Silero VAD returned no probability frames");
+        return -3;
+    }
+    float *probability_output = (float *) malloc((size_t) raw_probability_count * sizeof(float));
+    if (probability_output == NULL) {
+        mab_set_error(error_buffer, error_capacity, "Unable to allocate VAD probabilities");
+        return -4;
+    }
+    memcpy(probability_output, raw_probabilities, (size_t) raw_probability_count * sizeof(float));
+    *probabilities = probability_output;
+    *probability_count = raw_probability_count;
+    *probability_frame_duration = ((double) sample_count / 16000.0) / (double) raw_probability_count;
+
+    struct whisper_vad_segments *raw_segments = whisper_vad_segments_from_probs(
         context->value,
-        mab_vad_params(config),
-        samples,
-        sample_count
+        mab_vad_params(config)
     );
     if (raw_segments == NULL) {
+        free(probability_output);
+        *probabilities = NULL;
+        *probability_count = 0;
+        *probability_frame_duration = 0.0;
         mab_set_error(error_buffer, error_capacity, "Silero VAD inference failed");
         return -3;
     }
 
     if (mab_cancellation_token_is_cancelled(cancellation_token)) {
         whisper_vad_free_segments(raw_segments);
+        free(probability_output);
+        *probabilities = NULL;
+        *probability_count = 0;
+        *probability_frame_duration = 0.0;
         mab_set_error(error_buffer, error_capacity, "Voice activity detection was cancelled");
         return -2;
     }
@@ -418,13 +438,31 @@ int32_t mab_vad_detect(
         );
         if (output == NULL) {
             whisper_vad_free_segments(raw_segments);
+            free(probability_output);
+            *probabilities = NULL;
+            *probability_count = 0;
+            *probability_frame_duration = 0.0;
             mab_set_error(error_buffer, error_capacity, "Unable to allocate VAD results");
             return -4;
         }
         for (int index = 0; index < count; ++index) {
             output[index].start_time = whisper_vad_segments_get_segment_t0(raw_segments, index);
             output[index].end_time = whisper_vad_segments_get_segment_t1(raw_segments, index);
-            output[index].confidence = 1.0f;
+            int first_probability = (int) (output[index].start_time / *probability_frame_duration);
+            int final_probability = (int) (output[index].end_time / *probability_frame_duration) + 1;
+            if (first_probability < 0) first_probability = 0;
+            if (final_probability > raw_probability_count) final_probability = raw_probability_count;
+            float confidence_sum = 0.0f;
+            int confidence_count = 0;
+            for (int probability_index = first_probability;
+                 probability_index < final_probability;
+                 ++probability_index) {
+                confidence_sum += probability_output[probability_index];
+                confidence_count += 1;
+            }
+            output[index].confidence = confidence_count > 0
+                ? confidence_sum / (float) confidence_count
+                : 0.0f;
         }
         *segments = output;
         *segment_count = count;
@@ -435,4 +473,8 @@ int32_t mab_vad_detect(
 
 void mab_voice_activity_segments_free(MABVoiceActivitySegment *segments) {
     free(segments);
+}
+
+void mab_vad_probabilities_free(float *probabilities) {
+    free(probabilities);
 }

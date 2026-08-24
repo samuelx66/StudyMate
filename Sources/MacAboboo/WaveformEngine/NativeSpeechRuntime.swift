@@ -79,42 +79,76 @@ public actor NativeSpeechRuntime {
         pcm: AudioPCMData,
         configuration: VoiceActivityConfiguration
     ) async throws -> [VoiceActivitySegment] {
+        try await detectVoiceActivityAnalysis(
+            pcm: pcm,
+            configuration: configuration
+        ).segments
+    }
+
+    public func detectVoiceActivityAnalysis(
+        pcm: AudioPCMData,
+        configuration: VoiceActivityConfiguration
+    ) async throws -> VoiceActivityAnalysis {
         guard pcm.sampleRate == AudioPCMData.requiredSampleRate, !pcm.isEmpty else {
             throw NativeSpeechRuntimeError.invalidPCM
         }
-        let modelURL = try Self.sileroModelURL()
-        let context = try loadVADContext(modelURL: modelURL)
-        let contextHandle = NativeContextHandle(pointer: context)
         let cancellation = NativeCancellation()
 
         return try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
             try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            var outputPointer: UnsafeMutablePointer<MABVoiceActivitySegment>?
-            var outputCount: Int32 = 0
-            var errorBuffer = [CChar](repeating: 0, count: 512)
-            let status = pcm.samples.withUnsafeBufferPointer { samples in
-                mab_vad_detect(
-                    contextHandle.pointer,
-                    samples.baseAddress,
-                    Int32(clamping: samples.count),
-                    Self.nativeVADConfiguration(configuration),
-                    cancellation.pointer,
-                    &outputPointer,
-                    &outputCount,
-                    &errorBuffer,
-                    errorBuffer.count
+                try await self.detectVoiceActivityLocked(
+                    pcm: pcm,
+                    configuration: configuration,
+                    cancellation: cancellation
                 )
+            } onCancel: {
+                cancellation.cancel()
             }
-            defer { mab_voice_activity_segments_free(outputPointer) }
-            if status == -2 || cancellation.isCancelled {
-                throw CancellationError()
-            }
-            guard status == 0 else {
-                throw NativeSpeechRuntimeError.inferenceFailed(Self.errorMessage(errorBuffer))
-            }
-            guard let outputPointer, outputCount > 0 else { return [] }
-            return (0..<Int(outputCount)).map { index in
+        }
+    }
+
+    private func detectVoiceActivityLocked(
+        pcm: AudioPCMData,
+        configuration: VoiceActivityConfiguration,
+        cancellation: NativeCancellation
+    ) throws -> VoiceActivityAnalysis {
+        try Task.checkCancellation()
+        let modelURL = try Self.sileroModelURL()
+        let context = try loadVADContext(modelURL: modelURL)
+        let contextHandle = NativeContextHandle(pointer: context)
+        var outputPointer: UnsafeMutablePointer<MABVoiceActivitySegment>?
+        var outputCount: Int32 = 0
+        var probabilityPointer: UnsafeMutablePointer<Float>?
+        var probabilityCount: Int32 = 0
+        var probabilityFrameDuration: Double = 0
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+        let status = pcm.samples.withUnsafeBufferPointer { samples in
+            mab_vad_detect(
+                contextHandle.pointer,
+                samples.baseAddress,
+                Int32(clamping: samples.count),
+                Self.nativeVADConfiguration(configuration),
+                cancellation.pointer,
+                &outputPointer,
+                &outputCount,
+                &probabilityPointer,
+                &probabilityCount,
+                &probabilityFrameDuration,
+                &errorBuffer,
+                errorBuffer.count
+            )
+        }
+        defer { mab_voice_activity_segments_free(outputPointer) }
+        defer { mab_vad_probabilities_free(probabilityPointer) }
+        if status == -2 || cancellation.isCancelled {
+            throw CancellationError()
+        }
+        guard status == 0 else {
+            throw NativeSpeechRuntimeError.inferenceFailed(Self.errorMessage(errorBuffer))
+        }
+        let segments: [VoiceActivitySegment]
+        if let outputPointer, outputCount > 0 {
+            segments = (0..<Int(outputCount)).map { index in
                 let segment = outputPointer[index]
                 return VoiceActivitySegment(
                     startTime: segment.start_time,
@@ -122,10 +156,25 @@ public actor NativeSpeechRuntime {
                     confidence: segment.confidence
                 )
             }
-            } onCancel: {
-                cancellation.cancel()
-            }
+        } else {
+            segments = []
         }
+        let probabilities: [VADProbabilityFrame]
+        if let probabilityPointer, probabilityCount > 0, probabilityFrameDuration > 0 {
+            probabilities = (0..<Int(probabilityCount)).map { index in
+                VADProbabilityFrame(
+                    time: (Double(index) + 0.5) * probabilityFrameDuration,
+                    probability: probabilityPointer[index]
+                )
+            }
+        } else {
+            probabilities = []
+        }
+        return VoiceActivityAnalysis(
+            segments: segments,
+            probabilities: probabilities,
+            frameDuration: probabilityFrameDuration
+        )
     }
 
     public func transcribe(
@@ -188,7 +237,6 @@ public actor NativeSpeechRuntime {
     ) async throws -> SpeechRecognitionTimeline {
         let context = try loadWhisperContext(modelURL: modelURL, forceCPU: forceCPU)
         let contextHandle = NativeContextHandle(pointer: context)
-        let vadModelURL = useInternalVAD ? try Self.sileroModelURL() : nil
         let cancellation = NativeCancellation()
 
         return try await withTaskCancellationHandler {
@@ -201,15 +249,29 @@ public actor NativeSpeechRuntime {
             whisperConfiguration.enable_tinydiarize = false
             whisperConfiguration.vad = Self.nativeVADConfiguration(configuration)
 
+            // Stable whisper.cpp v1.9.1 does not expose the development
+            // build's original-timeline mapping for internal VAD token times.
+            // Run the same bundled Silero model first and transcribe its
+            // external windows so all returned timestamps stay on the source
+            // media timeline.
+            let internalVoiceAnalysis = useInternalVAD
+                ? try self.detectVoiceActivityLocked(
+                    pcm: pcm,
+                    configuration: configuration,
+                    cancellation: cancellation
+                )
+                : VoiceActivityAnalysis(segments: [], probabilities: [], frameDuration: 0)
+            let effectiveSpeechWindows = useInternalVAD ? internalVoiceAnalysis.segments : speechWindows
+
             // External Silero/SpeakerKit regions are used as Whisper's input
             // windows. This keeps noise and long silent stretches out of the
             // recognizer without allowing Whisper's own VAD windows to become
             // public sentence boundaries. A full-file pass remains available
             // for legacy callers that do not provide external windows.
-            let ranges = useInternalVAD || speechWindows.isEmpty
-                ? [SampleRange(start: 0, end: pcm.samples.count)]
+            let ranges = effectiveSpeechWindows.isEmpty
+                ? []
                 : Self.transcriptionRanges(
-                    speechWindows,
+                    effectiveSpeechWindows,
                     duration: pcm.duration,
                     sampleCount: pcm.samples.count,
                     hardBoundaries: hardWindowBoundaries
@@ -219,12 +281,19 @@ public actor NativeSpeechRuntime {
             }
 
             var allTokens: [SpeechToken] = []
-            var externalVoiceSegments: [VoiceActivitySegment] = []
             var detectedLanguage = ""
+            var effectiveLanguage = language
             allTokens.reserveCapacity(ranges.count * 32)
 
             for (windowIndex, range) in ranges.enumerated() {
                 try Task.checkCancellation()
+                whisperConfiguration.reset_context = Self.shouldResetWhisperContext(
+                    windowIndex: windowIndex,
+                    range: range,
+                    previousRange: windowIndex > 0 ? ranges[windowIndex - 1] : nil,
+                    hardBoundaries: hardWindowBoundaries,
+                    sampleRate: pcm.sampleRate
+                )
                 let progressStart = Double(windowIndex) / Double(ranges.count)
                 let progressSpan = 1.0 / Double(ranges.count)
                 let progressBox = NativeProgressBox { localProgress in
@@ -246,11 +315,10 @@ public actor NativeSpeechRuntime {
                     }
                     let windowPointer = baseAddress.advanced(by: range.start)
                     let windowCount = Int32(clamping: range.end - range.start)
-                    return language.withCString { languageCode in
-                        let transcribe: (UnsafePointer<CChar>?) -> Int32 = { vadPath in
-                            mab_whisper_transcribe(
+                    return effectiveLanguage.withCString { languageCode in
+                        mab_whisper_transcribe(
                                 contextHandle.pointer,
-                                vadPath,
+                                nil,
                                 windowPointer,
                                 windowCount,
                                 languageCode,
@@ -262,13 +330,6 @@ public actor NativeSpeechRuntime {
                                 &errorBuffer,
                                 errorBuffer.count
                             )
-                        }
-                        guard useInternalVAD, let vadModelURL else {
-                            return transcribe(nil)
-                        }
-                        return vadModelURL.path.withCString { vadPath in
-                            transcribe(vadPath)
-                        }
                     }
                 }
                 defer { mab_transcription_result_free(&result) }
@@ -301,26 +362,36 @@ public actor NativeSpeechRuntime {
                         ))
                     }
                 }
-                if let pointer = result.voice_segments, result.voice_segment_count > 0 {
-                    for index in 0..<Int(result.voice_segment_count) {
-                        let segment = pointer[index]
-                        externalVoiceSegments.append(VoiceActivitySegment(
-                            startTime: segment.start_time + timeOffset,
-                            endTime: segment.end_time + timeOffset,
-                            confidence: segment.confidence
-                        ))
-                    }
-                }
                 if detectedLanguage.isEmpty, let languagePointer = result.detected_language {
                     detectedLanguage = String(cString: languagePointer)
+                }
+                if Self.isAutomaticLanguage(language),
+                   Self.isAutomaticLanguage(effectiveLanguage),
+                   let languagePointer = result.detected_language {
+                    let candidate = String(cString: languagePointer)
+                    let tokenCount = Int(result.token_count)
+                    let windowDuration = Double(range.end - range.start) / Double(pcm.sampleRate)
+                    let averageConfidence: Float = {
+                        guard let pointer = result.tokens, tokenCount > 0 else { return 0 }
+                        let sum = (0..<tokenCount).reduce(Float.zero) { $0 + pointer[$1].confidence }
+                        return sum / Float(tokenCount)
+                    }()
+                    // Do not lock a language based on a tiny/noisy opening
+                    // fragment. Once a representative window is available,
+                    // reuse its language for the rest of this media request.
+                    if !candidate.isEmpty,
+                       candidate != "auto",
+                       tokenCount >= 4,
+                       windowDuration >= 2.0,
+                       averageConfidence >= 0.45 {
+                        effectiveLanguage = candidate
+                    }
                 }
                 withExtendedLifetime(progressBox) {}
             }
 
             let tokens = Self.deduplicateWindowTokens(allTokens)
-            let voiceSegments = useInternalVAD
-                ? externalVoiceSegments
-                : speechWindows
+            let voiceSegments = useInternalVAD ? internalVoiceAnalysis.segments : speechWindows
             return SpeechRecognitionTimeline(
                 tokens: tokens,
                 voiceSegments: voiceSegments,
@@ -331,9 +402,38 @@ public actor NativeSpeechRuntime {
             }
     }
 
+    private static func isAutomaticLanguage(_ language: String) -> Bool {
+        let normalized = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "auto"
+    }
+
     struct SampleRange: Sendable {
         var start: Int
         var end: Int
+    }
+
+    static func shouldResetWhisperContext(
+        windowIndex: Int,
+        range: SampleRange,
+        previousRange: SampleRange?,
+        hardBoundaries: [Double],
+        sampleRate: Int = AudioPCMData.requiredSampleRate
+    ) -> Bool {
+        guard windowIndex > 0, let previousRange, sampleRate > 0 else { return true }
+        let currentStart = Double(range.start) / Double(sampleRate)
+        let currentEnd = Double(range.end) / Double(sampleRate)
+        let previousEnd = Double(previousRange.end) / Double(sampleRate)
+        // Each speech island carries up to 350 ms context on both sides, so a
+        // remaining 800 ms range gap represents at least 1.5 s of real silence.
+        if currentStart - previousEnd >= 0.8 { return true }
+
+        // Reliable SpeakerKit turns are expanded by only 80 ms on each side.
+        // Reset the rolling text prompt at that turn while preserving normal
+        // context across overlapping technical chunks of the same speaker.
+        return hardBoundaries.contains { boundary in
+            boundary >= currentStart - 0.12
+                && boundary <= min(currentEnd, currentStart + 0.24)
+        }
     }
 
     static func transcriptionRanges(
@@ -402,29 +502,81 @@ public actor NativeSpeechRuntime {
         return ranges
     }
 
-    private static func deduplicateWindowTokens(_ input: [SpeechToken]) -> [SpeechToken] {
-        let sorted = input.sorted {
+    static func deduplicateWindowTokens(_ input: [SpeechToken]) -> [SpeechToken] {
+        let windows = Dictionary(grouping: input) { token in
+            max(0, token.recognitionSegmentIndex / 1_000_000)
+        }
+        var output: [SpeechToken] = []
+        output.reserveCapacity(input.count)
+
+        for windowIndex in windows.keys.sorted() {
+            let current = (windows[windowIndex] ?? []).sorted {
+                if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+                return $0.startTime < $1.startTime
+            }
+            guard !current.isEmpty else { continue }
+            let duplicatePrefix = matchingOverlapPrefix(previous: output, current: current)
+            output.append(contentsOf: current.dropFirst(duplicatePrefix))
+        }
+
+        // A single inference window has no cross-window duplication. Sorting
+        // here also keeps the fallback path deterministic when two windows
+        // disagree and both alternatives must be retained for the optimizer.
+        return output.sorted {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
             return $0.startTime < $1.startTime
         }
-        var output: [SpeechToken] = []
-        output.reserveCapacity(sorted.count)
-        for token in sorted {
-            if let lastIndex = output.indices.last {
-                let last = output[lastIndex]
-                let lhs = last.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let rhs = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let overlap = max(0, min(last.endTime, token.endTime) - max(last.startTime, token.startTime))
-                let shorter = max(0.01, min(last.endTime - last.startTime, token.endTime - token.startTime))
-                if !lhs.isEmpty, lhs.caseInsensitiveCompare(rhs) == .orderedSame,
-                   overlap / shorter >= 0.45 {
-                    if token.confidence > last.confidence { output[lastIndex] = token }
-                    continue
+    }
+
+    private static func matchingOverlapPrefix(
+        previous: [SpeechToken],
+        current: [SpeechToken]
+    ) -> Int {
+        guard !previous.isEmpty, !current.isEmpty else { return 0 }
+        let previousLimit = min(12, previous.count)
+        let currentLimit = min(12, current.count)
+        var bestPrefixCount = 0
+        var bestCharacterCount = 0
+
+        for previousCount in 1...previousLimit {
+            let previousStart = previous.count - previousCount
+            let previousSlice = previous[previousStart..<previous.count]
+            guard let previousFirst = previousSlice.first,
+                  let previousLast = previousSlice.last else { continue }
+            let previousText = normalizedOverlapText(previousSlice.map(\.text))
+            guard !previousText.isEmpty else { continue }
+
+            for currentCount in 1...currentLimit {
+                let currentSlice = current[0..<currentCount]
+                guard let currentFirst = currentSlice.first,
+                      let currentLast = currentSlice.last else { continue }
+                let currentText = normalizedOverlapText(currentSlice.map(\.text))
+                guard previousText == currentText else { continue }
+
+                // Duplicate windows describe the same source-time span even
+                // when punctuation or token boundaries differ. Repeated words
+                // spoken consecutively have distinct time spans and therefore
+                // are deliberately retained.
+                let startDelta = abs(previousFirst.startTime - currentFirst.startTime)
+                let endDelta = abs(previousLast.endTime - currentLast.endTime)
+                guard startDelta <= 0.30, endDelta <= 0.35 else { continue }
+                let characterCount = previousText.unicodeScalars.count
+                if characterCount > bestCharacterCount
+                    || (characterCount == bestCharacterCount && currentCount > bestPrefixCount) {
+                    bestCharacterCount = characterCount
+                    bestPrefixCount = currentCount
                 }
             }
-            output.append(token)
         }
-        return output
+        return bestPrefixCount
+    }
+
+    private static func normalizedOverlapText(_ parts: [String]) -> String {
+        parts.joined().lowercased().unicodeScalars.reduce(into: "") { result, scalar in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                result.unicodeScalars.append(scalar)
+            }
+        }
     }
 
     private func loadWhisperContext(

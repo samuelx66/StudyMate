@@ -192,21 +192,18 @@ public struct SegmentListView: View {
                     selectedSegmentIDs.isEmpty ? "Select sentences to add to a library" : "Add selected sentences to the current library"
                 ))
 
-                // 三种用户断句预设；六个细分 profile 由句子长度偏好自动选择
+                // 用户只决定速度优先还是质量优先；句长与证据权重由算法分析。
                 Menu {
                     Button(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)")) {
-                        engine.performSegmentation(preset: .fast)
+                        engine.performSegmentation(mode: .fast)
                     }
-                    Button(lang.text("高精度多人对话（推荐）", "High-precision multi-speaker (Recommended)")) {
-                        engine.performSegmentation(preset: .highPrecision)
-                    }
-                    Button(lang.text("纯语义断句（嘈杂/快对话）", "Semantic priority (noisy/fast dialogue)")) {
-                        engine.performSegmentation(preset: .semantic)
+                    Button(lang.text("智能断句（推荐）", "Intelligent segmentation (Recommended)")) {
+                        engine.performSegmentation(mode: .intelligent)
                     }
                 } label: {
                     Image(systemName: "wand.and.stars")
                         .foregroundColor(.secondary)
-                        .help(lang.text("智能断句预设", "Segmentation presets"))
+                        .help(lang.text("选择断句模式", "Choose segmentation mode"))
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)

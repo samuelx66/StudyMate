@@ -28,6 +28,7 @@ typedef struct {
     float no_speech_threshold;
     bool suppress_non_speech_tokens;
     bool enable_tinydiarize;
+    bool reset_context;
     MABVADConfig vad;
 } MABWhisperConfig;
 
@@ -105,11 +106,15 @@ int32_t mab_vad_detect(
     MABCancellationToken *cancellation_token,
     MABVoiceActivitySegment **segments,
     int32_t *segment_count,
+    float **probabilities,
+    int32_t *probability_count,
+    double *probability_frame_duration,
     char *error_buffer,
     size_t error_capacity
 );
 
 void mab_voice_activity_segments_free(MABVoiceActivitySegment *segments);
+void mab_vad_probabilities_free(float *probabilities);
 
 #ifdef __cplusplus
 }
