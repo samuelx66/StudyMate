@@ -50,11 +50,6 @@ public struct MainContentView: View {
                             removal: .move(edge: .bottom).combined(with: .opacity)
                         ))
                 }
-                
-                Divider()
-                
-                // 3. 底部：固定播放与精听控制栏
-                PlaybackControlView(engine: engine)
             }
             .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
             
