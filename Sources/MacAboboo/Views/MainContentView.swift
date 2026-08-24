@@ -146,27 +146,43 @@ public struct MainContentView: View {
                 }
                 .help(lang.text("调节播放语速", "Playback rate"))
                 
-                // 3. 工作区视图显示/隐藏开关（macOS HIG 原生工具栏切换项）
-                Toggle(isOn: $isPlaylistVisible) {
+                // 3. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isPlaylistVisible.toggle()
+                    }
+                }) {
                     Image(systemName: "music.note.list")
                 }
                 .help(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
                 
-                Toggle(isOn: $isWaveformsVisible) {
-                    Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isWaveformsVisible.toggle()
+                    }
+                }) {
+                    Image(systemName: "waveform.path.ecg")
                 }
                 .help(isWaveformsVisible
                     ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
                     : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
                 
-                Toggle(isOn: $isSubtitleEditVisible) {
-                    Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isSubtitleEditVisible.toggle()
+                    }
+                }) {
+                    Image(systemName: "captions.bubble")
                 }
                 .help(isSubtitleEditVisible
                     ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
                     : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
                 
-                Toggle(isOn: $isSidebarVisible) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isSidebarVisible.toggle()
+                    }
+                }) {
                     Image(systemName: "sidebar.right")
                 }
                 .help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"))
