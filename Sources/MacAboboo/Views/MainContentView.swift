@@ -146,32 +146,14 @@ public struct MainContentView: View {
                 }
                 .help(lang.text("调节播放语速", "Playback rate"))
                 
-                // 3. 显示/隐藏视图开关组（播放列表、波形图、字幕编辑区、断句列表）
-                ControlGroup {
-                    Toggle(isOn: $isPlaylistVisible) {
-                        Image(systemName: "music.note.list")
-                    }
-                    .help(lang.text("显示或隐藏播放列表", "Show or hide the playlist"))
-                    
-                    Toggle(isOn: $isWaveformsVisible) {
-                        Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
-                    }
-                    .help(isWaveformsVisible
-                        ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
-                        : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
-                    
-                    Toggle(isOn: $isSubtitleEditVisible) {
-                        Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
-                    }
-                    .help(isSubtitleEditVisible
-                        ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
-                        : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
-                    
-                    Toggle(isOn: $isSidebarVisible) {
-                        Image(systemName: "sidebar.right")
-                    }
-                    .help(lang.text("显示或隐藏断句列表", "Show or hide the sentence list"))
-                }
+                // 3. 显示/隐藏视图开关组（采用原生 NSSegmentedControl 多选，与 4 种播放模式选中底色完全一致）
+                ToolbarWorkspaceTogglesView(
+                    isPlaylistVisible: $isPlaylistVisible,
+                    isWaveformsVisible: $isWaveformsVisible,
+                    isSubtitleEditVisible: $isSubtitleEditVisible,
+                    isSidebarVisible: $isSidebarVisible,
+                    lang: lang
+                )
             }
         }
         // 支持直接拖拽音视频文件到窗口
@@ -293,6 +275,77 @@ public struct MainContentView: View {
         
         if panel.runModal() == .OK, let url = panel.url {
             engine.loadMedia(from: url)
+        }
+    }
+}
+
+/// 工具栏工作区多选开关组（采用原生 NSSegmentedControl 实现与 4 种播放模式完全一致的原生选中底色，绝非蓝色背景）
+public struct ToolbarWorkspaceTogglesView: NSViewRepresentable {
+    @Binding var isPlaylistVisible: Bool
+    @Binding var isWaveformsVisible: Bool
+    @Binding var isSubtitleEditVisible: Bool
+    @Binding var isSidebarVisible: Bool
+    
+    @ObservedObject var lang: LanguageManager
+    
+    public func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl()
+        control.segmentCount = 4
+        control.trackingMode = .selectAny
+        control.segmentStyle = .automatic
+        control.target = context.coordinator
+        control.action = #selector(Coordinator.segmentClicked(_:))
+        
+        configureSegments(control)
+        updateSelection(control)
+        return control
+    }
+    
+    public func updateNSView(_ nsView: NSSegmentedControl, context: Context) {
+        configureSegments(nsView)
+        updateSelection(nsView)
+    }
+    
+    private func configureSegments(_ control: NSSegmentedControl) {
+        let images = [
+            NSImage(systemSymbolName: "music.note.list", accessibilityDescription: nil) ?? NSImage(),
+            NSImage(systemSymbolName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash", accessibilityDescription: nil) ?? NSImage(),
+            NSImage(systemSymbolName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble", accessibilityDescription: nil) ?? NSImage(),
+            NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: nil) ?? NSImage()
+        ]
+        let tooltips = [
+            lang.text("显示或隐藏播放列表", "Show or hide playlist"),
+            lang.text("显示或隐藏波形图工作区（⌥W）", "Show or hide waveforms (⌥W)"),
+            lang.text("显示或隐藏字幕双语编辑区（⌥S）", "Show or hide subtitle editor (⌥S)"),
+            lang.text("显示或隐藏断句列表", "Show or hide sentence list")
+        ]
+        for (i, img) in images.enumerated() {
+            control.setImage(img, forSegment: i)
+            control.setToolTip(tooltips[i], forSegment: i)
+        }
+    }
+    
+    private func updateSelection(_ control: NSSegmentedControl) {
+        control.setSelected(isPlaylistVisible, forSegment: 0)
+        control.setSelected(isWaveformsVisible, forSegment: 1)
+        control.setSelected(isSubtitleEditVisible, forSegment: 2)
+        control.setSelected(isSidebarVisible, forSegment: 3)
+    }
+    
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    public class Coordinator: NSObject {
+        var parent: ToolbarWorkspaceTogglesView
+        init(_ parent: ToolbarWorkspaceTogglesView) {
+            self.parent = parent
+        }
+        @objc func segmentClicked(_ sender: NSSegmentedControl) {
+            parent.isPlaylistVisible = sender.isSelected(forSegment: 0)
+            parent.isWaveformsVisible = sender.isSelected(forSegment: 1)
+            parent.isSubtitleEditVisible = sender.isSelected(forSegment: 2)
+            parent.isSidebarVisible = sender.isSelected(forSegment: 3)
         }
     }
 }

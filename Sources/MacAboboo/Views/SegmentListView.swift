@@ -77,16 +77,25 @@ public struct SegmentListView: View {
 
                 Spacer()
 
-                Toggle(isOn: Binding(
-                    get: { followState.shouldFollow },
-                    set: { _ in followState.toggle() }
-                )) {
+                Button(action: {
+                    followState.toggle()
+                }) {
                     Image(systemName: followState.shouldFollow
                         ? "book.pages"
                         : "book.closed")
+                        .font(.system(size: 11, weight: followState.shouldFollow ? .semibold : .regular))
+                        .foregroundColor(followState.shouldFollow ? .primary : .secondary)
+                        .frame(width: 24, height: 20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(followState.shouldFollow ? Color.primary.opacity(0.12) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(followState.shouldFollow ? Color.primary.opacity(0.16) : Color.clear, lineWidth: 0.8)
+                        )
                 }
-                .toggleStyle(.button)
-                .controlSize(.small)
+                .buttonStyle(.plain)
                 .help(lang.text(
                     followState.shouldFollow
                         ? "播放时自动跟随当前句"
