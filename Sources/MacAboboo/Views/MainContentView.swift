@@ -109,7 +109,44 @@ public struct MainContentView: View {
             }
             
             ToolbarItemGroup(placement: .primaryAction) {
-                // 播放列表显示/隐藏开关
+                // 1. 四种循环模式切换器 (Segmented Control)
+                Picker("", selection: $engine.loopMode) {
+                    ForEach(PlaybackLoopMode.allCases) { mode in
+                        Image(systemName: mode.iconName)
+                            .tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .help(lang.text("切换播放循环模式（普通 / 单句复读 / 句后停顿 / 全篇循环）", "Playback loop mode"))
+                
+                // 2. 播放倍速切换下拉菜单
+                Menu {
+                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                        Button(action: { engine.playbackRate = speed }) {
+                            if abs(engine.playbackRate - speed) < 0.01 {
+                                Label(String(format: "%.2fx", speed), systemImage: "checkmark")
+                            } else {
+                                Text(String(format: "%.2fx", speed))
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button(action: { engine.playbackRate = 1.0 }) {
+                        Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "gauge.with.needle")
+                        Text(String(format: "%.2fx", engine.playbackRate))
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
+                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
+                }
+                .help(lang.text("调节播放语速", "Playback rate"))
+                
+                // 3. 播放列表显示/隐藏开关
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.24)) {
                         isPlaylistVisible.toggle()
