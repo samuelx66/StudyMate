@@ -21,7 +21,7 @@ public struct FloatingVideoOSDView: View {
     public var body: some View {
         VStack(spacing: 5) {
             // 第 1 行：核心播放控制与时间轴
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 // 1. 重播当前句
                 Button(action: { engine.repeatCurrentSegment() }) {
                     Image(systemName: "arrow.counterclockwise")
@@ -73,9 +73,9 @@ public struct FloatingVideoOSDView: View {
                 
                 // 5. 播放时间
                 Text(SentenceSegment.formatTimecode(isScrubbing ? engine.clock.currentTime : engine.currentTime))
-                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
                     .foregroundColor(.primary)
-                    .frame(minWidth: 56, alignment: .trailing)
+                    .frame(minWidth: 50, alignment: .trailing)
                 
                 // 6. 播放进度条（横向自适应扩展）
                 OSDTimelineSlider(
@@ -88,28 +88,28 @@ public struct FloatingVideoOSDView: View {
                     onPreviewEnded: { engine.endPreviewSeek() },
                     onSeek: { engine.seek(to: $0) }
                 )
-                .frame(minWidth: 120)
+                .frame(minWidth: 70)
                 
                 // 7. 总时间
                 Text(SentenceSegment.formatTimecode(engine.duration))
-                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
                     .foregroundColor(.secondary)
-                    .frame(minWidth: 56, alignment: .leading)
+                    .frame(minWidth: 50, alignment: .leading)
                 
                 // 分隔小竖线
                 Divider()
                     .frame(height: 14)
-                    .padding(.horizontal, 2)
+                    .padding(.horizontal, 1)
                 
                 // 8. 音量调节
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Button(action: {
                         engine.volume = engine.volume > 0 ? 0 : 1.0
                     }) {
                         Image(systemName: engine.volume == 0 ? "speaker.slash.fill" : (engine.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundColor(.primary)
-                            .frame(width: 20, height: 20)
+                            .frame(width: 18, height: 18)
                     }
                     .buttonStyle(.plain)
                     
@@ -120,13 +120,14 @@ public struct FloatingVideoOSDView: View {
                         ),
                         in: 0...1.0
                     )
-                    .frame(width: 55)
+                    .labelsHidden()
+                    .frame(width: 46)
                 }
                 .padding(.trailing, 2)
             }
             
             // 第 2 行：左侧 4 种播放模式（左对齐），右侧变速控制（右对齐）
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 // 四种播放模式按钮 (左对齐，选中状态与播放/暂停风格一致：实心强调色背景 + 白色图标)
                 ForEach(PlaybackLoopMode.allCases) { mode in
                     let isSelected = engine.loopMode == mode
@@ -157,10 +158,10 @@ public struct FloatingVideoOSDView: View {
                     .help(mode.localized(with: lang))
                 }
                 
-                Spacer()
+                Spacer(minLength: 12)
                 
                 // 变速控制（右对齐，与上一行右侧对齐）
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     let isSpeedActive = abs(engine.playbackRate - 1.0) > 0.001
                     
                     // 变速切换图标按钮（有变速时高亮选中；点击在 1.0x 与上次变速间切换）
@@ -214,8 +215,8 @@ public struct FloatingVideoOSDView: View {
                         }
                     } label: {
                         Text(String(format: "%.2fx", engine.playbackRate))
-                            .font(.system(size: 10.5, weight: .bold).monospacedDigit())
-                            .frame(width: 46)
+                            .font(.system(size: 10, weight: .bold).monospacedDigit())
+                            .frame(width: 44)
                     }
                     .menuStyle(.borderedButton)
                     .controlSize(.mini)
@@ -235,22 +236,22 @@ public struct FloatingVideoOSDView: View {
                         in: 0.5...2.0
                     )
                     .labelsHidden()
-                    .frame(width: 70)
+                    .frame(width: 58)
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
         .background(
-            RoundedRectangle(cornerRadius: 13)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(.regularMaterial)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 13)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 0.8)
         )
-        .shadow(color: Color.black.opacity(0.16), radius: 12, x: 0, y: 4)
-        .frame(maxWidth: 720)
+        .shadow(color: Color.black.opacity(0.16), radius: 10, x: 0, y: 4)
+        .frame(maxWidth: 480)
         .onAppear {
             if abs(engine.playbackRate - 1.0) > 0.001 {
                 lastCustomSpeed = engine.playbackRate
