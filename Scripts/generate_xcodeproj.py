@@ -1,11 +1,34 @@
 import os
 import uuid
+import xml.etree.ElementTree as ET
 
 def generate_id():
     return uuid.uuid4().hex[:24].upper()
 
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sources_dir = os.path.join(root_dir, 'Sources')
+
+def get_app_version():
+    info_plist_path = os.path.join(sources_dir, 'MacAbobooApp', 'Info.plist')
+    version = '1.0.0'
+    build = '1'
+    if os.path.exists(info_plist_path):
+        try:
+            tree = ET.parse(info_plist_path)
+            root = tree.getroot()
+            d = root.find('dict')
+            if d is not None:
+                children = list(d)
+                for i, child in enumerate(children):
+                    if child.tag == 'key' and child.text == 'CFBundleShortVersionString' and i + 1 < len(children):
+                        version = children[i+1].text or '1.0.0'
+                    elif child.tag == 'key' and child.text == 'CFBundleVersion' and i + 1 < len(children):
+                        build = children[i+1].text or '1'
+        except Exception:
+            pass
+    return version, build
+
+marketing_version, current_project_version = get_app_version()
 
 # 收集 Swift/C 源文件、桥接头与资源
 file_entries = []
@@ -373,7 +396,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tCURRENT_PROJECT_VERSION = 44;
+\t\t\t\tCURRENT_PROJECT_VERSION = {current_project_version};
 \t\t\t\tENABLE_DEBUG_DYLIB = YES;
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
@@ -383,7 +406,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = 1.0.43;
+\t\t\t\tMARKETING_VERSION = {marketing_version};
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -398,7 +421,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tCURRENT_PROJECT_VERSION = 44;
+\t\t\t\tCURRENT_PROJECT_VERSION = {current_project_version};
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
 \t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -407,7 +430,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = 1.0.43;
+\t\t\t\tMARKETING_VERSION = {marketing_version};
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

@@ -29,6 +29,9 @@ for tool in swift otool install_name_tool codesign actool ditto lipo; do
     require_tool "${tool}"
 done
 
+echo "=== 0. 同步更新 Xcode 工程配置 ==="
+python3 "${ROOT_DIR}/Scripts/generate_xcodeproj.py"
+
 echo "=== 1. 编译 Release 二进制 ==="
 swift build -c release --disable-sandbox
 BUILD_DIR="$(swift build -c release --disable-sandbox --show-bin-path)"
