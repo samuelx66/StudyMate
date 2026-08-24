@@ -61,6 +61,7 @@ struct MacAbobooApp: App {
     @StateObject private var engine = PlaybackEngine.shared
     @StateObject private var sentenceLibraryManager = SentenceLibraryManager.shared
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("MacAboboo.ShowStatusBar") private var showStatusBar = false
     
     init() {
         UserDefaults.standard.register(defaults: [
@@ -105,6 +106,23 @@ struct MacAbobooApp: App {
                     openFileAction()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+            }
+
+            // 显示菜单：控制主窗口底部的紧凑状态栏。
+            CommandGroup(after: .toolbar) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showStatusBar.toggle()
+                    }
+                } label: {
+                    HStack {
+                        Text(languageManager.text("显示状态栏", "Show Status Bar"))
+                        if showStatusBar {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
             }
             
             // 播放与复读控制菜单

@@ -4,6 +4,35 @@ import UniformTypeIdentifiers
 
 /// 主视窗内容容器（波形图置顶、视频视窗自动扩展占满剩余空间、底部控制栏、可自由调整窗口大小）
 public struct MainContentView: View {
+    /// 所有工作区面板共用的过渡参数，保证波形图、断句列表和播放列表的
+    /// 显示/隐藏节奏一致。列表仍从右侧进入，波形图仍从顶部进入。
+    private static let workspacePanelAnimation = Animation.easeInOut(duration: 0.22)
+
+    private static func slideAndFadeTransition(from edge: Edge) -> AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: edge).combined(with: .opacity),
+            removal: .move(edge: edge).combined(with: .opacity)
+        )
+    }
+
+    private var repeatOptions: [(label: String, count: Int)] {
+        [(lang.text("1次", "1×"), 1), (lang.text("2次", "2×"), 2),
+         (lang.text("3次", "3×"), 3), (lang.text("5次", "5×"), 5),
+         (lang.text("10次", "10×"), 10), (lang.text("无限", "∞"), 0)]
+    }
+
+    private var shadowingPauseOptions: [(label: String, ratio: Double)] {
+        [
+            (lang.text("关闭", "Off"), 0),
+            ("0.25×", 0.25),
+            ("0.5×", 0.5),
+            ("0.75×", 0.75),
+            ("1×", 1.0),
+            ("1.5×", 1.5),
+            ("2×", 2.0)
+        ]
+    }
+
     @StateObject private var engine = PlaybackEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
@@ -14,12 +43,14 @@ public struct MainContentView: View {
     @State private var isWaveformsVisible: Bool = true
     @State private var isSubtitleEditVisible: Bool = false
     @State private var isDropTargeted: Bool = false
+    @AppStorage("MacAboboo.ShowStatusBar") private var isStatusBarVisible: Bool = false
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "macaboboo_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "macaboboo_playlist_width") : 360
     
     public init() {}
     
     public var body: some View {
-        HSplitView {
+        VStack(spacing: 0) {
+            HSplitView {
             // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部控制栏）
             VStack(spacing: 0) {
                 // 1. 顶部：主次双波形图工作区（支持折叠/展开动画）
@@ -32,10 +63,7 @@ public struct MainContentView: View {
                     .padding(.top, 4)
                     .padding(.bottom, 2)
                     .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    ))
+                    .transition(Self.slideAndFadeTransition(from: .top))
                 }
                 
                 // 2. 中间：音视频播放视窗（波形图/字幕区折叠时自适应最大化填满全部可用纵向空间）
@@ -57,15 +85,20 @@ public struct MainContentView: View {
             if isSidebarVisible {
                 SegmentListView(engine: engine)
                     .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                    .transition(Self.slideAndFadeTransition(from: .trailing))
             }
 
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if isStatusBarVisible {
+                PlaybackStatusBar(engine: engine)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.22), value: isStatusBarVisible)
         .background(globalKeyboardShortcuts)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {
@@ -149,10 +182,57 @@ public struct MainContentView: View {
                     .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
                 }
                 .help(lang.text("调节播放语速", "Playback rate"))
+
+                // 3. 单句复读次数下拉菜单
+                Menu {
+                    ForEach(repeatOptions, id: \.count) { option in
+                        Button(action: {
+                            engine.repeatCountLimit = option.count
+                            engine.currentRepeatCount = 1
+                        }) {
+                            if engine.repeatCountLimit == option.count {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "repeat.1")
+                        Text(repeatCountToolbarLabel)
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
+                    .foregroundColor(engine.repeatCountLimit == 1 ? .primary : .blue)
+                }
+                .help(lang.text("设置单句复读次数", "Set sentence repeat count"))
+
+                // 4. 句末跟读停顿下拉菜单
+                Menu {
+                    ForEach(shadowingPauseOptions, id: \.ratio) { option in
+                        Button(action: {
+                            engine.shadowingPauseRatio = option.ratio
+                        }) {
+                            if abs(engine.shadowingPauseRatio - option.ratio) < 0.001 {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "mic.badge.plus")
+                        Text(shadowingPauseToolbarLabel)
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
+                    .foregroundColor(engine.shadowingPauseRatio == 0 ? .primary : .green)
+                }
+                .help(lang.text("设置句末跟读停顿", "Set shadowing pause"))
                 
-                // 3. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
+                // 5. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(Self.workspacePanelAnimation) {
                         isPlaylistVisible.toggle()
                     }
                 }) {
@@ -161,7 +241,7 @@ public struct MainContentView: View {
                 .help(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
                 
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(Self.workspacePanelAnimation) {
                         isWaveformsVisible.toggle()
                     }
                 }) {
@@ -172,7 +252,7 @@ public struct MainContentView: View {
                     : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
                 
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(Self.workspacePanelAnimation) {
                         isSubtitleEditVisible.toggle()
                     }
                 }) {
@@ -183,7 +263,7 @@ public struct MainContentView: View {
                     : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
                 
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(Self.workspacePanelAnimation) {
                         isSidebarVisible.toggle()
                     }
                 }) {
@@ -226,14 +306,14 @@ public struct MainContentView: View {
     private var globalKeyboardShortcuts: some View {
         Group {
             Button(action: {
-                withAnimation { isWaveformsVisible.toggle() }
+                withAnimation(Self.workspacePanelAnimation) { isWaveformsVisible.toggle() }
             }) {
                 EmptyView()
             }
             .keyboardShortcut("w", modifiers: [.option])
             
             Button(action: {
-                withAnimation { isSubtitleEditVisible.toggle() }
+                withAnimation(Self.workspacePanelAnimation) { isSubtitleEditVisible.toggle() }
             }) {
                 EmptyView()
             }
@@ -256,10 +336,7 @@ public struct MainContentView: View {
                     .transition(.opacity)
 
                 playlistPanel
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                    .transition(Self.slideAndFadeTransition(from: .trailing))
             }
         }
     }
@@ -278,9 +355,17 @@ public struct MainContentView: View {
     }
 
     private func hidePlaylist() {
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(Self.workspacePanelAnimation) {
             isPlaylistVisible = false
         }
+    }
+
+    private var repeatCountToolbarLabel: String {
+        engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)×"
+    }
+
+    private var shadowingPauseToolbarLabel: String {
+        engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
     }
     
     /// 弹出 macOS 原生打开文件面板
@@ -319,4 +404,67 @@ public struct MainContentView: View {
 #Preview("MacAboboo 主界面") {
     MainContentView()
         .frame(width: 1200, height: 800)
+}
+
+/// 主窗口底部的紧凑播放状态栏；它位于 HSplitView 之后，因此断句列表始终在其上方。
+private struct PlaybackStatusBar: View {
+    @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var lang = LanguageManager.shared
+
+    private var currentSegmentText: String {
+        let current = engine.activeSegmentIndex.map { $0 + 1 } ?? 0
+        return "\(current)/\(engine.segments.count)"
+    }
+
+    private var repeatCountText: String {
+        let total = engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)"
+        return "\(engine.currentRepeatCount)/\(total)"
+    }
+
+    private var shadowingText: String {
+        if engine.isShadowingPaused {
+            return "\(lang.text("正在跟读", "Shadowing")) \(String(format: "%.1fs", max(0, engine.shadowingCountdownRemaining)))"
+        }
+
+        return "\(lang.text("跟读停顿", "Shadowing pause")) \(String(format: "%.2g×", engine.shadowingPauseRatio))"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label(currentSegmentText, systemImage: "number")
+
+            if abs(engine.playbackRate - 1.0) > 0.001 {
+                Divider()
+                    .frame(height: 14)
+                Label(String(format: "%.2fx", engine.playbackRate), systemImage: "gauge.with.needle")
+                    .foregroundColor(.blue)
+            }
+
+            if engine.repeatCountLimit != 1 {
+                Divider()
+                    .frame(height: 14)
+                Label(repeatCountText, systemImage: "repeat.1")
+            }
+
+            if engine.shadowingPauseRatio > 0 {
+                Divider()
+                    .frame(height: 14)
+                Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "mic.badge.plus")
+                    .foregroundColor(engine.isShadowingPaused ? .green : .secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 11, weight: .medium).monospacedDigit())
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color(nsColor: .separatorColor)),
+            alignment: .top
+        )
+    }
 }

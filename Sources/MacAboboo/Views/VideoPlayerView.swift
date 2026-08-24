@@ -19,6 +19,11 @@ public struct VideoPlayerView: View {
     
     private var shouldShowOverlay: Bool {
         guard engine.currentMedia != nil else { return false }
+        // 跟读停顿期间音频已暂停但倒计时仍在进行，避免控制面板遮挡状态提示；
+        // 倒计时结束或用户普通暂停时，仍按原有规则显示控制面板。
+        if engine.isShadowingPaused {
+            return false
+        }
         // 只要鼠标在画面内、或者未在播放、或者正在拖拽进度条，就一直显示
         if isHovering || !engine.isPlaying || isScrubbing || dragTranslation != .zero {
             return true

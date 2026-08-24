@@ -6,12 +6,6 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject var modelManager = WhisperModelManager.shared
 
-    private var repeatOptions: [(label: String, count: Int)] {
-        [(lang.text("1次", "1×"), 1), (lang.text("2次", "2×"), 2),
-         (lang.text("3次", "3×"), 3), (lang.text("5次", "5×"), 5),
-         (lang.text("10次", "10×"), 10), (lang.text("无限", "∞"), 0)]
-    }
-
     public init(engine: PlaybackEngine) {
         self.engine = engine
     }
@@ -42,62 +36,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 1. 定次复读控制
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(lang.text("单句复读次数（定次复读）", "Sentence Repeat Count"), systemImage: "repeat.1")
-                        .font(.caption.bold())
-
-                    HStack(spacing: 5) {
-                        ForEach(repeatOptions, id: \.count) { opt in
-                            Button(action: {
-                                engine.repeatCountLimit = opt.count
-                                engine.currentRepeatCount = 1
-                            }) {
-                                Text(opt.label)
-                                    .font(.caption2.bold())
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 3)
-                                    .background(engine.repeatCountLimit == opt.count ? Color.blue : Color.gray.opacity(0.15))
-                                    .foregroundColor(engine.repeatCountLimit == opt.count ? .white : .primary)
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                Divider()
-
-                // 2. 跟读停顿模式 (Shadowing Pause)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Label(lang.text("句末跟读停顿", "Shadowing Pause"), systemImage: "mic.badge.plus")
-                            .font(.caption.bold())
-
-                        Spacer()
-
-                        Text(engine.shadowingPauseRatio == 0
-                            ? lang.text("已关闭", "Off")
-                            : String(format: lang.text("%.1fx 时长", "%.1fx duration"), engine.shadowingPauseRatio))
-                            .font(.caption2.monospacedDigit().bold())
-                            .foregroundColor(engine.shadowingPauseRatio == 0 ? .secondary : .green)
-                    }
-
-                    Slider(value: $engine.shadowingPauseRatio, in: 0...2.0, step: 0.25)
-                        .accentColor(.green)
-
-                    Text(lang.text(
-                        "每句播完后自动静音停顿对应倍率时长，留出开口跟读时间后自动继续",
-                        "After each sentence, pause for the selected duration so you can speak, then continue automatically."
-                    ))
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider()
-
-                // 3. 难句专练模式
+                // 1. 难句专练模式
                 Toggle(isOn: $engine.onlyPlayBookmarked) {
                     HStack(spacing: 6) {
                         Image(systemName: "star.fill")
@@ -111,7 +50,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 4. 时间轴批量平移校准
+                // 2. 时间轴批量平移校准
                 VStack(alignment: .leading, spacing: 6) {
                     Label(lang.text("时间轴批量平移（校准字幕提前/滞后）", "Shift Timeline (Subtitle Sync)"), systemImage: "clock.arrow.2.circlepath")
                         .font(.caption.bold())
@@ -137,7 +76,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 5. 边界吸附触觉反馈
+                // 3. 边界吸附触觉反馈
                 Toggle(isOn: $engine.boundarySnapHapticFeedback) {
                     HStack(spacing: 6) {
                         Image(systemName: "hand.tap")
@@ -158,7 +97,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 6. 解码引擎切换
+                // 4. 解码引擎切换
                 VStack(alignment: .leading, spacing: 6) {
                     Label(lang.localized(.decoderEngine), systemImage: "cpu")
                         .font(.caption.bold())
@@ -181,7 +120,7 @@ public struct IntensiveSettingsPopover: View {
 
                 Divider()
 
-                // 7. AI 语音识别与 Whisper 模型管理
+                // 5. AI 语音识别与 Whisper 模型管理
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Label(lang.text("Whisper AI 离线模型", "Whisper AI Offline Model"), systemImage: "waveform.badge.magnifyingglass")
