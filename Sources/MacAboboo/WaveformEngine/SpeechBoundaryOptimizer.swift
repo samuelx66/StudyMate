@@ -36,19 +36,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
     ) -> [SentenceSegment] {
         let safeDuration = duration.isFinite ? max(0, duration) : 0
         guard safeDuration > 0 else { return [] }
-        var profile = mode.profile
-        // When there is no speaker diarization signal (single-speaker content such
-        // as lectures, audiobooks, or monologues), the speakerWeight contributes
-        // nothing. Compensate by raising pauseWeight and semanticWeight so that
-        // natural pauses and punctuation can still win over splitPenalty.
-        if speakerSegments.isEmpty, mode.requiresTranscription {
-            profile.pauseWeight    = max(profile.pauseWeight,    1.20)
-            profile.semanticWeight = max(profile.semanticWeight, 1.40)
-        }
-        let normalizedVoice = smoothOnsetEdges(
-            normalizeVoiceSegments(voiceSegments, duration: safeDuration),
-            waveform: waveform
-        )
+        let profile = mode.profile
+        let normalizedVoice = normalizeVoiceSegments(voiceSegments, duration: safeDuration)
         let normalizedSpeakers = normalizeSpeakerSegments(speakerSegments, duration: safeDuration)
         let acousticSegments = optimizeVoiceActivity(
             voiceSegments: normalizedVoice,
@@ -1390,69 +1379,6 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             default:
                 return false
             }
-        }
-    }
-
-    /// Pull each VAD onset slightly left when the waveform shows rising energy
-    /// before the model's reported start time. Silero operates on 32 ms frames,
-    /// so soft consonant onsets (/p/ /t/ /k/ /s/) can be quantized to the next
-    /// frame boundary. A 3-frame weighted look-back (up to 60 ms) corrects this
-    /// without altering offsets or confidence ordering.
-    private func smoothOnsetEdges(
-        _ segments: [VoiceActivitySegment],
-        waveform: WaveformData
-    ) -> [VoiceActivitySegment] {
-        guard !waveform.isEmpty, waveform.sampleRate > 0 else { return segments }
-        let rate = waveform.sampleRate
-        let peaks = waveform.peaks
-        let maxLookback = 0.060  // max 60 ms look-back
-        let frameSize = 0.020    // 20 ms analysis frame
-
-        return segments.map { segment in
-            let onsetIndex = max(0, Int((segment.startTime * rate).rounded(.up)))
-            guard onsetIndex < peaks.count else { return segment }
-
-            // Search window: [onset - 60ms, onset]
-            let searchStart = max(0, Int(((segment.startTime - maxLookback) * rate).rounded(.down)))
-            guard searchStart < onsetIndex else { return segment }
-
-            let frameSamples = max(1, Int(frameSize * rate))
-            var bestTime = segment.startTime
-            var prevEnergy: Float = 0
-
-            // Slide a 20ms frame from left to right; find the first frame
-            // where energy already exceeds 40% of the onset frame's energy.
-            // That is where speech "really" began.
-            let onsetEnd = min(peaks.count, onsetIndex + frameSamples)
-            let onsetSlice = peaks[onsetIndex..<onsetEnd]
-            let onsetEnergy: Float = onsetSlice.isEmpty ? 0
-                : onsetSlice.reduce(0, +) / Float(onsetSlice.count)
-
-            guard onsetEnergy > 0.005 else { return segment }
-            let riseThreshold = onsetEnergy * 0.40
-
-            var frameStart = searchStart
-            while frameStart < onsetIndex {
-                let frameEnd = min(peaks.count, frameStart + frameSamples)
-                let slice = peaks[frameStart..<frameEnd]
-                let energy: Float = slice.isEmpty ? 0
-                    : slice.reduce(0, +) / Float(slice.count)
-                if energy >= riseThreshold, prevEnergy < riseThreshold {
-                    // Rising edge found – move onset here, but never overlap
-                    // with the previous segment.
-                    bestTime = Double(frameStart) / rate
-                    break
-                }
-                prevEnergy = energy
-                frameStart += frameSamples
-            }
-
-            guard bestTime < segment.startTime - 0.005 else { return segment }
-            return VoiceActivitySegment(
-                startTime: bestTime,
-                endTime: segment.endTime,
-                confidence: segment.confidence
-            )
         }
     }
 

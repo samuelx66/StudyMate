@@ -1,9 +1,7 @@
 import Foundation
 
-/// Silero VAD + Whisper 双引擎智能锚点熔合器（已废弃）
-/// 新的统一断句流程请使用 `SpeechSegmentationPipeline` + `SpeechBoundaryOptimizer`。
-/// 本类保留仅为历史记录与回归对比用途，不再被主流水线调用。
-@available(*, deprecated, renamed: "SpeechSegmentationPipeline", message: "Use SpeechSegmentationPipeline.run(request:stageChanged:preview:) instead.")
+/// Silero VAD + Whisper 双引擎智能锚点熔合器
+/// 将语义级识别句子（Whisper / Speech.framework）与物理级声学概率曲线（Silero VAD）在毫秒级微调熔合
 public final class DualEngineFusionSegmenter: @unchecked Sendable {
     public static let shared = DualEngineFusionSegmenter()
     
