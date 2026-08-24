@@ -279,8 +279,8 @@ public struct MainContentView: View {
     }
 }
 
-/// 工具栏工作区多选开关组（采用原生 NSSegmentedControl 实现与 4 种播放模式完全一致的原生选中底色，绝非蓝色背景）
-public struct ToolbarWorkspaceTogglesView: NSViewRepresentable {
+/// 工具栏工作区多选开关组（采用与断句列表“自动跟随当前句”完全一致的软圆角选中底色）
+public struct ToolbarWorkspaceTogglesView: View {
     @Binding var isPlaylistVisible: Bool
     @Binding var isWaveformsVisible: Bool
     @Binding var isSubtitleEditVisible: Bool
@@ -288,65 +288,81 @@ public struct ToolbarWorkspaceTogglesView: NSViewRepresentable {
     
     @ObservedObject var lang: LanguageManager
     
-    public func makeNSView(context: Context) -> NSSegmentedControl {
-        let control = NSSegmentedControl()
-        control.segmentCount = 4
-        control.trackingMode = .selectAny
-        control.segmentStyle = .automatic
-        control.target = context.coordinator
-        control.action = #selector(Coordinator.segmentClicked(_:))
-        
-        configureSegments(control)
-        updateSelection(control)
-        return control
-    }
-    
-    public func updateNSView(_ nsView: NSSegmentedControl, context: Context) {
-        configureSegments(nsView)
-        updateSelection(nsView)
-    }
-    
-    private func configureSegments(_ control: NSSegmentedControl) {
-        let images = [
-            NSImage(systemSymbolName: "music.note.list", accessibilityDescription: nil) ?? NSImage(),
-            NSImage(systemSymbolName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash", accessibilityDescription: nil) ?? NSImage(),
-            NSImage(systemSymbolName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble", accessibilityDescription: nil) ?? NSImage(),
-            NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: nil) ?? NSImage()
-        ]
-        let tooltips = [
-            lang.text("显示或隐藏播放列表", "Show or hide playlist"),
-            lang.text("显示或隐藏波形图工作区（⌥W）", "Show or hide waveforms (⌥W)"),
-            lang.text("显示或隐藏字幕双语编辑区（⌥S）", "Show or hide subtitle editor (⌥S)"),
-            lang.text("显示或隐藏断句列表", "Show or hide sentence list")
-        ]
-        for (i, img) in images.enumerated() {
-            control.setImage(img, forSegment: i)
-            control.setToolTip(tooltips[i], forSegment: i)
+    public var body: some View {
+        HStack(spacing: 4) {
+            // 1. 播放列表
+            toggleButton(
+                icon: "music.note.list",
+                isSelected: isPlaylistVisible,
+                helpText: lang.text("显示或隐藏播放列表", "Show or hide playlist")
+            ) {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isPlaylistVisible.toggle()
+                }
+            }
+            
+            // 2. 波形图 (⌥W)
+            toggleButton(
+                icon: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash",
+                isSelected: isWaveformsVisible,
+                helpText: isWaveformsVisible
+                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
+                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)")
+            ) {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isWaveformsVisible.toggle()
+                }
+            }
+            
+            // 3. 字幕编辑区 (⌥S)
+            toggleButton(
+                icon: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble",
+                isSelected: isSubtitleEditVisible,
+                helpText: isSubtitleEditVisible
+                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
+                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)")
+            ) {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isSubtitleEditVisible.toggle()
+                }
+            }
+            
+            // 4. 断句列表
+            toggleButton(
+                icon: "sidebar.right",
+                isSelected: isSidebarVisible,
+                helpText: lang.text("显示或隐藏断句列表", "Show or hide sentence list")
+            ) {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isSidebarVisible.toggle()
+                }
+            }
         }
     }
     
-    private func updateSelection(_ control: NSSegmentedControl) {
-        control.setSelected(isPlaylistVisible, forSegment: 0)
-        control.setSelected(isWaveformsVisible, forSegment: 1)
-        control.setSelected(isSubtitleEditVisible, forSegment: 2)
-        control.setSelected(isSidebarVisible, forSegment: 3)
-    }
-    
-    public func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-    
-    public class Coordinator: NSObject {
-        var parent: ToolbarWorkspaceTogglesView
-        init(_ parent: ToolbarWorkspaceTogglesView) {
-            self.parent = parent
+    @ViewBuilder
+    private func toggleButton(
+        icon: String,
+        isSelected: Bool,
+        helpText: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? .primary : .secondary)
+                .frame(width: 26, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(isSelected ? Color.primary.opacity(0.16) : Color.clear, lineWidth: 0.8)
+                )
         }
-        @objc func segmentClicked(_ sender: NSSegmentedControl) {
-            parent.isPlaylistVisible = sender.isSelected(forSegment: 0)
-            parent.isWaveformsVisible = sender.isSelected(forSegment: 1)
-            parent.isSubtitleEditVisible = sender.isSelected(forSegment: 2)
-            parent.isSidebarVisible = sender.isSelected(forSegment: 3)
-        }
+        .buttonStyle(.plain)
+        .help(helpText)
     }
 }
 
