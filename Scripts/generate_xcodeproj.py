@@ -511,6 +511,15 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "{target_id}"
+            BuildableName = "MacAboboo.app"
+            BlueprintName = "MacAboboo"
+            ReferencedContainer = "container:MacAboboo.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -561,5 +570,19 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 """
 with open(os.path.join(schemes_dir, 'MacAboboo.xcscheme'), 'w', encoding='utf-8') as f:
     f.write(scheme_content)
+
+# 生成 Workspace 数据 (必须包含 contents.xcworkspacedata，Xcode 才能正确解析 container:MacAboboo.xcodeproj)
+workspace_dir = os.path.join(xcodeproj_path, 'project.xcworkspace')
+os.makedirs(workspace_dir, exist_ok=True)
+workspace_content = """<?xml version="1.0" encoding="UTF-8"?>
+<Workspace
+   version = "1.0">
+   <FileRef
+      location = "self:">
+   </FileRef>
+</Workspace>
+"""
+with open(os.path.join(workspace_dir, 'contents.xcworkspacedata'), 'w', encoding='utf-8') as f:
+    f.write(workspace_content)
 
 print(f"🎉 成功生成 Xcode 原生工程：{xcodeproj_path}")
