@@ -109,15 +109,6 @@ public struct MainContentView: View {
             }
             
             ToolbarItemGroup(placement: .primaryAction) {
-                // 语言切换选择器
-                Picker(selection: $lang.currentLanguage, label: Image(systemName: "globe")) {
-                    ForEach(AppLanguage.allCases) { item in
-                        Text(item.displayName).tag(item)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 95)
-                
                 // 播放列表显示/隐藏开关
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.24)) {

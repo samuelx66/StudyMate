@@ -7,6 +7,7 @@ public struct FloatingVideoOSDView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @Binding var isScrubbing: Bool
     
+    @State private var lastCustomSpeed: Float = 1.25
     private let speedPresets: [Float] = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0]
     
     public init(
@@ -160,13 +161,50 @@ public struct FloatingVideoOSDView: View {
                 
                 // 变速控制（右对齐，与上一行右侧对齐）
                 HStack(spacing: 5) {
-                    Image(systemName: "speedometer")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundColor(.secondary)
+                    let isSpeedActive = abs(engine.playbackRate - 1.0) > 0.001
+                    
+                    // 变速切换图标按钮（有变速时高亮选中；点击在 1.0x 与上次变速间切换）
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            if isSpeedActive {
+                                lastCustomSpeed = engine.playbackRate
+                                engine.playbackRate = 1.0
+                            } else {
+                                engine.playbackRate = (lastCustomSpeed > 0 && abs(lastCustomSpeed - 1.0) > 0.001) ? lastCustomSpeed : 1.25
+                            }
+                        }
+                    }) {
+                        ZStack {
+                            if isSpeedActive {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: 24, height: 24)
+                                    .shadow(color: Color.accentColor.opacity(0.28), radius: 3, x: 0, y: 1)
+                            } else {
+                                Circle()
+                                    .fill(Color.primary.opacity(0.06))
+                                    .frame(width: 24, height: 24)
+                            }
+                            
+                            Image(systemName: "gauge.with.needle")
+                                .font(.system(size: 11, weight: isSpeedActive ? .bold : .semibold))
+                                .foregroundColor(isSpeedActive ? .white : .primary)
+                        }
+                        .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isSpeedActive
+                        ? lang.text("取消变速，恢复正常语速 (1.0x)", "Cancel speed change, reset to normal (1.0x)")
+                        : String(format: lang.text("恢复上次变速 (%.2fx)", "Restore last speed (%.2fx)"), lastCustomSpeed))
                     
                     Menu {
                         ForEach(speedPresets, id: \.self) { speed in
-                            Button(action: { engine.playbackRate = speed }) {
+                            Button(action: {
+                                engine.playbackRate = speed
+                                if speed != 1.0 {
+                                    lastCustomSpeed = speed
+                                }
+                            }) {
                                 if engine.playbackRate == speed {
                                     Label(String(format: "%.2fx", speed), systemImage: "checkmark")
                                 } else {
@@ -185,7 +223,13 @@ public struct FloatingVideoOSDView: View {
                     Slider(
                         value: Binding(
                             get: { Double(engine.playbackRate) },
-                            set: { engine.playbackRate = Float($0) }
+                            set: {
+                                let newRate = Float($0)
+                                engine.playbackRate = newRate
+                                if abs(newRate - 1.0) > 0.001 {
+                                    lastCustomSpeed = newRate
+                                }
+                            }
                         ),
                         in: 0.5...2.0,
                         step: 0.05
@@ -206,6 +250,11 @@ public struct FloatingVideoOSDView: View {
         )
         .shadow(color: Color.black.opacity(0.16), radius: 12, x: 0, y: 4)
         .frame(maxWidth: 720)
+        .onAppear {
+            if abs(engine.playbackRate - 1.0) > 0.001 {
+                lastCustomSpeed = engine.playbackRate
+            }
+        }
     }
 }
 

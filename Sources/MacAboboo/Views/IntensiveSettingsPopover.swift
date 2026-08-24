@@ -27,6 +27,19 @@ public struct IntensiveSettingsPopover: View {
                     Spacer()
                 }
 
+                // 0. 界面语言设置
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(lang.text("界面语言", "App Language"), systemImage: "globe")
+                        .font(.caption.bold())
+
+                    Picker("", selection: $lang.currentLanguage) {
+                        ForEach(AppLanguage.allCases) { item in
+                            Text(item.displayName).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Divider()
 
                 // 1. 定次复读控制
