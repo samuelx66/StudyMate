@@ -56,7 +56,7 @@ private enum WaveformRenderCache {
     }
 }
 
-/// 高性能连续实心双层包络波形绘制 Canvas
+/// 高性能现代圆角胶囊渐变柱波形绘制 Canvas（方案 2）
 public struct WaveformCanvas: View {
     let waveformData: WaveformData
     let startTime: Double
@@ -82,92 +82,64 @@ public struct WaveformCanvas: View {
         Canvas { context, size in
             guard !waveformData.isEmpty, size.width > 0, size.height > 0 else { return }
 
-            let count = max(20, Int(size.width))
+            let barWidth: CGFloat = 2.4
+            let spacing: CGFloat = 1.4
+            let totalBarSlot = barWidth + spacing
+            let barCount = max(10, Int(size.width / totalBarSlot))
+            
             let resampled = WaveformRenderCache.peaks(
                 waveform: waveformData,
                 start: startTime,
                 end: endTime,
-                count: count
+                count: barCount
             )
             guard !resampled.isEmpty else { return }
             
             let centerY = size.height / 2.0
-            let maxBarHeight = (size.height / 2.0) * 0.90
-            let stepX = size.width / CGFloat(max(1, resampled.count - 1))
+            let maxBarHeight = (size.height / 2.0) * 0.92
             
-            // 1. 中心零电平参考细线
+            // 1. 中心零电平微细参考线
             var zeroLine = Path()
             zeroLine.move(to: CGPoint(x: 0, y: centerY))
             zeroLine.addLine(to: CGPoint(x: size.width, y: centerY))
-            context.stroke(zeroLine, with: .color(Color.primary.opacity(0.12)), lineWidth: 0.8)
+            context.stroke(zeroLine, with: .color(Color.primary.opacity(0.10)), lineWidth: 0.8)
             
-            // 2. 构造外层峰值包络轮廓路径 (Peak Envelope)
-            var peakPath = Path()
-            peakPath.move(to: CGPoint(x: 0, y: centerY))
+            // 2. 构造所有圆角胶囊柱的 Path
+            var capsulePath = Path()
+            let cornerRadius = barWidth / 2.0
             
-            // 顶部外轮廓（左 -> 右）
             for (i, peak) in resampled.enumerated() {
-                let x = CGFloat(i) * stepX
-                let ampMax = CGFloat(max(0.015, min(1.0, max(abs(peak.min), abs(peak.max)))))
-                let y = centerY - ampMax * maxBarHeight
-                peakPath.addLine(to: CGPoint(x: x, y: y))
-            }
-            
-            // 底部外轮廓（右 -> 左）
-            for (i, peak) in resampled.enumerated().reversed() {
-                let x = CGFloat(i) * stepX
-                let ampMax = CGFloat(max(0.015, min(1.0, max(abs(peak.min), abs(peak.max)))))
-                let y = centerY + ampMax * maxBarHeight
-                peakPath.addLine(to: CGPoint(x: x, y: y))
-            }
-            peakPath.closeSubpath()
-            
-            // 填充外层包络（带有上下轻微通透渐变）
-            let outerGradient = Gradient(colors: [
-                Color.accentColor.opacity(0.30),
-                Color.accentColor.opacity(0.16),
-                Color.accentColor.opacity(0.30)
-            ])
-            context.fill(
-                peakPath,
-                with: .linearGradient(
-                    outerGradient,
-                    startPoint: CGPoint(x: 0, y: 0),
-                    endPoint: CGPoint(x: 0, y: size.height)
+                let x = CGFloat(i) * totalBarSlot
+                let amplitude = CGFloat(max(0.04, min(1.0, max(abs(peak.min), abs(peak.max)))))
+                let barH = max(cornerRadius, amplitude * maxBarHeight)
+                
+                let rect = CGRect(
+                    x: x,
+                    y: centerY - barH,
+                    width: barWidth,
+                    height: barH * 2.0
                 )
-            )
-            // 外轮廓精细描边（增强轻辅音和峰值轮廓边缘的清晰锐利度）
-            context.stroke(
-                peakPath,
-                with: .color(Color.accentColor.opacity(0.48)),
-                lineWidth: 1.0
-            )
-            
-            // 3. 构造内层能量核心路径 (RMS / Core Energy Envelope)
-            var corePath = Path()
-            corePath.move(to: CGPoint(x: 0, y: centerY))
-            
-            for (i, peak) in resampled.enumerated() {
-                let x = CGFloat(i) * stepX
-                let ampMax = CGFloat(max(0.008, min(1.0, max(abs(peak.min), abs(peak.max)))))
-                let coreAmp = ampMax * 0.52
-                let y = centerY - coreAmp * maxBarHeight
-                corePath.addLine(to: CGPoint(x: x, y: y))
+                
+                capsulePath.addRoundedRect(
+                    in: rect,
+                    cornerSize: CGSize(width: cornerRadius, height: cornerRadius)
+                )
             }
             
-            for (i, peak) in resampled.enumerated().reversed() {
-                let x = CGFloat(i) * stepX
-                let ampMax = CGFloat(max(0.008, min(1.0, max(abs(peak.min), abs(peak.max)))))
-                let coreAmp = ampMax * 0.52
-                let y = centerY + coreAmp * maxBarHeight
-                corePath.addLine(to: CGPoint(x: x, y: y))
-            }
-            corePath.closeSubpath()
+            // 3. 使用纵向现代渐变进行填充（两端活力强调色，中心微透，极具通透呼吸感）
+            let capsuleGradient = Gradient(stops: [
+                .init(color: Color.accentColor.opacity(0.85), location: 0.0),
+                .init(color: Color.accentColor.opacity(0.48), location: 0.5),
+                .init(color: Color.accentColor.opacity(0.85), location: 1.0)
+            ])
             
-            // 填充内层能量核心
             context.fill(
-                corePath,
-                with: .color(Color.accentColor.opacity(0.24))
+                capsulePath,
+                with: .linearGradient(
+                    capsuleGradient,
+                    startPoint: CGPoint(x: 0, y: centerY - maxBarHeight),
+                    endPoint: CGPoint(x: 0, y: centerY + maxBarHeight)
+                )
             )
         }
     }
