@@ -533,7 +533,10 @@ final class MPVOpenGLLayer: CAOpenGLLayer {
         self.cglContextObj = glCtx
         
         super.init()
-        self.isAsynchronous = true
+        // libmpv 的更新回调会在有新帧时调用 requestDisplay()。这里必须使用
+        // 按需绘制；isAsynchronous=true 会让 CAOpenGLLayer 周期性调用
+        // canDraw，而 canDraw 一旦返回 true 就会在暂停时也持续重绘上一帧。
+        self.isAsynchronous = false
         self.needsDisplayOnBoundsChange = true
         self.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
     }
@@ -548,7 +551,7 @@ final class MPVOpenGLLayer: CAOpenGLLayer {
             self.cglContextObj = nil
         }
         super.init(layer: layer)
-        self.isAsynchronous = true
+        self.isAsynchronous = false
         self.needsDisplayOnBoundsChange = true
         self.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
     }
@@ -558,7 +561,7 @@ final class MPVOpenGLLayer: CAOpenGLLayer {
         self.cglContextObj = nil
         self.renderContext = nil
         super.init(coder: coder)
-        self.isAsynchronous = true
+        self.isAsynchronous = false
         self.needsDisplayOnBoundsChange = true
         self.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
     }
