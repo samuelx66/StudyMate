@@ -5,72 +5,164 @@ import AppKit
 public struct VideoPlayerView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var lang = LanguageManager.shared
+    @Binding var isWaveformsVisible: Bool
+    @Binding var isSubtitleEditVisible: Bool
     
-    public init(engine: PlaybackEngine) {
+    @State private var isHovering: Bool = false
+    @State private var isScrubbing: Bool = false
+    
+    // 自由拖拽定位坐标
+    @State private var positionOffset: CGSize = .zero
+    @State private var dragTranslation: CGSize = .zero
+    
+    public init(
+        engine: PlaybackEngine,
+        isWaveformsVisible: Binding<Bool> = .constant(true),
+        isSubtitleEditVisible: Binding<Bool> = .constant(false)
+    ) {
         self.engine = engine
+        self._isWaveformsVisible = isWaveformsVisible
+        self._isSubtitleEditVisible = isSubtitleEditVisible
+    }
+    
+    private var shouldShowOverlay: Bool {
+        guard engine.currentMedia != nil else { return false }
+        // 只要鼠标在画面内、或者未在播放、或者正在拖拽进度条，就一直显示
+        if isHovering || !engine.isPlaying || isScrubbing || dragTranslation != .zero {
+            return true
+        }
+        return false
     }
     
     public var body: some View {
-        ZStack {
-            Color.black
-            
-            if let media = engine.currentMedia {
-                if media.isVideo {
-                    // 智能多媒体双引擎硬件加速视频渲染视图（AVFoundation / libmpv 无缝直通）
-                    NativeVideoPlayerRepresentable(playerView: engine.activeBackend.playerView)
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
+                
+                if let media = engine.currentMedia {
+                    if media.isVideo {
+                        // 智能多媒体双引擎硬件加速视频渲染视图（AVFoundation / libmpv 无缝直通）
+                        NativeVideoPlayerRepresentable(
+                            playerView: engine.activeBackend.playerView,
+                            onHoverChanged: { hovering in
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isHovering = hovering
+                                }
+                            }
+                        )
                         .id("\(ObjectIdentifier(engine.activeBackend))_\(media.id)")
                         .onTapGesture {
                             engine.togglePlayPause()
                         }
+                    } else {
+                        // 纯音频模式下的视觉占位
+                        AudioVisualPlaceholder(
+                            title: media.title,
+                            isPlaying: engine.isPlaying,
+                            duration: media.formattedDuration
+                        )
+                        .onTapGesture {
+                            engine.togglePlayPause()
+                        }
+                    }
                 } else {
-                    // 纯音频模式下的视觉占位
-                    AudioVisualPlaceholder(
-                        title: media.title,
-                        isPlaying: engine.isPlaying,
-                        duration: media.formattedDuration
-                    )
-                    .onTapGesture {
-                        engine.togglePlayPause()
+                    // 未打开媒体文件时的空状态
+                    EmptyMediaPlaceholder()
+                }
+
+                if engine.isMediaLoading {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(lang.text("正在加载媒体…", "Loading media…"))
+                            .font(.caption)
+                    }
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                
+                // 悬浮式播放控制面板（IINA 风格，支持在画面区域内随意拖放）
+                if engine.currentMedia != nil {
+                    VStack {
+                        Spacer()
+                        FloatingVideoOSDView(
+                            engine: engine,
+                            isScrubbing: $isScrubbing,
+                            isWaveformsVisible: $isWaveformsVisible,
+                            isSubtitleEditVisible: $isSubtitleEditVisible
+                        )
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 14)
+                            .offset(
+                                x: positionOffset.width + dragTranslation.width,
+                                y: positionOffset.height + dragTranslation.height
+                            )
+                            .gesture(
+                                DragGesture(minimumDistance: 4)
+                                    .onChanged { value in
+                                        dragTranslation = value.translation
+                                    }
+                                    .onEnded { value in
+                                        let maxOffsetX = max(0, (geometry.size.width - 240) / 2)
+                                        let maxOffsetY = max(0, geometry.size.height - 60)
+                                        
+                                        var newWidth = positionOffset.width + value.translation.width
+                                        var newHeight = positionOffset.height + value.translation.height
+                                        
+                                        newWidth = max(-maxOffsetX, min(maxOffsetX, newWidth))
+                                        newHeight = max(-maxOffsetY, min(0, newHeight))
+                                        
+                                        positionOffset = CGSize(width: newWidth, height: newHeight)
+                                        dragTranslation = .zero
+                                    }
+                            )
+                            .opacity(shouldShowOverlay ? 1.0 : 0.0)
+                            .animation(.easeInOut(duration: 0.2), value: shouldShowOverlay)
+                            .allowsHitTesting(shouldShowOverlay)
                     }
                 }
-            } else {
-                // 未打开媒体文件时的空状态
-                EmptyMediaPlaceholder()
             }
-
-            if engine.isMediaLoading {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(lang.text("正在加载媒体…", "Loading media…"))
-                        .font(.caption)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            )
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    if !isHovering {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isHovering = true
+                        }
+                    }
+                case .ended:
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isHovering = false
+                    }
                 }
-                .padding(12)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .frame(minHeight: 200)
-        .cornerRadius(10)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        )
     }
 }
 
-/// 纯原生 AppKit 视频渲染容器宿主
+/// 纯原生 AppKit 视频渲染容器宿主（集成 NSTrackingArea 确保 100% 鼠标悬停感知）
 public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
     let playerView: NSView
+    var onHoverChanged: ((Bool) -> Void)? = nil
     
-    public func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+    public func makeNSView(context: Context) -> TrackingVideoContainerView {
+        let container = TrackingVideoContainerView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
+        container.onHoverChanged = onHoverChanged
         embed(playerView, in: container)
         return container
     }
     
-    public func updateNSView(_ nsView: NSView, context: Context) {
+    public func updateNSView(_ nsView: TrackingVideoContainerView, context: Context) {
+        nsView.onHoverChanged = onHoverChanged
         embed(playerView, in: nsView)
     }
     
@@ -86,6 +178,37 @@ public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
                 view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             ])
         }
+    }
+}
+
+/// 带有完整鼠标悬停与移动追踪的容器视图
+public final class TrackingVideoContainerView: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
+    
+    private var trackingArea: NSTrackingArea?
+    
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let options: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
+            .mouseMoved,
+            .activeInActiveApp,
+            .inVisibleRect
+        ]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    
+    public override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+    
+    public override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
     }
 }
 
@@ -148,16 +271,11 @@ struct EmptyMediaPlaceholder: View {
             
             Text(lang.text(
                 "支持 MP4、MKV、WebM、AVI、MOV、FLV、MP3、WAV 等格式及字幕导入",
-                "Supports MP4, MKV, WebM, AVI, MOV, FLV, MP3, WAV, and subtitle import"
+                "Supports MP4, MKV, WebM, AVI, MOV, FLV, MP3, WAV and subtitle imports"
             ))
-                .font(.caption)
-                .foregroundColor(.secondary.opacity(0.8))
+            .font(.caption)
+            .foregroundColor(.secondary.opacity(0.8))
         }
         .padding()
     }
-}
-
-#Preview("视频/音频视窗 (空状态)") {
-    VideoPlayerView(engine: PlaybackEngine.shared)
-        .frame(width: 600, height: 400)
 }

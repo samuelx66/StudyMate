@@ -1581,7 +1581,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 triggerSentenceRepeat(for: currentSeg)
             } else {
                 currentRepeatCount = 1
-                advanceToNextSentence(from: activeIdx)
+                if shadowingPauseRatio > 0 {
+                    let pauseDuration = max(0.5, currentSeg.duration * shadowingPauseRatio)
+                    startShadowingPause(duration: pauseDuration) { [weak self] in
+                        guard let self = self else { return }
+                        self.advanceToNextSentence(from: activeIdx)
+                    }
+                } else {
+                    advanceToNextSentence(from: activeIdx)
+                }
             }
             return
         }
@@ -1638,6 +1646,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if !Task.isCancelled {
                 self.isShadowingPaused = false
                 self.shadowingCountdownRemaining = 0
+                self.wantsPlayback = true
                 onFinished()
             }
         }
@@ -1684,6 +1693,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 // 正在播放而时间永远停在下一句起点。
                 let nextSegment = segments[nextIdx]
                 let isAdjacentNaturalContinuation =
+                    shadowingPauseRatio == 0 &&
                     !onlyPlayBookmarked &&
                     nextIdx == currentIndex + 1 &&
                     abs(nextSegment.startTime - currentTime) <= 0.04

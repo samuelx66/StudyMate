@@ -14,6 +14,7 @@ public struct MainContentView: View {
     @State private var isWaveformsVisible: Bool = true
     @State private var isSubtitleEditVisible: Bool = false
     @State private var isDropTargeted: Bool = false
+    @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "macaboboo_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "macaboboo_playlist_width") : 360
     
     public init() {}
     
@@ -37,15 +38,13 @@ public struct MainContentView: View {
                     ))
                 }
                 
-                // 次波形图与视频播放画面之间的折叠/展开联动条
-                WaveformCollapseToggleBar(isWaveformsVisible: $isWaveformsVisible)
-                
                 // 2. 中间：音视频播放视窗（波形图/字幕区折叠时自适应最大化填满全部可用纵向空间）
-                VideoPlayerView(engine: engine)
+                VideoPlayerView(
+                    engine: engine,
+                    isWaveformsVisible: $isWaveformsVisible,
+                    isSubtitleEditVisible: $isSubtitleEditVisible
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                // 视频画面播放区与字幕编辑区之间的折叠/展开联动条
-                SubtitleCollapseToggleBar(isSubtitleEditVisible: $isSubtitleEditVisible)
                 
                 // 2.5 字幕编辑区（原文 + 译文双行输入，支持折叠/展开动画，焦点离开时自动保存）
                 if isSubtitleEditVisible {
@@ -72,6 +71,7 @@ public struct MainContentView: View {
         }
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        .background(globalKeyboardShortcuts)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {
             playlistOverlay
@@ -179,6 +179,26 @@ public struct MainContentView: View {
             Text(engine.lastErrorMessage ?? "")
         }
     }
+    
+    private var globalKeyboardShortcuts: some View {
+        Group {
+            Button(action: {
+                withAnimation { isWaveformsVisible.toggle() }
+            }) {
+                EmptyView()
+            }
+            .keyboardShortcut("w", modifiers: [.option])
+            
+            Button(action: {
+                withAnimation { isSubtitleEditVisible.toggle() }
+            }) {
+                EmptyView()
+            }
+            .keyboardShortcut("s", modifiers: [.option])
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
 
     @ViewBuilder
     private var playlistOverlay: some View {
@@ -201,12 +221,16 @@ public struct MainContentView: View {
     }
 
     private var playlistPanel: some View {
-        PlaybackListView(engine: engine, historyStore: playbackHistory)
-            .frame(width: 480)
-            .frame(maxHeight: .infinity)
-            .background(.thinMaterial)
-            .border(Color(nsColor: .separatorColor).opacity(0.5), width: 1)
-            .shadow(color: Color.black.opacity(0.2), radius: 12, x: -4, y: 2)
+        PlaybackListView(
+            engine: engine,
+            historyStore: playbackHistory,
+            playlistWidth: $playlistWidth,
+            onResizeEnded: {
+                UserDefaults.standard.set(playlistWidth, forKey: "macaboboo_playlist_width")
+            }
+        )
+        .frame(width: CGFloat(playlistWidth))
+        .frame(maxHeight: .infinity)
     }
 
     private func hidePlaylist() {
@@ -245,174 +269,6 @@ public struct MainContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             engine.loadMedia(from: url)
         }
-    }
-}
-
-/// 次波形图与视频播放画面之间的折叠/展开联动条（左侧极简图标，鼠标悬停时平滑展开完整内容与快捷键）
-public struct WaveformCollapseToggleBar: View {
-    @Binding var isWaveformsVisible: Bool
-    @ObservedObject var lang = LanguageManager.shared
-    
-    @State private var isHovered: Bool = false
-    
-    public init(isWaveformsVisible: Binding<Bool>) {
-        self._isWaveformsVisible = isWaveformsVisible
-    }
-    
-    public var body: some View {
-        Button(action: {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                isWaveformsVisible.toggle()
-            }
-        }) {
-            ZStack(alignment: .leading) {
-                // 背景细分割线
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor).opacity(0.35))
-                    .frame(height: 1)
-                
-                // 左侧极简交互胶囊按钮（默认仅显示图标，悬停时丝滑展开文字与快捷键）
-                HStack(spacing: 5) {
-                    Image(systemName: isWaveformsVisible ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                    
-                    Image(systemName: isWaveformsVisible ? "rectangle.expand.vertical" : "waveform.path.ecg")
-                        .font(.system(size: 9))
-                    
-                    if isHovered {
-                        Text(isWaveformsVisible
-                            ? lang.text("收起波形 • 最大化画面", "Hide waveforms • Maximize video")
-                            : lang.text("展开双波形图", "Show waveforms"))
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                        
-                        Text("⌥W")
-                            .font(.system(size: 8, weight: .medium, design: .monospaced))
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 0.5)
-                            .background(Color.secondary.opacity(0.15))
-                            .cornerRadius(2)
-                            .transition(.opacity)
-                    }
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2.5)
-                .background(
-                    Capsule()
-                        .fill(isHovered ? Color.blue.opacity(0.14) : Color(nsColor: .controlBackgroundColor))
-                        .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: 2, y: 1)
-                )
-                .overlay(
-                    Capsule()
-                        .stroke(isHovered ? Color.blue.opacity(0.5) : Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.8)
-                )
-                .foregroundColor(isHovered ? .blue : .secondary)
-                .padding(.leading, 12)
-                .scaleEffect(isHovered ? 1.02 : 1.0)
-                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isHovered)
-            }
-            .frame(height: 18)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("w", modifiers: [.option])
-        .onHover { hovering in
-            isHovered = hovering
-            if hovering {
-                NSCursor.pointingHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
-        .help(isWaveformsVisible
-            ? lang.text("点击折叠主次波形图，最大化视频画面（⌥W）", "Hide both waveforms and maximize video (⌥W)")
-            : lang.text("点击恢复主次波形图（⌥W）", "Restore both waveforms (⌥W)"))
-    }
-}
-
-/// 视频画面播放区与字幕编辑区之间的折叠/展开联动条（左侧极简图标，鼠标悬停时平滑展开完整内容与快捷键 ⌥S）
-public struct SubtitleCollapseToggleBar: View {
-    @Binding var isSubtitleEditVisible: Bool
-    @ObservedObject var lang = LanguageManager.shared
-    
-    @State private var isHovered: Bool = false
-    
-    public init(isSubtitleEditVisible: Binding<Bool>) {
-        self._isSubtitleEditVisible = isSubtitleEditVisible
-    }
-    
-    public var body: some View {
-        Button(action: {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                isSubtitleEditVisible.toggle()
-            }
-        }) {
-            ZStack(alignment: .leading) {
-                // 背景细分割线
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor).opacity(0.35))
-                    .frame(height: 1)
-                
-                // 左侧极简交互胶囊按钮（默认仅显示图标，悬停时丝滑展开文字提示与快捷键）
-                HStack(spacing: 5) {
-                    Image(systemName: isSubtitleEditVisible ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 8, weight: .bold))
-                    
-                    Image(systemName: isSubtitleEditVisible ? "text.bubble" : "character.cursor.ibeam")
-                        .font(.system(size: 9))
-                    
-                    if isHovered {
-                        Text(isSubtitleEditVisible
-                            ? lang.text("收起字幕编辑 • 扩展画面", "Hide subtitle editor • Expand video")
-                            : lang.text("展开字幕编辑区", "Show subtitle editor"))
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                        
-                        Text("⌥S")
-                            .font(.system(size: 8, weight: .medium, design: .monospaced))
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 0.5)
-                            .background(Color.secondary.opacity(0.15))
-                            .cornerRadius(2)
-                            .transition(.opacity)
-                    }
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2.5)
-                .background(
-                    Capsule()
-                        .fill(isHovered ? Color.blue.opacity(0.14) : Color(nsColor: .controlBackgroundColor))
-                        .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: 2, y: 1)
-                )
-                .overlay(
-                    Capsule()
-                        .stroke(isHovered ? Color.blue.opacity(0.5) : Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.8)
-                )
-                .foregroundColor(isHovered ? .blue : .secondary)
-                .padding(.leading, 12)
-                .scaleEffect(isHovered ? 1.02 : 1.0)
-                .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isHovered)
-            }
-            .frame(height: 18)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("s", modifiers: [.option])
-        .onHover { hovering in
-            isHovered = hovering
-            if hovering {
-                NSCursor.pointingHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
-        .help(isSubtitleEditVisible
-            ? lang.text("点击折叠字幕编辑区，扩展视频画面（⌥S）", "Hide subtitle editor and expand video (⌥S)")
-            : lang.text("点击展开字幕编辑区（⌥S）", "Show subtitle editor (⌥S)"))
     }
 }
 

@@ -81,8 +81,8 @@ public struct SegmentListView: View {
                     followState.toggle()
                 }) {
                     Image(systemName: followState.shouldFollow
-                        ? "arrow.down.to.line"
-                        : "pause.circle.fill")
+                        ? "book.pages"
+                        : "book.closed")
                         .foregroundColor(followState.shouldFollow ? .blue : .secondary)
                         .help(lang.text(
                             followState.shouldFollow
@@ -376,6 +376,7 @@ public struct SegmentListView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 220)
         .sheet(isPresented: $showImportSheet) {
             SubtitleImportSheet(engine: engine)
         }
@@ -735,44 +736,47 @@ struct SegmentRowView: View {
                             .font(.system(size: 9).monospacedDigit())
                             .foregroundColor(.secondary.opacity(0.8))
 
-                        // 悬停操作按钮
-                        if isHovering {
-                            HStack(spacing: 4) {
-                                Button(action: {
-                                    tempOriginalText = seg.text
-                                    tempTranslationText = seg.translation
-                                    isEditing = true
-                                    focusedField = .original
-                                }) {
-                                    Image(systemName: "pencil")
-                                        .font(.system(size: 9))
-                                }
-                                .buttonStyle(.plain)
-                                .help(lang.text("编辑原文和译文", "Edit original text and translation"))
-
-                                Button(action: onSplit) {
-                                    Image(systemName: "rectangle.split.2x1")
-                                        .font(.system(size: 9))
-                                }
-                                .buttonStyle(.plain)
-                                .help(lang.text("在中间拆分此句", "Split this sentence at its midpoint"))
-
-                                Button(action: onMergeNext) {
-                                    Image(systemName: "arrow.triangle.merge")
-                                        .font(.system(size: 9))
-                                }
-                                .buttonStyle(.plain)
-                                .help(lang.localized(.mergeSegment))
-
-                                Button(action: onDelete) {
-                                    Image(systemName: "trash")
-                                        .font(.system(size: 9))
-                                        .foregroundColor(.red)
-                                }
-                                .buttonStyle(.plain)
-                                .help(lang.localized(.deleteSegment))
+                        // 悬停操作按钮（始终占位，避免显示/隐藏引起行宽变化晃动）
+                        HStack(spacing: 4) {
+                            Button(action: {
+                                tempOriginalText = seg.text
+                                tempTranslationText = seg.translation
+                                isEditing = true
+                                focusedField = .original
+                            }) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 9))
                             }
+                            .buttonStyle(.plain)
+                            .help(lang.text("编辑原文和译文", "Edit original text and translation"))
+                            .allowsHitTesting(isHovering)
+
+                            Button(action: onSplit) {
+                                Image(systemName: "rectangle.split.2x1")
+                                    .font(.system(size: 9))
+                            }
+                            .buttonStyle(.plain)
+                            .help(lang.text("在中间拆分此句", "Split this sentence at its midpoint"))
+                            .allowsHitTesting(isHovering)
+
+                            Button(action: onMergeNext) {
+                                Image(systemName: "arrow.triangle.merge")
+                                    .font(.system(size: 9))
+                            }
+                            .buttonStyle(.plain)
+                            .help(lang.localized(.mergeSegment))
+                            .allowsHitTesting(isHovering)
+
+                            Button(action: onDelete) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .help(lang.localized(.deleteSegment))
+                            .allowsHitTesting(isHovering)
                         }
+                        .opacity(isHovering ? 1 : 0)
                     }
 
                     // 第二行：分为两个区域，左边显示原文，右边显示译文

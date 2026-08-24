@@ -289,7 +289,7 @@ public actor SpeechSegmentationPipeline {
                 merged.append(VoiceActivitySegment(startTime: start, endTime: end, confidence: segment.confidence))
                 continue
             }
-            if start <= last.endTime + 0.35 {
+            if start <= last.endTime + 0.20 {
                 merged[merged.count - 1].endTime = max(last.endTime, end)
                 merged[merged.count - 1].confidence = max(last.confidence, segment.confidence)
             } else {

@@ -1,10 +1,9 @@
 import Foundation
 
-/// Silero + Whisper 两阶段级联双模断句器
-/// 算法架构：
-/// 1. 第一阶段：Silero VAD 声学物理初筛粗切（毫秒级锁定人声发声岛屿，强力滤除纯 BGM 音乐与环境底噪）
-/// 2. 第二阶段：Whisper / Speech AI 逐句语义精确校准与英文台词生成（根据单词时间戳重构标准语法句子边界）
-/// 3. 第三阶段：首尾声学 Padding 智能微调（前推 80~120ms 防吞音，后延 180~250ms 防掐尾音）
+/// Silero + Whisper 两阶段级联双模断句器（已废弃）
+/// 新的统一断句流程请使用 `SpeechSegmentationPipeline` + `SpeechBoundaryOptimizer`。
+/// 本类保留仅为历史记录与回归对比用途，不再被主流水线调用。
+@available(*, deprecated, renamed: "SpeechSegmentationPipeline", message: "Use SpeechSegmentationPipeline.run(request:stageChanged:preview:) instead.")
 public final class SileroWhisperCascadeSegmenter: @unchecked Sendable {
     public static let shared = SileroWhisperCascadeSegmenter()
     

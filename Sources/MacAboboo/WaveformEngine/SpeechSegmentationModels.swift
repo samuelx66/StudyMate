@@ -144,7 +144,11 @@ public enum SpeechSegmentationMode: String, CaseIterable, Codable, Sendable {
                 vad: .init(threshold: 0.58, minSpeechDuration: 0.38, minSilenceDuration: 0.50, maxSpeechDuration: 18, speechPadding: 0.10, sampleOverlap: 0.10),
                 minimumSentenceDuration: 0.80,
                 preferredSentenceDuration: 8.0,
-                maximumSentenceDuration: 18,
+                // VAD engine allows up to 18 s so Silero does not prematurely
+                // split uninterrupted speech; the optimizer enforces 12 s on
+                // the final output so the energy-valley splitter always fires
+                // for very long chunks, keeping segments listenable.
+                maximumSentenceDuration: 12,
                 mergeGap: 0.32,
                 onsetPadding: 0.08,
                 offsetPadding: 0.18,
