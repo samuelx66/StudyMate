@@ -7,138 +7,138 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D878B86F0DAE41AC9F6E1CE4 /* SpeakerKitModels in Resources */ = {isa = PBXBuildFile; fileRef = 88433852E71F48CFBBCFF24D /* SpeakerKitModels */; };
-		C3E5B09B704C4BB8B371B74F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CA0831A348E04769B7446D3A /* Assets.xcassets */; };
-		92B07A64E80F4678B5DFE3FE /* CSpeechRuntime.c in Sources */ = {isa = PBXBuildFile; fileRef = ACEBED9656424B16BA5B68EC /* CSpeechRuntime.c */; };
-		947567A850E0462BB0D2B3F1 /* SpeakerKit-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 73311D9FF93B43DDA2B9843F /* SpeakerKit-LICENSE.txt */; };
-		E2B080E8612747629A0149EF /* Silero-VAD-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 5F155ACA860447208EC4E392 /* Silero-VAD-LICENSE.txt */; };
-		9CDFCD58A7BD47D49C5A08FB /* whisper.cpp-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D1FC491BF31148D7B589ABF4 /* whisper.cpp-LICENSE.txt */; };
-		A3869AFD369F4BDB80F9593C /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8D05DEF3C8DA4F7CB04ABBD9 /* ggml-silero-v6.2.0.bin */; };
-		92B05E5F107D40DA96103CEB /* PlaybackEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74C794507AC4C7793A092F5 /* PlaybackEngine.swift */; };
-		C38E19158D82438488A2D201 /* SentenceLibraryPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E092A05543724CE5B486DD03 /* SentenceLibraryPlayer.swift */; };
-		D11CE1B836544A66926A1FD5 /* AVFoundationPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F6A11046194CB5BFA05E12 /* AVFoundationPlayerBackend.swift */; };
-		89760AC93AFA4EAC816BB7F5 /* MPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 347610FF9B8843A29829722F /* MPVPlayerBackend.swift */; };
-		6C15D72708F94DFE9449951B /* LazyMPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CEAF131486F4D2F9DCBB958 /* LazyMPVPlayerBackend.swift */; };
-		71CC2205C4084F59A591B605 /* MediaPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2458121A4CCB44B0A83918AE /* MediaPlayerBackend.swift */; };
-		B4C91DC5692A4FD6A8F19E28 /* MPVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2996346D666F4D30AE20944D /* MPVClient.swift */; };
-		B25D76C294CF4290A36AD338 /* SentenceLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5123485EB82542C4997D9F84 /* SentenceLibraryModels.swift */; };
-		CD4450D8DF034EDCB608771D /* DecoderEngineMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DD88ABF66414CFE94651A00 /* DecoderEngineMode.swift */; };
-		DE436E409316458183E41F01 /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C159EE0F4F4E719B6848F3 /* WaveformData.swift */; };
-		F3CF3D8969BF4411A8A70228 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56660EBD2F0D4AB0AEC589B7 /* MediaItem.swift */; };
-		CF64178E7520424CACE4C0B3 /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A06D1565B14B46A5EC0728 /* SentenceSegment.swift */; };
-		B35961800452427390420783 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC96FA7E8C4A43E9935CB292 /* WhisperModelManager.swift */; };
-		F68BD7B586C24F5D8E657D2E /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468378AA84F7460F9A94DFD9 /* SpeechAlignmentEngine.swift */; };
-		0D3C6D65C646444484D245A1 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF23B49DBBB347B09F9A5EA4 /* SpeechSegmentationPipeline.swift */; };
-		D2C9E051E3224669B5E83106 /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069FF189F7B24ED78F91F1C4 /* WaveformExtractor.swift */; };
-		58F4817165684921B8BA1C91 /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9FFD16B75EB4AA3BF118A23 /* SpeakerDiarizationEngine.swift */; };
-		EB2AD43693B1487593F1A704 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEDF1898063F44FAA7658E74 /* SpeechSegmentationModels.swift */; };
-		11B8443B4F7047A1B9C55679 /* MacAbobooResourceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56983EE93D074B5DA3A33675 /* MacAbobooResourceBundle.swift */; };
-		79B07A8358EE47F29100ACE6 /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C475EA6820144F369F65FE6B /* NativeSpeechRuntime.swift */; };
-		C6E2C98B5A324DCEA7BDAC9D /* SileroVADEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5EB0EAA3B6342A6AC18352B /* SileroVADEngine.swift */; };
-		5E104E9A6BB54C9EBF47B48D /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC506B1BD19F4F0EA6929EF5 /* AudioPCMExtractor.swift */; };
-		AD106E3F17F54BDB9860AB2E /* VADSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC9C8CDE701C48DFA2506BCE /* VADSegmenter.swift */; };
-		C7549E2235644AAE9CD0B2E1 /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39DFBA98573F41C69222D941 /* SpeechBoundaryOptimizer.swift */; };
-		D45A0A544D364B64A23ECC96 /* SubtitleExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ABFD4C8F6E440D791F74101 /* SubtitleExporter.swift */; };
-		9B6EE449904A4F7CAD2D64CE /* TextAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4845FCB0C8014E95A4F35256 /* TextAlignmentEngine.swift */; };
-		CA0F0541427A4554ACA4E6A4 /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E7B1276F2BF4AA682F14E77 /* SubtitleParser.swift */; };
-		8C2897B464BA4363BE193D07 /* SegmentationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1B3488B99545A3A80E263B /* SegmentationStore.swift */; };
-		2748C1960F3A44D6B6F89581 /* SentenceLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB17D8D1031B4518AA3D4AF7 /* SentenceLibraryManager.swift */; };
-		BBEDBC4A489F4894833EFF35 /* SentenceLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA9551018E5445ED957BEE7A /* SentenceLibraryStore.swift */; };
-		768B0EB0EB864917BA183C98 /* PlaybackHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37D6B0FD09324CAAA8C8A165 /* PlaybackHistoryStore.swift */; };
-		E7732ADD37494CB9B353CB70 /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C03DBAA59148F6946988AD /* ProjectFileManager.swift */; };
-		F05CC5240A0D42CF9C31F94E /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F00F90CADF4E29A652B10D /* SubtitleImportSheet.swift */; };
-		E101CE046AED4AA589BAF5D6 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 853B839AB7454C95828E94F6 /* SegmentListView.swift */; };
-		6B6236AD9AE04F1C9028B800 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 992F9E88849C43309F17209A /* VideoPlayerView.swift */; };
-		2FEC6CA2A49E49BD99265727 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2383D054F3C345DB922A8B4B /* WaveformComponents.swift */; };
-		F17E0A3CF8434C8882C506B9 /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDC6240D374E0E94C71F0F /* PlaybackListView.swift */; };
-		344227D97A754FDAA0C46DD4 /* FloatingVideoOSDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D7E6AB90B4441F18F3BD0B7 /* FloatingVideoOSDView.swift */; };
-		59E422F30988488D9CF6A113 /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E54DB6E75F46058B608364 /* BoundaryMarkerHandle.swift */; };
-		9ED57C5CEA88420989680E86 /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D5F0B74080B4EEBB54538BE /* SentenceLibraryView.swift */; };
-		DE0F278CE13F4643BD64E187 /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE7F8222A26421FAB8FD3B3 /* SecondaryWaveformView.swift */; };
-		F3BBC78BA1E64FDF9906FE0D /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 743F40F979574C0E86F8F59A /* PrimaryWaveformView.swift */; };
-		B4EBE89C7A3B4C2F8F659896 /* PlaybackControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E40D76E786694378AEA0938F /* PlaybackControlView.swift */; };
-		34D279F6CF0946E991725D62 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA2A8F5329DF45C7896087E6 /* MainContentView.swift */; };
-		AE26BC1DBC214EC09427E729 /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E16BD9C348440B6A2EB740B /* SubtitleEditView.swift */; };
-		58A1F5B8EBF545BB9409A0A8 /* IntensiveSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B99077B1FEE7457AB943BED6 /* IntensiveSettingsPopover.swift */; };
-		F7ED388ACDAB43F29658EA08 /* DraggableWaveformOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFEFF171A3FA46DDB6F3532E /* DraggableWaveformOverlay.swift */; };
-		A3228D23CA044CBC98A51E2B /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1974AC718A0447AB0D72525 /* LanguageManager.swift */; };
-		5BD31C5115AB434CAE7CBC62 /* MacAbobooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE307AE796614A769D08368C /* MacAbobooApp.swift */; };
-		346ACA9FA5164167B1241C3A /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C00DDD0158C4E58B320E61F /* whisper.xcframework */; };
-		E14E9DE86B8A4C3AB5B5FD11 /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C00DDD0158C4E58B320E61F /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C5AF48155BB28D01B4975C1C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A42BF39F5B159EF7C9E0661E /* Assets.xcassets */; };
+		A140681176DE656D13E83BD4 /* SpeakerKitModels in Resources */ = {isa = PBXBuildFile; fileRef = 603ADBF2101D3DBE0E3784AC /* SpeakerKitModels */; };
+		5AD27D198E8D091967BC127B /* CSpeechRuntime.c in Sources */ = {isa = PBXBuildFile; fileRef = 6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */; };
+		40314E47275F47874389F738 /* AVFoundationPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 307535009CD4B177F23718BF /* AVFoundationPlayerBackend.swift */; };
+		37DF687EE04D05AA014D8DC9 /* LazyMPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB54735762065E7D5CD02739 /* LazyMPVPlayerBackend.swift */; };
+		D495A8BAF4ADBD47CBF8ECD1 /* MPVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30611674A7138B9BD168C586 /* MPVClient.swift */; };
+		0268CD3483A35DADB5C645A3 /* MPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EFE2EDA7356909B0D83862A /* MPVPlayerBackend.swift */; };
+		8E7CDDBDF0CBAEC6A257DE1C /* MediaPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9808ECAA866BAA3BB3916082 /* MediaPlayerBackend.swift */; };
+		9FD00E5EA11353B2D87AFB03 /* PlaybackEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE06B750BF0F1EDA1D308A2F /* PlaybackEngine.swift */; };
+		3BB5E2D54F7B57BDE0CCA41E /* SentenceLibraryPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32EF2CED508E88EC61E5D8E1 /* SentenceLibraryPlayer.swift */; };
+		78B87CE26CED0CEF647579AF /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0F0B848411A45B794B35A9 /* LanguageManager.swift */; };
+		74D8B19F14ECC36A1254B2BB /* DecoderEngineMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 814BA23A5FFDFAE08941B05A /* DecoderEngineMode.swift */; };
+		5F3C25B319DC17030F71B416 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84553DF6D38EAA213AD2BE8F /* MediaItem.swift */; };
+		ADC0EC8A2BC6567964B1A1AA /* SentenceLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5179B15CD081C28523F300BF /* SentenceLibraryModels.swift */; };
+		E809F849DDE74C76FD1AF3BE /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089E020FE84F27C976394B94 /* SentenceSegment.swift */; };
+		F63EA19F1CFED56DEE8CA5CD /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7977EEAD34EF9593B283E2 /* WaveformData.swift */; };
+		8D26BABD1657CB292B87130C /* PlaybackHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */; };
+		AD3A589B758684AAA13698F0 /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78322D585642383992C4344 /* ProjectFileManager.swift */; };
+		44826EE451689221D2AEDCBE /* SegmentationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4884576F03A06D8EE875482 /* SegmentationStore.swift */; };
+		248B4FED5FDDE5EF6E955CBD /* SentenceLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */; };
+		E7C0FA87F7C5FF5220B106F3 /* SentenceLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */; };
+		205A62B92C9B7BE7D5BB4675 /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */; };
+		86C86636D040A1A0262484A9 /* Silero-VAD-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 04DC5D9CFB3F2157A5D35171 /* Silero-VAD-LICENSE.txt */; };
+		2C7BEDA51D2EF7A6C2B2DD6D /* SpeakerKit-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 6416608FB13E6E086A9B2972 /* SpeakerKit-LICENSE.txt */; };
+		3DCF597F098B219DF0AB0251 /* whisper.cpp-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0393130823D508B34FC08FA4 /* whisper.cpp-LICENSE.txt */; };
+		BD280A962553F6AB24C55B78 /* SubtitleExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0CB4796767DFE705F5A627 /* SubtitleExporter.swift */; };
+		A99C24FC2A5F6F71B18217E2 /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B993FC8E7EFF80D0A2B8A /* SubtitleParser.swift */; };
+		956A338B3E9A85BD1B023944 /* TextAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F102E3C15B87D9DAE52705BF /* TextAlignmentEngine.swift */; };
+		472B5564C8A300DFF7BC2351 /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */; };
+		708FC04B28824F84FA93C677 /* DraggableWaveformOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */; };
+		9C06C7E4D8F05364FF1F3DEE /* FloatingVideoOSDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */; };
+		28123690625B8092AD1C4AE0 /* IntensiveSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */; };
+		3376DFD638A9DDE7FA911ECC /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A918BD816D849ACFA171768E /* MainContentView.swift */; };
+		46AE8A1CFC34502E22B3F1E9 /* PlaybackControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */; };
+		E80F9787BE0201AAD3C60E4D /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67A44BC18300FC764615A465 /* PlaybackListView.swift */; };
+		37D7A9622E21A398EF88CFDD /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */; };
+		F9BA472A6AB510D5649CE226 /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */; };
+		8B24EE2B11C910F6D4AA1C11 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A61F036FF21BC7D8E1280F4 /* SegmentListView.swift */; };
+		94968FBAF137B36173998F75 /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70A91370F03C04FA5953E2F /* SentenceLibraryView.swift */; };
+		4ECE9823E15BA011982AB588 /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7ACFD9E69E57077068E58E1 /* SubtitleEditView.swift */; };
+		7B1D3652A3716A4910A5E482 /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5962E2A3F7BC13ADDAF9325 /* SubtitleImportSheet.swift */; };
+		A85B71EBD5487B4B2ADD4638 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1C0FDFEA66F708B3AB2DDF /* VideoPlayerView.swift */; };
+		7F5BC53F1D521F6E4B02EE0D /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD211FCB88F056E4FDB7D16E /* WaveformComponents.swift */; };
+		37925E80F95BB4008CCAD948 /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */; };
+		6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */; };
+		1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */; };
+		B6E8BA4E82BEFF64F32C418B /* SileroVADEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A2F32746F55615591A76A04 /* SileroVADEngine.swift */; };
+		86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */; };
+		8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */; };
+		C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */; };
+		CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */; };
+		2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */; };
+		A342290332D979D80C96ECB2 /* VADSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */; };
+		7CECCD0C25CCF80184A07918 /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */; };
+		C86E50177DDF0C4754E23857 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */; };
+		89F0FD679AEB3A6F1E805429 /* MacAbobooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E903988D1BDA490BFA9AC334 /* MacAbobooApp.swift */; };
+		11CACBE79E9A58BAEE17D343 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; };
+		BA2D27CDC73DCEA706BCE34C /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		3D6B035E7C65438D99B08B7F /* MacAboboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacAboboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		88433852E71F48CFBBCFF24D /* SpeakerKitModels */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Sources/MacAboboo/Resources/SpeakerKitModels"; sourceTree = "<group>"; };
-		CA0831A348E04769B7446D3A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Sources/MacAboboo/Resources/Assets.xcassets"; sourceTree = "<group>"; };
-		ACEBED9656424B16BA5B68EC /* CSpeechRuntime.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = "Sources/CSpeechRuntime/CSpeechRuntime.c"; sourceTree = "<group>"; };
-		943DC3E8D4A549DBBF674AE4 /* MacAboboo-Bridging-Header.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h"; sourceTree = "<group>"; };
-		4006B8C07B8744879F420D7F /* CSpeechRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/include/CSpeechRuntime.h"; sourceTree = "<group>"; };
-		73311D9FF93B43DDA2B9843F /* SpeakerKit-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/SpeakerKit-LICENSE.txt"; sourceTree = "<group>"; };
-		5F155ACA860447208EC4E392 /* Silero-VAD-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/Silero-VAD-LICENSE.txt"; sourceTree = "<group>"; };
-		D1FC491BF31148D7B589ABF4 /* whisper.cpp-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/whisper.cpp-LICENSE.txt"; sourceTree = "<group>"; };
-		8D05DEF3C8DA4F7CB04ABBD9 /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = archive; path = "Sources/MacAboboo/Resources/Models/ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
-		D74C794507AC4C7793A092F5 /* PlaybackEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/PlaybackEngine.swift"; sourceTree = "<group>"; };
-		E092A05543724CE5B486DD03 /* SentenceLibraryPlayer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/SentenceLibraryPlayer.swift"; sourceTree = "<group>"; };
-		99F6A11046194CB5BFA05E12 /* AVFoundationPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/AVFoundationPlayerBackend.swift"; sourceTree = "<group>"; };
-		347610FF9B8843A29829722F /* MPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVPlayerBackend.swift"; sourceTree = "<group>"; };
-		0CEAF131486F4D2F9DCBB958 /* LazyMPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/LazyMPVPlayerBackend.swift"; sourceTree = "<group>"; };
-		2458121A4CCB44B0A83918AE /* MediaPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MediaPlayerBackend.swift"; sourceTree = "<group>"; };
-		2996346D666F4D30AE20944D /* MPVClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVClient.swift"; sourceTree = "<group>"; };
-		5123485EB82542C4997D9F84 /* SentenceLibraryModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceLibraryModels.swift"; sourceTree = "<group>"; };
-		8DD88ABF66414CFE94651A00 /* DecoderEngineMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/DecoderEngineMode.swift"; sourceTree = "<group>"; };
-		C0C159EE0F4F4E719B6848F3 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/WaveformData.swift"; sourceTree = "<group>"; };
-		56660EBD2F0D4AB0AEC589B7 /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/MediaItem.swift"; sourceTree = "<group>"; };
-		70A06D1565B14B46A5EC0728 /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
-		BC96FA7E8C4A43E9935CB292 /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
-		468378AA84F7460F9A94DFD9 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
-		BF23B49DBBB347B09F9A5EA4 /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
-		069FF189F7B24ED78F91F1C4 /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
-		B9FFD16B75EB4AA3BF118A23 /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
-		EEDF1898063F44FAA7658E74 /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
-		56983EE93D074B5DA3A33675 /* MacAbobooResourceBundle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/MacAbobooResourceBundle.swift"; sourceTree = "<group>"; };
-		C475EA6820144F369F65FE6B /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
-		A5EB0EAA3B6342A6AC18352B /* SileroVADEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SileroVADEngine.swift"; sourceTree = "<group>"; };
-		AC506B1BD19F4F0EA6929EF5 /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
-		DC9C8CDE701C48DFA2506BCE /* VADSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/VADSegmenter.swift"; sourceTree = "<group>"; };
-		39DFBA98573F41C69222D941 /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
-		6ABFD4C8F6E440D791F74101 /* SubtitleExporter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleExporter.swift"; sourceTree = "<group>"; };
-		4845FCB0C8014E95A4F35256 /* TextAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/TextAlignmentEngine.swift"; sourceTree = "<group>"; };
-		3E7B1276F2BF4AA682F14E77 /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
-		4C1B3488B99545A3A80E263B /* SegmentationStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SegmentationStore.swift"; sourceTree = "<group>"; };
-		CB17D8D1031B4518AA3D4AF7 /* SentenceLibraryManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryManager.swift"; sourceTree = "<group>"; };
-		EA9551018E5445ED957BEE7A /* SentenceLibraryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryStore.swift"; sourceTree = "<group>"; };
-		37D6B0FD09324CAAA8C8A165 /* PlaybackHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/PlaybackHistoryStore.swift"; sourceTree = "<group>"; };
-		54C03DBAA59148F6946988AD /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
-		D9F00F90CADF4E29A652B10D /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
-		853B839AB7454C95828E94F6 /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SegmentListView.swift"; sourceTree = "<group>"; };
-		992F9E88849C43309F17209A /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
-		2383D054F3C345DB922A8B4B /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
-		95BDC6240D374E0E94C71F0F /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
-		0D7E6AB90B4441F18F3BD0B7 /* FloatingVideoOSDView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/FloatingVideoOSDView.swift"; sourceTree = "<group>"; };
-		A4E54DB6E75F46058B608364 /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
-		1D5F0B74080B4EEBB54538BE /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
-		9AE7F8222A26421FAB8FD3B3 /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
-		743F40F979574C0E86F8F59A /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
-		E40D76E786694378AEA0938F /* PlaybackControlView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackControlView.swift"; sourceTree = "<group>"; };
-		EA2A8F5329DF45C7896087E6 /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MainContentView.swift"; sourceTree = "<group>"; };
-		0E16BD9C348440B6A2EB740B /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
-		B99077B1FEE7457AB943BED6 /* IntensiveSettingsPopover.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/IntensiveSettingsPopover.swift"; sourceTree = "<group>"; };
-		EFEFF171A3FA46DDB6F3532E /* DraggableWaveformOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/DraggableWaveformOverlay.swift"; sourceTree = "<group>"; };
-		E1974AC718A0447AB0D72525 /* LanguageManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Localization/LanguageManager.swift"; sourceTree = "<group>"; };
-		CE307AE796614A769D08368C /* MacAbobooApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAbobooApp/MacAbobooApp.swift"; sourceTree = "<group>"; };
-		35F98AF527394680A298D9DC /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "Sources/MacAbobooApp/Info.plist"; sourceTree = "<group>"; };
-		0C00DDD0158C4E58B320E61F /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; };
+		33DDA984137DEBFBD8C8F2D7 /* MacAboboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacAboboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A42BF39F5B159EF7C9E0661E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Sources/MacAboboo/Resources/Assets.xcassets"; sourceTree = "<group>"; };
+		603ADBF2101D3DBE0E3784AC /* SpeakerKitModels */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Sources/MacAboboo/Resources/SpeakerKitModels"; sourceTree = "<group>"; };
+		6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = "Sources/CSpeechRuntime/CSpeechRuntime.c"; sourceTree = "<group>"; };
+		F4C2CF57E9FB885073F36DDC /* MacAboboo-Bridging-Header.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h"; sourceTree = "<group>"; };
+		CF4440375AE3204D9C9D31E7 /* CSpeechRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/include/CSpeechRuntime.h"; sourceTree = "<group>"; };
+		307535009CD4B177F23718BF /* AVFoundationPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/AVFoundationPlayerBackend.swift"; sourceTree = "<group>"; };
+		CB54735762065E7D5CD02739 /* LazyMPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/LazyMPVPlayerBackend.swift"; sourceTree = "<group>"; };
+		30611674A7138B9BD168C586 /* MPVClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVClient.swift"; sourceTree = "<group>"; };
+		9EFE2EDA7356909B0D83862A /* MPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MPVPlayerBackend.swift"; sourceTree = "<group>"; };
+		9808ECAA866BAA3BB3916082 /* MediaPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/MediaPlayerBackend.swift"; sourceTree = "<group>"; };
+		BE06B750BF0F1EDA1D308A2F /* PlaybackEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/PlaybackEngine.swift"; sourceTree = "<group>"; };
+		32EF2CED508E88EC61E5D8E1 /* SentenceLibraryPlayer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/AudioEngine/SentenceLibraryPlayer.swift"; sourceTree = "<group>"; };
+		FC0F0B848411A45B794B35A9 /* LanguageManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Localization/LanguageManager.swift"; sourceTree = "<group>"; };
+		814BA23A5FFDFAE08941B05A /* DecoderEngineMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/DecoderEngineMode.swift"; sourceTree = "<group>"; };
+		84553DF6D38EAA213AD2BE8F /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/MediaItem.swift"; sourceTree = "<group>"; };
+		5179B15CD081C28523F300BF /* SentenceLibraryModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceLibraryModels.swift"; sourceTree = "<group>"; };
+		089E020FE84F27C976394B94 /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
+		DA7977EEAD34EF9593B283E2 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/WaveformData.swift"; sourceTree = "<group>"; };
+		DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/PlaybackHistoryStore.swift"; sourceTree = "<group>"; };
+		A78322D585642383992C4344 /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
+		D4884576F03A06D8EE875482 /* SegmentationStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SegmentationStore.swift"; sourceTree = "<group>"; };
+		A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryManager.swift"; sourceTree = "<group>"; };
+		7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryStore.swift"; sourceTree = "<group>"; };
+		8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = archive; path = "Sources/MacAboboo/Resources/Models/ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
+		04DC5D9CFB3F2157A5D35171 /* Silero-VAD-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/Silero-VAD-LICENSE.txt"; sourceTree = "<group>"; };
+		6416608FB13E6E086A9B2972 /* SpeakerKit-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/SpeakerKit-LICENSE.txt"; sourceTree = "<group>"; };
+		0393130823D508B34FC08FA4 /* whisper.cpp-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/MacAboboo/Resources/ThirdPartyNotices/whisper.cpp-LICENSE.txt"; sourceTree = "<group>"; };
+		5E0CB4796767DFE705F5A627 /* SubtitleExporter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleExporter.swift"; sourceTree = "<group>"; };
+		1D8B993FC8E7EFF80D0A2B8A /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
+		F102E3C15B87D9DAE52705BF /* TextAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/SubtitleEngine/TextAlignmentEngine.swift"; sourceTree = "<group>"; };
+		DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
+		03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/DraggableWaveformOverlay.swift"; sourceTree = "<group>"; };
+		A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/FloatingVideoOSDView.swift"; sourceTree = "<group>"; };
+		B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/IntensiveSettingsPopover.swift"; sourceTree = "<group>"; };
+		A918BD816D849ACFA171768E /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MainContentView.swift"; sourceTree = "<group>"; };
+		9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackControlView.swift"; sourceTree = "<group>"; };
+		67A44BC18300FC764615A465 /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
+		ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
+		94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
+		8A61F036FF21BC7D8E1280F4 /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SegmentListView.swift"; sourceTree = "<group>"; };
+		D70A91370F03C04FA5953E2F /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
+		E7ACFD9E69E57077068E58E1 /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
+		D5962E2A3F7BC13ADDAF9325 /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
+		DD1C0FDFEA66F708B3AB2DDF /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
+		BD211FCB88F056E4FDB7D16E /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
+		B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
+		4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/MacAbobooResourceBundle.swift"; sourceTree = "<group>"; };
+		583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
+		6A2F32746F55615591A76A04 /* SileroVADEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SileroVADEngine.swift"; sourceTree = "<group>"; };
+		C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
+		3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
+		95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
+		F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
+		3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
+		CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/VADSegmenter.swift"; sourceTree = "<group>"; };
+		38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
+		1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
+		FC4BB19B52B62E7F952377BB /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "Sources/MacAbobooApp/Info.plist"; sourceTree = "<group>"; };
+		E903988D1BDA490BFA9AC334 /* MacAbobooApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAbobooApp/MacAbobooApp.swift"; sourceTree = "<group>"; };
+		158C35FECB86B6A321C2F534 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		1AB4076C847E4C5687A9ACBE /* Embed Frameworks */ = {
+		0102941A3076E2B37D228A94 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				E14E9DE86B8A4C3AB5B5FD11 /* whisper.xcframework in Embed Frameworks */,
+				BA2D27CDC73DCEA706BCE34C /* whisper.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -146,96 +146,96 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		B99B446FB4B3491EB56DF0FE /* Frameworks */ = {
+		C448FB86A22E5B7F468F9341 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				346ACA9FA5164167B1241C3A /* whisper.xcframework in Frameworks */,
+				11CACBE79E9A58BAEE17D343 /* whisper.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		3113964A1FD549EC8D87E2D1 = {
+		396AE4B78ADCA057876B0448 = {
 			isa = PBXGroup;
 			children = (
-				1599BAF5D2594ABF84F9CD98 /* Sources */,
-				943DDF12EA06403795B5D9DE /* Products */,
+				EFD445A8484F53F7F9AE2D79 /* Sources */,
+				B879358E0122ADB25F226773 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		1599BAF5D2594ABF84F9CD98 /* Sources */ = {
+		EFD445A8484F53F7F9AE2D79 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				ACEBED9656424B16BA5B68EC /* CSpeechRuntime.c */,
-				943DC3E8D4A549DBBF674AE4 /* MacAboboo-Bridging-Header.h */,
-				4006B8C07B8744879F420D7F /* CSpeechRuntime.h */,
-				73311D9FF93B43DDA2B9843F /* SpeakerKit-LICENSE.txt */,
-				5F155ACA860447208EC4E392 /* Silero-VAD-LICENSE.txt */,
-				D1FC491BF31148D7B589ABF4 /* whisper.cpp-LICENSE.txt */,
-				8D05DEF3C8DA4F7CB04ABBD9 /* ggml-silero-v6.2.0.bin */,
-				D74C794507AC4C7793A092F5 /* PlaybackEngine.swift */,
-				E092A05543724CE5B486DD03 /* SentenceLibraryPlayer.swift */,
-				99F6A11046194CB5BFA05E12 /* AVFoundationPlayerBackend.swift */,
-				347610FF9B8843A29829722F /* MPVPlayerBackend.swift */,
-				0CEAF131486F4D2F9DCBB958 /* LazyMPVPlayerBackend.swift */,
-				2458121A4CCB44B0A83918AE /* MediaPlayerBackend.swift */,
-				2996346D666F4D30AE20944D /* MPVClient.swift */,
-				5123485EB82542C4997D9F84 /* SentenceLibraryModels.swift */,
-				8DD88ABF66414CFE94651A00 /* DecoderEngineMode.swift */,
-				C0C159EE0F4F4E719B6848F3 /* WaveformData.swift */,
-				56660EBD2F0D4AB0AEC589B7 /* MediaItem.swift */,
-				70A06D1565B14B46A5EC0728 /* SentenceSegment.swift */,
-				BC96FA7E8C4A43E9935CB292 /* WhisperModelManager.swift */,
-				468378AA84F7460F9A94DFD9 /* SpeechAlignmentEngine.swift */,
-				BF23B49DBBB347B09F9A5EA4 /* SpeechSegmentationPipeline.swift */,
-				069FF189F7B24ED78F91F1C4 /* WaveformExtractor.swift */,
-				B9FFD16B75EB4AA3BF118A23 /* SpeakerDiarizationEngine.swift */,
-				EEDF1898063F44FAA7658E74 /* SpeechSegmentationModels.swift */,
-				56983EE93D074B5DA3A33675 /* MacAbobooResourceBundle.swift */,
-				C475EA6820144F369F65FE6B /* NativeSpeechRuntime.swift */,
-				A5EB0EAA3B6342A6AC18352B /* SileroVADEngine.swift */,
-				AC506B1BD19F4F0EA6929EF5 /* AudioPCMExtractor.swift */,
-				DC9C8CDE701C48DFA2506BCE /* VADSegmenter.swift */,
-				39DFBA98573F41C69222D941 /* SpeechBoundaryOptimizer.swift */,
-				6ABFD4C8F6E440D791F74101 /* SubtitleExporter.swift */,
-				4845FCB0C8014E95A4F35256 /* TextAlignmentEngine.swift */,
-				3E7B1276F2BF4AA682F14E77 /* SubtitleParser.swift */,
-				4C1B3488B99545A3A80E263B /* SegmentationStore.swift */,
-				CB17D8D1031B4518AA3D4AF7 /* SentenceLibraryManager.swift */,
-				EA9551018E5445ED957BEE7A /* SentenceLibraryStore.swift */,
-				37D6B0FD09324CAAA8C8A165 /* PlaybackHistoryStore.swift */,
-				54C03DBAA59148F6946988AD /* ProjectFileManager.swift */,
-				D9F00F90CADF4E29A652B10D /* SubtitleImportSheet.swift */,
-				853B839AB7454C95828E94F6 /* SegmentListView.swift */,
-				992F9E88849C43309F17209A /* VideoPlayerView.swift */,
-				2383D054F3C345DB922A8B4B /* WaveformComponents.swift */,
-				95BDC6240D374E0E94C71F0F /* PlaybackListView.swift */,
-				0D7E6AB90B4441F18F3BD0B7 /* FloatingVideoOSDView.swift */,
-				A4E54DB6E75F46058B608364 /* BoundaryMarkerHandle.swift */,
-				1D5F0B74080B4EEBB54538BE /* SentenceLibraryView.swift */,
-				9AE7F8222A26421FAB8FD3B3 /* SecondaryWaveformView.swift */,
-				743F40F979574C0E86F8F59A /* PrimaryWaveformView.swift */,
-				E40D76E786694378AEA0938F /* PlaybackControlView.swift */,
-				EA2A8F5329DF45C7896087E6 /* MainContentView.swift */,
-				0E16BD9C348440B6A2EB740B /* SubtitleEditView.swift */,
-				B99077B1FEE7457AB943BED6 /* IntensiveSettingsPopover.swift */,
-				EFEFF171A3FA46DDB6F3532E /* DraggableWaveformOverlay.swift */,
-				E1974AC718A0447AB0D72525 /* LanguageManager.swift */,
-				CE307AE796614A769D08368C /* MacAbobooApp.swift */,
-				35F98AF527394680A298D9DC /* Info.plist */,
-				88433852E71F48CFBBCFF24D /* SpeakerKitModels */,
-				CA0831A348E04769B7446D3A /* Assets.xcassets */,
-				0C00DDD0158C4E58B320E61F /* whisper.xcframework */,
+				6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */,
+				F4C2CF57E9FB885073F36DDC /* MacAboboo-Bridging-Header.h */,
+				CF4440375AE3204D9C9D31E7 /* CSpeechRuntime.h */,
+				307535009CD4B177F23718BF /* AVFoundationPlayerBackend.swift */,
+				CB54735762065E7D5CD02739 /* LazyMPVPlayerBackend.swift */,
+				30611674A7138B9BD168C586 /* MPVClient.swift */,
+				9EFE2EDA7356909B0D83862A /* MPVPlayerBackend.swift */,
+				9808ECAA866BAA3BB3916082 /* MediaPlayerBackend.swift */,
+				BE06B750BF0F1EDA1D308A2F /* PlaybackEngine.swift */,
+				32EF2CED508E88EC61E5D8E1 /* SentenceLibraryPlayer.swift */,
+				FC0F0B848411A45B794B35A9 /* LanguageManager.swift */,
+				814BA23A5FFDFAE08941B05A /* DecoderEngineMode.swift */,
+				84553DF6D38EAA213AD2BE8F /* MediaItem.swift */,
+				5179B15CD081C28523F300BF /* SentenceLibraryModels.swift */,
+				089E020FE84F27C976394B94 /* SentenceSegment.swift */,
+				DA7977EEAD34EF9593B283E2 /* WaveformData.swift */,
+				DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */,
+				A78322D585642383992C4344 /* ProjectFileManager.swift */,
+				D4884576F03A06D8EE875482 /* SegmentationStore.swift */,
+				A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */,
+				7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */,
+				8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */,
+				04DC5D9CFB3F2157A5D35171 /* Silero-VAD-LICENSE.txt */,
+				6416608FB13E6E086A9B2972 /* SpeakerKit-LICENSE.txt */,
+				0393130823D508B34FC08FA4 /* whisper.cpp-LICENSE.txt */,
+				5E0CB4796767DFE705F5A627 /* SubtitleExporter.swift */,
+				1D8B993FC8E7EFF80D0A2B8A /* SubtitleParser.swift */,
+				F102E3C15B87D9DAE52705BF /* TextAlignmentEngine.swift */,
+				DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */,
+				03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */,
+				A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */,
+				B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */,
+				A918BD816D849ACFA171768E /* MainContentView.swift */,
+				9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */,
+				67A44BC18300FC764615A465 /* PlaybackListView.swift */,
+				ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */,
+				94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */,
+				8A61F036FF21BC7D8E1280F4 /* SegmentListView.swift */,
+				D70A91370F03C04FA5953E2F /* SentenceLibraryView.swift */,
+				E7ACFD9E69E57077068E58E1 /* SubtitleEditView.swift */,
+				D5962E2A3F7BC13ADDAF9325 /* SubtitleImportSheet.swift */,
+				DD1C0FDFEA66F708B3AB2DDF /* VideoPlayerView.swift */,
+				BD211FCB88F056E4FDB7D16E /* WaveformComponents.swift */,
+				B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */,
+				4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */,
+				583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */,
+				6A2F32746F55615591A76A04 /* SileroVADEngine.swift */,
+				C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */,
+				3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */,
+				95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */,
+				F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */,
+				3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */,
+				CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */,
+				38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */,
+				1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */,
+				FC4BB19B52B62E7F952377BB /* Info.plist */,
+				E903988D1BDA490BFA9AC334 /* MacAbobooApp.swift */,
+				A42BF39F5B159EF7C9E0661E /* Assets.xcassets */,
+				603ADBF2101D3DBE0E3784AC /* SpeakerKitModels */,
+				158C35FECB86B6A321C2F534 /* whisper.xcframework */,
 			);
 			name = Sources;
 			sourceTree = "<group>";
 		};
-		943DDF12EA06403795B5D9DE /* Products */ = {
+		B879358E0122ADB25F226773 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				3D6B035E7C65438D99B08B7F /* MacAboboo.app */,
+				33DDA984137DEBFBD8C8F2D7 /* MacAboboo.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -243,44 +243,44 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		B904D6D0CBE04014A449FA20 /* MacAboboo */ = {
+		4F6AF4BFB40835049368CF8F /* MacAboboo */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 7C569CB87B2E440C82D1C74E /* Build configuration list for PBXNativeTarget "MacAboboo" */;
+			buildConfigurationList = 1250C239361C4EF0CC2A0E0A /* Build configuration list for PBXNativeTarget "MacAboboo" */;
 			buildPhases = (
-				17B142E01607487FB7699547 /* Sources */,
-				B99B446FB4B3491EB56DF0FE /* Frameworks */,
-				E18EA8D349CC4B638762FC2B /* Resources */,
-				1AB4076C847E4C5687A9ACBE /* Embed Frameworks */,
+				CD77EE1B024738EBDDD804E8 /* Sources */,
+				C448FB86A22E5B7F468F9341 /* Frameworks */,
+				CEB73B00154D0F57D6819D49 /* Resources */,
+				0102941A3076E2B37D228A94 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			packageProductDependencies = (
-				32B8E0415CE94811A26AB7AC /* SpeakerKit */,
+				6700D30280B43E9A5F9B450D /* SpeakerKit */,
 			);
 			name = MacAboboo;
 			productName = MacAboboo;
-			productReference = 3D6B035E7C65438D99B08B7F /* MacAboboo.app */;
+			productReference = 33DDA984137DEBFBD8C8F2D7 /* MacAboboo.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		15091DF76D06461EBE17B9C1 /* Project object */ = {
+		1620BD22A690C77A7E86ADF1 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
-					B904D6D0CBE04014A449FA20 = {
+					4F6AF4BFB40835049368CF8F = {
 						CreatedOnToolsVersion = 15.0;
 						ProvisioningStyle = Automatic;
 					};
 				};
 			};
-			buildConfigurationList = 8B05073D3A674BEAA158B873 /* Build configuration list for PBXProject "MacAboboo" */;
+			buildConfigurationList = FEEA668B833B084BC9C1EC1B /* Build configuration list for PBXProject "MacAboboo" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = zh_CN;
 			hasScannedForEncodings = 0;
@@ -289,97 +289,97 @@
 				Base,
 				zh_CN,
 			);
-			mainGroup = 3113964A1FD549EC8D87E2D1;
+			mainGroup = 396AE4B78ADCA057876B0448;
 			packageReferences = (
-				1A5265A6B5BF44E197594A38 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+				B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
 			);
-			productRefGroup = 943DDF12EA06403795B5D9DE /* Products */;
+			productRefGroup = B879358E0122ADB25F226773 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				B904D6D0CBE04014A449FA20 /* MacAboboo */,
+				4F6AF4BFB40835049368CF8F /* MacAboboo */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		E18EA8D349CC4B638762FC2B /* Resources */ = {
+		CEB73B00154D0F57D6819D49 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D878B86F0DAE41AC9F6E1CE4 /* SpeakerKitModels in Resources */,
-				C3E5B09B704C4BB8B371B74F /* Assets.xcassets in Resources */,
-				947567A850E0462BB0D2B3F1 /* SpeakerKit-LICENSE.txt in Resources */,
-				E2B080E8612747629A0149EF /* Silero-VAD-LICENSE.txt in Resources */,
-				9CDFCD58A7BD47D49C5A08FB /* whisper.cpp-LICENSE.txt in Resources */,
-				A3869AFD369F4BDB80F9593C /* ggml-silero-v6.2.0.bin in Resources */,
+				C5AF48155BB28D01B4975C1C /* Assets.xcassets in Resources */,
+				A140681176DE656D13E83BD4 /* SpeakerKitModels in Resources */,
+				205A62B92C9B7BE7D5BB4675 /* ggml-silero-v6.2.0.bin in Resources */,
+				86C86636D040A1A0262484A9 /* Silero-VAD-LICENSE.txt in Resources */,
+				2C7BEDA51D2EF7A6C2B2DD6D /* SpeakerKit-LICENSE.txt in Resources */,
+				3DCF597F098B219DF0AB0251 /* whisper.cpp-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		17B142E01607487FB7699547 /* Sources */ = {
+		CD77EE1B024738EBDDD804E8 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				92B07A64E80F4678B5DFE3FE /* CSpeechRuntime.c in Sources */,
-				92B05E5F107D40DA96103CEB /* PlaybackEngine.swift in Sources */,
-				C38E19158D82438488A2D201 /* SentenceLibraryPlayer.swift in Sources */,
-				D11CE1B836544A66926A1FD5 /* AVFoundationPlayerBackend.swift in Sources */,
-				89760AC93AFA4EAC816BB7F5 /* MPVPlayerBackend.swift in Sources */,
-				6C15D72708F94DFE9449951B /* LazyMPVPlayerBackend.swift in Sources */,
-				71CC2205C4084F59A591B605 /* MediaPlayerBackend.swift in Sources */,
-				B4C91DC5692A4FD6A8F19E28 /* MPVClient.swift in Sources */,
-				B25D76C294CF4290A36AD338 /* SentenceLibraryModels.swift in Sources */,
-				CD4450D8DF034EDCB608771D /* DecoderEngineMode.swift in Sources */,
-				DE436E409316458183E41F01 /* WaveformData.swift in Sources */,
-				F3CF3D8969BF4411A8A70228 /* MediaItem.swift in Sources */,
-				CF64178E7520424CACE4C0B3 /* SentenceSegment.swift in Sources */,
-				B35961800452427390420783 /* WhisperModelManager.swift in Sources */,
-				F68BD7B586C24F5D8E657D2E /* SpeechAlignmentEngine.swift in Sources */,
-				0D3C6D65C646444484D245A1 /* SpeechSegmentationPipeline.swift in Sources */,
-				D2C9E051E3224669B5E83106 /* WaveformExtractor.swift in Sources */,
-				58F4817165684921B8BA1C91 /* SpeakerDiarizationEngine.swift in Sources */,
-				EB2AD43693B1487593F1A704 /* SpeechSegmentationModels.swift in Sources */,
-				11B8443B4F7047A1B9C55679 /* MacAbobooResourceBundle.swift in Sources */,
-				79B07A8358EE47F29100ACE6 /* NativeSpeechRuntime.swift in Sources */,
-				C6E2C98B5A324DCEA7BDAC9D /* SileroVADEngine.swift in Sources */,
-				5E104E9A6BB54C9EBF47B48D /* AudioPCMExtractor.swift in Sources */,
-				AD106E3F17F54BDB9860AB2E /* VADSegmenter.swift in Sources */,
-				C7549E2235644AAE9CD0B2E1 /* SpeechBoundaryOptimizer.swift in Sources */,
-				D45A0A544D364B64A23ECC96 /* SubtitleExporter.swift in Sources */,
-				9B6EE449904A4F7CAD2D64CE /* TextAlignmentEngine.swift in Sources */,
-				CA0F0541427A4554ACA4E6A4 /* SubtitleParser.swift in Sources */,
-				8C2897B464BA4363BE193D07 /* SegmentationStore.swift in Sources */,
-				2748C1960F3A44D6B6F89581 /* SentenceLibraryManager.swift in Sources */,
-				BBEDBC4A489F4894833EFF35 /* SentenceLibraryStore.swift in Sources */,
-				768B0EB0EB864917BA183C98 /* PlaybackHistoryStore.swift in Sources */,
-				E7732ADD37494CB9B353CB70 /* ProjectFileManager.swift in Sources */,
-				F05CC5240A0D42CF9C31F94E /* SubtitleImportSheet.swift in Sources */,
-				E101CE046AED4AA589BAF5D6 /* SegmentListView.swift in Sources */,
-				6B6236AD9AE04F1C9028B800 /* VideoPlayerView.swift in Sources */,
-				2FEC6CA2A49E49BD99265727 /* WaveformComponents.swift in Sources */,
-				F17E0A3CF8434C8882C506B9 /* PlaybackListView.swift in Sources */,
-				344227D97A754FDAA0C46DD4 /* FloatingVideoOSDView.swift in Sources */,
-				59E422F30988488D9CF6A113 /* BoundaryMarkerHandle.swift in Sources */,
-				9ED57C5CEA88420989680E86 /* SentenceLibraryView.swift in Sources */,
-				DE0F278CE13F4643BD64E187 /* SecondaryWaveformView.swift in Sources */,
-				F3BBC78BA1E64FDF9906FE0D /* PrimaryWaveformView.swift in Sources */,
-				B4EBE89C7A3B4C2F8F659896 /* PlaybackControlView.swift in Sources */,
-				34D279F6CF0946E991725D62 /* MainContentView.swift in Sources */,
-				AE26BC1DBC214EC09427E729 /* SubtitleEditView.swift in Sources */,
-				58A1F5B8EBF545BB9409A0A8 /* IntensiveSettingsPopover.swift in Sources */,
-				F7ED388ACDAB43F29658EA08 /* DraggableWaveformOverlay.swift in Sources */,
-				A3228D23CA044CBC98A51E2B /* LanguageManager.swift in Sources */,
-				5BD31C5115AB434CAE7CBC62 /* MacAbobooApp.swift in Sources */,
+				5AD27D198E8D091967BC127B /* CSpeechRuntime.c in Sources */,
+				40314E47275F47874389F738 /* AVFoundationPlayerBackend.swift in Sources */,
+				37DF687EE04D05AA014D8DC9 /* LazyMPVPlayerBackend.swift in Sources */,
+				D495A8BAF4ADBD47CBF8ECD1 /* MPVClient.swift in Sources */,
+				0268CD3483A35DADB5C645A3 /* MPVPlayerBackend.swift in Sources */,
+				8E7CDDBDF0CBAEC6A257DE1C /* MediaPlayerBackend.swift in Sources */,
+				9FD00E5EA11353B2D87AFB03 /* PlaybackEngine.swift in Sources */,
+				3BB5E2D54F7B57BDE0CCA41E /* SentenceLibraryPlayer.swift in Sources */,
+				78B87CE26CED0CEF647579AF /* LanguageManager.swift in Sources */,
+				74D8B19F14ECC36A1254B2BB /* DecoderEngineMode.swift in Sources */,
+				5F3C25B319DC17030F71B416 /* MediaItem.swift in Sources */,
+				ADC0EC8A2BC6567964B1A1AA /* SentenceLibraryModels.swift in Sources */,
+				E809F849DDE74C76FD1AF3BE /* SentenceSegment.swift in Sources */,
+				F63EA19F1CFED56DEE8CA5CD /* WaveformData.swift in Sources */,
+				8D26BABD1657CB292B87130C /* PlaybackHistoryStore.swift in Sources */,
+				AD3A589B758684AAA13698F0 /* ProjectFileManager.swift in Sources */,
+				44826EE451689221D2AEDCBE /* SegmentationStore.swift in Sources */,
+				248B4FED5FDDE5EF6E955CBD /* SentenceLibraryManager.swift in Sources */,
+				E7C0FA87F7C5FF5220B106F3 /* SentenceLibraryStore.swift in Sources */,
+				BD280A962553F6AB24C55B78 /* SubtitleExporter.swift in Sources */,
+				A99C24FC2A5F6F71B18217E2 /* SubtitleParser.swift in Sources */,
+				956A338B3E9A85BD1B023944 /* TextAlignmentEngine.swift in Sources */,
+				472B5564C8A300DFF7BC2351 /* BoundaryMarkerHandle.swift in Sources */,
+				708FC04B28824F84FA93C677 /* DraggableWaveformOverlay.swift in Sources */,
+				9C06C7E4D8F05364FF1F3DEE /* FloatingVideoOSDView.swift in Sources */,
+				28123690625B8092AD1C4AE0 /* IntensiveSettingsPopover.swift in Sources */,
+				3376DFD638A9DDE7FA911ECC /* MainContentView.swift in Sources */,
+				46AE8A1CFC34502E22B3F1E9 /* PlaybackControlView.swift in Sources */,
+				E80F9787BE0201AAD3C60E4D /* PlaybackListView.swift in Sources */,
+				37D7A9622E21A398EF88CFDD /* PrimaryWaveformView.swift in Sources */,
+				F9BA472A6AB510D5649CE226 /* SecondaryWaveformView.swift in Sources */,
+				8B24EE2B11C910F6D4AA1C11 /* SegmentListView.swift in Sources */,
+				94968FBAF137B36173998F75 /* SentenceLibraryView.swift in Sources */,
+				4ECE9823E15BA011982AB588 /* SubtitleEditView.swift in Sources */,
+				7B1D3652A3716A4910A5E482 /* SubtitleImportSheet.swift in Sources */,
+				A85B71EBD5487B4B2ADD4638 /* VideoPlayerView.swift in Sources */,
+				7F5BC53F1D521F6E4B02EE0D /* WaveformComponents.swift in Sources */,
+				37925E80F95BB4008CCAD948 /* AudioPCMExtractor.swift in Sources */,
+				6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */,
+				1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */,
+				B6E8BA4E82BEFF64F32C418B /* SileroVADEngine.swift in Sources */,
+				86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */,
+				8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */,
+				C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */,
+				CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */,
+				2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */,
+				A342290332D979D80C96ECB2 /* VADSegmenter.swift in Sources */,
+				7CECCD0C25CCF80184A07918 /* WaveformExtractor.swift in Sources */,
+				C86E50177DDF0C4754E23857 /* WhisperModelManager.swift in Sources */,
+				89F0FD679AEB3A6F1E805429 /* MacAbobooApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		1A5265A6B5BF44E197594A38 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
+		B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
 			requirement = {
@@ -390,15 +390,15 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		32B8E0415CE94811A26AB7AC /* SpeakerKit */ = {
+		6700D30280B43E9A5F9B450D /* SpeakerKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 1A5265A6B5BF44E197594A38 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+			package = B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
 			productName = SpeakerKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
-		E51EA6CF66AB4E9CA7FE3E21 /* Debug */ = {
+		DDF18388A5A6BF12606AA040 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -434,7 +434,7 @@
 			};
 			name = Debug;
 		};
-		F6BA5F6D497C4C88AC864951 /* Release */ = {
+		1818EAFC7212389B4B45BC12 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -464,13 +464,13 @@
 			};
 			name = Release;
 		};
-		D99F1E93E6934187A87B8896 /* Debug */ = {
+		CE912E7CA9712A74B447EE08 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -480,7 +480,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.64;
+				MARKETING_VERSION = 1.0.65;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -489,13 +489,13 @@
 			};
 			name = Debug;
 		};
-		67E927E3B6E149C89DE2F2ED /* Release */ = {
+		9D14E739A5DF7B993D139497 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 65;
+				CURRENT_PROJECT_VERSION = 66;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -504,7 +504,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.64;
+				MARKETING_VERSION = 1.0.65;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
@@ -515,20 +515,20 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		8B05073D3A674BEAA158B873 /* Build configuration list for PBXProject "MacAboboo" */ = {
+		FEEA668B833B084BC9C1EC1B /* Build configuration list for PBXProject "MacAboboo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				E51EA6CF66AB4E9CA7FE3E21 /* Debug */,
-				F6BA5F6D497C4C88AC864951 /* Release */,
+				DDF18388A5A6BF12606AA040 /* Debug */,
+				1818EAFC7212389B4B45BC12 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		7C569CB87B2E440C82D1C74E /* Build configuration list for PBXNativeTarget "MacAboboo" */ = {
+		1250C239361C4EF0CC2A0E0A /* Build configuration list for PBXNativeTarget "MacAboboo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				D99F1E93E6934187A87B8896 /* Debug */,
-				67E927E3B6E149C89DE2F2ED /* Release */,
+				CE912E7CA9712A74B447EE08 /* Debug */,
+				9D14E739A5DF7B993D139497 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -536,5 +536,5 @@
 /* End XCConfigurationList section */
 
 	};
-	rootObject = 15091DF76D06461EBE17B9C1 /* Project object */;
+	rootObject = 1620BD22A690C77A7E86ADF1 /* Project object */;
 }

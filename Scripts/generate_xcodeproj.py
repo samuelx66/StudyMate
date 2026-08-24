@@ -1,9 +1,9 @@
 import os
-import uuid
+import hashlib
 import xml.etree.ElementTree as ET
 
-def generate_id():
-    return uuid.uuid4().hex[:24].upper()
+def generate_id(seed: str) -> str:
+    return hashlib.md5(seed.encode('utf-8')).hexdigest()[:24].upper()
 
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sources_dir = os.path.join(root_dir, 'Sources')
@@ -50,7 +50,7 @@ for root, dirs, files in os.walk(sources_dir):
             full_p = os.path.join(root, d)
             rel_p = os.path.relpath(full_p, root_dir)
             resource_entries.append((d, rel_p, 'folder'))
-    for f in files:
+    for f in sorted(files):
         if f.endswith(('.swift', '.c', '.h')) or f == 'Info.plist' or f == 'ggml-silero-v6.2.0.bin' or f.endswith('-LICENSE.txt'):
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, root_dir)
@@ -64,25 +64,29 @@ for root, dirs, files in os.walk(sources_dir):
                 kind = 'plist'
             file_entries.append((f, rel_p, kind))
 
-# PBX IDs
-proj_id = generate_id()
-main_group_id = generate_id()
-sources_group_id = generate_id()
-products_group_id = generate_id()
-target_id = generate_id()
-app_product_id = generate_id()
-sources_build_phase_id = generate_id()
-frameworks_build_phase_id = generate_id()
-resources_build_phase_id = generate_id()
-embed_frameworks_build_phase_id = generate_id()
-proj_config_list_id = generate_id()
-target_config_list_id = generate_id()
-debug_config_id = generate_id()
-release_config_id = generate_id()
-target_debug_config_id = generate_id()
-target_release_config_id = generate_id()
-package_reference_id = generate_id()
-speakerkit_product_dependency_id = generate_id()
+# 排序以保证确定性输出
+file_entries.sort(key=lambda x: x[1])
+resource_entries.sort(key=lambda x: x[1])
+
+# PBX IDs (确定性固定 ID，防止 Xcode 调试目标路径缓存失效)
+proj_id = generate_id("PROJECT_MacAboboo")
+main_group_id = generate_id("GROUP_Main")
+sources_group_id = generate_id("GROUP_Sources")
+products_group_id = generate_id("GROUP_Products")
+target_id = generate_id("TARGET_MacAboboo_App")
+app_product_id = generate_id("PRODUCT_MacAboboo_App")
+sources_build_phase_id = generate_id("PHASE_Sources")
+frameworks_build_phase_id = generate_id("PHASE_Frameworks")
+resources_build_phase_id = generate_id("PHASE_Resources")
+embed_frameworks_build_phase_id = generate_id("PHASE_EmbedFrameworks")
+proj_config_list_id = generate_id("CONFIGLIST_Project")
+target_config_list_id = generate_id("CONFIGLIST_Target")
+debug_config_id = generate_id("CONFIG_Project_Debug")
+release_config_id = generate_id("CONFIG_Project_Release")
+target_debug_config_id = generate_id("CONFIG_Target_Debug")
+target_release_config_id = generate_id("CONFIG_Target_Release")
+package_reference_id = generate_id("PKG_argmax_oss_swift")
+speakerkit_product_dependency_id = generate_id("DEP_SpeakerKit")
 
 pbx_file_refs = []
 pbx_build_files = []
@@ -92,15 +96,15 @@ framework_build_file_ids = []
 embed_framework_build_file_ids = []
 
 for name, path, resource_kind in resource_entries:
-    file_ref_id = generate_id()
+    file_ref_id = generate_id(f"RES_REF_{path}")
     file_type = 'folder.assetcatalog' if resource_kind == 'assetcatalog' else 'folder'
     pbx_file_refs.append(f'\t\t{file_ref_id} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = {file_type}; path = "{path}"; sourceTree = "<group>"; }};')
-    build_file_id = generate_id()
+    build_file_id = generate_id(f"RES_BUILD_{path}")
     pbx_build_files.append(f'\t\t{build_file_id} /* {name} in Resources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {name} */; }};')
     resource_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {name} in Resources */,')
 
 for filename, path, kind in file_entries:
-    file_ref_id = generate_id()
+    file_ref_id = generate_id(f"FILE_REF_{path}")
     file_types = {
         'source': 'sourcecode.swift' if filename.endswith('.swift') else 'sourcecode.c.c',
         'header': 'sourcecode.c.h',
@@ -111,17 +115,17 @@ for filename, path, kind in file_entries:
     pbx_file_refs.append(f'\t\t{file_ref_id} /* {filename} */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = {file_type}; path = "{path}"; sourceTree = "<group>"; }};')
     
     if kind == 'source':
-        build_file_id = generate_id()
+        build_file_id = generate_id(f"FILE_BUILD_{path}")
         pbx_build_files.append(f'\t\t{build_file_id} /* {filename} in Sources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {filename} */; }};')
         source_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {filename} in Sources */,')
     elif kind == 'resource':
-        build_file_id = generate_id()
+        build_file_id = generate_id(f"FILE_BUILD_{path}")
         pbx_build_files.append(f'\t\t{build_file_id} /* {filename} in Resources */ = {{isa = PBXBuildFile; fileRef = {file_ref_id} /* {filename} */; }};')
         resource_build_file_ids.append(f'\t\t\t\t{build_file_id} /* {filename} in Resources */,')
 
-whisper_framework_ref_id = generate_id()
-whisper_framework_link_id = generate_id()
-whisper_framework_embed_id = generate_id()
+whisper_framework_ref_id = generate_id("REF_whisper_xcframework")
+whisper_framework_link_id = generate_id("LINK_whisper_xcframework")
+whisper_framework_embed_id = generate_id("EMBED_whisper_xcframework")
 pbx_file_refs.append(f'\t\t{whisper_framework_ref_id} /* whisper.xcframework */ = {{isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; }};')
 pbx_build_files.append(f'\t\t{whisper_framework_link_id} /* whisper.xcframework in Frameworks */ = {{isa = PBXBuildFile; fileRef = {whisper_framework_ref_id} /* whisper.xcframework */; }};')
 pbx_build_files.append(f'\t\t{whisper_framework_embed_id} /* whisper.xcframework in Embed Frameworks */ = {{isa = PBXBuildFile; fileRef = {whisper_framework_ref_id} /* whisper.xcframework */; settings = {{ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }}; }};')
