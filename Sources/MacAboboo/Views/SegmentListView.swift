@@ -77,24 +77,24 @@ public struct SegmentListView: View {
 
                 Spacer()
 
-                Button(action: {
-                    followState.toggle()
-                }) {
+                Toggle(isOn: Binding(
+                    get: { followState.shouldFollow },
+                    set: { _ in followState.toggle() }
+                )) {
                     Image(systemName: followState.shouldFollow
                         ? "book.pages"
                         : "book.closed")
-                        .foregroundColor(followState.shouldFollow ? .blue : .secondary)
-                        .help(lang.text(
-                            followState.shouldFollow
-                                ? "播放时自动跟随当前句"
-                                : "已暂停自动跟随，点击恢复",
-                            followState.shouldFollow
-                                ? "Follow the active sentence during playback"
-                                : "Automatic following is paused; click to resume"
-                        ))
                 }
-                .buttonStyle(.plain)
-                .focusable(false)
+                .toggleStyle(.button)
+                .controlSize(.small)
+                .help(lang.text(
+                    followState.shouldFollow
+                        ? "播放时自动跟随当前句"
+                        : "已暂停自动跟随，点击恢复",
+                    followState.shouldFollow
+                        ? "Follow the active sentence during playback"
+                        : "Automatic following is paused; click to resume"
+                ))
 
                 // 难句过滤筛选开关
                 Button(action: { filterBookmarkedOnly.toggle() }) {

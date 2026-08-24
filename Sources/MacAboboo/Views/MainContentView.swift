@@ -146,53 +146,32 @@ public struct MainContentView: View {
                 }
                 .help(lang.text("调节播放语速", "Playback rate"))
                 
-                // 3. 播放列表显示/隐藏开关
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.24)) {
-                        isPlaylistVisible.toggle()
+                // 3. 显示/隐藏视图开关组（播放列表、波形图、字幕编辑区、断句列表）
+                ControlGroup {
+                    Toggle(isOn: $isPlaylistVisible) {
+                        Image(systemName: "music.note.list")
                     }
-                }) {
-                    Image(systemName: "music.note.list")
-                        .foregroundStyle(isPlaylistVisible ? Color.blue : Color.primary)
-                }
-                .help(lang.text("显示或隐藏播放列表", "Show or hide the playlist"))
-                
-                // 显示/隐藏波形工作区开关 (⌥W)
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isWaveformsVisible.toggle()
+                    .help(lang.text("显示或隐藏播放列表", "Show or hide the playlist"))
+                    
+                    Toggle(isOn: $isWaveformsVisible) {
+                        Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
                     }
-                }) {
-                    Image(systemName: isWaveformsVisible ? "waveform.path.ecg" : "waveform.slash")
-                        .foregroundStyle(isWaveformsVisible ? Color.blue : Color.primary)
-                }
-                .help(isWaveformsVisible
-                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
-                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
-                
-                // 显示/隐藏字幕编辑区开关 (⌥S)
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isSubtitleEditVisible.toggle()
+                    .help(isWaveformsVisible
+                        ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
+                        : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
+                    
+                    Toggle(isOn: $isSubtitleEditVisible) {
+                        Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
                     }
-                }) {
-                    Image(systemName: isSubtitleEditVisible ? "captions.bubble.fill" : "captions.bubble")
-                        .foregroundStyle(isSubtitleEditVisible ? Color.blue : Color.primary)
-                }
-                .help(isSubtitleEditVisible
-                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
-                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
-                
-                // 侧边栏折叠开关（显示/隐藏断句列表）
-                Button(action: {
-                    withAnimation {
-                        isSidebarVisible.toggle()
+                    .help(isSubtitleEditVisible
+                        ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
+                        : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
+                    
+                    Toggle(isOn: $isSidebarVisible) {
+                        Image(systemName: "sidebar.right")
                     }
-                }) {
-                    Image(systemName: "sidebar.right")
-                        .foregroundStyle(isSidebarVisible ? Color.blue : Color.primary)
+                    .help(lang.text("显示或隐藏断句列表", "Show or hide the sentence list"))
                 }
-                .help(lang.text("显示或隐藏断句列表", "Show or hide the sentence list"))
             }
         }
         // 支持直接拖拽音视频文件到窗口
