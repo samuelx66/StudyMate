@@ -303,9 +303,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let hadPlaybackIntent = self.wantsPlayback
             self.isPlaying = false
             if self.loopMode == .all {
+                // 全篇循环是一次不连续的时间跳转。媒体结束时主波形通常还停在
+                // 文件尾部视口；如果只 Seek 而不先重置视口，回到 0 秒后波形
+                // 仍会按尾部时间范围映射，直到用户缩放才被动触发正确重绘。
+                self.resetPrimaryViewportForLoopRestart()
                 self.seek(to: 0.0) {
                     Task { @MainActor [weak self] in
-                        self?.play()
+                        guard let self else { return }
+                        // Seek 完成后再做一次兜底，覆盖解码器异步回调期间对
+                        // duration/活动句状态的更新，确保首句与主波形始终一致。
+                        self.resetPrimaryViewportForLoopRestart()
+                        self.updateSecondaryViewportForActiveSegment(force: true)
+                        self.play()
                     }
                 }
             } else {
@@ -537,17 +546,45 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard isPlaying,
               !isWaveformFrozenAtNaturalEnd,
               !isBoundaryDragging,
-              duration > 0 else { return }
+              duration > 0,
+              // 边界处理可能在同一时钟回调内完成一次 Seek。此时传入的
+              // `current` 仍是旧句末尾时间，不能再用它把已重置的视口推回尾部。
+              abs(current - currentTime) <= 0.001 else { return }
+        // 最后一条断句没有可继续跟随的下一条内容。保持当前主波形视口
+        // 不动，避免播放尾句时无意义地把视口推进到文件末端。
+        if let activeSegmentIndex,
+           segments.indices.contains(activeSegmentIndex),
+           activeSegmentIndex == segments.count - 1 {
+            return
+        }
         let span = primaryViewport.end - primaryViewport.start
         guard span > 0, span < duration else { return }
 
         if current >= (primaryViewport.end - span * 0.3) || current < primaryViewport.start {
-            let newStart = max(0, current - span * 0.3)
-            let newEnd = min(duration, newStart + span)
+            // 右端贴住媒体末尾时，必须先把起点限制到 duration - span，
+            // 再按完整 span 计算终点；不能只截断终点，否则视口会被缩窄，
+            // 波形看起来就像突然放大。
+            let maxStart = max(0, duration - span)
+            let idealStart = max(0, current - span * 0.3)
+            let newStart = min(maxStart, idealStart)
+            let newEnd = newStart + span
             if abs(newStart - primaryViewport.start) > 0.05 {
                 primaryViewport = (newStart, newEnd)
             }
         }
+    }
+
+    /// 将主波形恢复到全篇循环重启后的起始视口，同时保留用户当前缩放级别。
+    /// 循环边界是时间轴的不连续点，不能依赖下一帧播放时钟来触发跟随，否则
+    /// 在解码器暂时不发送 0 秒时间回调时会留下尾部视口。
+    private func resetPrimaryViewportForLoopRestart() {
+        guard duration.isFinite, duration > 0 else { return }
+        let currentSpan = primaryViewport.end - primaryViewport.start
+        let fallbackSpan = min(15.0, duration)
+        let span = currentSpan.isFinite && currentSpan > 0
+            ? min(currentSpan, duration)
+            : fallbackSpan
+        primaryViewport = (0, span)
     }
 
     public func setDecoderMode(_ mode: DecoderEngineMode) {
@@ -1799,6 +1836,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     currentRepeatCount = 1
                     ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
                 } else {
+                    // 最后一条断句结束时，全篇循环可能先于媒体的 finished
+                    // 回调直接跳回第一条；同步重置主波形，避免仍保留文件尾部视口。
+                    if loopMode == .all,
+                       nextIdx == 0,
+                       currentIndex == segments.count - 1 {
+                        resetPrimaryViewportForLoopRestart()
+                    }
                     jumpToSegment(at: nextIdx)
                 }
             }

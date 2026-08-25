@@ -600,6 +600,173 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(native.seekCount, seekCountBeforeBoundary)
     }
 
+    func testLoopAllModeResetsPrimaryViewportWhenMediaFinishes() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("loop-viewport.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .all
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 19)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+
+        // 模拟播放到媒体尾部后，主波形已经跟随到文件末端。
+        engine.panPrimaryViewport(by: 20)
+        XCTAssertEqual(engine.primaryViewport.start, 5.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, 20.0, accuracy: 0.001)
+
+        // 后端结束回调应把时间轴和主波形一起带回开头，并继续播放。
+        native.onFinished?()
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(native.currentTime, 0.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.start, 0.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, 15.0, accuracy: 0.001)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testLoopAllModeResetsPrimaryViewportWhenLastSentenceWraps() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("loop-boundary-viewport.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .all
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 19)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+        engine.panPrimaryViewport(by: 20)
+
+        // 最后一条字幕先于媒体结束，循环应在句子边界直接回到第一句。
+        native.emitTime(19.0)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(native.currentTime, 0.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.start, 0.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, 15.0, accuracy: 0.001)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testPlaybackFollowKeepsViewportSpanAtMediaEnd() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("follow-span.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 30)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 30),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        // 保留一个可继续播放的下一句，使测试覆盖自动跟随而不是最后一句冻结。
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 30),
+            SentenceSegment(index: 2, startTime: 30, endTime: 35)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // 接近媒体末尾时，视口应平移到末端但仍保持原来的 15 秒跨度。
+        native.emitTime(29.0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.primaryViewport.start, 15.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, 30.0, accuracy: 0.001)
+    }
+
+    func testLastSentenceKeepsPrimaryViewportStableForContinuousPlayback() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("last-sentence-normal.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 20)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+        engine.panPrimaryViewport(by: 20)
+        let initialViewport = engine.primaryViewport
+
+        native.emitTime(18.0)
+        native.emitTime(20.0)
+        await Task.yield()
+
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertEqual(engine.primaryViewport.start, initialViewport.start, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, initialViewport.end, accuracy: 0.001)
+    }
+
+    func testLastSentenceKeepsPrimaryViewportStableForSingleSegmentLoop() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("last-sentence-single.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .singleSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 20)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+        engine.panPrimaryViewport(by: 20)
+        let initialViewport = engine.primaryViewport
+
+        native.emitTime(18.0)
+        native.emitTime(20.0)
+        for _ in 0..<3 { await Task.yield() }
+
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertEqual(native.currentTime, 16.0, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.start, initialViewport.start, accuracy: 0.001)
+        XCTAssertEqual(engine.primaryViewport.end, initialViewport.end, accuracy: 0.001)
+    }
+
     func testPauseAfterSegmentMode() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
