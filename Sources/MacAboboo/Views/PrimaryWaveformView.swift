@@ -132,6 +132,9 @@ public struct PrimaryWaveformView: View {
                         onBoundaryDragEnded: {
                             engine.endBoundaryDrag()
                         },
+                        onSelectSegmentForBoundaryDrag: { id in
+                            engine.playSegmentAfterBoundaryEditing(id: id)
+                        },
                         onPanViewport: { deltaTime in
                             engine.panPrimaryViewport(by: deltaTime)
                         }

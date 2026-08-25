@@ -348,6 +348,123 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertNil(engine.boundaryDragSource)
     }
 
+    func testBoundaryEditingKeepsPlaybackAndDoesNotSeek() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("boundary-edit.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 4)
+        let second = SentenceSegment(index: 2, startTime: 4, endTime: 8)
+        engine.segments = [first, second]
+        engine.activeSegmentIndex = 0
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        let seekCountBeforeDrag = native.seekCount
+
+        engine.beginBoundaryDrag(from: .primary)
+        engine.selectSegmentForBoundaryEditing(id: second.id)
+
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertEqual(native.seekCount, seekCountBeforeDrag)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        engine.endBoundaryDrag()
+    }
+
+    func testReleasingBoundaryDragSelectsAndPlaysDraggedSentence() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("boundary-release.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 4)
+        let second = SentenceSegment(index: 2, startTime: 4, endTime: 8)
+        engine.segments = [first, second]
+        engine.activeSegmentIndex = 0
+        engine.pause()
+
+        engine.beginBoundaryDrag(from: .primary)
+        engine.playSegmentAfterBoundaryEditing(id: second.id)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertEqual(native.currentTime, 4, accuracy: 0.0001)
+        engine.endBoundaryDrag()
+    }
+
+    func testBoundaryDragCarriesAdjacentBoundaryWhenCrossed() {
+        let engine = makeTestPlaybackEngine()
+        engine.duration = 20
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 3)
+        let second = SentenceSegment(index: 2, startTime: 3, endTime: 6)
+        engine.segments = [first, second]
+
+        engine.updateSegmentBoundaryFromDrag(
+            id: first.id,
+            proposed: 4,
+            isStart: false
+        )
+        XCTAssertEqual(engine.segments[0].endTime, 4, accuracy: 0.0001)
+        XCTAssertEqual(engine.segments[1].startTime, 4, accuracy: 0.0001)
+
+        engine.updateSegmentBoundaryFromDrag(
+            id: second.id,
+            proposed: 2,
+            isStart: true
+        )
+        XCTAssertEqual(engine.segments[0].endTime, 2, accuracy: 0.0001)
+        XCTAssertEqual(engine.segments[1].startTime, 2, accuracy: 0.0001)
+    }
+
+    func testBoundaryDragDoesNotAdvanceSingleRepeatWhilePointerIsDown() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("boundary-repeat.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 4)
+        let second = SentenceSegment(index: 2, startTime: 4, endTime: 8)
+        engine.segments = [first, second]
+        engine.activeSegmentIndex = 0
+        engine.loopMode = .singleSegment
+        engine.play()
+
+        engine.beginBoundaryDrag(from: .primary)
+        let seekCountBeforeRepeat = native.seekCount
+        native.emitTime(4.01)
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertGreaterThan(native.seekCount, seekCountBeforeRepeat)
+        engine.endBoundaryDrag()
+    }
+
     func testVideoTimelinePreviewUsesFastSeekAndResumesOnRelease() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

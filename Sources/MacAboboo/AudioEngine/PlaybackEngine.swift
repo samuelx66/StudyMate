@@ -169,6 +169,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var isPreviewingAnchor: Bool = false
     @Published public private(set) var isBoundaryDragging: Bool = false
     @Published public private(set) var boundaryDragSource: BoundaryDragSource? = nil
+    /// During a marker drag keep the working boundaries off the published
+    /// `segments` array.  Publishing a new full array for every NSEvent makes
+    /// SwiftUI rebuild the waveform tree and is the main source of the
+    /// visible marker lag.  The working copy is committed once on release.
+    private var boundaryDragWorkingSegments: [SentenceSegment]?
     private var shadowingTask: Task<Void, Never>?
     private var debouncedSaveTask: Task<Void, Never>?
     private var waveformTask: Task<Void, Never>?
@@ -483,16 +488,145 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func beginBoundaryDrag(from source: BoundaryDragSource) {
+        boundaryDragWorkingSegments = segments
         isBoundaryDragging = true
         boundaryDragSource = source
+        // Keep the current playback state while the boundary is dragged.  The
+        // playback clock is suppressed separately in `handlePlaybackBoundary`
+        // so a temporary marker position cannot advance/repeat a sentence,
+        // while the audio/video stream itself continues uninterrupted.
+        activeBoundarySnapMarker = nil
     }
 
     public func endBoundaryDrag() {
+        commitBoundaryDragIfNeeded()
         isBoundaryDragging = false
         boundaryDragSource = nil
         activeBoundarySnapMarker = nil
         debouncedSaveTask?.cancel()
         persistCurrentProject()
+    }
+
+    /// Selects the sentence whose marker is being edited without seeking or
+    /// starting playback.  Marker hit-testing uses this path so a drag never
+    /// becomes an implicit sentence jump; ordinary waveform/list clicks keep
+    /// using `jumpToSegment(id:)` and retain their playback behavior.
+    public func selectSegmentForBoundaryEditing(id: UUID) {
+        guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        isWaveformFrozenAtNaturalEnd = false
+        activeSegmentIndex = index
+        currentRepeatCount = 1
+        updateSecondaryViewportForActiveSegment(force: true)
+    }
+
+    /// Selects and immediately plays the sentence whose marker was just
+    /// released.  Unlike ordinary marker-target selection this is an explicit
+    /// user playback command, so it always starts playback even when the
+    /// player was paused before the drag.
+    public func playSegmentAfterBoundaryEditing(id: UUID) {
+        // The release callback invokes this before ending the drag.  Commit
+        // the final working copy first so the seek and the next redraw use the
+        // exact boundaries under the pointer.
+        commitBoundaryDragIfNeeded()
+        guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        isWaveformFrozenAtNaturalEnd = false
+        canResumePlaybackFromSegmentSelection = false
+        activeSegmentIndex = index
+        currentRepeatCount = 1
+        updateSecondaryViewportForActiveSegment(force: true)
+        seekToTargetSegment(segments[index])
+        play()
+    }
+
+    /// Applies one interactive marker update without persisting on every
+    /// mouse event.  When a boundary reaches its neighbour, the two touching
+    /// markers move as one, preserving their shared boundary while allowing
+    /// the user to keep dragging past the original position.
+    public func updateSegmentBoundaryFromDrag(
+        id: UUID,
+        proposed: Double,
+        isStart: Bool
+    ) {
+        guard proposed.isFinite else { return }
+
+        // A direct programmatic call keeps the historical immediate-update
+        // behavior.  Only the live mouse-drag path uses the un-published
+        // working copy to avoid a SwiftUI rebuild on every pointer event.
+        var editedSegments = boundaryDragWorkingSegments ?? segments
+        guard let index = editedSegments.firstIndex(where: { $0.id == id }) else { return }
+
+        let minimumDuration = 0.05
+        let mediaBound = duration > 0 ? duration : Double.greatestFiniteMagnitude
+        var current = editedSegments[index]
+
+        if isStart {
+            let raw = max(0, min(proposed, current.endTime - minimumDuration))
+            let crossesPreviousBoundary = index > 0 && raw < editedSegments[index - 1].endTime
+            // Dragging is a direct manipulation gesture: do not apply
+            // acoustic snapping or haptic feedback to the pointer's target.
+            let target = raw
+
+            if crossesPreviousBoundary {
+                activeBoundarySnapMarker = nil
+                var previous = editedSegments[index - 1]
+                let lowerBound = previous.startTime + minimumDuration
+                let upperBound = current.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                let boundary = max(lowerBound, min(target, upperBound))
+                previous.endTime = boundary
+                current.startTime = boundary
+                editedSegments[index - 1] = previous
+            } else {
+                let lowerBound = index > 0 ? editedSegments[index - 1].endTime : 0
+                let upperBound = current.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                current.startTime = max(lowerBound, min(target, upperBound))
+            }
+        } else {
+            let raw = min(mediaBound, max(current.startTime + minimumDuration, proposed))
+            let crossesNextBoundary = index + 1 < editedSegments.count && raw > editedSegments[index + 1].startTime
+            // Dragging is a direct manipulation gesture: do not apply
+            // acoustic snapping or haptic feedback to the pointer's target.
+            let target = raw
+
+            if crossesNextBoundary {
+                activeBoundarySnapMarker = nil
+                var next = editedSegments[index + 1]
+                let lowerBound = current.startTime + minimumDuration
+                let upperBound = next.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                let boundary = min(upperBound, max(target, lowerBound))
+                current.endTime = boundary
+                next.startTime = boundary
+                editedSegments[index + 1] = next
+            } else {
+                let lowerBound = current.startTime + minimumDuration
+                let upperBound = index + 1 < editedSegments.count
+                    ? min(mediaBound, editedSegments[index + 1].startTime)
+                    : mediaBound
+                guard lowerBound <= upperBound else { return }
+                current.endTime = min(upperBound, max(target, lowerBound))
+            }
+        }
+
+        editedSegments[index] = current
+        if isBoundaryDragging {
+            boundaryDragWorkingSegments = editedSegments
+        } else {
+            segments = editedSegments
+        }
+    }
+
+    /// Publishes the final marker positions once, after the pointer is
+    /// released.  This keeps persistence and all downstream views consistent
+    /// without paying the cost of publishing an entire segment array per
+    /// mouseDragged event.
+    private func commitBoundaryDragIfNeeded() {
+        guard let working = boundaryDragWorkingSegments else { return }
+        boundaryDragWorkingSegments = nil
+        if segments != working {
+            segments = working
+        }
     }
 
     public func scheduleDebouncedPersistence(delay: TimeInterval = 0.5) {
@@ -710,6 +844,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         hasCompletedSegmentation = false
         acousticBoundaryTimes = []
         activeBoundarySnapMarker = nil
+        boundaryDragWorkingSegments = nil
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
@@ -1688,6 +1823,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     private func handlePlaybackBoundary(at time: Double) {
         guard !isWaveformFrozenAtNaturalEnd else { return }
+
+        // Boundary editing must not change the active sentence while the
+        // pointer is down.  In single-sentence mode, however, the raw media
+        // clock must still be wrapped back to the same sentence; otherwise
+        // the backend would naturally run into the following sentence while
+        // the user is dragging.  This repeat keeps playback continuous and
+        // never selects or seeks to the next sentence.
+        if isBoundaryDragging {
+            guard loopMode == .singleSegment,
+                  let activeIdx = activeSegmentIndex,
+                  (boundaryDragWorkingSegments ?? segments).indices.contains(activeIdx),
+                  isPlaying,
+                  !isShadowingPaused else { return }
+            let currentSeg = (boundaryDragWorkingSegments ?? segments)[activeIdx]
+            guard time >= currentSeg.endTime - 0.005 else { return }
+            currentRepeatCount += 1
+            seekToTargetSegment(currentSeg)
+            return
+        }
 
         if let previewEndTime, time >= previewEndTime {
             self.previewEndTime = nil

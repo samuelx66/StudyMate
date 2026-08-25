@@ -11,6 +11,9 @@ public struct DraggableWaveformOverlay: View {
     let isSecondaryView: Bool
     let onBoundaryDragBegan: () -> Void
     let onBoundaryDragEnded: () -> Void
+    /// 选中标线所属句子时只更新编辑目标，不执行 Seek/播放。
+    /// 普通波形点击仍使用 `onSelectSegment`，两者的行为必须分开。
+    let onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
     let onPanViewport: ((Double) -> Void)?
     
     public init(
@@ -22,6 +25,7 @@ public struct DraggableWaveformOverlay: View {
         isSecondaryView: Bool = false,
         onBoundaryDragBegan: @escaping () -> Void = {},
         onBoundaryDragEnded: @escaping () -> Void = {},
+        onSelectSegmentForBoundaryDrag: ((UUID) -> Void)? = nil,
         onPanViewport: ((Double) -> Void)? = nil
     ) {
         self.engine = engine
@@ -32,6 +36,7 @@ public struct DraggableWaveformOverlay: View {
         self.isSecondaryView = isSecondaryView
         self.onBoundaryDragBegan = onBoundaryDragBegan
         self.onBoundaryDragEnded = onBoundaryDragEnded
+        self.onSelectSegmentForBoundaryDrag = onSelectSegmentForBoundaryDrag
         self.onPanViewport = onPanViewport
     }
     
@@ -47,7 +52,8 @@ public struct DraggableWaveformOverlay: View {
                 viewportEnd: viewportEnd,
                 width: width,
                 height: height,
-                isSecondaryView: isSecondaryView
+                isSecondaryView: isSecondaryView,
+                isBoundaryDragging: engine.isBoundaryDragging
             )
             .frame(width: width, height: height)
             .allowsHitTesting(false)
@@ -59,7 +65,8 @@ public struct DraggableWaveformOverlay: View {
                 viewportEnd: viewportEnd,
                 width: width,
                 height: height,
-                isSecondaryView: isSecondaryView
+                isSecondaryView: isSecondaryView,
+                isBoundaryDragging: engine.isBoundaryDragging
             )
             .frame(width: width, height: height)
             .allowsHitTesting(false)
@@ -72,20 +79,19 @@ public struct DraggableWaveformOverlay: View {
                 viewportEnd: viewportEnd,
                 duration: engine.duration,
                 isSecondaryView: isSecondaryView,
+                isBoundaryDragging: engine.isBoundaryDragging,
                 onBoundaryDragBegan: onBoundaryDragBegan,
                 onBoundaryDragEnded: onBoundaryDragEnded,
+                onSelectSegmentForBoundaryDrag: onSelectSegmentForBoundaryDrag,
                 onPanViewport: onPanViewport,
                 onSelectSegment: { id in
                     engine.jumpToSegment(id: id)
                 },
                 onUpdateStartAnchor: { id, newStart in
-                    engine.updateSegmentAnchor(id: id, start: newStart)
+                    engine.updateSegmentBoundaryFromDrag(id: id, proposed: newStart, isStart: true)
                 },
                 onUpdateEndAnchor: { id, newEnd in
-                    engine.updateSegmentAnchor(id: id, end: newEnd)
-                },
-                onSnapBoundary: { id, proposedTime, isStart in
-                    engine.snappedBoundaryTime(id: id, proposed: proposedTime, isStart: isStart)
+                    engine.updateSegmentBoundaryFromDrag(id: id, proposed: newEnd, isStart: false)
                 },
                 onLeftClickEmpty: { time in
                     handleCtrlLeftClick(at: time)
@@ -146,10 +152,15 @@ private struct WaveformBoundaryCanvas: View {
     let width: CGFloat
     let height: CGFloat
     let isSecondaryView: Bool
+    let isBoundaryDragging: Bool
 
     var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
         Canvas { context, _ in
+            // The AppKit interaction layer draws the active marker directly
+            // from the mouse event while dragging. Do not leave a coalesced
+            // SwiftUI line underneath it.
+            guard !isBoundaryDragging else { return }
             for segment in segments {
                 let isActive = activeSegmentIndex == (segment.index - 1)
                 guard !isSecondaryView || isActive else { continue }
@@ -188,11 +199,13 @@ private struct WaveformBoundaryLabels: View {
     let width: CGFloat
     let height: CGFloat
     let isSecondaryView: Bool
+    let isBoundaryDragging: Bool
 
     var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
         ZStack(alignment: .topLeading) {
-            ForEach(segments) { segment in
+            if !isBoundaryDragging {
+                ForEach(segments) { segment in
                 let isActive = activeSegmentIndex == (segment.index - 1)
                 if !isSecondaryView || isActive {
                     let startX = CGFloat((segment.startTime - viewportStart) / span) * width
@@ -210,6 +223,7 @@ private struct WaveformBoundaryLabels: View {
                         color: Color(nsColor: .systemOrange)
                     )
                     .position(x: endX - 22, y: max(11, height - 11))
+                }
                 }
             }
         }
@@ -254,14 +268,15 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
     let viewportEnd: Double
     let duration: Double
     let isSecondaryView: Bool
+    let isBoundaryDragging: Bool
     let onBoundaryDragBegan: () -> Void
     let onBoundaryDragEnded: () -> Void
+    let onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
     let onPanViewport: ((Double) -> Void)?
     
     let onSelectSegment: (UUID) -> Void
     let onUpdateStartAnchor: (UUID, Double) -> Void
     let onUpdateEndAnchor: (UUID, Double) -> Void
-    let onSnapBoundary: ((UUID, Double, Bool) -> Double)?
     let onLeftClickEmpty: (Double) -> Void
     let onRightClickEmpty: (Double) -> Void
     
@@ -282,13 +297,14 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         view.viewportEnd = viewportEnd
         view.duration = duration
         view.isSecondaryView = isSecondaryView
+        view.updateBoundaryDragState(isBoundaryDragging)
         view.onBoundaryDragBegan = onBoundaryDragBegan
         view.onBoundaryDragEnded = onBoundaryDragEnded
+        view.onSelectSegmentForBoundaryDrag = onSelectSegmentForBoundaryDrag
         view.onPanViewport = onPanViewport
         view.onSelectSegment = onSelectSegment
         view.onUpdateStartAnchor = onUpdateStartAnchor
         view.onUpdateEndAnchor = onUpdateEndAnchor
-        view.onSnapBoundary = onSnapBoundary
         view.onLeftClickEmpty = onLeftClickEmpty
         view.onRightClickEmpty = onRightClickEmpty
     }
@@ -300,14 +316,18 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         var viewportEnd: Double = 1
         var duration: Double = 0
         var isSecondaryView: Bool = false
+        /// Mirrors the engine's published drag state. The local flag remains
+        /// separate so the final real-time frame survives until SwiftUI has
+        /// committed the released boundaries.
+        private var modelIsBoundaryDragging = false
         var onBoundaryDragBegan: (() -> Void)?
         var onBoundaryDragEnded: (() -> Void)?
+        var onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
         var onPanViewport: ((Double) -> Void)?
         
         var onSelectSegment: ((UUID) -> Void)?
         var onUpdateStartAnchor: ((UUID, Double) -> Void)?
         var onUpdateEndAnchor: ((UUID, Double) -> Void)?
-        var onSnapBoundary: ((UUID, Double, Bool) -> Double)?
         var onLeftClickEmpty: ((Double) -> Void)?
         var onRightClickEmpty: ((Double) -> Void)?
         
@@ -319,10 +339,19 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             case end(id: UUID)
             case emptyLeft
             case emptyRight
-            case pan(lastX: CGFloat)
+            case pan(lastX: CGFloat, didMove: Bool, pendingSegmentID: UUID?)
+            case tap(lastX: CGFloat, didMove: Bool, pendingSegmentID: UUID?)
         }
         private var activeDrag: ActiveDrag? = nil
         private var isBoundaryDragging = false
+        /// Latest pointer-aligned marker position rendered directly by
+        /// AppKit, avoiding a SwiftUI body update for every mouse event.
+        private var boundaryVisualX: CGFloat?
+        private var boundaryVisualDrag: ActiveDrag?
+        /// The pointer-to-marker offset at mouseDown.  Keeping this offset
+        /// makes the marker follow the exact point grabbed instead of jumping
+        /// when the user starts on the wider hit target.
+        private var boundaryGrabOffsetX: CGFloat = 0
         
         public override var isFlipped: Bool {
             return true // 坐标原点设置在左上角 (0, 0)
@@ -335,6 +364,216 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         
         public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
             return true
+        }
+
+        func updateBoundaryDragState(_ dragging: Bool) {
+            if modelIsBoundaryDragging && !dragging {
+                boundaryVisualX = nil
+                boundaryVisualDrag = nil
+                needsDisplay = true
+            }
+            modelIsBoundaryDragging = dragging
+            if dragging {
+                needsDisplay = true
+            }
+        }
+
+        public override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            guard modelIsBoundaryDragging || isBoundaryDragging else { return }
+
+            let span = max(0.001, viewportEnd - viewportStart)
+            let active = boundaryVisualDrag ?? activeDrag
+            let coupledIndex: Int? = active.flatMap { drag in
+                guard let x = boundaryVisualX else { return nil }
+                return coupledAdjacentIndex(for: drag, visualX: x)
+            }
+
+            // During a drag, draw the stable markers in AppKit as well. The
+            // SwiftUI Canvas is disabled for this frame, so a coalesced old
+            // line cannot remain underneath the pointer-synchronous line.
+            for (index, segment) in segments.enumerated() {
+                guard segment.endTime >= viewportStart,
+                      segment.startTime <= viewportEnd,
+                      !isSecondaryView || activeSegmentIndex == (segment.index - 1) else { continue }
+
+                let startX = CGFloat((segment.startTime - viewportStart) / span) * bounds.width + 1
+                let endX = CGFloat((segment.endTime - viewportStart) / span) * bounds.width - 1
+                let skipStart = active.map {
+                    shouldSkipStartMarker(segment, index: index, drag: $0, coupledIndex: coupledIndex)
+                } ?? false
+                let skipEnd = active.map {
+                    shouldSkipEndMarker(segment, index: index, drag: $0, coupledIndex: coupledIndex)
+                } ?? false
+                if !skipStart {
+                    drawBoundaryLine(at: startX, color: .systemGreen)
+                }
+                if !skipEnd {
+                    drawBoundaryLine(at: endX, color: .systemOrange)
+                }
+
+                if !isSecondaryView || activeSegmentIndex == (segment.index - 1) {
+                    if !skipStart {
+                        drawBoundaryBadge(label: "S#\(segment.index)", at: CGPoint(x: startX - 1 + 22, y: 11), color: .systemGreen, pointsRight: true)
+                    }
+                    if !skipEnd {
+                        drawBoundaryBadge(label: "E#\(segment.index)", at: CGPoint(x: endX + 1 - 22, y: max(11, bounds.height - 11)), color: .systemOrange, pointsRight: false)
+                    }
+                }
+            }
+
+            guard let drag = active,
+                  let x = boundaryVisualX else { return }
+            switch drag {
+            case .start(let id):
+                drawBoundaryLine(at: x, color: .systemGreen)
+                if let segment = segments.first(where: { $0.id == id }) {
+                    drawBoundaryBadge(label: "S#\(segment.index)", at: CGPoint(x: x + 22, y: 11), color: .systemGreen, pointsRight: true)
+                }
+                if coupledIndex != nil {
+                    drawBoundaryLine(at: x, color: .systemOrange)
+                    if let index = coupledIndex, segments.indices.contains(index) {
+                        let segment = segments[index]
+                        drawBoundaryBadge(label: "E#\(segment.index)", at: CGPoint(x: x - 22, y: max(11, bounds.height - 11)), color: .systemOrange, pointsRight: false)
+                    }
+                }
+            case .end(let id):
+                drawBoundaryLine(at: x, color: .systemOrange)
+                if let segment = segments.first(where: { $0.id == id }) {
+                    drawBoundaryBadge(label: "E#\(segment.index)", at: CGPoint(x: x - 22, y: max(11, bounds.height - 11)), color: .systemOrange, pointsRight: false)
+                }
+                if coupledIndex != nil {
+                    drawBoundaryLine(at: x, color: .systemGreen)
+                    if let index = coupledIndex, segments.indices.contains(index) {
+                        let segment = segments[index]
+                        drawBoundaryBadge(label: "S#\(segment.index)", at: CGPoint(x: x + 22, y: 11), color: .systemGreen, pointsRight: true)
+                    }
+                }
+            default:
+                break
+            }
+        }
+
+        private func drawBoundaryLine(at x: CGFloat, color: NSColor) {
+            guard x.isFinite, x >= -2, x <= bounds.width + 2 else { return }
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
+            context.saveGState()
+            context.setLineWidth(2)
+            context.setStrokeColor(color.cgColor)
+            context.move(to: CGPoint(x: x, y: 0))
+            context.addLine(to: CGPoint(x: x, y: bounds.height))
+            context.strokePath()
+            context.restoreGState()
+        }
+
+        private func shouldSkipStartMarker(
+            _ segment: SentenceSegment,
+            index: Int,
+            drag: ActiveDrag,
+            coupledIndex: Int?
+        ) -> Bool {
+            switch drag {
+            case .start(let id):
+                return segment.id == id
+            case .end:
+                return coupledIndex == index
+            default:
+                return false
+            }
+        }
+
+        private func shouldSkipEndMarker(
+            _ segment: SentenceSegment,
+            index: Int,
+            drag: ActiveDrag,
+            coupledIndex: Int?
+        ) -> Bool {
+            switch drag {
+            case .end(let id):
+                return segment.id == id
+            case .start:
+                return coupledIndex == index
+            default:
+                return false
+            }
+        }
+
+        private func drawBoundaryBadge(
+            label: String,
+            at center: CGPoint,
+            color: NSColor,
+            pointsRight: Bool
+        ) {
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
+            let font = NSFont.systemFont(ofSize: 9, weight: .black)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: NSColor.white
+            ]
+            let textSize = (label as NSString).size(withAttributes: attributes)
+            let triangleWidth: CGFloat = 6
+            let spacing: CGFloat = 2
+            let horizontalPadding: CGFloat = 5
+            let verticalPadding: CGFloat = 2
+            let badgeSize = CGSize(
+                width: textSize.width + triangleWidth + spacing + horizontalPadding * 2,
+                height: max(15, textSize.height + verticalPadding * 2)
+            )
+            let rect = CGRect(
+                x: center.x - badgeSize.width / 2,
+                y: center.y - badgeSize.height / 2,
+                width: badgeSize.width,
+                height: badgeSize.height
+            )
+
+            context.saveGState()
+            context.setFillColor(color.cgColor)
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: badgeSize.height / 2, cornerHeight: badgeSize.height / 2, transform: nil))
+            context.fillPath()
+
+            let textX: CGFloat = pointsRight
+                ? rect.minX + horizontalPadding + triangleWidth + spacing
+                : rect.minX + horizontalPadding
+            let textY = rect.minY + (badgeSize.height - textSize.height) / 2
+            (label as NSString).draw(at: CGPoint(x: textX, y: textY), withAttributes: attributes)
+
+            let triangleCenterX: CGFloat = pointsRight
+                ? rect.minX + horizontalPadding + triangleWidth / 2
+                : rect.maxX - horizontalPadding - triangleWidth / 2
+            let triangleCenterY = rect.midY
+            let triangle = CGMutablePath()
+            if pointsRight {
+                triangle.move(to: CGPoint(x: triangleCenterX - 2.5, y: triangleCenterY - 3))
+                triangle.addLine(to: CGPoint(x: triangleCenterX - 2.5, y: triangleCenterY + 3))
+                triangle.addLine(to: CGPoint(x: triangleCenterX + 2.5, y: triangleCenterY))
+            } else {
+                triangle.move(to: CGPoint(x: triangleCenterX + 2.5, y: triangleCenterY - 3))
+                triangle.addLine(to: CGPoint(x: triangleCenterX + 2.5, y: triangleCenterY + 3))
+                triangle.addLine(to: CGPoint(x: triangleCenterX - 2.5, y: triangleCenterY))
+            }
+            triangle.closeSubpath()
+            context.setFillColor(NSColor.white.cgColor)
+            context.addPath(triangle)
+            context.fillPath()
+            context.restoreGState()
+        }
+
+        private func coupledAdjacentIndex(for drag: ActiveDrag, visualX: CGFloat) -> Int? {
+            let visualTime = timeFromX(visualX)
+            switch drag {
+            case .end(let id):
+                guard let index = segments.firstIndex(where: { $0.id == id }),
+                      index + 1 < segments.count,
+                      visualTime >= segments[index + 1].startTime else { return nil }
+                return index + 1
+            case .start(let id):
+                guard let index = segments.firstIndex(where: { $0.id == id }),
+                      index > 0,
+                      visualTime <= segments[index - 1].endTime else { return nil }
+                return index - 1
+            default:
+                return nil
+            }
         }
         
         public override var acceptsFirstResponder: Bool {
@@ -364,16 +603,17 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             // 1. 优先命中绿/橙标线抓手
             if let hitHandle = handle(at: loc) {
                 activeDrag = hitHandle
+                boundaryVisualDrag = hitHandle
+                boundaryVisualX = markerX(for: hitHandle) ?? loc.x
+                boundaryGrabOffsetX = loc.x - (markerX(for: hitHandle) ?? loc.x)
                 isBoundaryDragging = true
+                needsDisplay = true
                 onBoundaryDragBegan?()
-                if case .start(let id) = hitHandle {
-                    onSelectSegment?(id)
-                } else if case .end(let id) = hitHandle {
-                    onSelectSegment?(id)
-                }
                 NSCursor.resizeLeftRight.set()
                 return
             }
+
+            boundaryGrabOffsetX = 0
 
             let clickTime = timeFromX(loc.x)
             
@@ -382,31 +622,44 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                 activeDrag = .emptyLeft
                 onLeftClickEmpty?(clickTime)
             } else {
-                // 3. 普通左键单击：智能查找命中或临近的断句并联动选中
-                if let seg = findSegment(near: clickTime) {
-                    onSelectSegment?(seg.id)
-                }
-                
-                // 主波形图允许左右拖拽平移视口浏览附近断句
+                // 3. 普通左键：主波形图先等待是否真的发生平移。
+                // 如果一按下就立即选句并 Seek，用户只要稍微偏离标线几像素，
+                // 拖动就会被误判成“点击下一句”，随后触发播放和自动推进。
+                let pendingSegmentID = findSegment(near: clickTime)?.id
                 if !isSecondaryView && onPanViewport != nil {
-                    activeDrag = .pan(lastX: loc.x)
+                    activeDrag = .pan(
+                        lastX: loc.x,
+                        didMove: false,
+                        pendingSegmentID: pendingSegmentID
+                    )
                     NSCursor.openHand.set()
                 } else {
-                    activeDrag = nil
+                    // 次波形没有平移手势，但同样要等 mouseUp 才确认这是
+                    // 点击。否则在标线命中容差外按住拖动会立即跳句播放。
+                    activeDrag = .tap(
+                        lastX: loc.x,
+                        didMove: false,
+                        pendingSegmentID: pendingSegmentID
+                    )
                 }
             }
         }
         
         public override func rightMouseDown(with event: NSEvent) {
             let loc = convert(event.locationInWindow, from: nil)
-            if let hitHandle = handle(at: loc), case .end(let id) = hitHandle {
+            if let hitHandle = handle(at: loc), case .end = hitHandle {
                 activeDrag = hitHandle
+                boundaryVisualDrag = hitHandle
+                boundaryVisualX = markerX(for: hitHandle) ?? loc.x
+                boundaryGrabOffsetX = loc.x - (markerX(for: hitHandle) ?? loc.x)
                 isBoundaryDragging = true
+                needsDisplay = true
                 onBoundaryDragBegan?()
-                onSelectSegment?(id)
                 NSCursor.resizeLeftRight.set()
                 return
             }
+
+            boundaryGrabOffsetX = 0
 
             let clickTime = timeFromX(loc.x)
             
@@ -427,33 +680,56 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         
         public override func mouseDragged(with event: NSEvent) {
             let loc = convert(event.locationInWindow, from: nil)
-            let newTime = timeFromX(loc.x)
+            let effectiveX = isBoundaryDragging ? loc.x - boundaryGrabOffsetX : loc.x
+            let newTime = timeFromX(effectiveX)
+            if isBoundaryDragging {
+                boundaryVisualX = max(0, min(bounds.width, effectiveX))
+                needsDisplay = true
+            }
             updateActiveDrag(at: newTime, currentLocX: loc.x)
         }
         
         public override func rightMouseDragged(with event: NSEvent) {
             let loc = convert(event.locationInWindow, from: nil)
-            let newTime = timeFromX(loc.x)
+            let effectiveX = isBoundaryDragging ? loc.x - boundaryGrabOffsetX : loc.x
+            let newTime = timeFromX(effectiveX)
+            if isBoundaryDragging {
+                boundaryVisualX = max(0, min(bounds.width, effectiveX))
+                needsDisplay = true
+            }
             updateActiveDrag(at: newTime, currentLocX: loc.x)
         }
         
         // MARK: - 鼠标松开
         
         public override func mouseUp(with event: NSEvent) {
+            selectBoundarySegmentAfterDragIfNeeded()
+            switch activeDrag {
+            case .pan(_, let didMove, let pendingSegmentID),
+                 .tap(_, let didMove, let pendingSegmentID):
+                if !didMove, let pendingSegmentID {
+                    onSelectSegment?(pendingSegmentID)
+                }
+            default:
+                break
+            }
             if isBoundaryDragging {
                 onBoundaryDragEnded?()
                 isBoundaryDragging = false
             }
             activeDrag = nil
+            boundaryGrabOffsetX = 0
             NSCursor.arrow.set()
         }
         
         public override func rightMouseUp(with event: NSEvent) {
+            selectBoundarySegmentAfterDragIfNeeded()
             if isBoundaryDragging {
                 onBoundaryDragEnded?()
                 isBoundaryDragging = false
             }
             activeDrag = nil
+            boundaryGrabOffsetX = 0
             NSCursor.arrow.set()
         }
         
@@ -512,26 +788,32 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                 seg.endTime >= viewportStart && seg.startTime <= viewportEnd
             }
 
-            // 1. 顶部区域 (y <= 24) -> 优先抓取绿色起始标线 (S#)
-            if loc.y <= 24 {
+            // 顶部/底部保留更宽的垂直抓取区，避免触控板在徽章边缘丢失
+            // mouseDown；中间区域也放宽，但仍始终选择最近的标线。
+            let edgeZoneHeight = min(30, max(0, height / 2 - 1))
+            let edgeHitTolerance: CGFloat = 30
+            let middleHitTolerance: CGFloat = 18
+
+            // 1. 顶部区域 -> 优先抓取绿色起始标线 (S#)
+            if loc.y <= edgeZoneHeight {
                 let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
                     guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
                     let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
                     let distance = abs(loc.x - startX)
-                    return distance <= 22 ? (.start(id: seg.id), distance) : nil
+                    return distance <= edgeHitTolerance ? (.start(id: seg.id), distance) : nil
                 }
                 if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
                     return nearest.drag
                 }
             }
 
-            // 2. 底部区域 (y >= height - 24) -> 优先抓取橙色结束标线 (E#)
-            if loc.y >= (height - 24) {
+            // 2. 底部区域 -> 优先抓取橙色结束标线 (E#)
+            if loc.y >= (height - edgeZoneHeight) {
                 let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
                     guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
                     let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
                     let distance = abs(loc.x - endX)
-                    return distance <= 22 ? (.end(id: seg.id), distance) : nil
+                    return distance <= edgeHitTolerance ? (.end(id: seg.id), distance) : nil
                 }
                 if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
                     return nearest.drag
@@ -546,8 +828,8 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                 let distStart = abs(loc.x - startX)
                 let distEnd = abs(loc.x - endX)
                 var result: [(drag: ActiveDrag, distance: CGFloat)] = []
-                if distStart <= 10 { result.append((.start(id: seg.id), distStart)) }
-                if distEnd <= 10 { result.append((.end(id: seg.id), distEnd)) }
+                if distStart <= middleHitTolerance { result.append((.start(id: seg.id), distStart)) }
+                if distEnd <= middleHitTolerance { result.append((.end(id: seg.id), distEnd)) }
                 return result
             }
             if let nearest = middleCandidates.min(by: { $0.distance < $1.distance }) {
@@ -563,28 +845,64 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             switch drag {
             case .start(let id):
                 NSCursor.resizeLeftRight.set()
-                if let seg = segments.first(where: { $0.id == id }) {
-                    let clamped = max(0, min(newTime, seg.endTime - 0.05))
-                    onUpdateStartAnchor?(id, onSnapBoundary?(id, clamped, true) ?? clamped)
-                }
+                // Keep the pointer's raw time.  The engine owns only the
+                // minimum-duration and adjacent-boundary constraints against
+                // its latest segment array; no acoustic snap is applied.
+                onUpdateStartAnchor?(id, max(0, min(newTime, duration > 0 ? duration : newTime)))
             case .end(let id):
                 NSCursor.resizeLeftRight.set()
-                if let seg = segments.first(where: { $0.id == id }) {
-                    let maxBound = duration > 0 ? duration : 999999.0
-                    let clamped = min(maxBound, max(seg.startTime + 0.05, newTime))
-                    onUpdateEndAnchor?(id, onSnapBoundary?(id, clamped, false) ?? clamped)
-                }
+                let maxBound = duration > 0 ? duration : max(0, newTime)
+                onUpdateEndAnchor?(id, min(maxBound, max(0, newTime)))
             case .emptyLeft:
                 onLeftClickEmpty?(newTime)
             case .emptyRight:
                 onRightClickEmpty?(newTime)
-            case .pan(let lastX):
+            case .pan(let lastX, let didMove, _):
                 let deltaX = currentLocX - lastX
+                let hasMoved = didMove || abs(deltaX) > 2
+                guard hasMoved else { return }
                 let span = max(0.001, viewportEnd - viewportStart)
                 let deltaTime = -Double(deltaX / max(1, bounds.width)) * span
-                activeDrag = .pan(lastX: currentLocX)
+                activeDrag = .pan(lastX: currentLocX, didMove: true, pendingSegmentID: nil)
                 NSCursor.closedHand.set()
                 onPanViewport?(deltaTime)
+            case .tap(let lastX, let didMove, _):
+                guard didMove || abs(currentLocX - lastX) > 2 else { return }
+                activeDrag = .tap(lastX: currentLocX, didMove: true, pendingSegmentID: nil)
+            }
+        }
+
+        private func markerX(for drag: ActiveDrag) -> CGFloat? {
+            let span = max(0.001, viewportEnd - viewportStart)
+            let width = bounds.width
+            switch drag {
+            case .start(let id):
+                guard let segment = segments.first(where: { $0.id == id }) else { return nil }
+                return CGFloat((segment.startTime - viewportStart) / span) * width + 1.0
+            case .end(let id):
+                guard let segment = segments.first(where: { $0.id == id }) else { return nil }
+                return CGFloat((segment.endTime - viewportStart) / span) * width - 1.0
+            default:
+                return nil
+            }
+        }
+
+        private func selectSegmentForBoundaryDrag(_ id: UUID) {
+            if let onSelectSegmentForBoundaryDrag {
+                onSelectSegmentForBoundaryDrag(id)
+            } else {
+                // 保留旧调用方的兼容行为；主界面已使用专用的“编辑目标”回调。
+                onSelectSegment?(id)
+            }
+        }
+
+        private func selectBoundarySegmentAfterDragIfNeeded() {
+            guard isBoundaryDragging else { return }
+            switch activeDrag {
+            case .start(let id), .end(let id):
+                selectSegmentForBoundaryDrag(id)
+            default:
+                break
             }
         }
     }
