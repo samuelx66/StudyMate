@@ -31,7 +31,7 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertFalse(lrc.contains("[00:08.00]"))
     }
 
-    func testSeparateAndMergedExportCreateMatchingMP3AndBilingualLRC() async throws {
+    func testSeparateAndMergedExportCreateMatchingM4AAndBilingualLRC() async throws {
         guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
             throw XCTSkip("ffmpeg is required for the media export integration test")
         }
@@ -72,7 +72,7 @@ final class SegmentMediaExporterTests: XCTestCase {
             at: separate.location,
             includingPropertiesForKeys: nil
         )
-        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "mp3" }.count, 2)
+        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "m4a" }.count, 2)
         XCTAssertEqual(separateFiles.filter { $0.pathExtension == "lrc" }.count, 2)
         XCTAssertTrue(separateFiles.allSatisfy { $0.pathExtension != "srt" })
         let firstSubtitleURL = try XCTUnwrap(
@@ -81,12 +81,16 @@ final class SegmentMediaExporterTests: XCTestCase {
         let firstSubtitle = try String(contentsOf: firstSubtitleURL, encoding: .utf8)
         XCTAssertTrue(firstSubtitle.contains("[00:00.00]Original one\n[00:00.00]译文一"))
 
-        let mergedAudioURL = root.appendingPathComponent("merged.mp3")
-        _ = try exporter.exportMerged(
+        // 即使调用方误传旧的 MP3 后缀，导出器也必须强制生成 M4A。
+        let requestedMergedAudioURL = root.appendingPathComponent("merged.mp3")
+        let mergedResult = try exporter.exportMerged(
             mediaURL: mediaURL,
             segments: selection,
-            outputAudioURL: mergedAudioURL
+            outputAudioURL: requestedMergedAudioURL
         )
+        let mergedAudioURL = mergedResult.location
+        XCTAssertEqual(mergedAudioURL.pathExtension, "m4a")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: requestedMergedAudioURL.path))
         let mergedSubtitle = try String(
             contentsOf: mergedAudioURL.deletingPathExtension().appendingPathExtension("lrc"),
             encoding: .utf8

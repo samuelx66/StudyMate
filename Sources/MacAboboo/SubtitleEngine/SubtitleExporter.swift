@@ -74,7 +74,7 @@ public final class SubtitleExporter {
         )
     }
 
-    /// 将不连续的断句按合并后 MP3 的连续时间轴生成 LRC。
+    /// 将不连续的断句按合并后 M4A 的连续时间轴生成 LRC。
     public func exportToConcatenatedLRC(
         segments: [SentenceSegment],
         title: String = "",
@@ -181,7 +181,7 @@ public enum SegmentMediaExportError: LocalizedError {
     }
 }
 
-/// 将已选断句导出为 MP3 与时间轴同步的双语 LRC。
+/// 将已选断句导出为 AAC 编码的 M4A 与时间轴同步的双语 LRC。
 public final class SegmentMediaExporter: @unchecked Sendable {
     public static let shared = SegmentMediaExporter()
 
@@ -208,7 +208,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             for segment in ordered {
                 let suffix = String(format: "%04d", max(1, segment.index))
                 let fileBase = "\(sanitizedFileName(baseName))-\(suffix)"
-                let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("mp3")
+                let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("m4a")
                 let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
                 try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: audioURL)
                 do {
@@ -242,31 +242,36 @@ public final class SegmentMediaExporter: @unchecked Sendable {
     ) throws -> SegmentMediaExportResult {
         let ordered = normalizedSelection(segments)
         guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
+        // 无论调用方传入什么后缀，合并导出始终落为 AAC 编码的 M4A，
+        // 避免用户在保存面板中手动输入 .mp3 后得到错误的容器/编码组合。
+        let normalizedOutputURL = outputAudioURL
+            .deletingPathExtension()
+            .appendingPathExtension("m4a")
         try FileManager.default.createDirectory(
-            at: outputAudioURL.deletingLastPathComponent(),
+            at: normalizedOutputURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
 
         if ordered.count == 1, let segment = ordered.first {
-            try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: outputAudioURL)
+            try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: normalizedOutputURL)
         } else {
-            try exportConcatenatedAudio(mediaURL: mediaURL, segments: ordered, outputURL: outputAudioURL)
+            try exportConcatenatedAudio(mediaURL: mediaURL, segments: ordered, outputURL: normalizedOutputURL)
         }
 
-        let subtitleURL = outputAudioURL.deletingPathExtension().appendingPathExtension("lrc")
+        let subtitleURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("lrc")
         do {
             let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
                 segments: ordered,
-                title: outputAudioURL.deletingPathExtension().lastPathComponent
+                title: normalizedOutputURL.deletingPathExtension().lastPathComponent
             )
             try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
         } catch {
-            try? FileManager.default.removeItem(at: outputAudioURL)
+            try? FileManager.default.removeItem(at: normalizedOutputURL)
             throw error
         }
 
         return SegmentMediaExportResult(
-            location: outputAudioURL,
+            location: normalizedOutputURL,
             audioFileCount: 1,
             subtitleFileCount: 1
         )
@@ -283,8 +288,9 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             "-t", preciseTime(segment.duration),
             "-map", "0:a:0",
             "-vn",
-            "-codec:a", "libmp3lame",
-            "-q:a", "2",
+            "-codec:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
             outputURL.path
         ])
     }
@@ -311,8 +317,9 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             "-/filter_complex", filterURL.path,
             "-map", "[out]",
             "-vn",
-            "-codec:a", "libmp3lame",
-            "-q:a", "2",
+            "-codec:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
             outputURL.path
         ])
     }
