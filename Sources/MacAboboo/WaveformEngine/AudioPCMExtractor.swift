@@ -31,6 +31,13 @@ public actor AudioPCMExtractor {
         var isCompleted: Bool
     }
 
+    /// 磁盘写入在后台进行，但删除播放列表记录时必须等对应写入结束，
+    /// 否则刚删除的缓存可能又被后台任务原子移动回来。
+    private struct DiskWriteFlight {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
     private static let cacheMagic = Data("MABPCM02".utf8)
     private static let cacheHeaderSize = cacheMagic.count + MemoryLayout<UInt32>.size + MemoryLayout<UInt64>.size
     private static let maxCachedSampleCount: UInt64 = 1_000_000_000
@@ -39,26 +46,64 @@ public actor AudioPCMExtractor {
     private let cacheDirectory: URL?
     private let legacyCacheDirectory: URL?
     private var inFlight: [String: DecodeFlight] = [:]
+    private var diskWrites: [String: DiskWriteFlight] = [:]
 
     public init() {
+        self.init(
+            cacheDirectoryOverride: nil,
+            legacyCacheDirectoryOverride: nil,
+            pruneDefaultCache: true
+        )
+    }
+
+    /// 测试和离线工具可以注入独立缓存目录；正式应用仍使用默认的
+    /// `~/Library/Application Support/MacAboboo/PCMCache` 路径。
+    init(cacheDirectory: URL, legacyCacheDirectory: URL? = nil) {
+        self.init(
+            cacheDirectoryOverride: cacheDirectory,
+            legacyCacheDirectoryOverride: legacyCacheDirectory,
+            pruneDefaultCache: false
+        )
+    }
+
+    private init(
+        cacheDirectoryOverride: URL?,
+        legacyCacheDirectoryOverride: URL?,
+        pruneDefaultCache: Bool
+    ) {
         memoryCache.countLimit = 2
         memoryCache.totalCostLimit = 256 * 1024 * 1024
 
-        if let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+        if let directory = cacheDirectoryOverride {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            cacheDirectory = directory
+            if pruneDefaultCache {
+                Task.detached(priority: .background) {
+                    Self.pruneDiskCache(in: directory)
+                }
+            }
+        } else if let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let directory = appSupportURL
                 .appendingPathComponent("MacAboboo", isDirectory: true)
                 .appendingPathComponent("PCMCache", isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             cacheDirectory = directory
-            Task.detached(priority: .background) {
-                Self.pruneDiskCache(in: directory)
+            if pruneDefaultCache {
+                Task.detached(priority: .background) {
+                    Self.pruneDiskCache(in: directory)
+                }
             }
         } else {
             cacheDirectory = nil
         }
-        legacyCacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("MacAboboo", isDirectory: true)
-            .appendingPathComponent("PCM", isDirectory: true)
+        if let legacyCacheDirectoryOverride {
+            try? FileManager.default.createDirectory(at: legacyCacheDirectoryOverride, withIntermediateDirectories: true)
+            legacyCacheDirectory = legacyCacheDirectoryOverride
+        } else {
+            legacyCacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("MacAboboo", isDirectory: true)
+                .appendingPathComponent("PCM", isDirectory: true)
+        }
     }
 
     public func extract(
@@ -88,7 +133,12 @@ public actor AudioPCMExtractor {
            let cached = Self.readDiskCache(from: legacyURL) {
             cacheInMemoryIfReasonable(cached, key: memoryKey)
             if let cacheURL = descriptor.fileURL {
-                _ = Self.scheduleDiskWrite(cached, to: cacheURL)
+                let writeTask = Self.scheduleDiskWrite(cached, to: cacheURL)
+                let writeID = registerDiskWrite(writeTask, for: descriptor.key)
+                Task.detached { [weak self] in
+                    _ = await writeTask.value
+                    await self?.clearDiskWrite(for: descriptor.key, id: writeID)
+                }
             }
             progress?(1)
             return cached
@@ -136,6 +186,7 @@ public actor AudioPCMExtractor {
             let shouldFinalize = markFlightCompleted(for: descriptor.key, flightID: flightID)
             if shouldFinalize, let cacheURL = descriptor.fileURL {
                 let writeTask = Self.scheduleDiskWrite(pcm, to: cacheURL)
+                let writeID = registerDiskWrite(writeTask, for: descriptor.key)
                 // Keep the completed result visible while the asynchronous
                 // cache write finishes. This prevents a second immediate
                 // caller from starting another full decode if NSCache evicts
@@ -143,6 +194,7 @@ public actor AudioPCMExtractor {
                 Task.detached { [weak self] in
                     _ = await writeTask.value
                     await self?.removeCompletedFlight(for: descriptor.key, flightID: flightID)
+                    await self?.clearDiskWrite(for: descriptor.key, id: writeID)
                 }
             } else if shouldFinalize {
                 removeCompletedFlight(for: descriptor.key, flightID: flightID)
@@ -198,6 +250,35 @@ public actor AudioPCMExtractor {
 
     public func purgeMemoryCache() {
         memoryCache.removeAllObjects()
+    }
+
+    /// 删除媒体对应的内存、主缓存、旧版缓存及未完成的临时写入。
+    ///
+    /// 播放列表删除只移除历史记录，不会删除原始音视频；但 PCM 是由原始
+    /// 媒体派生的可再生缓存，因此应随历史记录一并清理，避免长期占用磁盘。
+    public func removeCache(for url: URL) async {
+        let descriptor = Self.cacheDescriptor(
+            for: url,
+            cacheDirectory: cacheDirectory,
+            legacyCacheDirectory: legacyCacheDirectory
+        )
+        memoryCache.removeObject(forKey: descriptor.key as NSString)
+
+        if let flight = inFlight.removeValue(forKey: descriptor.key) {
+            flight.task.cancel()
+            _ = try? await flight.task.value
+        }
+
+        // 处理删除期间已经排队的写入。循环是为了覆盖 actor 在 await
+        // 期间又登记了同一媒体新写入的情况，确保删除返回后不会复现缓存。
+        while let write = diskWrites.removeValue(forKey: descriptor.key) {
+            _ = await write.task.value
+        }
+
+        Self.removeCacheFiles(
+            for: descriptor.key,
+            in: [cacheDirectory, legacyCacheDirectory].compactMap { $0 }
+        )
     }
 
     private static func readDiskCache(from url: URL) -> AudioPCMData? {
@@ -278,6 +359,34 @@ public actor AudioPCMExtractor {
             } catch {
                 try? fileHandle?.close()
                 try? FileManager.default.removeItem(at: temporaryURL)
+            }
+        }
+    }
+
+    private func registerDiskWrite(_ task: Task<Void, Never>, for key: String) -> UUID {
+        let id = UUID()
+        diskWrites[key] = DiskWriteFlight(id: id, task: task)
+        return id
+    }
+
+    private func clearDiskWrite(for key: String, id: UUID) {
+        guard diskWrites[key]?.id == id else { return }
+        diskWrites[key] = nil
+    }
+
+    private static func removeCacheFiles(for key: String, in directories: [URL]) {
+        let cacheName = "\(key).pcmcache"
+        let temporaryPrefix = "\(cacheName).tmp-"
+        for directory in directories {
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for file in files {
+                let name = file.lastPathComponent
+                guard name == cacheName || name.hasPrefix(temporaryPrefix) else { continue }
+                try? FileManager.default.removeItem(at: file)
             }
         }
     }

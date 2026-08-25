@@ -1380,6 +1380,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let standardizedURL = mediaURL.standardizedFileURL
         if currentMedia?.url.standardizedFileURL == standardizedURL {
             debouncedSaveTask?.cancel()
+            // 删除当前媒体的历史记录时，同时中止仍可能写入 PCMCache 的
+            // 波形/断句任务，避免缓存清理完成后又被后台解码任务生成。
+            waveformTask?.cancel()
+            waveformTask = nil
+            sidecarTask?.cancel()
+            sidecarTask = nil
+            segmentationTask?.cancel()
+            segmentationTask = nil
+            segmentationRequestID = UUID()
             suppressCurrentProjectPersistence = true
         }
         playbackHistoryStore?.remove(standardizedURL)
@@ -1390,6 +1399,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 ? "删除该文件的工程记录失败：\(error.localizedDescription)"
                 : "Unable to delete project records for this file: \(error.localizedDescription)"
         }
+        // PCMCache 是可再生的派生数据，删除历史记录时清理主缓存和旧版
+        // 缓存；原始音视频文件本身不会受到影响。
+        await AudioPCMExtractor.shared.removeCache(for: standardizedURL)
     }
 
     // MARK: - 播放控制与极速 Seek
@@ -1573,7 +1585,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         return Double(index) / waveformData.sampleRate
     }
 
-    private func seekToExplicitlySelectedSegment(
+    /// Seek to a sentence start while preserving that sentence as the active
+    /// target until the decoder reaches it. This is used both for an explicit
+    /// row selection and for sentence-repeat seeks: at an adjacent boundary,
+    /// a frame-rounded timestamp can be a few milliseconds before the target
+    /// and would otherwise resolve back to the previous sentence.
+    private func seekToTargetSegment(
         _ segment: SentenceSegment,
         completion: (@Sendable () -> Void)? = nil
     ) {
@@ -1726,7 +1743,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             startShadowingPause(duration: pauseDuration) { [weak self] in
                 guard let self = self else { return }
                 self.currentRepeatCount += 1
-                self.seek(to: segment.startTime) {
+                self.seekToTargetSegment(segment) {
                     Task { @MainActor [weak self] in
                         self?.play()
                     }
@@ -1734,7 +1751,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         } else {
             currentRepeatCount += 1
-            seek(to: segment.startTime)
+            seekToTargetSegment(segment)
         }
     }
 
@@ -1882,11 +1899,29 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 // One 60 Hz UI frame plus a small decoder rounding margin.
                 // This is deliberately far below a meaningful subtitle offset.
                 let earlySeekTolerance = 0.025
+                // A backend may finish an asynchronous seek before its next
+                // time callback has caught up.  In that short window it can
+                // report the previous sentence's timestamp (this is common
+                // when pressing Next near a sentence boundary).  Keep the
+                // explicitly selected sentence active while the decoder is
+                // still before its start; otherwise the stale callback would
+                // immediately select the previous sentence again.
+                if time < target.startTime - earlySeekTolerance {
+                    if activeSegmentIndex != targetIndex {
+                        activeSegmentIndex = targetIndex
+                    }
+                    return
+                }
                 if time >= target.startTime - earlySeekTolerance, time < target.endTime {
                     if activeSegmentIndex != targetIndex {
                         activeSegmentIndex = targetIndex
                     }
-                    if explicitSelection.hasCompletedSeek, time >= target.startTime {
+                    // Keep a small settling window after the target is
+                    // reached.  It prevents a late, queued pre-seek time
+                    // callback from undoing the user's explicit selection.
+                    let settleTolerance = 0.08
+                    if explicitSelection.hasCompletedSeek,
+                       time >= target.startTime + settleTolerance {
                         explicitSegmentSelection = nil
                     }
                     return
@@ -1975,7 +2010,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         currentRepeatCount = 1
         ensureSegmentVisibleInPrimaryViewport(at: index)
         updateSecondaryViewportForActiveSegment(force: true)
-        seekToExplicitlySelectedSegment(seg)
+        seekToTargetSegment(seg)
     }
 
     public func jumpToSegment(id: UUID) {

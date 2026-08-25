@@ -97,6 +97,46 @@ final class SentenceLibraryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: previewURL.path))
     }
 
+    func testEntriesCanFilterBySourceAndSortByImportTime() throws {
+        let library = try store.createLibrary(name: "来源筛选")
+        let first = SentenceLibraryEntry(
+            originalText: "first",
+            translation: "",
+            sourceMediaName: "lesson-a.mp4",
+            sourceMediaPath: "/lesson-a.mp4",
+            startTime: 0,
+            endTime: 1,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let second = SentenceLibraryEntry(
+            originalText: "second",
+            translation: "",
+            sourceMediaName: "lesson-b.mp4",
+            sourceMediaPath: "/lesson-b.mp4",
+            startTime: 1,
+            endTime: 2,
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        try store.add(entries: [first, second], previewData: [:], to: library.id)
+
+        XCTAssertEqual(
+            try store.entries(libraryID: library.id, sourceMediaName: "lesson-a.mp4").map(\.id),
+            [first.id]
+        )
+        XCTAssertEqual(
+            try store.entries(libraryID: library.id, sortOrder: .oldestFirst).map(\.id),
+            [first.id, second.id]
+        )
+        XCTAssertEqual(
+            try store.entries(libraryID: library.id, sortOrder: .newestFirst).map(\.id),
+            [second.id, first.id]
+        )
+        XCTAssertEqual(
+            try store.sourceMediaNames(libraryID: library.id),
+            ["lesson-a.mp4", "lesson-b.mp4"]
+        )
+    }
+
     func testExportedPackageCanBeImportedByAnotherStore() throws {
         let library = try store.createLibrary(name: "可携带句库")
         let entry = SentenceLibraryEntry(

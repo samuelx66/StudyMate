@@ -424,6 +424,193 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         ))
     }
 
+    /// 导出句库中已经独立保存的 M4A 片段。这里不再读取原始音视频，
+    /// 仅对句库内的 AAC 文件做一次封装并写入来源标签，同时生成对应 LRC。
+    public func exportLibraryEntriesIndividually(
+        entries: [SentenceLibraryEntry],
+        mediaURLs: [UUID: URL],
+        destinationDirectory: URL,
+        baseName: String,
+        album: String,
+        artist: String,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
+    ) throws -> SegmentMediaExportResult {
+        let ordered = entries.filter { mediaURLs[$0.id] != nil }
+        guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
+        let exportDirectory = try createUniqueDirectory(
+            in: destinationDirectory,
+            preferredName: "\(sanitizedFileName(baseName))-句库逐句导出"
+        )
+
+        do {
+            let total = ordered.count
+            for (offset, entry) in ordered.enumerated() {
+                try Task.checkCancellation()
+                guard let sourceURL = mediaURLs[entry.id] else {
+                    throw SegmentMediaExportError.ffmpegFailed("缺少句子音频：\(entry.id.uuidString)")
+                }
+                let fileBase = "\(sanitizedFileName(baseName))-\(String(format: "%04d", offset + 1))"
+                let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("m4a")
+                let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
+                progress(SegmentMediaExportProgress(
+                    fraction: Double(offset) / Double(total),
+                    completedItems: offset,
+                    totalItems: total,
+                    currentItem: fileBase,
+                    phase: "导出句库音频"
+                ))
+                try exportTaggedCopy(
+                    sourceURL: sourceURL,
+                    outputURL: audioURL,
+                    album: album,
+                    artist: artist,
+                    duration: max(0.05, entry.endTime - entry.startTime),
+                    progress: { fraction in
+                        progress(SegmentMediaExportProgress(
+                            fraction: (Double(offset) + fraction) / Double(total),
+                            completedItems: offset,
+                            totalItems: total,
+                            currentItem: fileBase,
+                            phase: "导出句库音频"
+                        ))
+                    }
+                )
+                let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+                    segments: [librarySubtitleSegment(entry, index: offset + 1)],
+                    title: fileBase
+                )
+                try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+                progress(SegmentMediaExportProgress(
+                    fraction: Double(offset + 1) / Double(total),
+                    completedItems: offset + 1,
+                    totalItems: total,
+                    currentItem: fileBase,
+                    phase: "写入字幕"
+                ))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: exportDirectory)
+            throw error
+        }
+
+        return SegmentMediaExportResult(
+            location: exportDirectory,
+            audioFileCount: ordered.count,
+            subtitleFileCount: ordered.count
+        )
+    }
+
+    /// 将句库中的多个独立片段无间隙合并为一个带 AAC 编码和来源标签的 M4A，
+    /// 再按同一顺序生成连续时间轴 LRC。
+    public func exportLibraryEntriesMerged(
+        entries: [SentenceLibraryEntry],
+        mediaURLs: [UUID: URL],
+        outputAudioURL: URL,
+        album: String,
+        artist: String,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
+    ) throws -> SegmentMediaExportResult {
+        let ordered = entries.filter { mediaURLs[$0.id] != nil }
+        guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
+        let outputURL = outputAudioURL.deletingPathExtension().appendingPathExtension("m4a")
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let totalDuration = max(0.05, ordered.reduce(0) { $0 + max(0.05, $1.endTime - $1.startTime) })
+        progress(SegmentMediaExportProgress(
+            fraction: 0,
+            completedItems: 0,
+            totalItems: 1,
+            currentItem: outputURL.lastPathComponent,
+            phase: "合并句库音频"
+        ))
+
+        do {
+            if ordered.count == 1, let sourceURL = mediaURLs[ordered[0].id] {
+                try exportTaggedCopy(
+                    sourceURL: sourceURL,
+                    outputURL: outputURL,
+                    album: album,
+                    artist: artist,
+                    duration: totalDuration,
+                    progress: { fraction in
+                        progress(SegmentMediaExportProgress(
+                            fraction: fraction * 0.9,
+                            completedItems: 0,
+                            totalItems: 1,
+                            currentItem: outputURL.lastPathComponent,
+                            phase: "导出句库音频"
+                        ))
+                    }
+                )
+            } else {
+                let temporaryDirectory = try makeTemporaryDirectory()
+                defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+                let filterURL = temporaryDirectory.appendingPathComponent("library-concat.filter")
+                var filter = ""
+                for index in ordered.indices {
+                    filter += "[\(index):a:0]asetpts=PTS-STARTPTS[a\(index)];\n"
+                }
+                let labels = ordered.indices.map { "[a\($0)]" }.joined()
+                filter += "\(labels)concat=n=\(ordered.count):v=0:a=1[out]\n"
+                try filter.write(to: filterURL, atomically: true, encoding: .utf8)
+                var arguments: [String] = []
+                for entry in ordered {
+                    guard let sourceURL = mediaURLs[entry.id] else {
+                        throw SegmentMediaExportError.ffmpegFailed("缺少句子音频：\(entry.id.uuidString)")
+                    }
+                    arguments += ["-i", sourceURL.path]
+                }
+                arguments += [
+                    "-/filter_complex", filterURL.path,
+                    "-map", "[out]",
+                    "-vn",
+                    "-codec:a", "aac",
+                    "-b:a", "192k",
+                    "-metadata", "album=\(album)",
+                    "-metadata", "artist=\(artist)",
+                    "-movflags", "+faststart",
+                    outputURL.path
+                ]
+                try runFFmpeg(
+                    arguments: arguments,
+                    duration: totalDuration,
+                    progress: { fraction in
+                        progress(SegmentMediaExportProgress(
+                            fraction: fraction * 0.9,
+                            completedItems: 0,
+                            totalItems: 1,
+                            currentItem: outputURL.lastPathComponent,
+                            phase: "合并句库音频"
+                        ))
+                    }
+                )
+            }
+
+            let subtitleSegments = ordered.enumerated().map { librarySubtitleSegment($0.element, index: $0.offset + 1) }
+            let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+                segments: subtitleSegments,
+                title: outputURL.deletingPathExtension().lastPathComponent
+            )
+            let subtitleURL = outputURL.deletingPathExtension().appendingPathExtension("lrc")
+            try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: outputURL.deletingPathExtension().appendingPathExtension("lrc"))
+            throw error
+        }
+
+        progress(SegmentMediaExportProgress(
+            fraction: 1,
+            completedItems: 1,
+            totalItems: 1,
+            currentItem: outputURL.lastPathComponent,
+            phase: "写入字幕"
+        ))
+        return SegmentMediaExportResult(location: outputURL, audioFileCount: 1, subtitleFileCount: 1)
+    }
+
     private func exportAudioRange(
         mediaURL: URL,
         segment: SentenceSegment,
@@ -443,6 +630,42 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 outputURL.path
             ],
             duration: max(0.05, segment.duration),
+            progress: progress
+        )
+    }
+
+    private func librarySubtitleSegment(_ entry: SentenceLibraryEntry, index: Int) -> SentenceSegment {
+        SentenceSegment(
+            id: entry.id,
+            index: index,
+            startTime: 0,
+            endTime: max(0.05, entry.endTime - entry.startTime),
+            text: entry.originalText,
+            translation: entry.translation,
+            note: entry.note
+        )
+    }
+
+    private func exportTaggedCopy(
+        sourceURL: URL,
+        outputURL: URL,
+        album: String,
+        artist: String,
+        duration: Double,
+        progress: @escaping @Sendable (Double) -> Void
+    ) throws {
+        try runFFmpeg(
+            arguments: [
+                "-i", sourceURL.path,
+                "-map", "0:a:0",
+                "-vn",
+                "-codec:a", "copy",
+                "-metadata", "album=\(album)",
+                "-metadata", "artist=\(artist)",
+                "-movflags", "+faststart",
+                outputURL.path
+            ],
+            duration: duration,
             progress: progress
         )
     }

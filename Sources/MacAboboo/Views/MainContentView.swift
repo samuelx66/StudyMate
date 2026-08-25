@@ -4,9 +4,11 @@ import UniformTypeIdentifiers
 
 /// 主视窗内容容器（波形图置顶、视频视窗自动扩展占满剩余空间、底部控制栏、可自由调整窗口大小）
 public struct MainContentView: View {
-    /// 所有工作区面板共用的过渡参数，保证波形图、断句列表和播放列表的
-    /// 显示/隐藏节奏一致。列表仍从右侧进入，波形图仍从顶部进入。
+    /// 波形图、字幕编辑区和断句列表使用的过渡参数。
     private static let workspacePanelAnimation = Animation.easeInOut(duration: 0.22)
+    /// 播放列表的滑入/滑出速度为原来的 50%：时长从 0.22 秒加倍到 0.44 秒。
+    private static let playlistPanelAnimationDuration: Double = 0.44
+    private static let playlistPanelAnimation = Animation.easeInOut(duration: playlistPanelAnimationDuration)
 
     private static func slideAndFadeTransition(from edge: Edge) -> AnyTransition {
         .asymmetric(
@@ -43,6 +45,13 @@ public struct MainContentView: View {
     
     @State private var isSidebarVisible: Bool = true
     @State private var isPlaylistVisible: Bool = false
+    /// 播放列表的挂载状态与显示状态分开：收回动画完成后才卸载内容，避免
+    /// SwiftUI 在动画中途直接销毁面板；同时也让隐藏状态不再保留列表的后台任务。
+    @State private var isPlaylistMounted: Bool = false
+    /// 右侧抽屉的展开比例。面板右边缘始终固定，比例变化只改变左边界的位置，
+    /// 因而得到 IINA 同款的实体侧栏滑入/滑出效果，而不是淡入淡出。
+    @State private var playlistRevealProgress: CGFloat = 0
+    @State private var playlistAnimationToken = UUID()
     @State private var isWaveformsVisible: Bool = true
     @State private var isSubtitleEditVisible: Bool = false
     @State private var isDropTargeted: Bool = false
@@ -274,9 +283,7 @@ public struct MainContentView: View {
                 
                 // 5. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
                 Button(action: {
-                    withAnimation(Self.workspacePanelAnimation) {
-                        isPlaylistVisible.toggle()
-                    }
+                    togglePlaylist()
                 }) {
                     Image(systemName: "music.note.list")
                 }
@@ -369,19 +376,30 @@ public struct MainContentView: View {
     
     @ViewBuilder
     private var playlistOverlay: some View {
-        if isPlaylistVisible {
+        if isPlaylistMounted {
             ZStack(alignment: .topTrailing) {
                 // 点击播放列表之外的任意内容区域时自动收起，并阻止点击穿透到底层。
                 Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         hidePlaylist()
                     }
-                    .transition(.opacity)
 
                 playlistPanel
-                    .transition(Self.slideAndFadeTransition(from: .trailing))
+                    // 固定右边缘、动画左边界：这是 IINA 播放列表的抽屉式展开方式。
+                    // 外层窄框负责裁剪，内部面板仍保持完整宽度，因此材质、阴影和内容
+                    // 都不会发生缩放或淡入淡出。
+                    .frame(
+                        width: max(1, CGFloat(playlistWidth) * playlistRevealProgress),
+                        alignment: .trailing
+                    )
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .clipped()
+                    .zIndex(1)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .clipped()
         }
     }
 
@@ -399,8 +417,43 @@ public struct MainContentView: View {
     }
 
     private func hidePlaylist() {
-        withAnimation(Self.workspacePanelAnimation) {
-            isPlaylistVisible = false
+        guard isPlaylistMounted else { return }
+
+        isPlaylistVisible = false
+        let token = UUID()
+        playlistAnimationToken = token
+        withAnimation(Self.playlistPanelAnimation) {
+            playlistRevealProgress = 0
+        }
+
+        // 等完整收回后再卸载列表。这样列表内容向右离开视口的过程不会被条件渲染
+        // 提前截断，同时隐藏后会释放列表的滚动与文件存在性检查任务。
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.playlistPanelAnimationDuration) {
+            guard token == playlistAnimationToken,
+                  !isPlaylistVisible,
+                  playlistRevealProgress < 0.01 else { return }
+            isPlaylistMounted = false
+        }
+    }
+
+    private func togglePlaylist() {
+        if isPlaylistVisible {
+            hidePlaylist()
+            return
+        }
+
+        let token = UUID()
+        playlistAnimationToken = token
+        isPlaylistVisible = true
+        isPlaylistMounted = true
+        // 先以零宽度挂载在右边缘，下一帧再启动动画；否则 SwiftUI 会在插入时
+        // 直接以最终宽度布局，无法得到“从右向左拉开”的连续左边界。
+        playlistRevealProgress = 0
+        DispatchQueue.main.async {
+            guard token == playlistAnimationToken, isPlaylistVisible else { return }
+            withAnimation(Self.playlistPanelAnimation) {
+                playlistRevealProgress = 1
+            }
         }
     }
 

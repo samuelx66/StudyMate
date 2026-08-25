@@ -10,6 +10,8 @@ public struct SentenceLibraryView: View {
     @State private var searchText = ""
     @State private var dateFilter: SentenceLibraryDateFilter = .all
     @State private var selectedDate = Date()
+    @State private var selectedSource = ""
+    @State private var sortOrder: SentenceLibrarySortOrder = .newestFirst
     @State private var selectedEntryIDs: Set<UUID> = []
     @State private var selectedEntryID: UUID?
     @State private var previewRequest: SentencePreviewRequest?
@@ -24,6 +26,17 @@ public struct SentenceLibraryView: View {
 
     private var selectedEntry: SentenceLibraryEntry? {
         manager.entries.first { $0.id == selectedEntryID }
+    }
+
+    private var selectedVisibleEntries: [SentenceLibraryEntry] {
+        manager.entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var selectedEntryPosition: Int? {
+        let id = libraryPlayer.currentEntry?.id ?? selectedEntryID
+        guard let id,
+              let index = manager.entries.firstIndex(where: { $0.id == id }) else { return nil }
+        return index + 1
     }
 
     public var body: some View {
@@ -94,22 +107,63 @@ public struct SentenceLibraryView: View {
                             .frame(width: 120)
                     }
 
+                    Picker("", selection: $selectedSource) {
+                        Text(lang.text("全部来源", "All Sources")).tag("")
+                        ForEach(manager.availableSources, id: \.self) { source in
+                            Text(source).tag(source)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+
+                    Picker("", selection: $sortOrder) {
+                        Text(lang.text("最新入库", "Newest First")).tag(SentenceLibrarySortOrder.newestFirst)
+                        Text(lang.text("最早入库", "Oldest First")).tag(SentenceLibrarySortOrder.oldestFirst)
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+
                     if !manager.entries.isEmpty {
                         Button { selectAllVisibleEntries() } label: {
                             Label(lang.text("全选", "Select All"), systemImage: "checkmark.circle")
                         }
-                        .disabled(selectedEntryIDs.count == manager.entries.count)
+                        .disabled(selectedEntryIDs.intersection(Set(manager.entries.map(\.id))).count == manager.entries.count)
 
                         Button { invertVisibleEntrySelection() } label: {
                             Label(lang.text("反选", "Invert Selection"), systemImage: "arrow.triangle.2.circlepath")
                         }
                     }
 
-                    if !selectedEntryIDs.isEmpty {
+                    if !selectedVisibleEntries.isEmpty {
+                        Menu {
+                            Button {
+                                chooseIndividualLibraryExportDestination()
+                            } label: {
+                                Label(lang.text("逐句导出 M4A＋LRC…", "Export Separate M4A + LRC…"), systemImage: "rectangle.split.3x1")
+                            }
+                            Button {
+                                chooseMergedLibraryExportDestination()
+                            } label: {
+                                Label(lang.text("合并导出 M4A＋LRC…", "Export Merged M4A + LRC…"), systemImage: "arrow.triangle.merge")
+                            }
+                        } label: {
+                            Label(lang.text("导出（\(selectedVisibleEntries.count)）", "Export (\(selectedVisibleEntries.count))"), systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(manager.isWorking || selectedVisibleEntries.isEmpty)
+
                         Button(role: .destructive) { deleteSelectedEntries() } label: {
-                            Label(lang.text("删除（\(selectedEntryIDs.count)）", "Delete (\(selectedEntryIDs.count))"), systemImage: "trash")
+                            Label(lang.text("删除（\(selectedVisibleEntries.count)）", "Delete (\(selectedVisibleEntries.count))"), systemImage: "trash")
                         }
                         .disabled(manager.isWorking)
+                    }
+
+                    if let progress = manager.operationProgress {
+                        ProgressView(value: progress.fraction)
+                            .frame(width: 130)
+                        Text(progress.phase)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 .padding(10)
@@ -120,7 +174,12 @@ public struct SentenceLibraryView: View {
                 SentenceLibraryPlaybackBar(
                     player: libraryPlayer,
                     selectedEntry: selectedEntry,
-                    selectedMediaURL: selectedEntry.flatMap(manager.mediaURL(for:))
+                    selectedMediaURL: selectedEntry.flatMap(manager.mediaURL(for:)),
+                    currentPosition: selectedEntryPosition,
+                    totalCount: manager.entries.count,
+                    onModeChanged: { mode in
+                        libraryPlayer.setPlaybackMode(mode)
+                    }
                 )
 
                 Divider()
@@ -134,15 +193,15 @@ public struct SentenceLibraryView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(manager.entries) { entry in
+                            ForEach(Array(manager.entries.enumerated()), id: \.element.id) { offset, entry in
                                 SentenceLibraryEntryRow(
                                     entry: entry,
+                                    number: offset + 1,
                                     previewURL: manager.previewURL(for: entry),
                                     isActive: selectedEntryID == entry.id,
                                     isChecked: selectedEntryIDs.contains(entry.id),
                                     onToggleCheck: { toggleSelection(entry.id) },
-                                    onSelect: { selectedEntryID = entry.id },
-                                    onPlay: {
+                                    onSelect: {
                                         selectedEntryID = entry.id
                                         libraryPlayer.play(entry, mediaURL: manager.mediaURL(for: entry))
                                     },
@@ -163,33 +222,86 @@ public struct SentenceLibraryView: View {
         }
         .frame(minWidth: 820, minHeight: 560)
         .onAppear {
-            manager.updateFilter(searchText: searchText, dateFilter: dateFilter, selectedDate: selectedDate)
+            manager.updateFilter(
+                searchText: searchText,
+                dateFilter: dateFilter,
+                selectedDate: selectedDate,
+                sourceMediaName: selectedSource,
+                sortOrder: sortOrder
+            )
+            refreshPlayerPlaylist()
         }
         .onDisappear {
             libraryPlayer.stop()
         }
         .onChange(of: searchText) { _, value in
-            manager.updateFilter(searchText: value, dateFilter: dateFilter, selectedDate: selectedDate)
+            manager.updateFilter(
+                searchText: value,
+                dateFilter: dateFilter,
+                selectedDate: selectedDate,
+                sourceMediaName: selectedSource,
+                sortOrder: sortOrder
+            )
             selectedEntryIDs.formIntersection(manager.entries.map(\.id))
         }
         .onChange(of: dateFilter) { _, value in
-            manager.updateFilter(searchText: searchText, dateFilter: value, selectedDate: selectedDate)
+            manager.updateFilter(
+                searchText: searchText,
+                dateFilter: value,
+                selectedDate: selectedDate,
+                sourceMediaName: selectedSource,
+                sortOrder: sortOrder
+            )
             selectedEntryIDs.formIntersection(manager.entries.map(\.id))
         }
         .onChange(of: selectedDate) { _, value in
             guard dateFilter == .specificDay else { return }
-            manager.updateFilter(searchText: searchText, dateFilter: dateFilter, selectedDate: value)
+            manager.updateFilter(
+                searchText: searchText,
+                dateFilter: dateFilter,
+                selectedDate: value,
+                sourceMediaName: selectedSource,
+                sortOrder: sortOrder
+            )
+        }
+        .onChange(of: selectedSource) { _, value in
+            manager.updateFilter(
+                searchText: searchText,
+                dateFilter: dateFilter,
+                selectedDate: selectedDate,
+                sourceMediaName: value,
+                sortOrder: sortOrder
+            )
+            selectedEntryIDs.formIntersection(manager.entries.map(\.id))
+        }
+        .onChange(of: sortOrder) { _, value in
+            manager.updateFilter(
+                searchText: searchText,
+                dateFilter: dateFilter,
+                selectedDate: selectedDate,
+                sourceMediaName: selectedSource,
+                sortOrder: value
+            )
         }
         .onChange(of: manager.currentLibraryID) { _, _ in
             selectedEntryIDs.removeAll()
             selectedEntryID = nil
+            selectedSource = ""
+            sortOrder = .newestFirst
             libraryPlayer.stop()
+            refreshPlayerPlaylist()
         }
         .onChange(of: manager.entries.map(\.id)) { _, currentIDs in
+            refreshPlayerPlaylist()
             selectedEntryIDs.formIntersection(currentIDs)
             if let selectedEntryID, !currentIDs.contains(selectedEntryID) {
                 self.selectedEntryID = nil
                 libraryPlayer.stop()
+            }
+        }
+        .onChange(of: libraryPlayer.currentEntry?.id) { _, id in
+            if let id, manager.entries.contains(where: { $0.id == id }) {
+                selectedEntryID = id
             }
         }
         .sheet(isPresented: $showCreateSheet) {
@@ -242,7 +354,8 @@ public struct SentenceLibraryView: View {
     }
 
     private func deleteSelectedEntries() {
-        let ids = selectedEntryIDs
+        let ids = selectedEntryIDs.intersection(Set(manager.entries.map(\.id)))
+        guard !ids.isEmpty else { return }
         let removesActiveEntry = selectedEntryID.map(ids.contains) ?? false
         Task {
             do {
@@ -254,6 +367,61 @@ public struct SentenceLibraryView: View {
                 }
             } catch {
                 notice = SentenceLibraryNotice(title: lang.text("删除失败", "Delete Failed"), message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func refreshPlayerPlaylist() {
+        let mediaURLs = Dictionary(uniqueKeysWithValues: manager.entries.compactMap { entry in
+            manager.mediaURL(for: entry).map { (entry.id, $0) }
+        })
+        libraryPlayer.setPlaylist(entries: manager.entries, mediaURLs: mediaURLs)
+    }
+
+    private func chooseIndividualLibraryExportDestination() {
+        let entries = selectedVisibleEntries
+        guard !entries.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = lang.text("选择", "Choose")
+        panel.message = lang.text("选择逐句 M4A 和 LRC 的保存位置", "Choose where to save separate M4A and LRC files")
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        performLibraryExport(entries: entries, merged: false, destinationURL: directory)
+    }
+
+    private func chooseMergedLibraryExportDestination() {
+        let entries = selectedVisibleEntries
+        guard !entries.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "m4a") ?? .audio]
+        panel.nameFieldStringValue = (manager.currentLibrary?.name ?? "句库") + "-已选句子.m4a"
+        panel.message = lang.text("将生成一个 AAC 编码的 M4A 和一个同名 LRC 字幕", "One AAC-encoded M4A and one matching LRC subtitle will be created")
+        guard panel.runModal() == .OK, let audioURL = panel.url else { return }
+        performLibraryExport(entries: entries, merged: true, destinationURL: audioURL)
+    }
+
+    private func performLibraryExport(
+        entries: [SentenceLibraryEntry],
+        merged: Bool,
+        destinationURL: URL
+    ) {
+        Task {
+            do {
+                let result = try await manager.exportEntries(
+                    entries,
+                    merged: merged,
+                    destinationURL: destinationURL
+                )
+                notice = SentenceLibraryNotice(
+                    title: lang.text("导出完成", "Export Complete"),
+                    message: result.location.path
+                )
+            } catch {
+                notice = SentenceLibraryNotice(title: lang.text("导出失败", "Export Failed"), message: error.localizedDescription)
             }
         }
     }
@@ -300,12 +468,12 @@ public struct SentenceLibraryView: View {
 private struct SentenceLibraryEntryRow: View {
     @ObservedObject private var lang = LanguageManager.shared
     let entry: SentenceLibraryEntry
+    let number: Int
     let previewURL: URL?
     let isActive: Bool
     let isChecked: Bool
     let onToggleCheck: () -> Void
     let onSelect: () -> Void
-    let onPlay: () -> Void
     let onPreview: () -> Void
 
     private static let dateFormatter: DateFormatter = {
@@ -319,9 +487,14 @@ private struct SentenceLibraryEntryRow: View {
         HStack(alignment: .top, spacing: 12) {
             Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggleCheck() }))
                 .toggleStyle(.checkbox)
-                .labelsHidden()
+            .labelsHidden()
 
             HStack(alignment: .top, spacing: 12) {
+                Text("#\(number)")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .leading)
+
                 Button(action: onPreview) {
                     Group {
                         if let previewURL, let image = NSImage(contentsOf: previewURL) {
@@ -377,7 +550,7 @@ private struct SentenceLibraryEntryRow: View {
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
-            .onTapGesture(count: 2, perform: onPlay)
+            .onTapGesture(count: 2, perform: onSelect)
             .onTapGesture(count: 1, perform: onSelect)
         }
         .padding(10)
@@ -395,6 +568,9 @@ private struct SentenceLibraryPlaybackBar: View {
     @ObservedObject var player: SentenceLibraryPlayer
     let selectedEntry: SentenceLibraryEntry?
     let selectedMediaURL: URL?
+    let currentPosition: Int?
+    let totalCount: Int
+    let onModeChanged: (SentenceLibraryPlaybackMode) -> Void
 
     private var displayedEntry: SentenceLibraryEntry? {
         player.currentEntry ?? selectedEntry
@@ -429,6 +605,22 @@ private struct SentenceLibraryPlaybackBar: View {
                 Text(formatTime(player.duration))
                     .monospacedDigit()
                     .frame(width: 44, alignment: .leading)
+
+                Text("#\(currentPosition.map(String.init) ?? "—")/\(totalCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 58, alignment: .trailing)
+
+                Picker("", selection: Binding(
+                    get: { player.playbackMode },
+                    set: { onModeChanged($0) }
+                )) {
+                    ForEach(SentenceLibraryPlaybackMode.allCases) { mode in
+                        Text(lang.text(mode.chineseName, mode.englishName)).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 92)
 
                 Text(displayedEntry?.originalText ?? lang.text("单击选择句子，双击即可播放", "Click to select, double-click to play"))
                     .font(.caption)

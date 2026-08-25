@@ -9,6 +9,9 @@ public final class SentenceLibraryManager: ObservableObject {
     @Published public private(set) var libraries: [SentenceLibraryDescriptor] = []
     @Published public private(set) var currentLibraryID: UUID?
     @Published public private(set) var entries: [SentenceLibraryEntry] = []
+    @Published public private(set) var availableSources: [String] = []
+    @Published public private(set) var selectedSource = ""
+    @Published public private(set) var sortOrder: SentenceLibrarySortOrder = .newestFirst
     @Published public private(set) var isWorking = false
     @Published public private(set) var operationProgress: SentenceLibraryOperationProgress?
     @Published public private(set) var lastErrorMessage: String?
@@ -54,17 +57,24 @@ public final class SentenceLibraryManager: ObservableObject {
         guard libraries.contains(where: { $0.id == id }) else { return }
         currentLibraryID = id
         defaults.set(id.uuidString, forKey: currentLibraryKey)
+        selectedSource = ""
+        availableSources = []
+        reloadSources(for: id)
         reloadEntries()
     }
 
     public func updateFilter(
         searchText: String,
         dateFilter: SentenceLibraryDateFilter,
-        selectedDate: Date? = nil
+        selectedDate: Date? = nil,
+        sourceMediaName: String = "",
+        sortOrder: SentenceLibrarySortOrder = .newestFirst
     ) {
         self.searchText = searchText
         self.dateFilter = dateFilter
         if let selectedDate { selectedFilterDate = selectedDate }
+        self.selectedSource = sourceMediaName
+        self.sortOrder = sortOrder
         reloadEntries(debounceNanoseconds: 150_000_000)
     }
 
@@ -78,6 +88,8 @@ public final class SentenceLibraryManager: ObservableObject {
         let filterDate = selectedFilterDate
         let lowerBound = dateFilter.lowerBound(selectedDate: filterDate)
         let upperBound = dateFilter.upperBound(selectedDate: filterDate)
+        let source = selectedSource
+        let order = sortOrder
         queryTask = Task { [weak self, store] in
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
@@ -89,14 +101,18 @@ public final class SentenceLibraryManager: ObservableObject {
                         libraryID: libraryID,
                         searchText: query,
                         createdAfter: lowerBound,
-                        createdBefore: upperBound
+                        createdBefore: upperBound,
+                        sourceMediaName: source,
+                        sortOrder: order
                     )
                 }
             }.value
             guard !Task.isCancelled,
                   let self,
                   self.currentLibraryID == libraryID,
-                  self.searchText == query else { return }
+                  self.searchText == query,
+                  self.selectedSource == source,
+                  self.sortOrder == order else { return }
             switch result {
             case let .success(foundEntries):
                 self.entries = foundEntries
@@ -264,6 +280,84 @@ public final class SentenceLibraryManager: ObservableObject {
         return store.mediaURL(for: entry, libraryID: libraryID)
     }
 
+    /// 将当前句库中筛选后可见的句子导出为 M4A 与 LRC。媒体文件均来自
+    /// `.mablib/Media`，因此导出不依赖当前主窗口是否还打开原始媒体。
+    public func exportEntries(
+        _ entries: [SentenceLibraryEntry],
+        merged: Bool,
+        destinationURL: URL,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
+    ) async throws -> SegmentMediaExportResult {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        // 调用方传入的顺序就是当前筛选结果在界面上的顺序；导出时保留它，
+        // 这样“最新入库”排序下的合并音频与用户看到的列表一致。
+        let ordered = entries
+        guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
+
+        var mediaURLs: [UUID: URL] = [:]
+        for entry in ordered {
+            guard let url = store.mediaURL(for: entry, libraryID: libraryID) else {
+                throw SentenceLibraryError.database("句库中缺少句子音频：\(entry.originalText.isEmpty ? entry.id.uuidString : entry.originalText)")
+            }
+            mediaURLs[entry.id] = url
+        }
+
+        let sourceTag: String = {
+            let names = Set(ordered.map(\.sourceMediaName).filter { !$0.isEmpty })
+            if names.count == 1 { return names.first ?? "MacAboboo" }
+            return names.isEmpty ? "MacAboboo" : "多个来源"
+        }()
+
+        isWorking = true
+        let generation = UUID()
+        operationGeneration = generation
+        operationProgress = SentenceLibraryOperationProgress(fraction: 0, phase: "准备导出句库")
+        defer {
+            if operationGeneration == generation {
+                isWorking = false
+                operationProgress = nil
+            }
+        }
+        let report: @Sendable (SegmentMediaExportProgress) -> Void = { [weak self] progress in
+            Task { @MainActor [weak self] in
+                guard let self, self.operationGeneration == generation else { return }
+                self.operationProgress = SentenceLibraryOperationProgress(
+                    fraction: progress.fraction,
+                    phase: progress.phase,
+                    currentItem: progress.currentItem
+                )
+            }
+        }
+
+        return try await Task.detached(priority: .userInitiated) {
+            if merged {
+                return try SegmentMediaExporter.shared.exportLibraryEntriesMerged(
+                    entries: ordered,
+                    mediaURLs: mediaURLs,
+                    outputAudioURL: destinationURL,
+                    album: sourceTag,
+                    artist: sourceTag,
+                    progress: { value in
+                        report(value)
+                        progress(value)
+                    }
+                )
+            }
+            return try SegmentMediaExporter.shared.exportLibraryEntriesIndividually(
+                entries: ordered,
+                mediaURLs: mediaURLs,
+                destinationDirectory: destinationURL,
+                baseName: sourceTag,
+                album: sourceTag,
+                artist: sourceTag,
+                progress: { value in
+                    report(value)
+                    progress(value)
+                }
+            )
+        }.value
+    }
+
     private func reloadLibraries(createDefaultIfNeeded: Bool) async {
         let available = await Task.detached(priority: .utility) { [store] in
             var result = store.listLibraries()
@@ -284,8 +378,23 @@ public final class SentenceLibraryManager: ObservableObject {
         }
         if let currentLibraryID {
             defaults.set(currentLibraryID.uuidString, forKey: currentLibraryKey)
+            reloadSources(for: currentLibraryID)
         }
         reloadEntries()
+    }
+
+    private func reloadSources(for libraryID: UUID) {
+        Task { [weak self, store] in
+            let result = await Task.detached(priority: .utility) {
+                (try? store.sourceMediaNames(libraryID: libraryID)) ?? []
+            }.value
+            guard let self, self.currentLibraryID == libraryID else { return }
+            self.availableSources = result
+            if !self.selectedSource.isEmpty, !result.contains(self.selectedSource) {
+                self.selectedSource = ""
+                self.reloadEntries()
+            }
+        }
     }
 }
 

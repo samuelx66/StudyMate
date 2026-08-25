@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import XCTest
 @testable import MacAbobooKit
 
@@ -108,10 +109,39 @@ final class PlaybackEngineTests: XCTestCase {
         await engine.removeFromPlaybackHistory(mediaURL)
         XCTAssertTrue(history.entries.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
 
         engine.persistCurrentProject(includeWaveform: true)
         projects.flush()
         XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
+    }
+
+    func testRemovingPCMCacheDeletesCurrentAndLegacyFiles() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("cache-source.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let cacheDirectory = directory.appendingPathComponent("PCMCache", isDirectory: true)
+        let legacyDirectory = directory.appendingPathComponent("LegacyPCM", isDirectory: true)
+        let extractor = AudioPCMExtractor(cacheDirectory: cacheDirectory, legacyCacheDirectory: legacyDirectory)
+        let cacheURLs = try pcmCacheURLs(
+            for: mediaURL,
+            cacheDirectory: cacheDirectory,
+            legacyDirectory: legacyDirectory
+        )
+        for cacheURL in cacheURLs {
+            try Data("pcm-cache".utf8).write(to: cacheURL, options: .atomic)
+        }
+        let temporaryURL = cacheDirectory.appendingPathComponent(
+            "\(cacheURLs[0].deletingPathExtension().lastPathComponent).pcmcache.tmp-test"
+        )
+        try Data("temporary".utf8).write(to: temporaryURL, options: .atomic)
+
+        await extractor.removeCache(for: mediaURL)
+
+        XCTAssertTrue(cacheURLs.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
     }
 
     func testSegmentOperations() {
@@ -827,6 +857,102 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
+    func testContinuousRepeatDoesNotFallBackAtAdjacentSentenceStart() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("continuous-repeat-adjacent.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        native.seekResultOffset = -0.001
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 3
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0.0, endTime: 1.0),
+            SentenceSegment(index: 2, startTime: 1.0, endTime: 2.0)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // The first two endings repeat sentence 1. The backend reports a
+        // frame-rounded position just before each repeat target.
+        native.emitTime(1.0)
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+
+        native.emitTime(1.0)
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 3)
+
+        // The third ending advances naturally to the adjacent second
+        // sentence. No stale sentence-1 repeat may survive this transition.
+        native.seekResultOffset = 0
+        native.emitTime(1.0)
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 1)
+
+        // Repeating sentence 2 at its boundary must stay on sentence 2 even
+        // when the decoder reports a timestamp slightly before 1.0s.
+        native.seekResultOffset = -0.001
+        native.emitTime(2.0)
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+    }
+
+    func testNextSegmentNearBoundaryDoesNotRevertToPreviousSentenceInSingleLoop() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("single-loop-next-race.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .singleSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0.0, endTime: 0.8),
+            SentenceSegment(index: 2, startTime: 0.8, endTime: 2.0)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // Let the first sentence enter its repeat seek, then press Next
+        // before that boundary work has fully settled.  The backend reports
+        // one stale previous-sentence timestamp for the new seek, matching
+        // AVPlayer's observable callback ordering at this boundary.
+        native.emitTime(0.796)
+        native.seekResultOffset = -0.8
+        engine.nextSegment()
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertTrue(engine.isPlaying)
+
+        // Once the decoder reaches the selected sentence, single-sentence
+        // repeat must continue to refer to sentence 2, never sentence 1.
+        native.seekResultOffset = 0
+        native.emitTime(0.8)
+        native.emitTime(2.0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 0.8, accuracy: 0.001)
+    }
+
     func testStaleLoadCompletionCannotReplaceNewMediaSession() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1091,5 +1217,32 @@ final class PlaybackEngineTests: XCTestCase {
             .appendingPathComponent("MacAboboo-PlaybackTests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    private func pcmCacheURLs(
+        for mediaURL: URL,
+        cacheDirectory: URL,
+        legacyDirectory: URL
+    ) throws -> [URL] {
+        let standardizedURL = mediaURL.standardizedFileURL
+        let values = try standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fileSize = values.fileSize ?? -1
+        let modificationTime = values.contentModificationDate?.timeIntervalSince1970 ?? -1
+        let signature = [
+            "pcm-cache-v1",
+            standardizedURL.path,
+            String(fileSize),
+            String(format: "%.6f", modificationTime),
+            String(AudioPCMData.requiredSampleRate),
+            "1",
+            "f32le"
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(signature.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let filename = "\(digest).pcmcache"
+        return [cacheDirectory.appendingPathComponent(filename), legacyDirectory.appendingPathComponent(filename)]
     }
 }

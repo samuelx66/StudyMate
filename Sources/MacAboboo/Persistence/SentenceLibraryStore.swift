@@ -83,7 +83,9 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         libraryID: UUID,
         searchText: String = "",
         createdAfter: Date? = nil,
-        createdBefore: Date? = nil
+        createdBefore: Date? = nil,
+        sourceMediaName: String? = nil,
+        sortOrder: SentenceLibrarySortOrder = .newestFirst
     ) throws -> [SentenceLibraryEntry] {
         try queue.sync {
             try validateLibrary(id: libraryID)
@@ -95,13 +97,24 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 if createdAfter != nil { clauses.append("created_at >= ?") }
                 if createdBefore != nil { clauses.append("created_at < ?") }
+                if let sourceMediaName,
+                   !sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    clauses.append("source_media_name = ?")
+                }
                 let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+                let orderSQL: String
+                switch sortOrder {
+                case .newestFirst:
+                    orderSQL = "created_at DESC, rowid DESC"
+                case .oldestFirst:
+                    orderSQL = "created_at ASC, rowid ASC"
+                }
                 let sql = """
                 SELECT id, original_text, translation, note, source_media_name,
                        source_media_path, start_time, end_time, created_at, preview_filename,
                        media_filename
                 FROM entries\(whereSQL)
-                ORDER BY created_at DESC, rowid DESC;
+                ORDER BY \(orderSQL);
                 """
                 var statement: OpaquePointer?
                 try prepare(sql, db: db, statement: &statement)
@@ -121,6 +134,11 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 if let createdBefore {
                     sqlite3_bind_double(statement, position, createdBefore.timeIntervalSince1970)
+                    position += 1
+                }
+                if let sourceMediaName,
+                   !sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    bind(sourceMediaName, at: position, to: statement)
                 }
                 var result: [SentenceLibraryEntry] = []
                 while sqlite3_step(statement) == SQLITE_ROW {
@@ -138,6 +156,28 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         previewFilename: optionalText(statement, 9),
                         mediaFilename: optionalText(statement, 10)
                     ))
+                }
+                return result
+            }
+        }
+    }
+
+    /// 返回当前句库中所有不重复的来源名称，供来源筛选器使用。
+    public func sourceMediaNames(libraryID: UUID) throws -> [String] {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            return try withDatabase(libraryID: libraryID) { db in
+                var statement: OpaquePointer?
+                try prepare(
+                    "SELECT DISTINCT source_media_name FROM entries WHERE trim(source_media_name) <> '' ORDER BY source_media_name COLLATE NOCASE ASC;",
+                    db: db,
+                    statement: &statement
+                )
+                defer { sqlite3_finalize(statement) }
+                var result: [String] = []
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    let value = text(statement, 0).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty { result.append(value) }
                 }
                 return result
             }

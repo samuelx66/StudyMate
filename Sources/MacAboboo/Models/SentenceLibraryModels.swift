@@ -124,3 +124,38 @@ public enum SentenceLibraryDateFilter: String, CaseIterable, Identifiable, Senda
         }
     }
 }
+
+/// 句库列表的入库时间排序方式。句子编号由当前排序后的列表位置派生，
+/// 因此删除任意句子后不会留下断号，也不会把编号写死在句库数据里。
+public enum SentenceLibrarySortOrder: String, CaseIterable, Identifiable, Sendable {
+    case newestFirst
+    case oldestFirst
+
+    public var id: String { rawValue }
+}
+
+/// 句库试听播放模式。普通单句播放保留现有行为，另外提供单句循环和
+/// 当前筛选结果的全篇循环。
+public enum SentenceLibraryPlaybackMode: String, CaseIterable, Identifiable, Sendable {
+    case single
+    case singleLoop
+    case allLoop
+
+    public var id: String { rawValue }
+
+    public var chineseName: String {
+        switch self {
+        case .single: return "单句播放"
+        case .singleLoop: return "单句循环"
+        case .allLoop: return "全篇循环"
+        }
+    }
+
+    public var englishName: String {
+        switch self {
+        case .single: return "Play Sentence"
+        case .singleLoop: return "Loop Sentence"
+        case .allLoop: return "Loop All"
+        }
+    }
+}

@@ -9,6 +9,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
     @Published public private(set) var currentTime = 0.0
     @Published public private(set) var duration = 0.0
     @Published public private(set) var errorMessage: String?
+    @Published public private(set) var playbackMode: SentenceLibraryPlaybackMode = .single
 
     private let nativeBackend: MediaPlayerBackend
     private var extendedBackend: MediaPlayerBackend?
@@ -16,6 +17,14 @@ public final class SentenceLibraryPlayer: ObservableObject {
     private var playbackGeneration = UUID()
     private var playbackStartTime = 0.0
     private var playbackEndTime = 0.0
+    private var playlist: [PlaylistItem] = []
+    private var handledEndGeneration: UUID?
+    private var isRestartSeeking = false
+
+    private struct PlaylistItem {
+        let entry: SentenceLibraryEntry
+        let mediaURL: URL?
+    }
 
     public convenience init() {
         self.init(nativeBackend: AVFoundationPlayerBackend())
@@ -25,6 +34,18 @@ public final class SentenceLibraryPlayer: ObservableObject {
         self.nativeBackend = nativeBackend
         self.activeBackend = nativeBackend
         configureCallbacks(for: nativeBackend)
+    }
+
+    public func setPlaylist(entries: [SentenceLibraryEntry], mediaURLs: [UUID: URL]) {
+        playlist = entries.map { PlaylistItem(entry: $0, mediaURL: mediaURLs[$0.id]) }
+        if let currentEntry,
+           !playlist.contains(where: { $0.entry.id == currentEntry.id }) {
+            stop()
+        }
+    }
+
+    public func setPlaybackMode(_ mode: SentenceLibraryPlaybackMode) {
+        playbackMode = mode
     }
 
     public func play(_ entry: SentenceLibraryEntry, mediaURL: URL? = nil) {
@@ -43,6 +64,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
         duration = max(0.05, entry.endTime - entry.startTime)
         playbackStartTime = mediaURL == nil ? entry.startTime : 0
         playbackEndTime = playbackStartTime + duration
+        handledEndGeneration = nil
+        isRestartSeeking = false
         currentTime = 0
         errorMessage = nil
         isPlaying = false
@@ -89,6 +112,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
         duration = 0
         playbackStartTime = 0
         playbackEndTime = 0
+        handledEndGeneration = nil
+        isRestartSeeking = false
         isPlaying = false
         errorMessage = nil
     }
@@ -154,13 +179,14 @@ public final class SentenceLibraryPlayer: ObservableObject {
                   let backend,
                   self.activeBackend === backend,
                   self.currentEntry != nil,
+                  !self.isRestartSeeking,
                   absoluteTime.isFinite else { return }
             let relativeTime = max(0, absoluteTime - self.playbackStartTime)
             self.currentTime = min(self.duration, relativeTime)
             if absoluteTime >= self.playbackEndTime - 0.005 {
                 backend.pause()
-                self.isPlaying = false
                 self.currentTime = self.duration
+                self.handleCurrentEntryFinished()
             }
         }
         backend.onStateChanged = { [weak self, weak backend] playing in
@@ -169,12 +195,67 @@ public final class SentenceLibraryPlayer: ObservableObject {
         }
         backend.onFinished = { [weak self, weak backend] in
             guard let self, let backend, self.activeBackend === backend else { return }
-            self.isPlaying = false
+            guard !self.isRestartSeeking, self.currentTime >= self.duration - 0.05 else { return }
+            self.currentTime = self.duration
+            self.handleCurrentEntryFinished()
         }
         backend.onError = { [weak self, weak backend] _ in
             guard let self, let backend, self.activeBackend === backend else { return }
             self.isPlaying = false
             self.errorMessage = "播放这个句子时发生了解码错误。"
+        }
+    }
+
+    private func handleCurrentEntryFinished() {
+        guard let currentEntry else {
+            isPlaying = false
+            return
+        }
+        let generation = playbackGeneration
+        guard handledEndGeneration != generation else { return }
+        handledEndGeneration = generation
+
+        switch playbackMode {
+        case .single:
+            isPlaying = false
+        case .singleLoop:
+            restartCurrentEntry(entry: currentEntry)
+        case .allLoop:
+            guard !playlist.isEmpty,
+                  let index = playlist.firstIndex(where: { $0.entry.id == currentEntry.id }) else {
+                restartCurrentEntry(entry: currentEntry)
+                return
+            }
+            let next = playlist[(index + 1) % playlist.count]
+            play(next.entry, mediaURL: next.mediaURL)
+        }
+    }
+
+    private func restartCurrentEntry(entry: SentenceLibraryEntry) {
+        let mediaURL = playlist.first(where: { $0.entry.id == entry.id })?.mediaURL
+        let sourceURL = mediaURL ?? URL(fileURLWithPath: entry.sourceMediaPath)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            isPlaying = false
+            errorMessage = "找不到句子的来源媒体文件。"
+            return
+        }
+        let generation = UUID()
+        playbackGeneration = generation
+        handledEndGeneration = nil
+        isRestartSeeking = true
+        activeBackend.pause()
+        playbackStartTime = mediaURL == nil ? entry.startTime : 0
+        playbackEndTime = playbackStartTime + duration
+        currentTime = 0
+        activeBackend.seek(to: playbackStartTime) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.playbackGeneration == generation,
+                      self.currentEntry?.id == entry.id else { return }
+                self.isRestartSeeking = false
+                self.activeBackend.play()
+                self.isPlaying = true
+            }
         }
     }
 }

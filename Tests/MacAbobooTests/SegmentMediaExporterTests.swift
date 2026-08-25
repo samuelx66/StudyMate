@@ -135,6 +135,84 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertTrue(recorder.values.allSatisfy { $0.fraction >= 0 && $0.fraction <= 1 })
     }
 
+    func testLibraryEntryExportReusesIndependentClipsAndWritesLRC() async throws {
+        guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
+            throw XCTSkip("ffmpeg is required for the media export integration test")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryExportTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceURL = root.appendingPathComponent("source.wav")
+        try makeTestAudio(at: sourceURL, duration: 3.0)
+        let clipOneURL = root.appendingPathComponent("one.m4a")
+        let clipTwoURL = root.appendingPathComponent("two.m4a")
+        let clipExporter = SegmentMediaExporter(temporaryRootURL: root.appendingPathComponent("runtime-temp"))
+        try clipExporter.exportAudioClip(
+            mediaURL: sourceURL,
+            segment: SentenceSegment(index: 1, startTime: 0, endTime: 0.6),
+            outputURL: clipOneURL
+        )
+        try clipExporter.exportAudioClip(
+            mediaURL: sourceURL,
+            segment: SentenceSegment(index: 2, startTime: 1.0, endTime: 1.8),
+            outputURL: clipTwoURL
+        )
+        let first = SentenceLibraryEntry(
+            originalText: "One",
+            translation: "一",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: "/lesson.mp4",
+            startTime: 0,
+            endTime: 0.6,
+            mediaFilename: "one.m4a"
+        )
+        let second = SentenceLibraryEntry(
+            originalText: "Two",
+            translation: "二",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: "/lesson.mp4",
+            startTime: 1,
+            endTime: 1.8,
+            mediaFilename: "two.m4a"
+        )
+        let exporter = SegmentMediaExporter(temporaryRootURL: root.appendingPathComponent("runtime-temp-2"))
+        let separate = try exporter.exportLibraryEntriesIndividually(
+            entries: [first, second],
+            mediaURLs: [first.id: clipOneURL, second.id: clipTwoURL],
+            destinationDirectory: root,
+            baseName: "lesson",
+            album: "lesson.mp4",
+            artist: "lesson.mp4"
+        )
+        let separateFiles = try FileManager.default.contentsOfDirectory(at: separate.location, includingPropertiesForKeys: nil)
+        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "m4a" }.count, 2)
+        XCTAssertTrue(separateFiles.contains { $0.pathExtension == "lrc" })
+        let separateLRCs = try separateFiles
+            .filter { $0.pathExtension == "lrc" }
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+        XCTAssertTrue(separateLRCs.contains { $0.contains("One") && $0.contains("一") })
+        XCTAssertTrue(separateLRCs.contains { $0.contains("Two") && $0.contains("二") })
+
+        let merged = try exporter.exportLibraryEntriesMerged(
+            entries: [first, second],
+            mediaURLs: [first.id: clipOneURL, second.id: clipTwoURL],
+            outputAudioURL: root.appendingPathComponent("merged.mp3"),
+            album: "lesson.mp4",
+            artist: "lesson.mp4"
+        )
+        XCTAssertEqual(merged.location.pathExtension, "m4a")
+        let mergedLRC = try String(
+            contentsOf: merged.location.deletingPathExtension().appendingPathExtension("lrc"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(mergedLRC.contains("[00:00.00]One"))
+        XCTAssertTrue(mergedLRC.contains("[00:00.60]Two"))
+        let duration = try await AVURLAsset(url: merged.location).load(.duration).seconds
+        XCTAssertEqual(duration, 1.4, accuracy: 0.2)
+    }
+
     private func makeTestAudio(at url: URL, duration: Double) throws {
         let sampleRate = 16_000.0
         let frameCount = AVAudioFrameCount(sampleRate * duration)
