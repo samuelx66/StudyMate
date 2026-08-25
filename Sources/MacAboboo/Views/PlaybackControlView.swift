@@ -18,6 +18,10 @@ public struct PlaybackControlView: View {
                     Button(action: { engine.loopMode = mode }) {
                         Label(mode.localized(with: lang), systemImage: mode.iconName)
                     }
+                    .help(MacAbobooShortcutCatalog.help(
+                        mode.localized(with: lang),
+                        shortcut: mode.shortcutID
+                    ))
                 }
             } label: {
                 Label(engine.loopMode.localized(with: lang), systemImage: engine.loopMode.iconName)
@@ -25,6 +29,10 @@ public struct PlaybackControlView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .help(lang.text(
+                "播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）",
+                "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File (⌘1 / ⌘2 / ⌘3 / ⌘4)"
+            ))
             
             Spacer()
         }

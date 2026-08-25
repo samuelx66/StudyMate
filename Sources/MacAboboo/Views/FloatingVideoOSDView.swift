@@ -26,7 +26,10 @@ public struct FloatingVideoOSDView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .help(lang.localized(.repeatSentence))
+            .help(MacAbobooShortcutCatalog.help(
+                lang.localized(.repeatSentence),
+                shortcut: .repeatCurrentSegment
+            ))
             
             // 2. 上一句
             Button(action: { engine.previousSegment() }) {
@@ -37,7 +40,10 @@ public struct FloatingVideoOSDView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .help(lang.localized(.previousSentence))
+            .help(MacAbobooShortcutCatalog.help(
+                lang.localized(.previousSentence),
+                shortcut: .previousSegment
+            ))
             
             // 3. 播放 / 暂停 大按钮（实心强调色背景 + 白色图标）
             Button(action: { engine.togglePlayPause() }) {
@@ -53,7 +59,10 @@ public struct FloatingVideoOSDView: View {
                 }
             }
             .buttonStyle(.plain)
-            .help(engine.isPlaying ? lang.localized(.pause) : lang.localized(.play))
+            .help(MacAbobooShortcutCatalog.help(
+                engine.isPlaying ? lang.localized(.pause) : lang.localized(.play),
+                shortcut: .playPause
+            ))
             
             // 4. 下一句
             Button(action: { engine.nextSegment() }) {
@@ -64,7 +73,10 @@ public struct FloatingVideoOSDView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .help(lang.localized(.nextSentence))
+            .help(MacAbobooShortcutCatalog.help(
+                lang.localized(.nextSentence),
+                shortcut: .nextSegment
+            ))
             
             // 5. 播放时间
             Text(SentenceSegment.formatTimecode(isScrubbing ? engine.clock.currentTime : engine.currentTime))
@@ -107,6 +119,10 @@ public struct FloatingVideoOSDView: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("静音 / 取消静音", "Mute / Unmute"),
+                    shortcut: .mute
+                ))
                 
                 Slider(
                     value: Binding(

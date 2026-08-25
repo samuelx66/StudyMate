@@ -106,7 +106,6 @@ public struct MainContentView: View {
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
-        .background(globalKeyboardShortcuts)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {
             playlistOverlay
@@ -129,7 +128,11 @@ public struct MainContentView: View {
                 } label: {
                     Label(lang.text("句库", "Sentence Library"), systemImage: "books.vertical")
                 }
-                .help(lang.text("打开句库", "Open sentence library"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("打开句库", "Open sentence library"),
+                    shortcut: .openSentenceLibrary
+                ))
+                .keyboardShortcut("l", modifiers: [.command])
             }
 
             ToolbarItem(placement: .navigation) {
@@ -137,9 +140,12 @@ public struct MainContentView: View {
                 Button(action: openFileDialog) {
                     Label(lang.localized(.openFile), systemImage: "folder.badge.plus")
                 }
-                .help(lang.text(
-                    "打开音视频文件（MP3、WAV、M4A、FLAC、MKV、MP4、MOV、WebM、AVI）",
-                    "Open audio or video (MP3, WAV, M4A, FLAC, MKV, MP4, MOV, WebM, AVI)"
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text(
+                        "打开音视频文件（MP3、WAV、M4A、FLAC、MKV、MP4、MOV、WebM、AVI）",
+                        "Open audio or video (MP3, WAV, M4A, FLAC, MKV, MP4, MOV, WebM, AVI)"
+                    ),
+                    shortcut: .openMedia
                 ))
             }
             
@@ -166,15 +172,18 @@ public struct MainContentView: View {
                 Picker("", selection: $engine.loopMode) {
                     ForEach(PlaybackLoopMode.allCases) { mode in
                         Image(systemName: mode.iconName)
-                            .help(mode.localized(with: lang))
+                            .help(MacAbobooShortcutCatalog.help(
+                                mode.localized(with: lang),
+                                shortcut: mode.shortcutID
+                            ))
                             .accessibilityLabel(mode.localized(with: lang))
                             .tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .help(lang.text(
-                    "播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环",
-                    "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File"
+                    "播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）",
+                    "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File (⌘1 / ⌘2 / ⌘3 / ⌘4)"
                 ))
                 
                 // 2. 播放倍速切换下拉菜单
@@ -202,7 +211,11 @@ public struct MainContentView: View {
                     }
                     .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
                 }
-                .help(lang.text("调节播放语速", "Playback rate"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("调节播放语速", "Playback rate"),
+                    shortcut: .playbackRateMenu
+                ))
+                .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 // 3. 单句复读次数下拉菜单
                 Menu {
@@ -226,7 +239,11 @@ public struct MainContentView: View {
                     }
                     .foregroundColor(engine.repeatCountLimit == 1 ? .primary : .blue)
                 }
-                .help(lang.text("设置单句复读次数", "Set sentence repeat count"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("设置单句复读次数", "Set sentence repeat count"),
+                    shortcut: .repeatCountMenu
+                ))
+                .keyboardShortcut("c", modifiers: [.command, .shift])
 
                 // 4. 句末跟读停顿下拉菜单
                 Menu {
@@ -249,7 +266,11 @@ public struct MainContentView: View {
                     }
                     .foregroundColor(engine.shadowingPauseRatio == 0 ? .primary : .green)
                 }
-                .help(lang.text("设置句末跟读停顿", "Set shadowing pause"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("设置句末跟读停顿", "Set shadowing pause"),
+                    shortcut: .shadowingPauseMenu
+                ))
+                .keyboardShortcut("p", modifiers: [.command, .shift])
                 
                 // 5. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
                 Button(action: {
@@ -259,7 +280,11 @@ public struct MainContentView: View {
                 }) {
                     Image(systemName: "music.note.list")
                 }
-                .help(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("显示或隐藏播放列表", "Show or hide playlist"),
+                    shortcut: .togglePlaylist
+                ))
+                .keyboardShortcut("p", modifiers: [.option])
                 
                 Button(action: {
                     withAnimation(Self.workspacePanelAnimation) {
@@ -268,9 +293,13 @@ public struct MainContentView: View {
                 }) {
                     Image(systemName: "waveform.path.ecg")
                 }
-                .help(isWaveformsVisible
-                    ? lang.text("隐藏波形图工作区（⌥W）", "Hide waveforms (⌥W)")
-                    : lang.text("显示波形图工作区（⌥W）", "Show waveforms (⌥W)"))
+                .help(MacAbobooShortcutCatalog.help(
+                    isWaveformsVisible
+                        ? lang.text("隐藏波形图工作区", "Hide waveforms")
+                        : lang.text("显示波形图工作区", "Show waveforms"),
+                    shortcut: .toggleWaveforms
+                ))
+                .keyboardShortcut("w", modifiers: [.option])
                 
                 Button(action: {
                     withAnimation(Self.workspacePanelAnimation) {
@@ -279,9 +308,13 @@ public struct MainContentView: View {
                 }) {
                     Image(systemName: "captions.bubble")
                 }
-                .help(isSubtitleEditVisible
-                    ? lang.text("隐藏字幕双语编辑区（⌥S）", "Hide subtitle editor (⌥S)")
-                    : lang.text("显示字幕双语编辑区（⌥S）", "Show subtitle editor (⌥S)"))
+                .help(MacAbobooShortcutCatalog.help(
+                    isSubtitleEditVisible
+                        ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor")
+                        : lang.text("显示字幕双语编辑区", "Show subtitle editor"),
+                    shortcut: .toggleSubtitleEditor
+                ))
+                .keyboardShortcut("s", modifiers: [.option])
                 
                 Button(action: {
                     withAnimation(Self.workspacePanelAnimation) {
@@ -290,7 +323,11 @@ public struct MainContentView: View {
                 }) {
                     Image(systemName: "sidebar.right")
                 }
-                .help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("显示或隐藏断句列表", "Show or hide sentence list"),
+                    shortcut: .toggleSegmentList
+                ))
+                .keyboardShortcut("l", modifiers: [.option])
             }
         }
         // 支持直接拖拽音视频文件到窗口
@@ -330,26 +367,6 @@ public struct MainContentView: View {
             || statusCenter.errorMessage != nil
     }
     
-    private var globalKeyboardShortcuts: some View {
-        Group {
-            Button(action: {
-                withAnimation(Self.workspacePanelAnimation) { isWaveformsVisible.toggle() }
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("w", modifiers: [.option])
-            
-            Button(action: {
-                withAnimation(Self.workspacePanelAnimation) { isSubtitleEditVisible.toggle() }
-            }) {
-                EmptyView()
-            }
-            .keyboardShortcut("s", modifiers: [.option])
-        }
-        .opacity(0)
-        .allowsHitTesting(false)
-    }
-
     @ViewBuilder
     private var playlistOverlay: some View {
         if isPlaylistVisible {

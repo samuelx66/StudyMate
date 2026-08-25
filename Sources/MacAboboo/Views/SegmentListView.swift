@@ -127,6 +127,7 @@ public struct SegmentListView: View {
     @State private var cachedDisplayedSegments: [SentenceSegment] = []
     @State private var followState = SegmentListFollowState()
     @State private var scrollSuppressionToken = UUID()
+    @State private var shortcutEditRequest: UUID?
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -163,17 +164,22 @@ public struct SegmentListView: View {
                         ? "book.pages.fill"
                         : "book.closed")
                         .foregroundColor(followState.shouldFollow ? .primary : .secondary)
-                        .help(lang.text(
+                        .help(MacAbobooShortcutCatalog.help(
                             followState.shouldFollow
-                                ? "播放时自动跟随当前句"
-                                : "已暂停自动跟随，点击恢复",
-                            followState.shouldFollow
-                                ? "Follow the active sentence during playback"
-                                : "Automatic following is paused; click to resume"
+                                ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
+                                : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
+                            shortcut: .followActiveSentence
                         ))
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
+                .help(MacAbobooShortcutCatalog.help(
+                    followState.shouldFollow
+                        ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
+                        : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
+                    shortcut: .followActiveSentence
+                ))
+                .keyboardShortcut("f", modifiers: [.command, .shift])
 
                 // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
                 Button {
@@ -186,7 +192,11 @@ public struct SegmentListView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .help(lang.text("筛选句子", "Filter sentences"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("筛选句子", "Filter sentences"),
+                    shortcut: .filterSentences
+                ))
+                .keyboardShortcut("l", modifiers: [.command, .shift])
                 .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
                     SegmentFilterPopover(
                         criteria: $filterCriteria,
@@ -208,14 +218,13 @@ public struct SegmentListView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
-                .help(lang.text(
+                .help(MacAbobooShortcutCatalog.help(
                     translationSettings.isAutomaticTranslationEnabled
-                        ? "翻译句子（选择服务和目标语言）"
-                        : "请先在设置中启用翻译功能",
-                    translationSettings.isAutomaticTranslationEnabled
-                        ? "Translate sentences (choose service and target language)"
-                        : "Enable translation in Settings first"
+                        ? lang.text("翻译句子（选择服务和目标语言）", "Translate sentences (choose service and target language)")
+                        : lang.text("请先在设置中启用翻译功能", "Enable translation in Settings first"),
+                    shortcut: .translateSentences
                 ))
+                .keyboardShortcut("t", modifiers: [.command])
                 .popover(isPresented: $showTranslationPopover, arrowEdge: .top) {
                     TranslationExecutionSheet(
                         engine: engine,
@@ -229,19 +238,37 @@ public struct SegmentListView: View {
                 Button(action: { showImportSheet = true }) {
                     Image(systemName: "captions.bubble")
                         .foregroundColor(.secondary)
-                        .help(lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"))
+                        .help(MacAbobooShortcutCatalog.help(
+                            lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
+                            shortcut: .importSubtitles
+                        ))
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
+                    shortcut: .importSubtitles
+                ))
+                .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 // 将已选断句统一导出为音频和字幕
                 Menu {
                     Button(lang.text("逐句导出 M4A＋LRC…", "Export separate M4A + LRC…")) {
                         chooseIndividualExportDestination()
                     }
+                    .keyboardShortcut("e", modifiers: [.command])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("逐句导出 M4A＋LRC…", "Export separate M4A + LRC…"),
+                        shortcut: .exportSeparate
+                    ))
                     Button(lang.text("合并导出 M4A＋LRC…", "Export merged M4A + LRC…")) {
                         chooseMergedExportDestination()
                     }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("合并导出 M4A＋LRC…", "Export merged M4A + LRC…"),
+                        shortcut: .exportMerged
+                    ))
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                         .foregroundColor(.secondary)
@@ -249,10 +276,13 @@ public struct SegmentListView: View {
                 .menuStyle(.borderlessButton)
                 .focusable(false)
                 .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
-                .help(lang.text(
-                    selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 M4A 和 LRC",
-                    selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as M4A and LRC"
+                .help(MacAbobooShortcutCatalog.help(
+                    selectedSegmentIDs.isEmpty
+                        ? lang.text("请先勾选要导出的句子", "Select sentences to export")
+                        : lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
+                    shortcut: .exportMenu
                 ))
+                .keyboardShortcut("e", modifiers: [.command, .option])
 
                 // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
                 Menu {
@@ -297,26 +327,47 @@ public struct SegmentListView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-                .help(lang.text(
-                    selectedSegmentIDs.isEmpty ? "请先勾选要加入句库的句子" : "将已选句子加入当前句库",
-                    selectedSegmentIDs.isEmpty ? "Select sentences to add to a library" : "Add selected sentences to the current library"
+                .help(MacAbobooShortcutCatalog.help(
+                    selectedSegmentIDs.isEmpty
+                        ? lang.text("请先勾选要加入句库的句子", "Select sentences to add to a library")
+                        : lang.text("将已选句子加入当前句库", "Add selected sentences to the current library"),
+                    shortcut: .addToSentenceLibrary
                 ))
+                .keyboardShortcut("a", modifiers: [.command, .option])
 
                 // 用户只决定速度优先还是质量优先；句长与证据权重由算法分析。
                 Menu {
                     Button(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)")) {
                         engine.performSegmentation(mode: .fast)
                     }
+                    .keyboardShortcut("1", modifiers: [.command, .control])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("快速断句", "Fast segmentation"),
+                        shortcut: .fastSegmentation
+                    ))
                     Button(lang.text("智能断句（推荐）", "Intelligent segmentation (Recommended)")) {
                         engine.performSegmentation(mode: .intelligent)
                     }
+                    .keyboardShortcut("2", modifiers: [.command, .control])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("智能断句", "Intelligent segmentation"),
+                        shortcut: .intelligentSegmentation
+                    ))
                 } label: {
                     Image(systemName: "wand.and.stars")
                         .foregroundColor(.secondary)
-                        .help(lang.text("选择断句模式", "Choose segmentation mode"))
+                        .help(MacAbobooShortcutCatalog.help(
+                            lang.text("选择断句模式", "Choose segmentation mode"),
+                            shortcut: .segmentationMenu
+                        ))
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("选择断句模式", "Choose segmentation mode"),
+                    shortcut: .segmentationMenu
+                ))
+                .keyboardShortcut("g", modifiers: [.command, .shift])
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -337,6 +388,11 @@ public struct SegmentListView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("清除搜索", "Clear search"),
+                        shortcut: .clearSearch
+                    ))
+                    .keyboardShortcut(.escape)
                 }
             }
             .padding(6)
@@ -414,7 +470,8 @@ public struct SegmentListView: View {
                                             text: originalText,
                                             translation: translationText
                                         )
-                                    }
+                                    },
+                                    editRequest: $shortcutEditRequest
                                 )
                                 .id(seg.id)
                             }
@@ -461,6 +518,100 @@ public struct SegmentListView: View {
                 dismissButton: .default(Text(lang.text("好", "OK")))
             )
         }
+        .background(listKeyboardShortcuts)
+    }
+
+    private var activeSegmentID: UUID? {
+        guard let index = engine.activeSegmentIndex,
+              engine.segments.indices.contains(index) else { return nil }
+        return engine.segments[index].id
+    }
+
+    private var listKeyboardShortcuts: some View {
+        Group {
+            Button(action: toggleActiveSentenceSelection) { EmptyView() }
+                .keyboardShortcut(.space, modifiers: [.command, .shift])
+
+            Button(action: selectActiveSentence) { EmptyView() }
+                .keyboardShortcut(.return, modifiers: [.command])
+
+            Button(action: toggleActiveDifficultyBookmark) { EmptyView() }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+
+            Button(action: requestEditActiveSentence) { EmptyView() }
+                .keyboardShortcut("y", modifiers: [.command, .shift])
+
+            Button(action: splitActiveSentence) { EmptyView() }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+
+            Button(action: mergeActiveWithPrevious) { EmptyView() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+
+            Button(action: mergeActiveWithNext) { EmptyView() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+
+            Button(action: toggleActiveNavigationBookmark) { EmptyView() }
+                .keyboardShortcut("b", modifiers: [.command])
+
+            Button(action: deleteActiveSentence) { EmptyView() }
+                .keyboardShortcut(.delete, modifiers: [.command])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
+
+    private func toggleActiveSentenceSelection() {
+        guard let id = activeSegmentID else { return }
+        if selectedSegmentIDs.contains(id) {
+            selectedSegmentIDs.remove(id)
+        } else {
+            selectedSegmentIDs.insert(id)
+        }
+    }
+
+    private func selectActiveSentence() {
+        guard let id = activeSegmentID else { return }
+        engine.jumpToSegment(id: id)
+    }
+
+    private func toggleActiveDifficultyBookmark() {
+        guard let id = activeSegmentID else { return }
+        engine.toggleBookmark(for: id)
+    }
+
+    private func requestEditActiveSentence() {
+        guard let id = activeSegmentID else { return }
+        shortcutEditRequest = id
+        DispatchQueue.main.async {
+            if shortcutEditRequest == id { shortcutEditRequest = nil }
+        }
+    }
+
+    private func splitActiveSentence() {
+        guard let id = activeSegmentID,
+              let segment = engine.segments.first(where: { $0.id == id }) else { return }
+        engine.splitSegment(id: id, at: (segment.startTime + segment.endTime) / 2.0)
+    }
+
+    private func mergeActiveWithPrevious() {
+        guard let id = activeSegmentID else { return }
+        engine.mergeSegmentWithPrevious(id: id)
+    }
+
+    private func mergeActiveWithNext() {
+        guard let id = activeSegmentID else { return }
+        engine.mergeSegmentWithNext(id: id)
+    }
+
+    private func toggleActiveNavigationBookmark() {
+        guard let id = activeSegmentID else { return }
+        engine.toggleNavigationBookmark(for: id)
+    }
+
+    private func deleteActiveSentence() {
+        guard let id = activeSegmentID else { return }
+        engine.deleteSegment(id: id)
     }
 
     private func refreshDisplayedSegments(selectMatching: Bool = false) {
@@ -675,8 +826,18 @@ private struct SegmentFilterPopover: View {
             HStack(spacing: 8) {
                 Button(lang.text("全选", "Select All"), action: onSelectAll)
                     .disabled(displayedCount == 0 || selectedCount == displayedCount)
+                    .keyboardShortcut("a", modifiers: [.command])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("全选", "Select All"),
+                        shortcut: .selectAllVisibleSentences
+                    ))
                 Button(lang.text("反选", "Invert Selection"), action: onInvertSelection)
                     .disabled(displayedCount == 0)
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("反选", "Invert Selection"),
+                        shortcut: .invertVisibleSentenceSelection
+                    ))
                 Spacer(minLength: 0)
                 Text("\(selectedCount)/\(displayedCount)")
                     .font(.caption)
@@ -834,6 +995,7 @@ struct SegmentRowView: View {
     let onMergeNext: () -> Void
     let onDelete: () -> Void
     let onSaveText: (String, String) -> Void
+    @Binding var editRequest: UUID?
 
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
@@ -851,7 +1013,10 @@ struct SegmentRowView: View {
                 ))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
-                .help(lang.text("选择此句用于导出或加入句库", "Select this sentence for export or sentence library"))
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("选择此句用于导出或加入句库", "Select this sentence for export or sentence library"),
+                    shortcut: .toggleSentenceSelection
+                ))
                 .padding(.leading, 4)
                 .padding(.trailing, 6)
 
@@ -870,6 +1035,10 @@ struct SegmentRowView: View {
                                 .foregroundColor(seg.isBookmarked ? .yellow : .gray.opacity(0.4))
                         }
                         .buttonStyle(.plain)
+                        .help(MacAbobooShortcutCatalog.help(
+                            lang.text("切换难句星标", "Toggle difficulty star"),
+                            shortcut: .toggleDifficultyBookmark
+                        ))
 
                         // 序号
                         Text("#\(seg.index)")
@@ -916,22 +1085,16 @@ struct SegmentRowView: View {
                         // 悬停操作按钮（始终占位，避免显示/隐藏引起行宽变化晃动）
                         HStack(spacing: 4) {
                             Button(action: {
-                                tempOriginalText = seg.text
-                                tempTranslationText = seg.translation
-                                isEditing = true
-                                focusedField = nil
-                                // 编辑区域在下一次布局后才会出现，延迟设置焦点
-                                // 可确保点击编辑按钮后始终落入原文输入框。
-                                DispatchQueue.main.async {
-                                    guard isEditing else { return }
-                                    focusedField = .original
-                                }
+                                beginEditing()
                             }) {
                                 Image(systemName: "pencil")
                                     .font(.system(size: 9))
                             }
                             .buttonStyle(.plain)
-                            .help(lang.text("编辑原文和译文", "Edit original text and translation"))
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("编辑原文和译文", "Edit original text and translation"),
+                                shortcut: .editSentence
+                            ))
                             .allowsHitTesting(isHovering)
 
                             Button(action: onSplit) {
@@ -939,7 +1102,10 @@ struct SegmentRowView: View {
                                     .font(.system(size: 9))
                             }
                             .buttonStyle(.plain)
-                            .help(lang.text("在中间拆分此句", "Split this sentence at its midpoint"))
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("在中间拆分此句", "Split this sentence at its midpoint"),
+                                shortcut: .splitSentence
+                            ))
                             .allowsHitTesting(isHovering)
 
                             Button(action: onMergePrevious) {
@@ -948,7 +1114,10 @@ struct SegmentRowView: View {
                                     .scaleEffect(x: -1, y: 1)
                             }
                             .buttonStyle(.plain)
-                            .help(lang.text("合并上一句", "Merge with previous sentence"))
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("合并上一句", "Merge with previous sentence"),
+                                shortcut: .mergePreviousSentence
+                            ))
                             .disabled(seg.index <= 1)
                             .allowsHitTesting(isHovering && seg.index > 1)
 
@@ -958,7 +1127,10 @@ struct SegmentRowView: View {
                                     .rotationEffect(.degrees(180))
                             }
                             .buttonStyle(.plain)
-                            .help(lang.localized(.mergeSegment))
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.localized(.mergeSegment),
+                                shortcut: .mergeNextSentence
+                            ))
                             .allowsHitTesting(isHovering)
 
                             Button(action: onToggleNavigationBookmark) {
@@ -967,9 +1139,12 @@ struct SegmentRowView: View {
                                     .foregroundColor(seg.isNavigationBookmarked ? .blue : .secondary)
                             }
                             .buttonStyle(.plain)
-                            .help(lang.text(
-                                seg.isNavigationBookmarked ? "移出书签" : "加入书签",
-                                seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text(
+                                    seg.isNavigationBookmarked ? "移出书签" : "加入书签",
+                                    seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
+                                ),
+                                shortcut: .toggleNavigationBookmark
                             ))
                             .allowsHitTesting(isHovering)
 
@@ -979,7 +1154,10 @@ struct SegmentRowView: View {
                                     .foregroundColor(.red)
                             }
                             .buttonStyle(.plain)
-                            .help(lang.localized(.deleteSegment))
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.localized(.deleteSegment),
+                                shortcut: .deleteSentence
+                            ))
                             .allowsHitTesting(isHovering)
                         }
                         .opacity(isHovering ? 1 : 0)
@@ -1024,8 +1202,29 @@ struct SegmentRowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(MacAbobooShortcutCatalog.help(
+            lang.text("选中此句并定位播放", "Select and seek to this sentence"),
+            shortcut: .selectSentence
+        ))
         .onHover { inside in
             isHovering = inside
+        }
+        .onChange(of: editRequest) { _, requestedID in
+            guard requestedID == seg.id else { return }
+            beginEditing()
+        }
+    }
+
+    private func beginEditing() {
+        tempOriginalText = seg.text
+        tempTranslationText = seg.translation
+        isEditing = true
+        focusedField = nil
+        // 编辑区域在下一次布局后才会出现，延迟设置焦点
+        // 可确保点击编辑按钮后始终落入原文输入框。
+        DispatchQueue.main.async {
+            guard isEditing else { return }
+            focusedField = .original
         }
     }
 

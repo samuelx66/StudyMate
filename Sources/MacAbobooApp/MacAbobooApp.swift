@@ -100,6 +100,13 @@ struct MacAbobooApp: App {
                 .keyboardShortcut(",", modifiers: [.command])
             }
 
+            // 帮助菜单：打开可搜索的两列快捷键总览窗口。
+            CommandGroup(after: .help) {
+                Button(languageManager.text("快捷键…", "Keyboard Shortcuts…")) {
+                    openWindow(id: "shortcuts")
+                }
+            }
+
             // 文件菜单
             CommandGroup(replacing: .newItem) {
                 Button(languageManager.localized(.openFile)) {
@@ -153,6 +160,59 @@ struct MacAbobooApp: App {
                     engine.togglePlayPause()
                 }
                 
+                Divider()
+
+                // 四种播放模式使用固定快捷键，和工具栏分段选择器保持一致。
+                Button {
+                    engine.loopMode = .normal
+                } label: {
+                    Label(
+                        languageManager.text("连续播放", "Continuous Play"),
+                        systemImage: PlaybackLoopMode.normal.iconName
+                    )
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+
+                Button {
+                    engine.loopMode = .singleSegment
+                } label: {
+                    Label(
+                        languageManager.text("单句重复", "Repeat Sentence"),
+                        systemImage: PlaybackLoopMode.singleSegment.iconName
+                    )
+                }
+                .keyboardShortcut("2", modifiers: [.command])
+
+                Button {
+                    engine.loopMode = .pauseAfterSegment
+                } label: {
+                    Label(
+                        languageManager.text("句后停顿", "Pause After Sentence"),
+                        systemImage: PlaybackLoopMode.pauseAfterSegment.iconName
+                    )
+                }
+                .keyboardShortcut("3", modifiers: [.command])
+
+                Button {
+                    engine.loopMode = .all
+                } label: {
+                    Label(
+                        languageManager.text("全篇循环", "Loop Entire File"),
+                        systemImage: PlaybackLoopMode.all.iconName
+                    )
+                }
+                .keyboardShortcut("4", modifiers: [.command])
+
+                Button {
+                    engine.volume = engine.volume > 0 ? 0 : 1.0
+                } label: {
+                    Label(
+                        languageManager.text("静音 / 取消静音", "Mute / Unmute"),
+                        systemImage: engine.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill"
+                    )
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+
                 Divider()
                 
                 Button(languageManager.localized(.previousSentence)) {
@@ -209,6 +269,13 @@ struct MacAbobooApp: App {
                 .environmentObject(languageManager)
         }
         .defaultSize(width: 980, height: 680)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+
+        Window(languageManager.text("快捷键", "Keyboard Shortcuts"), id: "shortcuts") {
+            ShortcutHelpView()
+        }
+        .defaultSize(width: 560, height: 600)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
     }
