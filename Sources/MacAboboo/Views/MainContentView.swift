@@ -36,6 +36,8 @@ public struct MainContentView: View {
     @StateObject private var engine = PlaybackEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
+    @ObservedObject private var libraryManager = SentenceLibraryManager.shared
+    @ObservedObject private var statusCenter = MainStatusCenter.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     
@@ -92,14 +94,18 @@ public struct MainContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if isStatusBarVisible {
-                PlaybackStatusBar(engine: engine)
+            if shouldShowStatusBar {
+                PlaybackStatusBar(
+                    engine: engine,
+                    libraryManager: libraryManager,
+                    statusCenter: statusCenter
+                )
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
-        .animation(.easeInOut(duration: 0.22), value: isStatusBarVisible)
+        .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
         .background(globalKeyboardShortcuts)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {
@@ -214,7 +220,7 @@ public struct MainContentView: View {
                     }
                 } label: {
                     HStack(spacing: 3) {
-                        Image(systemName: "repeat.1")
+                        Image(systemName: "repeat.circle")
                         Text(repeatCountToolbarLabel)
                             .font(.system(size: 11, weight: .medium).monospacedDigit())
                     }
@@ -237,7 +243,7 @@ public struct MainContentView: View {
                     }
                 } label: {
                     HStack(spacing: 3) {
-                        Image(systemName: "mic.badge.plus")
+                        Image(systemName: "pause.circle")
                         Text(shadowingPauseToolbarLabel)
                             .font(.system(size: 11, weight: .medium).monospacedDigit())
                     }
@@ -308,14 +314,20 @@ public struct MainContentView: View {
                 }
             }
         )
-        .alert(lang.text("提示", "Notice"), isPresented: Binding(
-            get: { engine.lastErrorMessage != nil },
-            set: { if !$0 { engine.lastErrorMessage = nil } }
-        )) {
-            Button(lang.text("好", "OK"), role: .cancel) {}
-        } message: {
-            Text(engine.lastErrorMessage ?? "")
-        }
+    }
+
+    /// 有后台任务或错误时即使用户关闭了常驻状态栏，也临时显示状态栏，
+    /// 避免进度和错误没有任何可见出口；任务结束/错误关闭后恢复用户的隐藏设置。
+    private var shouldShowStatusBar: Bool {
+        isStatusBarVisible
+            || engine.isExtractingWaveform
+            || engine.isAITranscribing
+            || engine.isAutoTranslating
+            || libraryManager.isWorking
+            || engine.statusErrorMessage != nil
+            || libraryManager.lastErrorMessage != nil
+            || statusCenter.progress != nil
+            || statusCenter.errorMessage != nil
     }
     
     private var globalKeyboardShortcuts: some View {
@@ -422,8 +434,11 @@ public struct MainContentView: View {
 }
 
 /// 主窗口底部的紧凑播放状态栏；它位于 HSplitView 之后，因此断句列表始终在其上方。
+/// 播放信息靠左，所有进度与错误提示统一靠右显示。
 private struct PlaybackStatusBar: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject var libraryManager: SentenceLibraryManager
+    @ObservedObject var statusCenter: MainStatusCenter
     @ObservedObject private var lang = LanguageManager.shared
 
     private var currentSegmentText: String {
@@ -442,6 +457,46 @@ private struct PlaybackStatusBar: View {
         }
 
         return "\(lang.text("跟读停顿", "Shadowing pause")) \(String(format: "%.2g×", engine.shadowingPauseRatio))"
+    }
+
+    private var currentProgress: MainStatusProgress? {
+        if engine.isAITranscribing {
+            return MainStatusProgress(
+                fraction: max(0.05, engine.aiTranscriptionProgress),
+                phase: engine.aiTranscriptionStatusText
+            )
+        }
+        if engine.isAutoTranslating {
+            return MainStatusProgress(
+                fraction: max(0.02, engine.autoTranslationProgress),
+                phase: engine.autoTranslationStatusText
+            )
+        }
+        if engine.isExtractingWaveform {
+            return MainStatusProgress(
+                fraction: engine.waveformExtractionProgress,
+                phase: lang.localized(.extractingWaveform)
+            )
+        }
+        if let progress = statusCenter.progress {
+            return progress
+        }
+        if let progress = libraryManager.operationProgress {
+            return MainStatusProgress(
+                fraction: progress.fraction,
+                phase: progress.phase,
+                currentItem: progress.currentItem
+            )
+        }
+        return nil
+    }
+
+    private var canCancelCurrentProgress: Bool {
+        engine.isAITranscribing || engine.isAutoTranslating
+    }
+
+    private var currentErrorMessage: String? {
+        statusCenter.errorMessage ?? engine.statusErrorMessage ?? libraryManager.lastErrorMessage
     }
 
     var body: some View {
@@ -463,22 +518,42 @@ private struct PlaybackStatusBar: View {
             if engine.repeatCountLimit != 1 {
                 Divider()
                     .frame(height: 14)
-                Label(repeatCountText, systemImage: "repeat.1")
+                Label(repeatCountText, systemImage: "repeat.circle")
             }
 
             if engine.shadowingPauseRatio > 0 {
                 Divider()
                     .frame(height: 14)
-                Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "mic.badge.plus")
+                Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "pause.circle")
                     .foregroundColor(engine.isShadowingPaused ? .green : .secondary)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+
+            if let progress = currentProgress {
+                StatusBarProgressView(
+                    progress: progress,
+                    canCancel: canCancelCurrentProgress,
+                    onCancel: cancelCurrentProgress
+                )
+            }
+
+            if let currentErrorMessage {
+                if currentProgress != nil {
+                    Divider()
+                        .frame(height: 14)
+                }
+                StatusBarErrorView(
+                    message: currentErrorMessage,
+                    onDismiss: dismissCurrentError
+                )
+            }
         }
         .font(.system(size: 11, weight: .medium).monospacedDigit())
         .foregroundColor(.secondary)
         .padding(.horizontal, 10)
-        .frame(height: 26)
+        .padding(.vertical, 3)
+        .frame(minHeight: 26)
         .background(Color(nsColor: .controlBackgroundColor))
         .overlay(
             Rectangle()
@@ -486,5 +561,97 @@ private struct PlaybackStatusBar: View {
                 .foregroundColor(Color(nsColor: .separatorColor)),
             alignment: .top
         )
+    }
+
+    private func cancelCurrentProgress() {
+        if engine.isAITranscribing {
+            engine.cancelSegmentation()
+        } else if engine.isAutoTranslating {
+            engine.cancelAutomaticTranslation()
+        }
+    }
+
+    private func dismissCurrentError() {
+        engine.dismissStatusError()
+        libraryManager.dismissErrorMessage()
+        statusCenter.clearError()
+    }
+}
+
+private struct StatusBarProgressView: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let progress: MainStatusProgress
+    let canCancel: Bool
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+                .frame(width: 92)
+
+            Text(progress.phase.isEmpty ? lang.text("处理中", "Working") : progress.phase)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 190, alignment: .leading)
+
+            if !progress.currentItem.isEmpty {
+                Text(progress.currentItem)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 115, alignment: .leading)
+            }
+
+            Text("\(Int(progress.fraction * 100))%")
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+
+            if canCancel {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(lang.text("取消当前任务", "Cancel current task"))
+            }
+        }
+        .frame(maxWidth: 470, alignment: .trailing)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(progress.phase)
+    }
+}
+
+private struct StatusBarErrorView: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(alignment: isHovering ? .top : .center, spacing: 5) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+
+            Text(message)
+                .lineLimit(isHovering ? nil : 1)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360, alignment: .leading)
+                .layoutPriority(1)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("关闭提示")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, isHovering ? 4 : 0)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .onHover { isHovering = $0 }
+        .help(message)
     }
 }

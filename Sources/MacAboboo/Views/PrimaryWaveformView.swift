@@ -31,22 +31,6 @@ public struct PrimaryWaveformView: View {
                         .foregroundColor(.secondary)
                 }
                 
-                if waveformState.isExtracting {
-                    ProgressView(value: waveformState.extractionProgress)
-                        .progressViewStyle(.linear)
-                        .frame(width: 80)
-                    Text(lang.localized(.extractingWaveform))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                } else if engine.isAITranscribing {
-                    ProgressView(value: max(0.05, engine.aiTranscriptionProgress))
-                        .progressViewStyle(.linear)
-                        .frame(width: 90)
-                    Text(engine.aiTranscriptionStatusText)
-                        .font(.caption2.bold())
-                        .foregroundColor(.blue)
-                }
-                
                 Spacer()
                 
                 // 视口缩放按钮

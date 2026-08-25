@@ -13,6 +13,11 @@ public final class SentenceLibraryManager: ObservableObject {
     @Published public private(set) var operationProgress: SentenceLibraryOperationProgress?
     @Published public private(set) var lastErrorMessage: String?
 
+    /// 由主窗口状态栏的小叉调用；仅关闭提示，不影响句库中的数据或后台任务。
+    public func dismissErrorMessage() {
+        lastErrorMessage = nil
+    }
+
     private let store: SentenceLibraryStore
     private let defaults: UserDefaults
     private let currentLibraryKey = "MacAboboo.CurrentSentenceLibraryID"

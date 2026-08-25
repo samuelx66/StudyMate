@@ -200,7 +200,7 @@ struct MacAbobooApp: App {
             IntensiveSettingsPopover(engine: engine)
                 .background(SettingsWindowAccessor())
         }
-        .defaultSize(width: 680, height: 880)
+        .defaultSize(width: 960, height: 720)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
 
@@ -300,8 +300,8 @@ struct SettingsWindowAccessor: NSViewRepresentable {
         window.titleVisibility = .visible
         window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable])
         window.level = .normal
-        window.minSize = NSSize(width: 620, height: 820)
-        window.maxSize = NSSize(width: 1200, height: 1200)
+        window.minSize = NSSize(width: 880, height: 640)
+        window.maxSize = NSSize(width: 1400, height: 1200)
         window.showsResizeIndicator = true
         window.isMovableByWindowBackground = false
         window.tabbingMode = .disallowed

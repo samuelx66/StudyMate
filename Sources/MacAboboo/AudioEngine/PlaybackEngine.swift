@@ -88,6 +88,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var isAITranscribing: Bool = false
     @Published public var aiTranscriptionProgress: Double = 0.0
     @Published public var aiTranscriptionStatusText: String = ""
+    /// 翻译任务状态。任务只由用户在翻译确认面板中明确启动。
+    @Published public private(set) var isAutoTranslating: Bool = false
+    @Published public private(set) var autoTranslationProgress: Double = 0.0
+    @Published public private(set) var autoTranslationStatusText: String = ""
+    @Published public private(set) var translationErrorMessage: String?
+
+    /// 状态栏右侧显示的当前错误/警告。保留三类来源的独立状态，方便任务
+    /// 完成或媒体切换时分别清理；用户点击状态栏的小叉时统一关闭当前提示。
+    public var statusErrorMessage: String? {
+        lastErrorMessage ?? translationErrorMessage ?? segmentationWarningMessage
+    }
 
     // MARK: - 断句与波形数据
     private let autoGenerateSubtitlesKey = "MacAboboo.AutoGenerateSubtitles"
@@ -163,10 +174,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var waveformTask: Task<Void, Never>?
     private var sidecarTask: Task<Void, Never>?
     private var segmentationTask: Task<Void, Never>?
+    private var automaticTranslationTask: Task<Void, Never>?
     private var modelIdleUnloadTask: Task<Void, Never>?
     private var previewSeekTask: Task<Void, Never>?
     private var pendingPreviewSeekTime: Double?
     private var segmentationRequestID = UUID()
+    private var translationRequestID = UUID()
     private var mediaSessionID = UUID()
     private var seekGeneration: UInt64 = 0
     /// AVPlayer/libmpv should always finish a seek, but a cancelled seek can
@@ -639,10 +652,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         waveformTask?.cancel()
         sidecarTask?.cancel()
         segmentationTask?.cancel()
+        cancelAutomaticTranslation()
         segmentationRequestID = UUID()
         isAITranscribing = false
         aiTranscriptionProgress = 0
         aiTranscriptionStatusText = ""
+        translationErrorMessage = nil
         activeBackend.pause()
         isShadowingPaused = false
         shadowingCountdownRemaining = 0
@@ -885,6 +900,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let requestID = UUID()
         segmentationRequestID = requestID
         segmentationTask?.cancel()
+        cancelAutomaticTranslation()
         modelIdleUnloadTask?.cancel()
         acousticBoundaryTimes = []
         activeBoundarySnapMarker = nil
@@ -997,6 +1013,121 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         scheduleIdleModelRelease()
     }
 
+    /// 取消当前自动翻译请求。媒体切换、重新断句和字幕重新导入时调用，
+    /// 防止旧请求返回后把译文写入新的工程。
+    public func cancelAutomaticTranslation() {
+        automaticTranslationTask?.cancel()
+        automaticTranslationTask = nil
+        translationRequestID = UUID()
+        isAutoTranslating = false
+        autoTranslationProgress = 0
+        autoTranslationStatusText = ""
+    }
+
+    /// 关闭状态栏右侧的错误或断句警告提示，不影响播放、断句和翻译任务。
+    public func dismissStatusError() {
+        lastErrorMessage = nil
+        translationErrorMessage = nil
+        segmentationWarningMessage = nil
+    }
+
+    /// 按用户确认过的服务配置，翻译当前工程中符合范围的句子。
+    ///
+    /// `segmentIDs` 为空时处理整个工程；传入集合时只处理指定句子。这个方法
+    /// 只由明确的“开始翻译”操作调用，断句、导入字幕和恢复工程不会自动触发。
+    public func translateMissingTranslations(
+        configuration suppliedConfiguration: TranslationConfiguration? = nil,
+        segmentIDs: Set<UUID>? = nil,
+        overwriteExistingTranslations: Bool = false,
+        batchSize: Int = 100
+    ) {
+        let settings = TranslationSettings.shared
+        guard settings.isAutomaticTranslationEnabled else {
+            translationErrorMessage = "请先在设置中启用翻译功能。"
+            return
+        }
+        guard !isAITranscribing else { return }
+        guard let configuration = suppliedConfiguration ?? settings.configuration() else {
+            translationErrorMessage = TranslationProviderError.missingAPIKey.localizedDescription
+            return
+        }
+
+        let units = segments.compactMap { segment -> TranslationUnit? in
+            let source = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existingTranslation = segment.translation.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !source.isEmpty,
+                  (overwriteExistingTranslations || existingTranslation.isEmpty),
+                  segmentIDs == nil || segmentIDs?.contains(segment.id) == true else { return nil }
+            return TranslationUnit(id: segment.id, sourceText: source)
+        }
+        guard !units.isEmpty else {
+            translationErrorMessage = overwriteExistingTranslations
+                ? "没有找到包含原文的句子。"
+                : "没有找到需要翻译的空译文句子。"
+            return
+        }
+
+        automaticTranslationTask?.cancel()
+        let requestID = UUID()
+        translationRequestID = requestID
+        let sessionID = mediaSessionID
+        let sourceLanguage = speechRecognitionLanguage
+        let sourceByID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0.sourceText) })
+        isAutoTranslating = true
+        autoTranslationProgress = 0
+        autoTranslationStatusText = "正在使用 \(configuration.provider.displayName) 生成译文…"
+        translationErrorMessage = nil
+
+        automaticTranslationTask = Task { @MainActor [weak self] in
+            do {
+                let results = try await TranslationService.shared.translate(
+                    units: units,
+                    configuration: configuration,
+                    sourceLanguage: sourceLanguage,
+                    batchSize: batchSize,
+                    progress: { [weak self] completed, total in
+                        Task { @MainActor [weak self] in
+                            guard let self,
+                                  self.translationRequestID == requestID,
+                                  self.mediaSessionID == sessionID else { return }
+                            self.autoTranslationProgress = total > 0
+                                ? min(1, max(0, Double(completed) / Double(total)))
+                                : 1
+                        }
+                    }
+                )
+                try Task.checkCancellation()
+                guard let self,
+                      self.translationRequestID == requestID,
+                      self.mediaSessionID == sessionID else { return }
+
+                for result in results {
+                    guard let index = self.segments.firstIndex(where: { $0.id == result.id }),
+                          self.segments[index].text.trimmingCharacters(in: .whitespacesAndNewlines) == sourceByID[result.id],
+                          (overwriteExistingTranslations
+                           || self.segments[index].translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                          !result.translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                    self.segments[index].translation = result.translatedText
+                }
+                self.persistCurrentProject()
+                self.autoTranslationProgress = 1
+                self.isAutoTranslating = false
+                self.autoTranslationStatusText = ""
+            } catch is CancellationError {
+                guard let self, self.translationRequestID == requestID else { return }
+                self.isAutoTranslating = false
+                self.autoTranslationStatusText = ""
+            } catch {
+                guard let self,
+                      self.translationRequestID == requestID,
+                      self.mediaSessionID == sessionID else { return }
+                self.isAutoTranslating = false
+                self.autoTranslationStatusText = ""
+                self.translationErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func scheduleIdleModelRelease() {
         modelIdleUnloadTask?.cancel()
         modelIdleUnloadTask = Task(priority: .background) {
@@ -1052,6 +1183,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         sidecarTask?.cancel()
         sidecarTask = nil
         cancelSegmentation()
+        cancelAutomaticTranslation()
         segments = []
         activeSegmentIndex = nil
         segmentOrigin = .none

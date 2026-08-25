@@ -106,38 +106,19 @@ struct SegmentListFilterCriteria: Equatable {
     }
 }
 
-@MainActor
-private final class SegmentListExportProgressState: ObservableObject {
-    @Published var progress: SegmentMediaExportProgress?
-    private var generation = UUID()
-
-    func begin(_ progress: SegmentMediaExportProgress) -> UUID {
-        generation = UUID()
-        self.progress = progress
-        return generation
-    }
-
-    func update(_ progress: SegmentMediaExportProgress, generation: UUID) {
-        guard self.generation == generation else { return }
-        self.progress = progress
-    }
-
-    func finish(generation: UUID) {
-        guard self.generation == generation else { return }
-        progress = nil
-    }
-}
-
 /// 断句列表区视图（支持字幕导入、选句媒体导出、多条件筛选、文本编辑与快捷切分）
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject private var libraryManager = SentenceLibraryManager.shared
+    @ObservedObject private var translationSettings = TranslationSettings.shared
+    @ObservedObject private var statusCenter = MainStatusCenter.shared
     @Environment(\.openWindow) private var openWindow
 
     @State private var searchText: String = ""
     @State private var showImportSheet: Bool = false
     @State private var showSettingsPopover: Bool = false
+    @State private var showTranslationPopover: Bool = false
     @State private var filterCriteria = SegmentListFilterCriteria()
     @State private var showFilterPopover: Bool = false
     @State private var selectedSegmentIDs: Set<UUID> = []
@@ -146,7 +127,6 @@ public struct SegmentListView: View {
     @State private var cachedDisplayedSegments: [SentenceSegment] = []
     @State private var followState = SegmentListFollowState()
     @State private var scrollSuppressionToken = UUID()
-    @StateObject private var exportProgressState = SegmentListExportProgressState()
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -218,9 +198,36 @@ public struct SegmentListView: View {
                     )
                 }
 
+                // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
+                Button {
+                    showTranslationPopover = true
+                } label: {
+                    Image(systemName: "character.book.closed")
+                        .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
+                .help(lang.text(
+                    translationSettings.isAutomaticTranslationEnabled
+                        ? "翻译句子（选择服务和目标语言）"
+                        : "请先在设置中启用翻译功能",
+                    translationSettings.isAutomaticTranslationEnabled
+                        ? "Translate sentences (choose service and target language)"
+                        : "Enable translation in Settings first"
+                ))
+                .popover(isPresented: $showTranslationPopover, arrowEdge: .top) {
+                    TranslationExecutionSheet(
+                        engine: engine,
+                        settings: translationSettings,
+                        selectedSegmentIDs: selectedSegmentIDs,
+                        lang: lang
+                    )
+                }
+
                 // 导入字幕按钮
                 Button(action: { showImportSheet = true }) {
-                    Image(systemName: "square.and.arrow.down")
+                    Image(systemName: "captions.bubble")
                         .foregroundColor(.secondary)
                         .help(lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"))
                 }
@@ -236,17 +243,12 @@ public struct SegmentListView: View {
                         chooseMergedExportDestination()
                     }
                 } label: {
-                    if exportProgressState.progress != nil {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "square.and.arrow.up")
-                            .foregroundColor(.secondary)
-                    }
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundColor(.secondary)
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || exportProgressState.progress != nil)
+                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
                 .help(lang.text(
                     selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 M4A 和 LRC",
                     selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as M4A and LRC"
@@ -290,13 +292,8 @@ public struct SegmentListView: View {
                         Label(lang.text("打开句库…", "Open Sentence Library…"), systemImage: "books.vertical")
                     }
                 } label: {
-                    if isAddingToLibrary {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "text.badge.plus")
-                            .foregroundColor(.secondary)
-                    }
+                    Image(systemName: "text.badge.plus")
+                        .foregroundColor(isAddingToLibrary ? .blue : .secondary)
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
@@ -324,55 +321,6 @@ public struct SegmentListView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
-
-            if let progress = exportProgressState.progress {
-                SegmentListProgressBar(progress: progress)
-            }
-
-            if isAddingToLibrary {
-                SegmentListProgressBar(
-                    fraction: libraryManager.operationProgress?.fraction ?? 0,
-                    phase: libraryManager.operationProgress?.phase ?? lang.text("准备保存句库", "Preparing sentence library"),
-                    currentItem: libraryManager.operationProgress?.currentItem ?? ""
-                )
-            }
-
-            // AI 语音识别与智能断句进度指示条
-            if engine.isAITranscribing {
-                HStack(spacing: 8) {
-                    ProgressView(value: max(0.05, engine.aiTranscriptionProgress))
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: .infinity)
-                    Text(engine.aiTranscriptionStatusText)
-                        .font(.caption2.bold())
-                        .foregroundColor(.blue)
-                    Button(action: { engine.cancelSegmentation() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(lang.text("取消断句", "Cancel segmentation"))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.blue.opacity(0.12))
-                .animation(.easeInOut(duration: 0.2), value: engine.aiTranscriptionProgress)
-            }
-
-            if let warning = engine.segmentationWarningMessage {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                    Text(warning)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.orange.opacity(0.10))
-            }
 
             // 搜索过滤栏
             HStack {
@@ -607,22 +555,28 @@ public struct SegmentListView: View {
     private func performExport(
         operation: @escaping @Sendable (@escaping @Sendable (SegmentMediaExportProgress) -> Void) throws -> SegmentMediaExportResult
     ) {
-        let operationGeneration = exportProgressState.begin(SegmentMediaExportProgress(
+        statusCenter.clearError()
+        let operationGeneration = statusCenter.begin(MainStatusProgress(
             fraction: 0,
-            completedItems: 0,
-            totalItems: 1,
             phase: lang.text("准备导出", "Preparing export")
         ))
         let progressUpdate: @Sendable (SegmentMediaExportProgress) -> Void = { progress in
             Task { @MainActor in
-                exportProgressState.update(progress, generation: operationGeneration)
+                statusCenter.update(
+                    MainStatusProgress(
+                        fraction: progress.fraction,
+                        phase: progress.phase,
+                        currentItem: progress.currentItem
+                    ),
+                    generation: operationGeneration
+                )
             }
         }
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try operation(progressUpdate) }
             }.value
-            exportProgressState.finish(generation: operationGeneration)
+            statusCenter.finish(generation: operationGeneration)
             switch result {
             case let .success(output):
                 exportNotice = SegmentExportNotice(
@@ -633,10 +587,7 @@ public struct SegmentListView: View {
                     )
                 )
             case let .failure(error):
-                exportNotice = SegmentExportNotice(
-                    title: lang.text("导出失败", "Export Failed"),
-                    message: error.localizedDescription
-                )
+                statusCenter.showError(error.localizedDescription)
             }
         }
     }
@@ -645,6 +596,7 @@ public struct SegmentListView: View {
         guard let media = engine.currentMedia, !selectedSegments.isEmpty else { return }
         let segments = selectedSegments
         isAddingToLibrary = true
+        statusCenter.clearError()
         Task {
             defer { isAddingToLibrary = false }
             do {
@@ -657,10 +609,7 @@ public struct SegmentListView: View {
                     )
                 )
             } catch {
-                exportNotice = SegmentExportNotice(
-                    title: lang.text("加入句库失败", "Unable to Add to Library"),
-                    message: error.localizedDescription
-                )
+                statusCenter.showError(error.localizedDescription)
             }
         }
     }
@@ -737,50 +686,6 @@ private struct SegmentFilterPopover: View {
         }
         .padding(14)
         .frame(width: 310)
-    }
-}
-
-private struct SegmentListProgressBar: View {
-    @ObservedObject private var lang = LanguageManager.shared
-    let fraction: Double
-    let phase: String
-    let currentItem: String
-
-    init(progress: SegmentMediaExportProgress) {
-        self.fraction = progress.fraction
-        self.phase = progress.phase
-        self.currentItem = progress.currentItem
-    }
-
-    init(fraction: Double, phase: String, currentItem: String) {
-        self.fraction = fraction
-        self.phase = phase
-        self.currentItem = currentItem
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text(phase.isEmpty ? lang.text("处理中", "Working") : phase)
-                    .font(.caption2)
-                    .lineLimit(1)
-                if !currentItem.isEmpty {
-                    Text(currentItem)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Text("\(Int(min(1, max(0, fraction)) * 100))%")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundColor(.secondary)
-            }
-            ProgressView(value: min(1, max(0, fraction)))
-                .progressViewStyle(.linear)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.accentColor.opacity(0.08))
     }
 }
 
@@ -1176,6 +1081,220 @@ struct SegmentRowView: View {
         let nextIndex = (currentIndex + 1) % order.count
         focusedField = order[nextIndex]
         return .handled
+    }
+}
+
+/// 翻译执行确认面板。它以内嵌 popover 显示在断句列表工具栏下方；翻译按钮只负责
+/// 打开此面板，只有用户选择服务、模型、目标语言并点击“开始翻译”后才会创建网络任务。
+private struct TranslationExecutionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var engine: PlaybackEngine
+    @ObservedObject var settings: TranslationSettings
+    let selectedSegmentIDs: Set<UUID>
+    @ObservedObject var lang: LanguageManager
+
+    @State private var serviceID: UUID?
+    @State private var targetLanguage: TranslationTargetLanguage = .simplifiedChinese
+    @State private var overwriteExistingTranslations = false
+    @State private var batchSizeText = "100"
+
+    init(
+        engine: PlaybackEngine,
+        settings: TranslationSettings,
+        selectedSegmentIDs: Set<UUID>,
+        lang: LanguageManager
+    ) {
+        self.engine = engine
+        self.settings = settings
+        self.selectedSegmentIDs = selectedSegmentIDs
+        self.lang = lang
+        _serviceID = State(initialValue: settings.lastTranslationServiceID ?? settings.selectedServiceID)
+        _targetLanguage = State(initialValue: settings.lastTranslationTargetLanguage)
+    }
+
+    private var selectedService: TranslationServiceProfile? {
+        guard let serviceID else { return nil }
+        return settings.services.first(where: { $0.id == serviceID })
+    }
+
+    private var targetSegmentCount: Int {
+        engine.segments.reduce(into: 0) { count, segment in
+            guard !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  (overwriteExistingTranslations
+                   || segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                  selectedSegmentIDs.isEmpty || selectedSegmentIDs.contains(segment.id) else { return }
+            count += 1
+        }
+    }
+
+    private var requestedBatchSize: Int? {
+        let value = Int(batchSizeText.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let value, value > 0 else { return nil }
+        return value
+    }
+
+    private var configuration: TranslationConfiguration? {
+        guard let serviceID else { return nil }
+        return settings.configuration(for: serviceID, targetLanguage: targetLanguage)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(lang.text("确认翻译", "Confirm Translation"))
+                .font(.headline)
+
+            Text(lang.text(
+                selectedSegmentIDs.isEmpty
+                    ? (overwriteExistingTranslations
+                       ? "将翻译当前工程中所有有原文的句子，并覆盖已有译文。"
+                       : "将翻译当前工程中所有有原文且译文为空的句子。")
+                    : (overwriteExistingTranslations
+                       ? "将翻译当前勾选的有原文句子，并覆盖已有译文。"
+                       : "将翻译当前勾选的、有原文且译文为空的句子。"),
+                selectedSegmentIDs.isEmpty
+                    ? (overwriteExistingTranslations
+                       ? "Translate every sentence with original text and overwrite existing translations."
+                       : "Translate every sentence in this project that has original text and no translation.")
+                    : (overwriteExistingTranslations
+                       ? "Translate the checked sentences with original text and overwrite existing translations."
+                       : "Translate the checked sentences that have original text and no translation.")
+            ))
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Toggle(isOn: $overwriteExistingTranslations) {
+                    Text(lang.text("覆盖已有译文", "Overwrite existing translations"))
+                }
+                .toggleStyle(.checkbox)
+
+                Spacer(minLength: 8)
+
+                Text(lang.text("每批提交", "Batch size"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextField("100", text: $batchSizeText)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 62)
+                Text(lang.text("句", "sentences"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                Text(lang.text("翻译服务", "Service"))
+                    .font(.body.weight(.medium))
+                    .frame(width: 88, alignment: .leading)
+                Picker("", selection: $serviceID) {
+                    ForEach(settings.services) { service in
+                        Text(service.name).tag(Optional(service.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: serviceID) { _, value in
+                    settings.rememberTranslationService(value)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text(lang.text("模型", "Model"))
+                    .font(.body.weight(.medium))
+                    .frame(width: 88, alignment: .leading)
+                let models = serviceID.map { settings.availableModels(for: $0) } ?? []
+                if !models.isEmpty, let serviceID {
+                    Picker("", selection: Binding(
+                        get: { settings.services.first(where: { $0.id == serviceID })?.model ?? "" },
+                        set: { settings.updateService(id: serviceID, model: $0) }
+                    )) {
+                        ForEach(models) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text(selectedService?.model ?? "—")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text(lang.text("目标语言", "Target language"))
+                    .font(.body.weight(.medium))
+                    .frame(width: 88, alignment: .leading)
+                Picker("", selection: $targetLanguage) {
+                    ForEach(TranslationTargetLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: targetLanguage) { _, value in
+                    settings.rememberTranslationTargetLanguage(value)
+                }
+            }
+
+            if let selectedService {
+                HStack(spacing: 8) {
+                    Image(systemName: settings.hasAPIKey(for: selectedService.id)
+                        ? "checkmark.circle.fill"
+                        : "exclamationmark.triangle.fill")
+                        .foregroundColor(settings.hasAPIKey(for: selectedService.id) ? .green : .orange)
+                    Text(settings.hasAPIKey(for: selectedService.id)
+                        ? lang.text("API Key 已配置，将使用 \(selectedService.provider.displayName) / \(selectedService.model)。", "API key is configured. Using \(selectedService.provider.displayName) / \(selectedService.model).")
+                        : lang.text("当前服务尚未配置 API Key，请先在设置中填写。", "This service has no API key. Add it in Settings first."))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "number")
+                    .foregroundColor(.secondary)
+                Text(lang.text("待翻译句子：\(targetSegmentCount) 条", "Sentences to translate: \(targetSegmentCount)"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button(lang.text("取消", "Cancel")) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(lang.text("开始翻译", "Start Translation")) {
+                    startTranslation()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    configuration == nil
+                        || targetSegmentCount == 0
+                        || requestedBatchSize == nil
+                        || engine.isAutoTranslating
+                )
+            }
+        }
+        .padding(14)
+        .frame(width: 430)
+    }
+
+    private func startTranslation() {
+        guard let serviceID, let configuration, let requestedBatchSize else { return }
+        settings.rememberTranslationService(serviceID)
+        settings.rememberTranslationTargetLanguage(targetLanguage)
+        engine.translateMissingTranslations(
+            configuration: configuration,
+            segmentIDs: selectedSegmentIDs.isEmpty ? nil : selectedSegmentIDs,
+            overwriteExistingTranslations: overwriteExistingTranslations,
+            batchSize: requestedBatchSize
+        )
+        dismiss()
     }
 }
 

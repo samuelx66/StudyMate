@@ -31,7 +31,7 @@ public struct SubtitleImportSheet: View {
         VStack(spacing: 0) {
             // 头部标题栏
             HStack {
-                Label(lang.text("导入字幕或文章文本", "Import Subtitles or Text"), systemImage: "square.and.arrow.down")
+                Label(lang.text("导入字幕或文章文本", "Import Subtitles or Text"), systemImage: "captions.bubble")
                     .font(.headline)
                 
                 Spacer()
