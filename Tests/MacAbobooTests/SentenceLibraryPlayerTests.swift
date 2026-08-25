@@ -39,6 +39,35 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         XCTAssertFalse(player.isPlaying)
     }
 
+    func testPlayingIndependentClipStartsAtZeroInsteadOfOriginalTimestamp() async throws {
+        let sourceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryClip-\(UUID().uuidString).m4a")
+        let originalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-MissingOriginal-\(UUID().uuidString).mp4")
+        try Data("self-contained-media".utf8).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let backend = TestMediaPlayerBackend(duration: 3)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entry = SentenceLibraryEntry(
+            originalText: "Independent",
+            translation: "独立片段",
+            sourceMediaName: "original.mp4",
+            sourceMediaPath: originalURL.path,
+            startTime: 120,
+            endTime: 123,
+            mediaFilename: "clip.m4a"
+        )
+
+        player.play(entry, mediaURL: sourceURL)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(backend.loadedURL, sourceURL)
+        XCTAssertEqual(backend.currentTime, 0, accuracy: 0.001)
+        XCTAssertEqual(player.duration, 3, accuracy: 0.001)
+        XCTAssertTrue(player.isPlaying)
+    }
+
     private func makeEntry(path: String, start: Double, end: Double) -> SentenceLibraryEntry {
         SentenceLibraryEntry(
             originalText: "Original",

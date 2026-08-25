@@ -94,6 +94,17 @@ public struct SentenceLibraryView: View {
                             .frame(width: 120)
                     }
 
+                    if !manager.entries.isEmpty {
+                        Button { selectAllVisibleEntries() } label: {
+                            Label(lang.text("全选", "Select All"), systemImage: "checkmark.circle")
+                        }
+                        .disabled(selectedEntryIDs.count == manager.entries.count)
+
+                        Button { invertVisibleEntrySelection() } label: {
+                            Label(lang.text("反选", "Invert Selection"), systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+
                     if !selectedEntryIDs.isEmpty {
                         Button(role: .destructive) { deleteSelectedEntries() } label: {
                             Label(lang.text("删除（\(selectedEntryIDs.count)）", "Delete (\(selectedEntryIDs.count))"), systemImage: "trash")
@@ -108,7 +119,8 @@ public struct SentenceLibraryView: View {
 
                 SentenceLibraryPlaybackBar(
                     player: libraryPlayer,
-                    selectedEntry: selectedEntry
+                    selectedEntry: selectedEntry,
+                    selectedMediaURL: selectedEntry.flatMap(manager.mediaURL(for:))
                 )
 
                 Divider()
@@ -132,7 +144,7 @@ public struct SentenceLibraryView: View {
                                     onSelect: { selectedEntryID = entry.id },
                                     onPlay: {
                                         selectedEntryID = entry.id
-                                        libraryPlayer.play(entry)
+                                        libraryPlayer.play(entry, mediaURL: manager.mediaURL(for: entry))
                                     },
                                     onPreview: {
                                         if let previewURL = manager.previewURL(for: entry) {
@@ -219,6 +231,14 @@ public struct SentenceLibraryView: View {
     private func toggleSelection(_ id: UUID) {
         if selectedEntryIDs.contains(id) { selectedEntryIDs.remove(id) }
         else { selectedEntryIDs.insert(id) }
+    }
+
+    private func selectAllVisibleEntries() {
+        selectedEntryIDs.formUnion(manager.entries.map(\.id))
+    }
+
+    private func invertVisibleEntrySelection() {
+        selectedEntryIDs = selectedEntryIDs.symmetricDifference(Set(manager.entries.map(\.id)))
     }
 
     private func deleteSelectedEntries() {
@@ -374,6 +394,7 @@ private struct SentenceLibraryPlaybackBar: View {
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject var player: SentenceLibraryPlayer
     let selectedEntry: SentenceLibraryEntry?
+    let selectedMediaURL: URL?
 
     private var displayedEntry: SentenceLibraryEntry? {
         player.currentEntry ?? selectedEntry
@@ -383,7 +404,7 @@ private struct SentenceLibraryPlaybackBar: View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
                 Button {
-                    player.togglePlayback(for: selectedEntry)
+                    player.togglePlayback(for: selectedEntry, mediaURL: selectedMediaURL)
                 } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .frame(width: 14)

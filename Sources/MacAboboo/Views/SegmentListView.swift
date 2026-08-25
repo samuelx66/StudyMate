@@ -31,7 +31,104 @@ struct SegmentListFollowState: Equatable {
     }
 }
 
-/// 断句列表区视图（支持字幕导入、选句媒体导出、星标过滤、文本编辑与快捷切分）
+/// 断句列表筛选条件。每个条件都是独立的“启用/不启用”复选项，
+/// 启用多个条件时取交集；筛选值为空或无效时不额外排除句子，避免用户输入过程中列表突然清空。
+struct SegmentListFilterCriteria: Equatable {
+    var requiresOriginal = false
+    var requiresTranslation = false
+    var requiresMinimumDuration = false
+    var minimumDurationText = "5"
+    var requiresWord = false
+    var wordText = ""
+    var requiresBookmark = false
+
+    var hasActiveFilters: Bool {
+        requiresOriginal ||
+        requiresTranslation ||
+        requiresMinimumDuration ||
+        requiresWord ||
+        requiresBookmark
+    }
+
+    func matches(_ segment: SentenceSegment) -> Bool {
+        if requiresOriginal && segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if requiresTranslation && segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if requiresMinimumDuration,
+           let threshold = parsedMinimumDuration,
+           !(segment.duration > threshold) {
+            return false
+        }
+        if requiresWord {
+            let query = wordText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !query.isEmpty,
+               !Self.containsWord(query, in: segment.text),
+               !Self.containsWord(query, in: segment.translation) {
+                return false
+            }
+        }
+        if requiresBookmark && !segment.isBookmarked {
+            return false
+        }
+        return true
+    }
+
+    private var parsedMinimumDuration: Double? {
+        let normalized = minimumDurationText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value >= 0, value.isFinite else { return nil }
+        return value
+    }
+
+    private static func containsWord(_ query: String, in text: String) -> Bool {
+        // 对中文等非 ASCII 文本使用包含匹配；英语/数字使用完整词匹配，
+        // 避免查询 “he” 时误命中 “the”。保留撇号以支持 don't 这类词。
+        guard query.unicodeScalars.allSatisfy(\.isASCII),
+              !query.contains(where: \.isWhitespace) else {
+            return text.localizedCaseInsensitiveContains(query)
+        }
+
+        let tokens = text
+            .lowercased()
+            .split { character in
+                !(character.isLetter || character.isNumber || character == "'" || character == "’")
+            }
+        return tokens.contains {
+            String($0).compare(
+                query,
+                options: [.caseInsensitive, .diacriticInsensitive]
+            ) == .orderedSame
+        }
+    }
+}
+
+@MainActor
+private final class SegmentListExportProgressState: ObservableObject {
+    @Published var progress: SegmentMediaExportProgress?
+    private var generation = UUID()
+
+    func begin(_ progress: SegmentMediaExportProgress) -> UUID {
+        generation = UUID()
+        self.progress = progress
+        return generation
+    }
+
+    func update(_ progress: SegmentMediaExportProgress, generation: UUID) {
+        guard self.generation == generation else { return }
+        self.progress = progress
+    }
+
+    func finish(generation: UUID) {
+        guard self.generation == generation else { return }
+        progress = nil
+    }
+}
+
+/// 断句列表区视图（支持字幕导入、选句媒体导出、多条件筛选、文本编辑与快捷切分）
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang = LanguageManager.shared
@@ -41,14 +138,15 @@ public struct SegmentListView: View {
     @State private var searchText: String = ""
     @State private var showImportSheet: Bool = false
     @State private var showSettingsPopover: Bool = false
-    @State private var filterBookmarkedOnly: Bool = false
+    @State private var filterCriteria = SegmentListFilterCriteria()
+    @State private var showFilterPopover: Bool = false
     @State private var selectedSegmentIDs: Set<UUID> = []
-    @State private var isExporting: Bool = false
     @State private var isAddingToLibrary: Bool = false
     @State private var exportNotice: SegmentExportNotice?
     @State private var cachedDisplayedSegments: [SentenceSegment] = []
     @State private var followState = SegmentListFollowState()
     @State private var scrollSuppressionToken = UUID()
+    @StateObject private var exportProgressState = SegmentListExportProgressState()
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -97,14 +195,28 @@ public struct SegmentListView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
 
-                // 难句过滤筛选开关
-                Button(action: { filterBookmarkedOnly.toggle() }) {
-                    Image(systemName: filterBookmarkedOnly ? "star.fill" : "star")
-                        .foregroundColor(filterBookmarkedOnly ? .yellow : .secondary)
-                        .help(lang.text("只显示星标难句", "Show bookmarked sentences only"))
+                // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
+                Button {
+                    showFilterPopover.toggle()
+                } label: {
+                    Image(systemName: filterCriteria.hasActiveFilters
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease.circle")
+                        .foregroundColor(filterCriteria.hasActiveFilters ? .blue : .secondary)
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
+                .help(lang.text("筛选句子", "Filter sentences"))
+                .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
+                    SegmentFilterPopover(
+                        criteria: $filterCriteria,
+                        lang: lang,
+                        displayedCount: displayedSegments.count,
+                        selectedCount: selectedSegmentIDs.intersection(Set(displayedSegments.map(\.id))).count,
+                        onSelectAll: selectDisplayedSegments,
+                        onInvertSelection: invertDisplayedSegmentSelection
+                    )
+                }
 
                 // 导入字幕按钮
                 Button(action: { showImportSheet = true }) {
@@ -124,7 +236,7 @@ public struct SegmentListView: View {
                         chooseMergedExportDestination()
                     }
                 } label: {
-                    if isExporting {
+                    if exportProgressState.progress != nil {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -134,7 +246,7 @@ public struct SegmentListView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .focusable(false)
-                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || isExporting)
+                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || exportProgressState.progress != nil)
                 .help(lang.text(
                     selectedSegmentIDs.isEmpty ? "请先勾选要导出的句子" : "导出已选句子的 M4A 和 LRC",
                     selectedSegmentIDs.isEmpty ? "Select sentences to export" : "Export selected sentences as M4A and LRC"
@@ -213,6 +325,18 @@ public struct SegmentListView: View {
             .padding(.vertical, 8)
             .background(Color(nsColor: .controlBackgroundColor))
 
+            if let progress = exportProgressState.progress {
+                SegmentListProgressBar(progress: progress)
+            }
+
+            if isAddingToLibrary {
+                SegmentListProgressBar(
+                    fraction: libraryManager.operationProgress?.fraction ?? 0,
+                    phase: libraryManager.operationProgress?.phase ?? lang.text("准备保存句库", "Preparing sentence library"),
+                    currentItem: libraryManager.operationProgress?.currentItem ?? ""
+                )
+            }
+
             // AI 语音识别与智能断句进度指示条
             if engine.isAITranscribing {
                 HStack(spacing: 8) {
@@ -279,11 +403,15 @@ public struct SegmentListView: View {
             if displayedSegments.isEmpty {
                 VStack(spacing: 8) {
                     Spacer()
-                    Image(systemName: filterBookmarkedOnly ? "star.slash" : "text.badge.plus")
+                    Image(systemName: filterCriteria.hasActiveFilters || !searchText.isEmpty
+                        ? "line.3.horizontal.decrease.circle"
+                        : "text.badge.plus")
                         .font(.largeTitle)
                         .foregroundColor(.secondary)
-                    Text(filterBookmarkedOnly
-                        ? lang.text("暂无星标难句", "No bookmarked sentences")
+                    Text(filterCriteria.hasActiveFilters
+                        ? lang.text("没有符合筛选条件的句子", "No sentences match the filters")
+                        : !searchText.isEmpty
+                            ? lang.text("没有符合搜索条件的句子", "No sentences match the search")
                         : lang.text("暂无断句数据", "No sentence data"))
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -375,7 +503,9 @@ public struct SegmentListView: View {
         .onAppear { refreshDisplayedSegments() }
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
         .onChange(of: searchText) { _, _ in refreshDisplayedSegments() }
-        .onChange(of: filterBookmarkedOnly) { _, _ in refreshDisplayedSegments() }
+        .onChange(of: filterCriteria) { _, _ in
+            refreshDisplayedSegments(selectMatching: filterCriteria.hasActiveFilters)
+        }
         .alert(item: $exportNotice) { notice in
             Alert(
                 title: Text(notice.title),
@@ -385,9 +515,9 @@ public struct SegmentListView: View {
         }
     }
 
-    private func refreshDisplayedSegments() {
-        var list = engine.segments
-        if filterBookmarkedOnly { list = list.filter(\.isBookmarked) }
+    private func refreshDisplayedSegments(selectMatching: Bool = false) {
+        let criteriaMatches = engine.segments.filter { filterCriteria.matches($0) }
+        var list = criteriaMatches
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
             list = list.filter {
@@ -396,7 +526,15 @@ public struct SegmentListView: View {
             }
         }
         cachedDisplayedSegments = list
-        selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
+        if selectMatching && filterCriteria.hasActiveFilters {
+            selectedSegmentIDs = Set(list.map(\.id))
+        } else if filterCriteria.hasActiveFilters {
+            // 底层句子被编辑、合并或星标状态变化后，移除已不再符合条件的隐藏选择；
+            // 但保留用户对仍符合条件句子的手动取消勾选。搜索词不参与此集合，避免搜索栏改变导出范围。
+            selectedSegmentIDs.formIntersection(criteriaMatches.lazy.map(\.id))
+        } else {
+            selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
+        }
     }
 
     private func markUserScroll() {
@@ -414,6 +552,15 @@ public struct SegmentListView: View {
         engine.segments.filter { selectedSegmentIDs.contains($0.id) }
     }
 
+    private func selectDisplayedSegments() {
+        selectedSegmentIDs.formUnion(displayedSegments.map(\.id))
+    }
+
+    private func invertDisplayedSegmentSelection() {
+        let displayedIDs = Set(displayedSegments.map(\.id))
+        selectedSegmentIDs = selectedSegmentIDs.symmetricDifference(displayedIDs)
+    }
+
     private func chooseIndividualExportDestination() {
         guard let media = engine.currentMedia, !selectedSegments.isEmpty else { return }
         let panel = NSOpenPanel()
@@ -425,12 +572,13 @@ public struct SegmentListView: View {
         panel.message = lang.text("选择逐句 M4A 和 LRC 的保存位置", "Choose where to save separate M4A and LRC files")
         if panel.runModal() == .OK, let directory = panel.url {
             let segments = selectedSegments
-            performExport {
+            performExport { progress in
                 try SegmentMediaExporter.shared.exportIndividually(
                     mediaURL: media.url,
                     segments: segments,
                     destinationDirectory: directory,
-                    baseName: media.title
+                    baseName: media.title,
+                    progress: progress
                 )
             }
         }
@@ -445,25 +593,36 @@ public struct SegmentListView: View {
         panel.message = lang.text("将生成一个 AAC 编码的 M4A 和一个同名 LRC 字幕", "One AAC-encoded M4A and one matching LRC subtitle will be created")
         if panel.runModal() == .OK, let audioURL = panel.url {
             let segments = selectedSegments
-            performExport {
+            performExport { progress in
                 try SegmentMediaExporter.shared.exportMerged(
                     mediaURL: media.url,
                     segments: segments,
-                    outputAudioURL: audioURL
+                    outputAudioURL: audioURL,
+                    progress: progress
                 )
             }
         }
     }
 
     private func performExport(
-        operation: @escaping @Sendable () throws -> SegmentMediaExportResult
+        operation: @escaping @Sendable (@escaping @Sendable (SegmentMediaExportProgress) -> Void) throws -> SegmentMediaExportResult
     ) {
-        isExporting = true
+        let operationGeneration = exportProgressState.begin(SegmentMediaExportProgress(
+            fraction: 0,
+            completedItems: 0,
+            totalItems: 1,
+            phase: lang.text("准备导出", "Preparing export")
+        ))
+        let progressUpdate: @Sendable (SegmentMediaExportProgress) -> Void = { progress in
+            Task { @MainActor in
+                exportProgressState.update(progress, generation: operationGeneration)
+            }
+        }
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Result { try operation() }
+                Result { try operation(progressUpdate) }
             }.value
-            isExporting = false
+            exportProgressState.finish(generation: operationGeneration)
             switch result {
             case let .success(output):
                 exportNotice = SegmentExportNotice(
@@ -504,6 +663,124 @@ public struct SegmentListView: View {
                 )
             }
         }
+    }
+}
+
+private struct SegmentFilterPopover: View {
+    @Binding var criteria: SegmentListFilterCriteria
+    @ObservedObject var lang: LanguageManager
+    let displayedCount: Int
+    let selectedCount: Int
+    let onSelectAll: () -> Void
+    let onInvertSelection: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(lang.text("句子筛选", "Sentence Filters"))
+                .font(.headline)
+
+            Toggle(isOn: $criteria.requiresOriginal) {
+                Text(lang.text("只显示有原文的句子", "Only sentences with original text"))
+            }
+            .toggleStyle(.checkbox)
+
+            Toggle(isOn: $criteria.requiresTranslation) {
+                Text(lang.text("只显示有译文的句子", "Only sentences with translation"))
+            }
+            .toggleStyle(.checkbox)
+
+            HStack(spacing: 6) {
+                Toggle(isOn: $criteria.requiresMinimumDuration) {
+                    Text(lang.text("只显示时长大于", "Only sentences longer than"))
+                }
+                .toggleStyle(.checkbox)
+
+                TextField("5", text: $criteria.minimumDurationText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 54)
+                    .disabled(!criteria.requiresMinimumDuration)
+
+                Text(lang.text("秒", "sec"))
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                Toggle(isOn: $criteria.requiresWord) {
+                    Text(lang.text("只显示含单词", "Only sentences containing"))
+                }
+                .toggleStyle(.checkbox)
+
+                TextField(lang.text("单词", "word"), text: $criteria.wordText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 92)
+                    .disabled(!criteria.requiresWord)
+            }
+
+            Toggle(isOn: $criteria.requiresBookmark) {
+                Text(lang.text("只显示带星标的句子", "Only starred sentences"))
+            }
+            .toggleStyle(.checkbox)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button(lang.text("全选", "Select All"), action: onSelectAll)
+                    .disabled(displayedCount == 0 || selectedCount == displayedCount)
+                Button(lang.text("反选", "Invert Selection"), action: onInvertSelection)
+                    .disabled(displayedCount == 0)
+                Spacer(minLength: 0)
+                Text("\(selectedCount)/\(displayedCount)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+        }
+        .padding(14)
+        .frame(width: 310)
+    }
+}
+
+private struct SegmentListProgressBar: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let fraction: Double
+    let phase: String
+    let currentItem: String
+
+    init(progress: SegmentMediaExportProgress) {
+        self.fraction = progress.fraction
+        self.phase = progress.phase
+        self.currentItem = progress.currentItem
+    }
+
+    init(fraction: Double, phase: String, currentItem: String) {
+        self.fraction = fraction
+        self.phase = phase
+        self.currentItem = currentItem
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(phase.isEmpty ? lang.text("处理中", "Working") : phase)
+                    .font(.caption2)
+                    .lineLimit(1)
+                if !currentItem.isEmpty {
+                    Text(currentItem)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Text("\(Int(min(1, max(0, fraction)) * 100))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+            ProgressView(value: min(1, max(0, fraction)))
+                .progressViewStyle(.linear)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.accentColor.opacity(0.08))
     }
 }
 

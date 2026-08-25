@@ -20,8 +20,9 @@ public enum SentenceLibraryError: LocalizedError {
 }
 
 /// `.mablib` 是可携带目录包：manifest.json 保存格式版本，Library.sqlite3
-/// 保存可检索字段，Previews/ 保存 JPEG。图片与索引分离可避免数据库因缩略图频繁
-/// 增删而膨胀，同时整个目录包仍可作为一个句库复制、备份和导出。
+/// 保存可检索字段，Previews/ 保存 JPEG，Media/ 保存每条句子的独立 AAC M4A 片段。
+/// 图片、媒体与索引分离，可避免数据库因大对象频繁增删而膨胀；整个目录包复制、
+/// 导出或导入后，句库播放不再依赖原始音视频文件。
 public final class SentenceLibraryStore: @unchecked Sendable {
     public static let shared = SentenceLibraryStore()
 
@@ -69,6 +70,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             let descriptor = SentenceLibraryDescriptor(name: trimmed)
             let packageURL = packageURL(for: descriptor.id)
             try fileManager.createDirectory(at: previewsURL(for: descriptor.id), withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: mediaURL(for: descriptor.id), withIntermediateDirectories: true)
             try writeManifest(descriptor, to: packageURL)
             try withDatabase(libraryID: descriptor.id) { db in
                 try createSchema(in: db)
@@ -96,7 +98,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
                 let sql = """
                 SELECT id, original_text, translation, note, source_media_name,
-                       source_media_path, start_time, end_time, created_at, preview_filename
+                       source_media_path, start_time, end_time, created_at, preview_filename,
+                       media_filename
                 FROM entries\(whereSQL)
                 ORDER BY created_at DESC, rowid DESC;
                 """
@@ -132,7 +135,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         startTime: sqlite3_column_double(statement, 6),
                         endTime: sqlite3_column_double(statement, 7),
                         createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
-                        previewFilename: optionalText(statement, 9)
+                        previewFilename: optionalText(statement, 9),
+                        mediaFilename: optionalText(statement, 10)
                     ))
                 }
                 return result
@@ -143,20 +147,49 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func add(
         entries: [SentenceLibraryEntry],
         previewData: [UUID: Data],
-        to libraryID: UUID
+        to libraryID: UUID,
+        mediaURLs: [UUID: URL] = [:],
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
         guard !entries.isEmpty else { return }
         try queue.sync {
             try validateLibrary(id: libraryID)
             let previewDirectory = previewsURL(for: libraryID)
+            let mediaDirectory = mediaURL(for: libraryID)
             try fileManager.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
             var storedPreviewIDs: Set<UUID> = []
-            for (id, data) in previewData {
-                let destination = previewDirectory.appendingPathComponent("\(id.uuidString).jpg")
-                if (try? data.write(to: destination, options: .atomic)) != nil {
-                    storedPreviewIDs.insert(id)
+            var storedMediaFilenames: Set<String> = []
+            do {
+                for (id, data) in previewData {
+                    let destination = previewDirectory.appendingPathComponent("\(id.uuidString).jpg")
+                    if (try? data.write(to: destination, options: .atomic)) != nil {
+                        storedPreviewIDs.insert(id)
+                    }
                 }
+                for entry in entries {
+                    guard let mediaFilename = entry.mediaFilename else { continue }
+                    guard let sourceURL = mediaURLs[entry.id], fileManager.fileExists(atPath: sourceURL.path) else {
+                        throw SentenceLibraryError.database("缺少句子媒体片段：\(mediaFilename)")
+                    }
+                    let safeFilename = URL(fileURLWithPath: mediaFilename).lastPathComponent
+                    guard safeFilename == mediaFilename, !safeFilename.isEmpty else {
+                        throw SentenceLibraryError.database("句子媒体文件名无效。")
+                    }
+                    let destination = mediaDirectory.appendingPathComponent(safeFilename)
+                    try fileManager.copyItem(at: sourceURL, to: destination)
+                    storedMediaFilenames.insert(safeFilename)
+                }
+            } catch {
+                for id in storedPreviewIDs {
+                    try? fileManager.removeItem(at: previewDirectory.appendingPathComponent("\(id.uuidString).jpg"))
+                }
+                for filename in storedMediaFilenames {
+                    try? fileManager.removeItem(at: mediaDirectory.appendingPathComponent(filename))
+                }
+                throw error
             }
+            progress(0.85)
             do {
                 try withDatabase(libraryID: libraryID) { db in
                     try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
@@ -164,8 +197,9 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         let sql = """
                         INSERT INTO entries (
                             id, original_text, translation, note, source_media_name,
-                            source_media_path, start_time, end_time, created_at, preview_filename
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            source_media_path, start_time, end_time, created_at, preview_filename,
+                            media_filename
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """
                         var statement: OpaquePointer?
                         try prepare(sql, db: db, statement: &statement)
@@ -187,6 +221,11 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                             } else {
                                 sqlite3_bind_null(statement, 10)
                             }
+                            if storedMediaFilenames.contains(entry.mediaFilename ?? ""), let filename = entry.mediaFilename {
+                                bind(filename, at: 11, to: statement)
+                            } else {
+                                sqlite3_bind_null(statement, 11)
+                            }
                             guard sqlite3_step(statement) == SQLITE_DONE else {
                                 throw databaseError(db)
                             }
@@ -201,8 +240,12 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 for id in storedPreviewIDs {
                     try? fileManager.removeItem(at: previewDirectory.appendingPathComponent("\(id.uuidString).jpg"))
                 }
+                for filename in storedMediaFilenames {
+                    try? fileManager.removeItem(at: mediaDirectory.appendingPathComponent(filename))
+                }
                 throw error
             }
+            progress(1)
             try touchManifest(libraryID: libraryID)
         }
     }
@@ -232,6 +275,9 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             }
             for filename in oldEntries.compactMap(\.previewFilename) {
                 try? fileManager.removeItem(at: previewsURL(for: libraryID).appendingPathComponent(filename))
+            }
+            for filename in oldEntries.compactMap(\.mediaFilename) {
+                try? fileManager.removeItem(at: mediaURL(for: libraryID).appendingPathComponent(filename))
             }
             try touchManifest(libraryID: libraryID)
         }
@@ -286,12 +332,23 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         return previewsURL(for: libraryID).appendingPathComponent(filename)
     }
 
+    public func mediaURL(for entry: SentenceLibraryEntry, libraryID: UUID) -> URL? {
+        guard let filename = entry.mediaFilename else { return nil }
+        guard URL(fileURLWithPath: filename).lastPathComponent == filename, !filename.isEmpty else { return nil }
+        let url = mediaURL(for: libraryID).appendingPathComponent(filename)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
     public func packageURL(for id: UUID) -> URL {
         rootURL.appendingPathComponent(id.uuidString, isDirectory: true).appendingPathExtension("mablib")
     }
 
     private func previewsURL(for id: UUID) -> URL {
         packageURL(for: id).appendingPathComponent("Previews", isDirectory: true)
+    }
+
+    private func mediaURL(for id: UUID) -> URL {
+        packageURL(for: id).appendingPathComponent("Media", isDirectory: true)
     }
 
     private func databaseURL(for id: UUID) -> URL {
@@ -333,7 +390,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     private func entriesUnlocked(libraryID: UUID, ids: Set<UUID>) throws -> [SentenceLibraryEntry] {
         try withDatabase(libraryID: libraryID) { db in
             var statement: OpaquePointer?
-            try prepare("SELECT id, preview_filename FROM entries WHERE id = ?;", db: db, statement: &statement)
+            try prepare("SELECT id, preview_filename, media_filename FROM entries WHERE id = ?;", db: db, statement: &statement)
             defer { sqlite3_finalize(statement) }
             var result: [SentenceLibraryEntry] = []
             for id in ids {
@@ -345,7 +402,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         id: id,
                         originalText: "", translation: "", sourceMediaName: "", sourceMediaPath: "",
                         startTime: 0, endTime: 0.05,
-                        previewFilename: optionalText(statement, 1)
+                        previewFilename: optionalText(statement, 1),
+                        mediaFilename: optionalText(statement, 2)
                     ))
                 }
             }
@@ -362,39 +420,46 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             throw SentenceLibraryError.libraryUnavailable
         }
         defer { sqlite3_close_v2(db) }
-        sqlite3_busy_timeout(db, 3_000)
+        sqlite3_busy_timeout(db, 5_000)
         try createSchema(in: db)
         return try operation(db)
     }
 
     private func createSchema(in db: OpaquePointer) throws {
+        try execute("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;", in: db)
         var versionStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &versionStatement, nil) == SQLITE_OK else {
             throw databaseError(db)
         }
         defer { sqlite3_finalize(versionStatement) }
-        if sqlite3_step(versionStatement) == SQLITE_ROW,
-           sqlite3_column_int(versionStatement, 0) >= 1 {
-            return
+        let version: Int32
+        if sqlite3_step(versionStatement) == SQLITE_ROW {
+            version = sqlite3_column_int(versionStatement, 0)
+        } else {
+            version = 0
         }
-        try execute("PRAGMA journal_mode=DELETE;", in: db)
-        try execute("""
-        CREATE TABLE IF NOT EXISTS entries (
-            id TEXT PRIMARY KEY NOT NULL,
-            original_text TEXT NOT NULL DEFAULT '',
-            translation TEXT NOT NULL DEFAULT '',
-            note TEXT NOT NULL DEFAULT '',
-            source_media_name TEXT NOT NULL DEFAULT '',
-            source_media_path TEXT NOT NULL DEFAULT '',
-            start_time REAL NOT NULL,
-            end_time REAL NOT NULL,
-            created_at REAL NOT NULL,
-            preview_filename TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
-        PRAGMA user_version=1;
-        """, in: db)
+        if version == 0 {
+            try execute("""
+            CREATE TABLE IF NOT EXISTS entries (
+                id TEXT PRIMARY KEY NOT NULL,
+                original_text TEXT NOT NULL DEFAULT '',
+                translation TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                source_media_name TEXT NOT NULL DEFAULT '',
+                source_media_path TEXT NOT NULL DEFAULT '',
+                start_time REAL NOT NULL,
+                end_time REAL NOT NULL,
+                created_at REAL NOT NULL,
+                preview_filename TEXT,
+                media_filename TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
+            PRAGMA user_version=2;
+            """, in: db)
+        } else if version == 1 {
+            try execute("ALTER TABLE entries ADD COLUMN media_filename TEXT; PRAGMA user_version=2;", in: db)
+        }
     }
 
     private func prepare(_ sql: String, db: OpaquePointer, statement: inout OpaquePointer?) throws {

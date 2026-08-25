@@ -14,6 +14,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
     private var extendedBackend: MediaPlayerBackend?
     private var activeBackend: MediaPlayerBackend
     private var playbackGeneration = UUID()
+    private var playbackStartTime = 0.0
+    private var playbackEndTime = 0.0
 
     public convenience init() {
         self.init(nativeBackend: AVFoundationPlayerBackend())
@@ -25,8 +27,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
         configureCallbacks(for: nativeBackend)
     }
 
-    public func play(_ entry: SentenceLibraryEntry) {
-        let sourceURL = URL(fileURLWithPath: entry.sourceMediaPath)
+    public func play(_ entry: SentenceLibraryEntry, mediaURL: URL? = nil) {
+        let sourceURL = mediaURL ?? URL(fileURLWithPath: entry.sourceMediaPath)
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             stop()
             errorMessage = "找不到句子的来源媒体文件。"
@@ -39,6 +41,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
         extendedBackend?.pause()
         currentEntry = entry
         duration = max(0.05, entry.endTime - entry.startTime)
+        playbackStartTime = mediaURL == nil ? entry.startTime : 0
+        playbackEndTime = playbackStartTime + duration
         currentTime = 0
         errorMessage = nil
         isPlaying = false
@@ -52,10 +56,10 @@ public final class SentenceLibraryPlayer: ObservableObject {
         )
     }
 
-    public func togglePlayback(for selectedEntry: SentenceLibraryEntry?) {
+    public func togglePlayback(for selectedEntry: SentenceLibraryEntry?, mediaURL: URL? = nil) {
         guard let selectedEntry else { return }
         if currentEntry?.id != selectedEntry.id {
-            play(selectedEntry)
+            play(selectedEntry, mediaURL: mediaURL)
         } else if isPlaying {
             activeBackend.pause()
             isPlaying = false
@@ -70,10 +74,10 @@ public final class SentenceLibraryPlayer: ObservableObject {
     }
 
     public func seek(to relativeTime: Double) {
-        guard let entry = currentEntry else { return }
+        guard currentEntry != nil else { return }
         let clamped = max(0, min(relativeTime, duration))
         currentTime = clamped
-        activeBackend.seek(to: entry.startTime + clamped, completion: nil)
+        activeBackend.seek(to: playbackStartTime + clamped, completion: nil)
     }
 
     public func stop() {
@@ -83,6 +87,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
         currentEntry = nil
         currentTime = 0
         duration = 0
+        playbackStartTime = 0
+        playbackEndTime = 0
         isPlaying = false
         errorMessage = nil
     }
@@ -116,7 +122,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
             }
 
             self.activeBackend = backend
-            backend.seek(to: entry.startTime) { [weak self, weak backend] in
+            backend.seek(to: self.playbackStartTime) { [weak self, weak backend] in
                 Task { @MainActor [weak self, weak backend] in
                     guard let self,
                           let backend,
@@ -147,11 +153,11 @@ public final class SentenceLibraryPlayer: ObservableObject {
             guard let self,
                   let backend,
                   self.activeBackend === backend,
-                  let entry = self.currentEntry,
+                  self.currentEntry != nil,
                   absoluteTime.isFinite else { return }
-            let relativeTime = max(0, absoluteTime - entry.startTime)
+            let relativeTime = max(0, absoluteTime - self.playbackStartTime)
             self.currentTime = min(self.duration, relativeTime)
-            if absoluteTime >= entry.endTime - 0.005 {
+            if absoluteTime >= self.playbackEndTime - 0.005 {
                 backend.pause()
                 self.isPlaying = false
                 self.currentTime = self.duration

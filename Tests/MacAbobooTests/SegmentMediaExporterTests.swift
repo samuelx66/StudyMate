@@ -105,6 +105,36 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertEqual(duration, 1.0, accuracy: 0.12)
     }
 
+    func testIndependentAudioClipStartsAtZeroAndReportsProgress() async throws {
+        guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
+            throw XCTSkip("ffmpeg is required for the media export integration test")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-IndependentClipTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let mediaURL = root.appendingPathComponent("source.wav")
+        try makeTestAudio(at: mediaURL, duration: 3.0)
+        let outputURL = root.appendingPathComponent("clip.m4a")
+        let recorder = ProgressRecorder()
+        let segment = SentenceSegment(index: 4, startTime: 1.0, endTime: 2.0)
+
+        try SegmentMediaExporter(temporaryRootURL: root.appendingPathComponent("runtime-temp"))
+            .exportAudioClip(
+                mediaURL: mediaURL,
+                segment: segment,
+                outputURL: outputURL,
+                progress: { value in recorder.append(value) }
+            )
+
+        let duration = try await AVURLAsset(url: outputURL).load(.duration).seconds
+        XCTAssertEqual(duration, 1.0, accuracy: 0.12)
+        XCTAssertEqual(try XCTUnwrap(recorder.values.first).fraction, 0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(recorder.values.last).fraction, 1, accuracy: 0.0001)
+        XCTAssertTrue(recorder.values.allSatisfy { $0.fraction >= 0 && $0.fraction <= 1 })
+    }
+
     private func makeTestAudio(at url: URL, duration: Double) throws {
         let sampleRate = 16_000.0
         let frameCount = AVAudioFrameCount(sampleRate * duration)
@@ -118,5 +148,16 @@ final class SegmentMediaExporterTests: XCTestCase {
         }
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         try file.write(from: buffer)
+    }
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var values: [SegmentMediaExportProgress] = []
+
+    func append(_ value: SegmentMediaExportProgress) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
     }
 }

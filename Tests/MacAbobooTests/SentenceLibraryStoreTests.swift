@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import MacAbobooKit
 
 final class SentenceLibraryStoreTests: XCTestCase {
@@ -123,5 +124,91 @@ final class SentenceLibraryStoreTests: XCTestCase {
         XCTAssertEqual(importedEntry.translation, entry.translation)
         XCTAssertEqual(importedEntry.sourceMediaName, entry.sourceMediaName)
         XCTAssertEqual(importedEntry.createdAt.timeIntervalSince1970, entry.createdAt.timeIntervalSince1970, accuracy: 0.001)
+    }
+
+    func testIndependentMediaIsStoredAndRemovedWithEntry() throws {
+        let library = try store.createLibrary(name: "独立媒体句库")
+        let entryID = UUID()
+        let entry = SentenceLibraryEntry(
+            id: entryID,
+            originalText: "Portable media",
+            translation: "独立媒体",
+            sourceMediaName: "missing-source.mp4",
+            sourceMediaPath: "/does/not/exist.mp4",
+            startTime: 20,
+            endTime: 21,
+            mediaFilename: "\(entryID.uuidString).m4a"
+        )
+        let sourceURL = temporaryDirectory.appendingPathComponent("exported-clip.m4a")
+        let mediaData = Data("self-contained clip".utf8)
+        try mediaData.write(to: sourceURL)
+
+        try store.add(
+            entries: [entry],
+            previewData: [:],
+            to: library.id,
+            mediaURLs: [entryID: sourceURL]
+        )
+
+        let saved = try XCTUnwrap(store.entries(libraryID: library.id).first)
+        let storedURL = try XCTUnwrap(store.mediaURL(for: saved, libraryID: library.id))
+        XCTAssertEqual(try Data(contentsOf: storedURL), mediaData)
+
+        try store.deleteEntries(ids: [entryID], from: library.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
+    }
+
+    func testVersionOneLibraryMigratesToIndependentMediaSchema() throws {
+        let libraryID = UUID()
+        let packageURL = store.packageURL(for: libraryID)
+        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+        let now = ISO8601DateFormatter().string(from: Date())
+        let manifest: [String: Any] = [
+            "format": SentenceLibraryDescriptor.formatIdentifier,
+            "version": 1,
+            "id": libraryID.uuidString,
+            "name": "旧版句库",
+            "createdAt": now,
+            "updatedAt": now
+        ]
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: packageURL.appendingPathComponent("manifest.json"))
+
+        var database: OpaquePointer?
+        let databaseURL = packageURL.appendingPathComponent("Library.sqlite3")
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let schema = """
+        CREATE TABLE entries (
+            id TEXT PRIMARY KEY NOT NULL,
+            original_text TEXT NOT NULL DEFAULT '',
+            translation TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            source_media_name TEXT NOT NULL DEFAULT '',
+            source_media_path TEXT NOT NULL DEFAULT '',
+            start_time REAL NOT NULL,
+            end_time REAL NOT NULL,
+            created_at REAL NOT NULL,
+            preview_filename TEXT
+        );
+        PRAGMA user_version=1;
+        """
+        XCTAssertEqual(sqlite3_exec(database, schema, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(database)
+        database = nil
+
+        XCTAssertTrue(try store.entries(libraryID: libraryID).isEmpty)
+        let entry = SentenceLibraryEntry(
+            originalText: "Migrated",
+            translation: "已迁移",
+            sourceMediaName: "old.mp4",
+            sourceMediaPath: "/missing.mp4",
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "migrated-\(UUID().uuidString).m4a"
+        )
+        let sourceURL = temporaryDirectory.appendingPathComponent("migrated.m4a")
+        try Data("migrated-media".utf8).write(to: sourceURL)
+        try store.add(entries: [entry], previewData: [:], to: libraryID, mediaURLs: [entry.id: sourceURL])
+        XCTAssertNotNil(try store.mediaURL(for: XCTUnwrap(store.entries(libraryID: libraryID).first), libraryID: libraryID))
     }
 }

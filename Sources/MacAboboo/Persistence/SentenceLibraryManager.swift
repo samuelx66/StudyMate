@@ -10,6 +10,7 @@ public final class SentenceLibraryManager: ObservableObject {
     @Published public private(set) var currentLibraryID: UUID?
     @Published public private(set) var entries: [SentenceLibraryEntry] = []
     @Published public private(set) var isWorking = false
+    @Published public private(set) var operationProgress: SentenceLibraryOperationProgress?
     @Published public private(set) var lastErrorMessage: String?
 
     private let store: SentenceLibraryStore
@@ -19,6 +20,7 @@ public final class SentenceLibraryManager: ObservableObject {
     private var dateFilter: SentenceLibraryDateFilter = .all
     private var selectedFilterDate = Date()
     private var queryTask: Task<Void, Never>?
+    private var operationGeneration = UUID()
 
     public init(
         store: SentenceLibraryStore = .shared,
@@ -106,44 +108,106 @@ public final class SentenceLibraryManager: ObservableObject {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         guard !segments.isEmpty else { return 0 }
         isWorking = true
-        defer { isWorking = false }
+        let generation = UUID()
+        operationGeneration = generation
+        operationProgress = SentenceLibraryOperationProgress(fraction: 0, phase: "准备导出句库音频")
+        defer {
+            if operationGeneration == generation {
+                isWorking = false
+                operationProgress = nil
+            }
+        }
 
         let timestamp = Date()
         let ordered = segments.sorted {
             if $0.startTime == $1.startTime { return $0.index < $1.index }
             return $0.startTime < $1.startTime
         }
-        let prepared = try await Task.detached(priority: .userInitiated) {
+        let sourceURL = media.url
+        let sourceTitle = media.title
+        let sourceIsVideo = media.isVideo
+        let report: @Sendable (Double, String, String) -> Void = { [weak self] fraction, phase, currentItem in
+            Task { @MainActor [weak self] in
+                guard let self, self.operationGeneration == generation else { return }
+                self.operationProgress = SentenceLibraryOperationProgress(
+                    fraction: fraction,
+                    phase: phase,
+                    currentItem: currentItem
+                )
+            }
+        }
+        let prepared = try await Task.detached(priority: .userInitiated) { [store] in
+            let fileManager = FileManager.default
+            guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+                throw SentenceLibraryError.database("无法找到应用支持目录。")
+            }
+            let tempRoot = support
+                .appendingPathComponent("MacAboboo", isDirectory: true)
+                .appendingPathComponent("SentenceLibraryTemp", isDirectory: true)
+            try fileManager.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+            let workDirectory = tempRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: false)
+            defer { try? fileManager.removeItem(at: workDirectory) }
+
+            let exporter = SegmentMediaExporter()
             var entries: [SentenceLibraryEntry] = []
             var previews: [UUID: Data] = [:]
-            let imageGenerator = media.isVideo ? SentencePreviewGenerator(mediaURL: media.url) : nil
-            for segment in ordered {
+            var mediaURLs: [UUID: URL] = [:]
+            let imageGenerator = sourceIsVideo ? SentencePreviewGenerator(mediaURL: sourceURL) : nil
+            let total = max(1, ordered.count)
+            for (offset, segment) in ordered.enumerated() {
                 try Task.checkCancellation()
                 let id = UUID()
+                let mediaFilename = "\(id.uuidString).m4a"
+                let mediaOutputURL = workDirectory.appendingPathComponent(mediaFilename)
+                try exporter.exportAudioClip(
+                    mediaURL: sourceURL,
+                    segment: segment,
+                    outputURL: mediaOutputURL,
+                    progress: { exportProgress in
+                        let itemFraction = (Double(offset) + exportProgress.fraction) / Double(total)
+                        report(itemFraction * 0.82, "导出句库音频", mediaFilename)
+                    }
+                )
+                mediaURLs[id] = mediaOutputURL
                 let preview = imageGenerator?.jpegData(at: (segment.startTime + segment.endTime) / 2)
                 if let preview { previews[id] = preview }
+                report(
+                    0.82 * Double(offset + 1) / Double(total),
+                    sourceIsVideo ? "生成预览并整理音频" : "整理音频片段",
+                    mediaFilename
+                )
                 entries.append(SentenceLibraryEntry(
                     id: id,
                     originalText: segment.text,
                     translation: segment.translation,
                     note: segment.note,
-                    sourceMediaName: media.title,
-                    sourceMediaPath: media.url.path,
+                    sourceMediaName: sourceTitle,
+                    sourceMediaPath: sourceURL.path,
                     startTime: segment.startTime,
                     endTime: segment.endTime,
                     createdAt: timestamp,
-                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg"
+                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg",
+                    mediaFilename: mediaFilename
                 ))
             }
-            return (entries, previews)
+            try Task.checkCancellation()
+            try store.add(
+                entries: entries,
+                previewData: previews,
+                to: libraryID,
+                mediaURLs: mediaURLs,
+                progress: { fraction in
+                    report(0.82 + fraction * 0.18, "写入句库索引", "")
+                }
+            )
+            return entries.count
         }.value
 
-        try await Task.detached(priority: .utility) { [store] in
-            try store.add(entries: prepared.0, previewData: prepared.1, to: libraryID)
-        }.value
+        operationProgress = SentenceLibraryOperationProgress(fraction: 1, phase: "句库保存完成")
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
-        return prepared.0.count
+        return prepared
     }
 
     public func deleteEntries(ids: Set<UUID>) async throws {
@@ -188,6 +252,11 @@ public final class SentenceLibraryManager: ObservableObject {
     public func previewURL(for entry: SentenceLibraryEntry) -> URL? {
         guard let libraryID = currentLibraryID else { return nil }
         return store.previewURL(for: entry, libraryID: libraryID)
+    }
+
+    public func mediaURL(for entry: SentenceLibraryEntry) -> URL? {
+        guard let libraryID = currentLibraryID else { return nil }
+        return store.mediaURL(for: entry, libraryID: libraryID)
     }
 
     private func reloadLibraries(createDefaultIfNeeded: Bool) async {

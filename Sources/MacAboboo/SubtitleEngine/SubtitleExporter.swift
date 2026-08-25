@@ -161,6 +161,29 @@ public struct SegmentMediaExportResult: Sendable {
     public let subtitleFileCount: Int
 }
 
+/// 媒体导出进度。回调始终在导出后台线程触发，调用方应切回主线程更新界面。
+public struct SegmentMediaExportProgress: Sendable, Equatable {
+    public let fraction: Double
+    public let completedItems: Int
+    public let totalItems: Int
+    public let currentItem: String
+    public let phase: String
+
+    public init(
+        fraction: Double,
+        completedItems: Int,
+        totalItems: Int,
+        currentItem: String = "",
+        phase: String = ""
+    ) {
+        self.fraction = min(1, max(0, fraction.isFinite ? fraction : 0))
+        self.completedItems = max(0, completedItems)
+        self.totalItems = max(0, totalItems)
+        self.currentItem = currentItem
+        self.phase = phase
+    }
+}
+
 public enum SegmentMediaExportError: LocalizedError {
     case noSelection
     case ffmpegUnavailable
@@ -195,7 +218,8 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         mediaURL: URL,
         segments: [SentenceSegment],
         destinationDirectory: URL,
-        baseName: String
+        baseName: String,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
     ) throws -> SegmentMediaExportResult {
         let ordered = normalizedSelection(segments)
         guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
@@ -205,12 +229,33 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         )
 
         do {
-            for segment in ordered {
+            let total = ordered.count
+            progress(SegmentMediaExportProgress(
+                fraction: 0,
+                completedItems: 0,
+                totalItems: total,
+                phase: "准备导出"
+            ))
+            for (offset, segment) in ordered.enumerated() {
                 let suffix = String(format: "%04d", max(1, segment.index))
                 let fileBase = "\(sanitizedFileName(baseName))-\(suffix)"
                 let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("m4a")
                 let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
-                try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: audioURL)
+                let itemProgress: @Sendable (Double) -> Void = { fraction in
+                    progress(SegmentMediaExportProgress(
+                        fraction: (Double(offset) + fraction) / Double(total),
+                        completedItems: offset,
+                        totalItems: total,
+                        currentItem: fileBase,
+                        phase: "导出音频"
+                    ))
+                }
+                try exportAudioRange(
+                    mediaURL: mediaURL,
+                    segment: segment,
+                    outputURL: audioURL,
+                    progress: itemProgress
+                )
                 do {
                     let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
                         segments: [segment],
@@ -221,6 +266,13 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                     try? FileManager.default.removeItem(at: audioURL)
                     throw error
                 }
+                progress(SegmentMediaExportProgress(
+                    fraction: Double(offset + 1) / Double(total),
+                    completedItems: offset + 1,
+                    totalItems: total,
+                    currentItem: fileBase,
+                    phase: "写入字幕"
+                ))
             }
         } catch {
             // 该目录由本次操作新建；失败时不留下不完整的半成品。
@@ -238,7 +290,8 @@ public final class SegmentMediaExporter: @unchecked Sendable {
     public func exportMerged(
         mediaURL: URL,
         segments: [SentenceSegment],
-        outputAudioURL: URL
+        outputAudioURL: URL,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
     ) throws -> SegmentMediaExportResult {
         let ordered = normalizedSelection(segments)
         guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
@@ -252,10 +305,44 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             withIntermediateDirectories: true
         )
 
+        progress(SegmentMediaExportProgress(
+            fraction: 0,
+            completedItems: 0,
+            totalItems: 1,
+            currentItem: normalizedOutputURL.lastPathComponent,
+            phase: "导出音频"
+        ))
+
         if ordered.count == 1, let segment = ordered.first {
-            try exportAudioRange(mediaURL: mediaURL, segment: segment, outputURL: normalizedOutputURL)
+            try exportAudioRange(
+                mediaURL: mediaURL,
+                segment: segment,
+                outputURL: normalizedOutputURL,
+                progress: { fraction in
+                    progress(SegmentMediaExportProgress(
+                        fraction: fraction * 0.9,
+                        completedItems: 0,
+                        totalItems: 1,
+                        currentItem: normalizedOutputURL.lastPathComponent,
+                        phase: "导出音频"
+                    ))
+                }
+            )
         } else {
-            try exportConcatenatedAudio(mediaURL: mediaURL, segments: ordered, outputURL: normalizedOutputURL)
+            try exportConcatenatedAudio(
+                mediaURL: mediaURL,
+                segments: ordered,
+                outputURL: normalizedOutputURL,
+                progress: { fraction in
+                    progress(SegmentMediaExportProgress(
+                        fraction: fraction * 0.9,
+                        completedItems: 0,
+                        totalItems: 1,
+                        currentItem: normalizedOutputURL.lastPathComponent,
+                        phase: "合并音频"
+                    ))
+                }
+            )
         }
 
         let subtitleURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("lrc")
@@ -270,6 +357,14 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             throw error
         }
 
+        progress(SegmentMediaExportProgress(
+            fraction: 1,
+            completedItems: 1,
+            totalItems: 1,
+            currentItem: normalizedOutputURL.lastPathComponent,
+            phase: "写入字幕"
+        ))
+
         return SegmentMediaExportResult(
             location: normalizedOutputURL,
             audioFileCount: 1,
@@ -277,28 +372,86 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         )
     }
 
+    /// 导出一个句库独立 AAC M4A 片段。输出时间轴从 0 开始，之后播放不再依赖原媒体。
+    public func exportAudioClip(
+        mediaURL: URL,
+        segment: SentenceSegment,
+        outputURL: URL,
+        progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
+    ) throws {
+        guard segment.duration > 0 else { throw SegmentMediaExportError.noSelection }
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        progress(SegmentMediaExportProgress(
+            fraction: 0,
+            completedItems: 0,
+            totalItems: 1,
+            currentItem: outputURL.lastPathComponent,
+            phase: "导出句库音频"
+        ))
+        try runFFmpeg(
+            arguments: [
+                "-i", mediaURL.path,
+                "-ss", preciseTime(segment.startTime),
+                "-t", preciseTime(segment.duration),
+                "-map", "0:a:0",
+                "-vn",
+                "-codec:a", "aac",
+                "-b:a", "192k",
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart",
+                outputURL.path
+            ],
+            duration: max(0.05, segment.duration),
+            progress: { fraction in
+                progress(SegmentMediaExportProgress(
+                    fraction: fraction * 0.95,
+                    completedItems: 0,
+                    totalItems: 1,
+                    currentItem: outputURL.lastPathComponent,
+                    phase: "导出句库音频"
+                ))
+            }
+        )
+        progress(SegmentMediaExportProgress(
+            fraction: 1,
+            completedItems: 1,
+            totalItems: 1,
+            currentItem: outputURL.lastPathComponent,
+            phase: "句库音频完成"
+        ))
+    }
+
     private func exportAudioRange(
         mediaURL: URL,
         segment: SentenceSegment,
-        outputURL: URL
+        outputURL: URL,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
-        try runFFmpeg(arguments: [
-            "-i", mediaURL.path,
-            "-ss", preciseTime(segment.startTime),
-            "-t", preciseTime(segment.duration),
-            "-map", "0:a:0",
-            "-vn",
-            "-codec:a", "aac",
-            "-b:a", "192k",
-            "-movflags", "+faststart",
-            outputURL.path
-        ])
+        try runFFmpeg(
+            arguments: [
+                "-i", mediaURL.path,
+                "-ss", preciseTime(segment.startTime),
+                "-t", preciseTime(segment.duration),
+                "-map", "0:a:0",
+                "-vn",
+                "-codec:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                outputURL.path
+            ],
+            duration: max(0.05, segment.duration),
+            progress: progress
+        )
     }
 
     private func exportConcatenatedAudio(
         mediaURL: URL,
         segments: [SentenceSegment],
-        outputURL: URL
+        outputURL: URL,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -312,34 +465,66 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         filter += "\(audioLabels)concat=n=\(segments.count):v=0:a=1[out]\n"
         try filter.write(to: filterURL, atomically: true, encoding: .utf8)
 
-        try runFFmpeg(arguments: [
-            "-i", mediaURL.path,
-            "-/filter_complex", filterURL.path,
-            "-map", "[out]",
-            "-vn",
-            "-codec:a", "aac",
-            "-b:a", "192k",
-            "-movflags", "+faststart",
-            outputURL.path
-        ])
+        try runFFmpeg(
+            arguments: [
+                "-i", mediaURL.path,
+                "-/filter_complex", filterURL.path,
+                "-map", "[out]",
+                "-vn",
+                "-codec:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                outputURL.path
+            ],
+            duration: max(0.05, segments.reduce(0) { $0 + $1.duration }),
+            progress: progress
+        )
     }
 
-    private func runFFmpeg(arguments: [String]) throws {
+    private func runFFmpeg(
+        arguments: [String],
+        duration: Double,
+        progress: @escaping @Sendable (Double) -> Void
+    ) throws {
         guard let executable = AudioPCMExtractor.ffmpegExecutableURL() else {
             throw SegmentMediaExportError.ffmpegUnavailable
         }
         let process = Process()
         let errorPipe = Pipe()
         process.executableURL = executable
-        process.arguments = ["-y", "-nostdin", "-hide_banner", "-loglevel", "error"] + arguments
+        process.arguments = [
+            "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-nostats", "-progress", "pipe:2"
+        ] + arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
         try process.run()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        var pending = ""
+        var errorLines: [String] = []
+        let safeDuration = max(0.05, duration.isFinite ? duration : 0.05)
+        while true {
+            let data = errorPipe.fileHandleForReading.readData(ofLength: 4096)
+            if data.isEmpty { break }
+            pending += String(data: data, encoding: .utf8) ?? ""
+            while let newline = pending.firstIndex(of: "\n") {
+                let line = String(pending[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+                pending.removeSubrange(...newline)
+                if line.hasPrefix("out_time_ms="),
+                   let value = Double(line.dropFirst("out_time_ms=".count)) {
+                    progress(min(1, max(0, value / 1_000_000 / safeDuration)))
+                } else if line == "progress=end" {
+                    progress(1)
+                } else if !line.isEmpty, !line.contains("=") {
+                    errorLines.append(line)
+                }
+            }
+        }
+        if !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorLines.append(pending.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            let details = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let details = errorLines.joined(separator: "\n")
             throw SegmentMediaExportError.ffmpegFailed(details)
         }
     }
