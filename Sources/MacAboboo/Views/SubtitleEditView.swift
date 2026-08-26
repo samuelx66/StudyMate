@@ -117,6 +117,14 @@ public struct SubtitleEditView: View {
             saveCurrentSegment()
             loadActiveSegment()
         }
+        .onChange(of: engine.explicitSegmentSelectionRevision) { _, _ in
+            // An explicit keyboard/list/waveform jump is different from the
+            // natural playback clock.  Even when an editor field is focused,
+            // commit the old draft and immediately load the newly selected
+            // sentence so both subtitle fields follow the jump.
+            saveCurrentSegment()
+            loadActiveSegment()
+        }
         .onChange(of: activeSegment) { _, _ in
             if focusedField == nil { loadActiveSegment() }
         }

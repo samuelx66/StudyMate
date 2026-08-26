@@ -257,6 +257,24 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 2)
     }
 
+    func testExplicitSentenceSelectionPublishesEditorSyncRevision() {
+        let engine = makeTestPlaybackEngine()
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0.0, endTime: 2.0),
+            SentenceSegment(index: 2, startTime: 2.0, endTime: 4.0),
+            SentenceSegment(index: 3, startTime: 4.0, endTime: 6.0)
+        ]
+
+        let initialRevision = engine.explicitSegmentSelectionRevision
+        engine.nextSegment()
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.explicitSegmentSelectionRevision, initialRevision + 1)
+
+        engine.previousSegment()
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.explicitSegmentSelectionRevision, initialRevision + 2)
+    }
+
     func testSilentGapDoesNotRepublishUnchangedActiveSegment() {
         let engine = makeTestPlaybackEngine()
         engine.segments = [

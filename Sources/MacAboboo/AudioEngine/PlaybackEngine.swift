@@ -131,6 +131,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     @Published public var segments: [SentenceSegment] = []
+    /// Increments for every explicit user sentence selection (keyboard, list,
+    /// waveform or playback controls).  SubtitleEditView uses this separate
+    /// signal to distinguish an intentional jump from natural playback, so a
+    /// focused editor can load the newly selected sentence without allowing
+    /// the playback clock to overwrite text while the user is typing.
+    @Published public private(set) var explicitSegmentSelectionRevision: Int = 0
     @Published public var activeSegmentIndex: Int? {
         didSet {
             if activeSegmentIndex != oldValue {
@@ -523,6 +529,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
         isWaveformFrozenAtNaturalEnd = false
         activeSegmentIndex = index
+        markExplicitSegmentSelection()
         currentRepeatCount = 1
         updateSecondaryViewportForActiveSegment(force: true)
     }
@@ -540,6 +547,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isWaveformFrozenAtNaturalEnd = false
         canResumePlaybackFromSegmentSelection = false
         activeSegmentIndex = index
+        markExplicitSegmentSelection()
         currentRepeatCount = 1
         updateSecondaryViewportForActiveSegment(force: true)
         seekToTargetSegment(segments[index])
@@ -2491,6 +2499,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
         activeSegmentIndex = index
+        markExplicitSegmentSelection()
         currentRepeatCount = 1
         ensureSegmentVisibleInPrimaryViewport(at: index)
         updateSecondaryViewportForActiveSegment(force: true)
@@ -2500,6 +2509,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func jumpToSegment(id: UUID) {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         jumpToSegment(at: idx)
+    }
+
+    private func markExplicitSegmentSelection() {
+        explicitSegmentSelectionRevision &+= 1
     }
 
     public func previousSegment() {
