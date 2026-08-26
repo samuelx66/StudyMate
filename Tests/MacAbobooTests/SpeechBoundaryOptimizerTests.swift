@@ -572,6 +572,49 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ranges[1].start, 14_720)
     }
 
+    func testIsolatedWhisperWindowsReadOnlyExactSentenceSamples() {
+        let ranges = NativeSpeechRuntime.transcriptionRanges(
+            [
+                VoiceActivitySegment(startTime: 1, endTime: 2),
+                VoiceActivitySegment(startTime: 2, endTime: 3)
+            ],
+            duration: 4,
+            sampleCount: 64_000,
+            hardBoundaries: [1, 2, 3],
+            contextPadding: 0
+        )
+
+        XCTAssertEqual(ranges.count, 2)
+        XCTAssertEqual(ranges[0].start, 16_000)
+        XCTAssertEqual(ranges[0].end, 32_000)
+        XCTAssertEqual(ranges[1].start, 32_000)
+        XCTAssertEqual(ranges[1].end, 48_000)
+    }
+
+    func testIsolatedWhisperWindowsNeverDeduplicateAgainstPreviousSentence() {
+        let tokens = [
+            SpeechToken(
+                text: " again",
+                startTime: 1,
+                endTime: 1.3,
+                recognitionSegmentIndex: 0
+            ),
+            SpeechToken(
+                text: " again",
+                startTime: 1,
+                endTime: 1.3,
+                recognitionSegmentIndex: 1_000_000
+            )
+        ]
+
+        let isolated = NativeSpeechRuntime.finalizedWindowTokens(
+            tokens,
+            isolatedSpeechWindows: true
+        )
+
+        XCTAssertEqual(isolated.count, 2)
+    }
+
     func testWhisperContextResetsAtReliableSpeakerTurnButNotOrdinaryOverlap() {
         let previous = NativeSpeechRuntime.SampleRange(start: 0, end: 17_280)
         let current = NativeSpeechRuntime.SampleRange(start: 14_720, end: 32_000)

@@ -114,6 +114,7 @@ public struct MainContentView: View {
         }
         // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
         .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        .background(WindowTextInputFocusDismissalBridge())
         .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .overlay(alignment: .topTrailing) {

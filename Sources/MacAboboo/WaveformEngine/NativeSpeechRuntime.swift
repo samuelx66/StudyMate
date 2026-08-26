@@ -185,6 +185,7 @@ public actor NativeSpeechRuntime {
         useInternalVAD: Bool = true,
         speechWindows: [VoiceActivitySegment] = [],
         hardWindowBoundaries: [Double] = [],
+        isolatedSpeechWindows: Bool = false,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> SpeechRecognitionTimeline {
         guard pcm.sampleRate == AudioPCMData.requiredSampleRate, !pcm.isEmpty else {
@@ -200,6 +201,7 @@ public actor NativeSpeechRuntime {
                     useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
                     hardWindowBoundaries: hardWindowBoundaries,
+                    isolatedSpeechWindows: isolatedSpeechWindows,
                     progress: progress,
                     forceCPU: false
                 )
@@ -217,6 +219,7 @@ public actor NativeSpeechRuntime {
                     useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
                     hardWindowBoundaries: hardWindowBoundaries,
+                    isolatedSpeechWindows: isolatedSpeechWindows,
                     progress: progress,
                     forceCPU: true
                 )
@@ -232,6 +235,7 @@ public actor NativeSpeechRuntime {
         useInternalVAD: Bool,
         speechWindows: [VoiceActivitySegment],
         hardWindowBoundaries: [Double],
+        isolatedSpeechWindows: Bool,
         progress: @escaping @Sendable (Double) -> Void,
         forceCPU: Bool
     ) async throws -> SpeechRecognitionTimeline {
@@ -274,7 +278,8 @@ public actor NativeSpeechRuntime {
                     effectiveSpeechWindows,
                     duration: pcm.duration,
                     sampleCount: pcm.samples.count,
-                    hardBoundaries: hardWindowBoundaries
+                    hardBoundaries: hardWindowBoundaries,
+                    contextPadding: isolatedSpeechWindows ? 0 : 0.35
                 )
             guard !ranges.isEmpty else {
                 return SpeechRecognitionTimeline(tokens: [], voiceSegments: [], detectedLanguage: "")
@@ -287,13 +292,14 @@ public actor NativeSpeechRuntime {
 
             for (windowIndex, range) in ranges.enumerated() {
                 try Task.checkCancellation()
-                whisperConfiguration.reset_context = Self.shouldResetWhisperContext(
-                    windowIndex: windowIndex,
-                    range: range,
-                    previousRange: windowIndex > 0 ? ranges[windowIndex - 1] : nil,
-                    hardBoundaries: hardWindowBoundaries,
-                    sampleRate: pcm.sampleRate
-                )
+                whisperConfiguration.reset_context = isolatedSpeechWindows
+                    || Self.shouldResetWhisperContext(
+                        windowIndex: windowIndex,
+                        range: range,
+                        previousRange: windowIndex > 0 ? ranges[windowIndex - 1] : nil,
+                        hardBoundaries: hardWindowBoundaries,
+                        sampleRate: pcm.sampleRate
+                    )
                 let progressStart = Double(windowIndex) / Double(ranges.count)
                 let progressSpan = 1.0 / Double(ranges.count)
                 let progressBox = NativeProgressBox { localProgress in
@@ -365,7 +371,8 @@ public actor NativeSpeechRuntime {
                 if detectedLanguage.isEmpty, let languagePointer = result.detected_language {
                     detectedLanguage = String(cString: languagePointer)
                 }
-                if Self.isAutomaticLanguage(language),
+                if !isolatedSpeechWindows,
+                   Self.isAutomaticLanguage(language),
                    Self.isAutomaticLanguage(effectiveLanguage),
                    let languagePointer = result.detected_language {
                     let candidate = String(cString: languagePointer)
@@ -390,7 +397,13 @@ public actor NativeSpeechRuntime {
                 withExtendedLifetime(progressBox) {}
             }
 
-            let tokens = Self.deduplicateWindowTokens(allTokens)
+            // Isolated sentence recognition must not compare one sentence's
+            // words with another sentence. In particular, intentional repeated
+            // words at adjacent sentence edges must never be removed.
+            let tokens = Self.finalizedWindowTokens(
+                allTokens,
+                isolatedSpeechWindows: isolatedSpeechWindows
+            )
             let voiceSegments = useInternalVAD ? internalVoiceAnalysis.segments : speechWindows
             return SpeechRecognitionTimeline(
                 tokens: tokens,
@@ -440,7 +453,8 @@ public actor NativeSpeechRuntime {
         _ input: [VoiceActivitySegment],
         duration: Double,
         sampleCount: Int,
-        hardBoundaries: [Double] = []
+        hardBoundaries: [Double] = [],
+        contextPadding: Double = 0.35
     ) -> [SampleRange] {
         guard duration > 0, sampleCount > 0 else { return [] }
         let normalized = input.compactMap { segment -> (start: Double, end: Double)? in
@@ -455,7 +469,7 @@ public actor NativeSpeechRuntime {
         // connected words, but cap each inference window to keep timestamps
         // stable and memory bounded on long recordings.
         let mergeGap = 0.20
-        let context = 0.35
+        let context = max(0, contextPadding)
         let maximumWindow = 24.0
         var merged: [(start: Double, end: Double)] = []
         for interval in normalized {
@@ -523,6 +537,17 @@ public actor NativeSpeechRuntime {
         // here also keeps the fallback path deterministic when two windows
         // disagree and both alternatives must be retained for the optimizer.
         return output.sorted {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }
+    }
+
+    static func finalizedWindowTokens(
+        _ input: [SpeechToken],
+        isolatedSpeechWindows: Bool
+    ) -> [SpeechToken] {
+        guard isolatedSpeechWindows else { return deduplicateWindowTokens(input) }
+        return input.sorted {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
             return $0.startTime < $1.startTime
         }

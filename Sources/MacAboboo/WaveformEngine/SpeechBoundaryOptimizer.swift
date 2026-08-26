@@ -6,6 +6,14 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
 
     public init() {}
 
+    /// Formats Whisper tokens with the same spacing and punctuation rules used
+    /// by intelligent segmentation. Manual original-text regeneration reuses
+    /// this path so its subtitle text is identical to text produced during a
+    /// normal intelligent segmentation run.
+    public func joinedRecognizedText(_ tokens: [SpeechToken]) -> String {
+        joinTokenText(tokens)
+    }
+
     /// Attach an already-produced Whisper transcript to existing acoustic
     /// ranges without changing those ranges. Kept for import/legacy callers;
     /// the main pipeline now performs local semantic/acoustic fusion directly.

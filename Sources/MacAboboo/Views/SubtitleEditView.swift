@@ -16,6 +16,7 @@ public struct SubtitleEditView: View {
     @State private var originalText: String = ""
     @State private var translationText: String = ""
     @State private var currentSegmentId: UUID? = nil
+    @State private var editingSegmentSnapshot: SentenceSegment?
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -30,10 +31,8 @@ public struct SubtitleEditView: View {
 
     /// 输入框聚焦期间固定显示正在编辑的句子；播放指针跨句不能替换输入内容。
     private var displayedSegment: SentenceSegment? {
-        if focusedField != nil,
-           let currentSegmentId,
-           let editing = engine.segments.first(where: { $0.id == currentSegmentId }) {
-            return editing
+        if focusedField != nil, let editingSegmentSnapshot {
+            return editingSegmentSnapshot
         }
         return activeSegment
     }
@@ -137,10 +136,12 @@ public struct SubtitleEditView: View {
     private func loadActiveSegment() {
         if let seg = activeSegment {
             currentSegmentId = seg.id
+            editingSegmentSnapshot = seg
             originalText = seg.text
             translationText = seg.translation
         } else {
             currentSegmentId = nil
+            editingSegmentSnapshot = nil
             originalText = ""
             translationText = ""
         }

@@ -134,7 +134,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var activeSegmentIndex: Int? {
         didSet {
             if activeSegmentIndex != oldValue {
-                currentRepeatCount = 1
                 updateSecondaryViewportForActiveSegment()
             }
         }
@@ -201,6 +200,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private struct ExplicitSegmentSelection {
         let segmentID: UUID
         var hasCompletedSeek: Bool
+        var seekCompletedAtUptime: TimeInterval?
+        /// A repeated sentence cannot legitimately reach its end before this
+        /// uptime. AVPlayer can deliver a queued pre-seek end timestamp well
+        /// after the first valid post-seek frame, so a short fixed debounce is
+        /// insufficient for protecting the repeat counter.
+        var minimumValidEndUptime: TimeInterval?
+        /// Highest in-range media timestamp observed after a repeat seek.
+        /// A single queued old end frame must not qualify as real playback.
+        var maximumObservedTargetTime: Double
     }
     /// AVPlayer may complete an exact seek a fraction of a frame before a
     /// sentence boundary. Preserve an explicitly clicked sentence across that
@@ -1185,6 +1193,223 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         scheduleIdleModelRelease()
     }
 
+    /// Re-runs Whisper against the existing sentence time ranges without
+    /// changing sentence boundaries, translations, bookmarks, or notes.
+    /// Passing nil (or an empty set) processes every sentence; otherwise only
+    /// the checked sentence IDs are overwritten.
+    public func regenerateOriginalText(segmentIDs: Set<UUID>? = nil) {
+        guard let media = currentMedia, !segments.isEmpty else { return }
+        guard !isAITranscribing else { return }
+        guard !isAutoTranslating else {
+            lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                ? "请先等待当前翻译任务完成或取消翻译。"
+                : "Wait for the current translation task to finish or cancel it first."
+            return
+        }
+
+        let requestedIDs: Set<UUID>?
+        if let segmentIDs, !segmentIDs.isEmpty {
+            requestedIDs = segmentIDs
+        } else {
+            requestedIDs = nil
+        }
+        let targets = segments.filter { requestedIDs == nil || requestedIDs?.contains($0.id) == true }
+        guard !targets.isEmpty else { return }
+
+        let modelManager = WhisperModelManager.shared
+        let modelLevel = modelManager.selectedModelLevel
+        guard modelManager.isModelDownloaded(modelLevel) else {
+            lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                ? "所选 Whisper 模型尚未下载，请先在设置中下载模型。"
+                : "The selected Whisper model has not been downloaded. Download it in Settings first."
+            return
+        }
+
+        let mediaURL = media.url.standardizedFileURL
+        let modelURL = modelManager.modelFileURL(for: modelLevel)
+        let sessionID = mediaSessionID
+        let requestID = UUID()
+        let targetIDs = Set(targets.map(\.id))
+        let recognitionLanguage = speechRecognitionLanguage
+        let isChinese = LanguageManager.shared.currentLanguage == .zh
+        let preparingStatus = isChinese
+            ? "正在准备重新生成原文…"
+            : "Preparing to regenerate original text…"
+        let recognizingStatus = isChinese
+            ? "Whisper 正在重新生成原文…"
+            : "Whisper is regenerating original text…"
+
+        segmentationTask?.cancel()
+        segmentationRequestID = requestID
+        modelIdleUnloadTask?.cancel()
+        lastErrorMessage = nil
+        segmentationWarningMessage = nil
+        isAITranscribing = true
+        aiTranscriptionProgress = 0
+        aiTranscriptionStatusText = preparingStatus
+
+        segmentationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let pcm = try await AudioPCMExtractor.shared.extract(from: mediaURL) { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.mediaSessionID == sessionID,
+                              self.segmentationRequestID == requestID else { return }
+                        self.aiTranscriptionProgress = min(0.18, max(0, progress) * 0.18)
+                    }
+                }
+                try Task.checkCancellation()
+                guard self.mediaSessionID == sessionID,
+                      self.segmentationRequestID == requestID,
+                      self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+
+                self.aiTranscriptionStatusText = recognizingStatus
+                let speechWindows = targets.map {
+                    VoiceActivitySegment(
+                        startTime: $0.startTime,
+                        endTime: $0.endTime,
+                        confidence: 1
+                    )
+                }
+                // Every existing sentence edge is a hard recognition-window
+                // boundary. Regeneration uses strict isolation: Whisper reads
+                // only the samples inside each current sentence, clears its
+                // context for every sentence, and never deduplicates against a
+                // previously recognized sentence.
+                let hardBoundaries = Array(Set(targets.flatMap { [$0.startTime, $0.endTime] })).sorted()
+                let timeline = try await NativeSpeechRuntime.shared.transcribe(
+                    pcm: pcm,
+                    modelURL: modelURL,
+                    language: recognitionLanguage,
+                    configuration: SpeechSegmentationMode.intelligent.profile.vad,
+                    useInternalVAD: false,
+                    speechWindows: speechWindows,
+                    hardWindowBoundaries: hardBoundaries,
+                    isolatedSpeechWindows: true
+                ) { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.mediaSessionID == sessionID,
+                              self.segmentationRequestID == requestID else { return }
+                        self.aiTranscriptionProgress = 0.18 + min(1, max(0, progress)) * 0.80
+                    }
+                }
+                try Task.checkCancellation()
+                guard self.mediaSessionID == sessionID,
+                      self.segmentationRequestID == requestID,
+                      self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+
+                // If a target boundary changed while Whisper was running, its
+                // result describes an obsolete time range and must not be
+                // written into the edited timeline.
+                let timelineStillMatches = targets.allSatisfy { target in
+                    guard let current = self.segments.first(where: { $0.id == target.id }) else { return false }
+                    return abs(current.startTime - target.startTime) <= 0.001
+                        && abs(current.endTime - target.endTime) <= 0.001
+                }
+                guard timelineStillMatches else {
+                    self.lastErrorMessage = isChinese
+                        ? "识别期间目标句子的时间轴发生变化，未覆盖原文，请重新执行。"
+                        : "The target sentence timeline changed during recognition. Original text was not overwritten; run it again."
+                    self.isAITranscribing = false
+                    self.aiTranscriptionStatusText = ""
+                    self.segmentationTask = nil
+                    self.scheduleIdleModelRelease()
+                    return
+                }
+
+                let recognizedTexts = Self.recognizedOriginalTexts(
+                    for: targets,
+                    tokens: timeline.tokens
+                )
+                self.segments = Self.replacingOriginalTexts(
+                    in: self.segments,
+                    targetIDs: targetIDs,
+                    recognizedTexts: recognizedTexts
+                )
+                self.persistCurrentProject()
+                self.aiTranscriptionProgress = 1
+                self.isAITranscribing = false
+                self.aiTranscriptionStatusText = ""
+                self.segmentationTask = nil
+                self.scheduleIdleModelRelease()
+            } catch is CancellationError {
+                guard self.segmentationRequestID == requestID else { return }
+                self.isAITranscribing = false
+                self.aiTranscriptionStatusText = ""
+                self.segmentationTask = nil
+                self.scheduleIdleModelRelease()
+            } catch {
+                guard self.mediaSessionID == sessionID,
+                      self.segmentationRequestID == requestID else { return }
+                self.lastErrorMessage = error.localizedDescription
+                self.isAITranscribing = false
+                self.aiTranscriptionStatusText = ""
+                self.segmentationTask = nil
+                self.scheduleIdleModelRelease()
+            }
+        }
+    }
+
+    /// Assigns each Whisper token to the target sentence with the greatest
+    /// source-time overlap, then formats it using the normal subtitle rules.
+    /// The dictionary deliberately contains an empty value for targets where
+    /// Whisper found no text so confirmed regeneration truly overwrites them.
+    static func recognizedOriginalTexts(
+        for targets: [SentenceSegment],
+        tokens: [SpeechToken]
+    ) -> [UUID: String] {
+        let orderedTargets = targets.sorted {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }
+        var grouped = Dictionary(uniqueKeysWithValues: orderedTargets.map { ($0.id, [SpeechToken]()) })
+
+        for token in tokens.sorted(by: {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }) {
+            let midpoint = (token.startTime + token.endTime) / 2
+            var bestTarget: SentenceSegment?
+            var bestScore = 0.0
+            for target in orderedTargets {
+                let overlap = max(
+                    0,
+                    min(token.endTime, target.endTime) - max(token.startTime, target.startTime)
+                )
+                let containsPointToken = token.endTime - token.startTime <= 0.001
+                    && midpoint >= target.startTime - 0.001
+                    && midpoint <= target.endTime + 0.001
+                let score = overlap > 0 ? overlap : (containsPointToken ? 0.000_001 : 0)
+                if score > bestScore {
+                    bestScore = score
+                    bestTarget = target
+                }
+            }
+            if let bestTarget, bestScore > 0 {
+                grouped[bestTarget.id, default: []].append(token)
+            }
+        }
+
+        return Dictionary(uniqueKeysWithValues: orderedTargets.map { target in
+            let text = SpeechBoundaryOptimizer.shared.joinedRecognizedText(grouped[target.id] ?? [])
+            return (target.id, text)
+        })
+    }
+
+    static func replacingOriginalTexts(
+        in segments: [SentenceSegment],
+        targetIDs: Set<UUID>,
+        recognizedTexts: [UUID: String]
+    ) -> [SentenceSegment] {
+        var updated = segments
+        for index in updated.indices where targetIDs.contains(updated[index].id) {
+            updated[index].text = recognizedTexts[updated[index].id] ?? ""
+        }
+        return updated
+    }
+
     /// 取消当前自动翻译请求。媒体切换、重新断句和字幕重新导入时调用，
     /// 防止旧请求返回后把译文写入新的工程。
     public func cancelAutomaticTranslation() {
@@ -1602,6 +1827,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
         isWaveformFrozenAtNaturalEnd = false
         explicitSegmentSelection = nil
+        // A user/timeline seek starts a new repeat cycle. Internal repeat
+        // seeks deliberately bypass this public entry so decoder callbacks
+        // cannot reset the in-progress 2/3 or 3/3 count merely by making the
+        // active sentence index flicker across an adjacent boundary.
+        currentRepeatCount = 1
         performSeek(to: seconds, completion: completion)
     }
 
@@ -1727,11 +1957,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// and would otherwise resolve back to the previous sentence.
     private func seekToTargetSegment(
         _ segment: SentenceSegment,
+        protectRepeatCycle: Bool = false,
         completion: (@Sendable () -> Void)? = nil
     ) {
         explicitSegmentSelection = ExplicitSegmentSelection(
             segmentID: segment.id,
-            hasCompletedSeek: false
+            hasCompletedSeek: false,
+            seekCompletedAtUptime: nil,
+            minimumValidEndUptime: protectRepeatCycle ? .infinity : nil,
+            maximumObservedTargetTime: segment.startTime
         )
         performSeek(to: segment.startTime, completion: completion)
     }
@@ -1774,8 +2008,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.seekTimeoutTask?.cancel()
                 self.seekTimeoutTask = nil
                 let backendTime = backend.currentTime
+                self.markExplicitSelectionSeekCompleted()
                 if backendTime.isFinite, backendTime >= 0 {
-                    self.explicitSegmentSelection?.hasCompletedSeek = true
                     self.currentTime = backendTime
                     self.updateActiveSegment(for: backendTime)
                 }
@@ -1805,6 +2039,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                   self.activeBackend === backend,
                   self.isSeeking else { return }
             self.seekTimeoutTask = nil
+            self.markExplicitSelectionSeekCompleted()
             self.isSeeking = false
             if self.wantsPlayback {
                 backend.playbackRate = self.playbackRate
@@ -1813,6 +2048,21 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
             completion?()
         }
+    }
+
+    private func markExplicitSelectionSeekCompleted() {
+        guard var selection = explicitSegmentSelection else { return }
+        let completedAt = ProcessInfo.processInfo.systemUptime
+        selection.hasCompletedSeek = true
+        selection.seekCompletedAtUptime = completedAt
+        if selection.minimumValidEndUptime != nil,
+           let target = segments.first(where: { $0.id == selection.segmentID }) {
+            let effectiveRate = max(0.5, Double(playbackRate))
+            let expectedPlaybackDuration = target.duration / effectiveRate
+            selection.minimumValidEndUptime =
+                completedAt + max(0.12, expectedPlaybackDuration - 0.12)
+        }
+        explicitSegmentSelection = selection
     }
 
     public func seekBy(offset: Double) {
@@ -1849,6 +2099,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
 
+        // This check must run before the ordinary sentence-end branch below:
+        // a queued pre-seek frame already carries the target's end timestamp,
+        // so consulting it only from updateActiveSegment would be too late.
+        recordRepeatSeekPlaybackProgress(at: time)
+        settleExplicitSelectionAfterPlaybackProgress(at: time)
+        if shouldIgnoreStaleSentenceEndAfterSeek(at: time) { return }
+
         guard let activeIdx = activeSegmentIndex, activeIdx >= 0, activeIdx < segments.count else {
             updateActiveSegment(for: time)
             return
@@ -1863,7 +2120,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if needsRepeat {
                 triggerSentenceRepeat(for: currentSeg)
             } else {
-                currentRepeatCount = 1
                 if shadowingPauseRatio > 0 {
                     let pauseDuration = max(0.5, currentSeg.duration * shadowingPauseRatio)
                     startShadowingPause(duration: pauseDuration) { [weak self] in
@@ -1897,7 +2153,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             startShadowingPause(duration: pauseDuration) { [weak self] in
                 guard let self = self else { return }
                 self.currentRepeatCount += 1
-                self.seekToTargetSegment(segment) {
+                self.seekToTargetSegment(segment, protectRepeatCycle: true) {
                     Task { @MainActor [weak self] in
                         self?.play()
                     }
@@ -1905,7 +2161,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         } else {
             currentRepeatCount += 1
-            seekToTargetSegment(segment)
+            seekToTargetSegment(segment, protectRepeatCycle: true)
         }
     }
 
@@ -2075,11 +2331,26 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     // callback from undoing the user's explicit selection.
                     let settleTolerance = 0.08
                     if explicitSelection.hasCompletedSeek,
-                       time >= target.startTime + settleTolerance {
+                       time >= target.startTime + settleTolerance,
+                       explicitSelection.minimumValidEndUptime == nil {
                         explicitSegmentSelection = nil
                     }
                     return
                 }
+
+                // AVPlayer can deliver one queued pre-seek timestamp from the
+                // old sentence end immediately after a repeat seek completes.
+                // With a shadowing pause that stale frame otherwise looks like
+                // a freshly completed repeat and starts the same sentence's
+                // pause again forever. A repeat target remains the visual
+                // active sentence until `handlePlaybackBoundary` accepts a
+                // real completion; paused/seek callbacks must never switch
+                // the list or either waveform to the adjacent sentence.
+                if explicitSelection.minimumValidEndUptime != nil,
+                   time >= target.endTime {
+                    return
+                }
+                if shouldIgnoreStaleSentenceEndAfterSeek(at: time) { return }
             }
             explicitSegmentSelection = nil
         }
@@ -2125,6 +2396,65 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return false
         }
         return index == 0 || time >= segments[index - 1].endTime
+    }
+
+    private func shouldIgnoreStaleSentenceEndAfterSeek(at time: Double) -> Bool {
+        guard shadowingPauseRatio > 0,
+              let selection = explicitSegmentSelection,
+              selection.hasCompletedSeek,
+              let completedAt = selection.seekCompletedAtUptime,
+              let target = segments.first(where: { $0.id == selection.segmentID }),
+              time >= target.endTime else { return false }
+        let elapsed = ProcessInfo.processInfo.systemUptime - completedAt
+        if let minimumValidEndUptime = selection.minimumValidEndUptime {
+            let effectiveRate = max(0.5, Double(playbackRate))
+            let expectedPlaybackDuration = target.duration / effectiveRate
+            // A genuine completion needs both enough real playback time and
+            // an in-range progress sample close to the target end. The latter
+            // rejects AVPlayer's isolated queued pre-seek end frames, which
+            // otherwise make the UI jump to the adjacent sentence mid-repeat.
+            let progressTolerance = min(0.06, max(0.015, target.duration * 0.08))
+            let hasReachedTargetEnd =
+                selection.maximumObservedTargetTime >= target.endTime - progressTolerance
+            let hasPlayedLongEnough =
+                ProcessInfo.processInfo.systemUptime >= minimumValidEndUptime &&
+                elapsed >= max(0.05, expectedPlaybackDuration - 0.04)
+            return !(hasPlayedLongEnough && hasReachedTargetEnd)
+        }
+        let effectiveRate = max(0.5, Double(playbackRate))
+        let expectedPlaybackDuration = target.duration / effectiveRate
+        let staleCallbackWindow = min(0.40, max(0.12, expectedPlaybackDuration * 0.40))
+        return elapsed >= 0 && elapsed < staleCallbackWindow
+    }
+
+    private func recordRepeatSeekPlaybackProgress(at time: Double) {
+        guard var selection = explicitSegmentSelection,
+              selection.minimumValidEndUptime != nil,
+              selection.hasCompletedSeek,
+              let target = segments.first(where: { $0.id == selection.segmentID }),
+              time >= target.startTime - 0.025,
+              time < target.endTime else { return }
+        if time > selection.maximumObservedTargetTime {
+            selection.maximumObservedTargetTime = time
+            explicitSegmentSelection = selection
+        }
+    }
+
+    private func settleExplicitSelectionAfterPlaybackProgress(at time: Double) {
+        guard let selection = explicitSegmentSelection,
+              selection.hasCompletedSeek,
+              let target = segments.first(where: { $0.id == selection.segmentID }) else { return }
+        // Repeat seeks retain their target through the whole playback cycle.
+        // This makes late AVPlayer frames presentation-inert: the boundary
+        // state machine may decide whether they are real completions, but
+        // they can never make the list or waveform flicker to the next row.
+        if selection.minimumValidEndUptime != nil {
+            return
+        }
+        let settleTolerance = min(0.08, target.duration * 0.25)
+        if time >= target.startTime + settleTolerance, time < target.endTime {
+            explicitSegmentSelection = nil
+        }
     }
 
     // MARK: - 断句快捷操作、难句收藏与书签
@@ -2448,10 +2778,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func updateSegmentText(id: UUID, text: String, translation: String? = nil) {
         if let idx = segments.firstIndex(where: { $0.id == id }) {
-            segments[idx].text = text
-            if let t = translation {
-                segments[idx].translation = t
+            var changed = false
+            if segments[idx].text != text {
+                segments[idx].text = text
+                changed = true
             }
+            if let t = translation, segments[idx].translation != t {
+                segments[idx].translation = t
+                changed = true
+            }
+            guard changed else { return }
             scheduleDebouncedPersistence()
         }
     }

@@ -26,6 +26,7 @@ public enum MacAbobooShortcutID: String, CaseIterable, Identifiable, Sendable {
     case mute
     case followActiveSentence
     case filterSentences
+    case regenerateOriginalText
     case translateSentences
     case importSubtitles
     case exportMenu
@@ -99,6 +100,7 @@ public enum MacAbobooShortcutCatalog {
         .init(id: .mute, chineseName: "静音 / 取消静音", englishName: "Mute / Unmute", keyDisplay: "⌘⇧M"),
         .init(id: .followActiveSentence, chineseName: "播放时自动跟随当前句", englishName: "Follow Active Sentence During Playback", keyDisplay: "⌘⇧F"),
         .init(id: .filterSentences, chineseName: "筛选句子", englishName: "Filter Sentences", keyDisplay: "⌘⇧L"),
+        .init(id: .regenerateOriginalText, chineseName: "重新生成原文", englishName: "Regenerate Original Text", keyDisplay: "⌘⇧T"),
         .init(id: .translateSentences, chineseName: "翻译句子", englishName: "Translate Sentences", keyDisplay: "⌘T"),
         .init(id: .importSubtitles, chineseName: "导入字幕", englishName: "Import Subtitles", keyDisplay: "⌘⇧I"),
         .init(id: .exportMenu, chineseName: "打开导出菜单", englishName: "Open Export Menu", keyDisplay: "⌘⌥E"),

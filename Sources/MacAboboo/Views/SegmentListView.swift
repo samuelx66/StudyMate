@@ -121,6 +121,7 @@ public struct SegmentListView: View {
     @State private var showTranslationPopover: Bool = false
     @State private var filterCriteria = SegmentListFilterCriteria()
     @State private var showFilterPopover: Bool = false
+    @State private var showRegenerateOriginalConfirmation: Bool = false
     @State private var selectedSegmentIDs: Set<UUID> = []
     @State private var isAddingToLibrary: Bool = false
     @State private var exportNotice: SegmentExportNotice?
@@ -207,6 +208,32 @@ public struct SegmentListView: View {
                         onInvertSelection: invertDisplayedSegmentSelection
                     )
                 }
+
+                // 按现有时间轴重新运行 Whisper，只覆盖原文；未勾选时处理全部句子。
+                Button {
+                    showRegenerateOriginalConfirmation = true
+                } label: {
+                    Image(systemName: "waveform.and.mic")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .disabled(
+                    engine.currentMedia == nil
+                        || engine.segments.isEmpty
+                        || engine.isAITranscribing
+                        || engine.isAutoTranslating
+                )
+                .help(MacAbobooShortcutCatalog.help(
+                    validSelectedSegmentIDs.isEmpty
+                        ? lang.text("重新生成全部句子的原文", "Regenerate original text for all sentences")
+                        : lang.text(
+                            "重新生成已选 \(validSelectedSegmentIDs.count) 个句子的原文",
+                            "Regenerate original text for \(validSelectedSegmentIDs.count) selected sentences"
+                        ),
+                    shortcut: .regenerateOriginalText
+                ))
+                .keyboardShortcut("t", modifiers: [.command, .shift])
 
                 // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
                 Button {
@@ -505,6 +532,36 @@ public struct SegmentListView: View {
         .sheet(isPresented: $showImportSheet) {
             SubtitleImportSheet(engine: engine)
         }
+        .confirmationDialog(
+            validSelectedSegmentIDs.isEmpty
+                ? lang.text("重新生成全部原文？", "Regenerate all original text?")
+                : lang.text("重新生成已选原文？", "Regenerate selected original text?"),
+            isPresented: $showRegenerateOriginalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                validSelectedSegmentIDs.isEmpty
+                    ? lang.text(
+                        "覆盖并重新生成全部 \(engine.segments.count) 句",
+                        "Overwrite and regenerate all \(engine.segments.count) sentences"
+                    )
+                    : lang.text(
+                        "覆盖并重新生成已选 \(validSelectedSegmentIDs.count) 句",
+                        "Overwrite and regenerate \(validSelectedSegmentIDs.count) selected sentences"
+                    ),
+                role: .destructive
+            ) {
+                engine.regenerateOriginalText(
+                    segmentIDs: validSelectedSegmentIDs.isEmpty ? nil : validSelectedSegmentIDs
+                )
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(lang.text(
+                "Whisper 将按现有时间轴重新识别并覆盖已有原文。译文、断句时间和其他句子数据不会改变。",
+                "Whisper will recognize the existing time ranges again and overwrite original text. Translations, sentence timing, and other sentence data will not change."
+            ))
+        }
         .onAppear { refreshDisplayedSegments() }
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
         .onChange(of: searchText) { _, _ in refreshDisplayedSegments() }
@@ -649,6 +706,10 @@ public struct SegmentListView: View {
 
     private var selectedSegments: [SentenceSegment] {
         engine.segments.filter { selectedSegmentIDs.contains($0.id) }
+    }
+
+    private var validSelectedSegmentIDs: Set<UUID> {
+        selectedSegmentIDs.intersection(Set(engine.segments.map(\.id)))
     }
 
     private func selectDisplayedSegments() {
@@ -977,12 +1038,6 @@ private struct SegmentExportNotice: Identifiable {
 
 /// 单行断句单元格
 struct SegmentRowView: View {
-    private enum EditField: Hashable {
-        case original
-        case translation
-        case done
-    }
-
     let seg: SentenceSegment
     let isActive: Bool
     let isSelectedForExport: Bool
@@ -999,9 +1054,7 @@ struct SegmentRowView: View {
 
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
-    @State private var tempOriginalText: String = ""
-    @State private var tempTranslationText: String = ""
-    @FocusState private var focusedField: EditField?
+    @State private var editSessionID = UUID()
     @ObservedObject private var lang = LanguageManager.shared
 
     var body: some View {
@@ -1165,7 +1218,19 @@ struct SegmentRowView: View {
 
                     // 第二行：分为两个区域，左边显示原文，右边显示译文
                     if isEditing {
-                        editingFields
+                        SegmentInlineSubtitleEditor(
+                            originalText: seg.text,
+                            translationText: seg.translation,
+                            onFinish: { original, translation in
+                                guard isEditing else { return }
+                                onSaveText(original, translation)
+                                isEditing = false
+                            },
+                            onCancel: {
+                                isEditing = false
+                            }
+                        )
+                        .id(editSessionID)
                     } else {
                         HStack(alignment: .top, spacing: 6) {
                             // 左边区域：原文（若无输入则显示默认占位 Sentence #）
@@ -1216,69 +1281,98 @@ struct SegmentRowView: View {
     }
 
     private func beginEditing() {
-        tempOriginalText = seg.text
-        tempTranslationText = seg.translation
+        editSessionID = UUID()
         isEditing = true
-        focusedField = nil
-        // 编辑区域在下一次布局后才会出现，延迟设置焦点
-        // 可确保点击编辑按钮后始终落入原文输入框。
-        DispatchQueue.main.async {
-            guard isEditing else { return }
-            focusedField = .original
-        }
+    }
+}
+
+/// 输入状态与复杂的句子行渲染树隔离。每次按键只重绘这三个轻量控件，
+/// 不再重建整行时间戳、按钮、标签和背景，长列表中编辑也能即时跟手。
+private struct SegmentInlineSubtitleEditor: View {
+    private enum EditField: Hashable {
+        case original
+        case translation
+        case done
     }
 
-    private var editingFields: some View {
+    @ObservedObject private var lang = LanguageManager.shared
+    @State private var originalText: String
+    @State private var translationText: String
+    @State private var isResolved = false
+    @FocusState private var focusedField: EditField?
+    let onFinish: (String, String) -> Void
+    let onCancel: () -> Void
+
+    init(
+        originalText: String,
+        translationText: String,
+        onFinish: @escaping (String, String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _originalText = State(initialValue: originalText)
+        _translationText = State(initialValue: translationText)
+        self.onFinish = onFinish
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
         HStack(spacing: 4) {
-            TextField(lang.text("原文…", "Original text…"), text: $tempOriginalText)
+            TextField(lang.text("原文…", "Original text…"), text: $originalText)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
                 .focused($focusedField, equals: .original)
-                .onKeyPress(.tab) {
-                    moveEditFocus(from: .original)
-                }
-                .onSubmit {
-                    focusedField = .translation
-                }
+                .onKeyPress(.tab) { moveFocus(from: .original) }
+                .onSubmit { focusedField = .translation }
 
-            TextField(lang.text("译文…", "Translation…"), text: $tempTranslationText)
+            TextField(lang.text("译文…", "Translation…"), text: $translationText)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
                 .focused($focusedField, equals: .translation)
-                .onKeyPress(.tab) {
-                    moveEditFocus(from: .translation)
-                }
-                .onSubmit {
-                    finishEditing()
-                }
+                .onKeyPress(.tab) { moveFocus(from: .translation) }
+                .onSubmit { finish() }
 
-            Button(lang.text("完成", "Done"), action: finishEditing)
+            Button(lang.text("完成", "Done"), action: finish)
                 .controlSize(.mini)
                 .focusable(true)
                 .focused($focusedField, equals: .done)
-                .onKeyPress(.tab) {
-                    moveEditFocus(from: .done)
+                .onKeyPress(.tab) { moveFocus(from: .done) }
+                .onKeyPress(.return) {
+                    finish()
+                    return .handled
                 }
         }
-        .onChange(of: focusedField) { oldField, newField in
-            if oldField != nil, newField == nil {
-                finishEditing()
+        .onAppear {
+            DispatchQueue.main.async {
+                guard !isResolved else { return }
+                focusedField = .original
             }
+        }
+        .onKeyPress(.escape) {
+            cancel()
+            return .handled
+        }
+        .onExitCommand(perform: cancel)
+        .onChange(of: focusedField) { oldField, newField in
+            if oldField != nil, newField == nil { finish() }
         }
     }
 
-    private func finishEditing() {
-        guard isEditing else { return }
-        onSaveText(tempOriginalText, tempTranslationText)
-        isEditing = false
-        focusedField = nil
+    private func finish() {
+        guard !isResolved else { return }
+        isResolved = true
+        onFinish(originalText, translationText)
     }
 
-    private func moveEditFocus(from field: EditField) -> KeyPress.Result {
+    private func cancel() {
+        guard !isResolved else { return }
+        isResolved = true
+        onCancel()
+    }
+
+    private func moveFocus(from field: EditField) -> KeyPress.Result {
         let order: [EditField] = [.original, .translation, .done]
         guard let currentIndex = order.firstIndex(of: field) else { return .ignored }
-        let nextIndex = (currentIndex + 1) % order.count
-        focusedField = order[nextIndex]
+        focusedField = order[(currentIndex + 1) % order.count]
         return .handled
     }
 }

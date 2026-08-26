@@ -1026,6 +1026,159 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.currentRepeatCount, 2)
     }
 
+    func testContinuousThreeRepeatsWithShadowingPauseAdvancesToNextSentence() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("continuous-shadowing-repeat.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 3
+        engine.shadowingPauseRatio = 0.25
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // First playback completes, pauses for shadowing, then seeks to #1.
+        native.emitTime(1)
+        XCTAssertTrue(engine.isShadowingPaused)
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // Simulate AVPlayer's queued pre-seek sentence-end frame. It must not
+        // immediately start another pause/repeat cycle.
+        native.emitTime(1)
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        native.emitTime(0.2)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        native.emitTime(0.95)
+
+        // Second real playback and its stale post-seek frame.
+        native.emitTime(1)
+        XCTAssertTrue(engine.isShadowingPaused)
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(engine.currentRepeatCount, 3)
+        native.emitTime(1)
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 3)
+        native.emitTime(0.2)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        native.emitTime(0.95)
+
+        // The third real completion pauses once, then advances to sentence #2.
+        native.emitTime(1)
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 3)
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 1)
+        XCTAssertEqual(native.currentTime, 1, accuracy: 0.001)
+    }
+
+    func testDelayedPreSeekEndFrameDoesNotResetShadowingRepeatCycle() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("delayed-shadowing-frame.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 3
+        engine.shadowingPauseRatio = 0.25
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 2),
+            SentenceSegment(index: 2, startTime: 2.2, endTime: 3)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        native.emitTime(2)
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertFalse(engine.isShadowingPaused)
+
+        // Real AVPlayer can deliver this pre-seek end frame more than 400 ms
+        // after the repeat seek. It is still impossible for a two-second
+        // sentence to have genuinely completed by then.
+        try await Task.sleep(nanoseconds: 550_000_000)
+        native.emitTime(2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertFalse(engine.isShadowingPaused)
+    }
+
+    func testTransientActiveIndexChangeCannotResetRepeatProgress() throws {
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10)
+        )
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1.1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.currentRepeatCount = 2
+
+        // AVPlayer may briefly report a queued timestamp from the adjacent
+        // sentence and then return to the repeated target sentence.
+        engine.activeSegmentIndex = 1
+        engine.activeSegmentIndex = 0
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+    }
+
+    func testRepeatSeekEndFrameCannotVisuallySelectAdjacentSentenceWhilePaused() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("repeat-visual-stability.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 3
+        engine.shadowingPauseRatio = 0.25
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        native.emitTime(1)
+        try await Task.sleep(nanoseconds: 750_000_000)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+
+        // The renderer can still receive a delayed end timestamp while the
+        // player is paused. It must not visually select sentence #2.
+        engine.isShadowingPaused = true
+        engine.updateActiveSegment(for: 1)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+    }
+
     func testNextSegmentNearBoundaryDoesNotRevertToPreviousSentenceInSingleLoop() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1327,6 +1480,71 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.segments.map(\.endTime), [4, 11])
         XCTAssertEqual(engine.segments.map(\.text), ["", ""])
         XCTAssertEqual(engine.segments.map(\.translation), ["New subtitle", "Another subtitle"])
+    }
+
+    func testRegeneratedOriginalTextOverwritesOnlyTargetsAndPreservesSentenceMetadata() {
+        let first = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 2,
+            text: "Keep original",
+            translation: "保留译文",
+            note: "note",
+            isNavigationBookmarked: true,
+            isBookmarked: true,
+            speakerID: 3
+        )
+        let second = SentenceSegment(
+            index: 2,
+            startTime: 2,
+            endTime: 4,
+            text: "Old original",
+            translation: "原有译文",
+            note: "second note",
+            speakerID: 5
+        )
+        let tokens = [
+            SpeechToken(text: " New", startTime: 2.1, endTime: 2.5),
+            SpeechToken(text: " sentence", startTime: 2.6, endTime: 3.3),
+            SpeechToken(text: ".", startTime: 3.3, endTime: 3.4)
+        ]
+
+        let recognized = PlaybackEngine.recognizedOriginalTexts(for: [second], tokens: tokens)
+        let updated = PlaybackEngine.replacingOriginalTexts(
+            in: [first, second],
+            targetIDs: [second.id],
+            recognizedTexts: recognized
+        )
+
+        XCTAssertEqual(updated[0], first)
+        XCTAssertEqual(updated[1].text, "New sentence.")
+        XCTAssertEqual(updated[1].translation, second.translation)
+        XCTAssertEqual(updated[1].note, second.note)
+        XCTAssertEqual(updated[1].startTime, second.startTime)
+        XCTAssertEqual(updated[1].endTime, second.endTime)
+        XCTAssertEqual(updated[1].speakerIDs, second.speakerIDs)
+    }
+
+    func testRegeneratedOriginalTextClearsExistingTargetWhenWhisperFindsNoText() {
+        let segment = SentenceSegment(
+            index: 1,
+            startTime: 1,
+            endTime: 2,
+            text: "Stale text",
+            translation: "译文"
+        )
+
+        let recognized = PlaybackEngine.recognizedOriginalTexts(for: [segment], tokens: [])
+        let updated = PlaybackEngine.replacingOriginalTexts(
+            in: [segment],
+            targetIDs: [segment.id],
+            recognizedTexts: recognized
+        )
+
+        XCTAssertEqual(updated[0].text, "")
+        XCTAssertEqual(updated[0].translation, "译文")
+        XCTAssertEqual(updated[0].startTime, 1)
+        XCTAssertEqual(updated[0].endTime, 2)
     }
 
     private func temporaryTestDirectory() -> URL {
