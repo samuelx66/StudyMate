@@ -254,40 +254,7 @@ public struct MainContentView: View {
                 .keyboardShortcut("p", modifiers: [.command, .shift])
 
             }
-
-            // 2. 变速播放单独成组，位于播放控制组和视频字幕组之间。
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
-                        Button(action: { engine.playbackRate = speed }) {
-                            if abs(engine.playbackRate - speed) < 0.01 {
-                                Label(String(format: "%.2fx", speed), systemImage: "checkmark")
-                            } else {
-                                Text(String(format: "%.2fx", speed))
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    Button(action: { engine.playbackRate = 1.0 }) {
-                        Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "gauge.with.needle")
-                        Text(String(format: "%.2fx", engine.playbackRate))
-                            .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    }
-                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
-                }
-                .help(MacAbobooShortcutCatalog.help(
-                    lang.text("调节播放语速", "Playback rate"),
-                    shortcut: .playbackRateMenu
-                ))
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-            }
-
+            
             // 3. 视频播放区原文、译文和字体设置为同一组。
             ToolbarItemGroup(placement: .primaryAction) {
 
@@ -335,18 +302,41 @@ public struct MainContentView: View {
                 
             }
 
-            // 4. 工作区视图显示/隐藏开关，使用系统原生工具栏分组。
+            // 2. 变速播放单独成组，位于播放控制组和视频字幕组之间。
             ToolbarItemGroup(placement: .primaryAction) {
-                Button(action: {
-                    togglePlaylist()
-                }) {
-                    Image(systemName: "music.note.list")
+                Menu {
+                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                        Button(action: { engine.playbackRate = speed }) {
+                            if abs(engine.playbackRate - speed) < 0.01 {
+                                Label(String(format: "%.2fx", speed), systemImage: "checkmark")
+                            } else {
+                                Text(String(format: "%.2fx", speed))
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    Button(action: { engine.playbackRate = 1.0 }) {
+                        Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "gauge.with.needle")
+                        Text(String(format: "%.2fx", engine.playbackRate))
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
+                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
                 }
                 .help(MacAbobooShortcutCatalog.help(
-                    lang.text("显示或隐藏播放列表", "Show or hide playlist"),
-                    shortcut: .togglePlaylist
+                    lang.text("调节播放语速", "Playback rate"),
+                    shortcut: .playbackRateMenu
                 ))
-                .keyboardShortcut("p", modifiers: [.option])
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+
+            // 4. 工作区视图显示/隐藏开关，使用系统原生工具栏分组。
+            ToolbarItemGroup(placement: .primaryAction) {
                 
                 Button(action: {
                     withAnimation(Self.workspacePanelAnimation) {
@@ -377,6 +367,17 @@ public struct MainContentView: View {
                     shortcut: .toggleSubtitleEditor
                 ))
                 .keyboardShortcut("s", modifiers: [.option])
+                
+                Button(action: {
+                    togglePlaylist()
+                }) {
+                    Image(systemName: "music.note.list")
+                }
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("显示或隐藏播放列表", "Show or hide playlist"),
+                    shortcut: .togglePlaylist
+                ))
+                .keyboardShortcut("p", modifiers: [.option])
                 
                 Button(action: {
                     withAnimation(Self.workspacePanelAnimation) {
