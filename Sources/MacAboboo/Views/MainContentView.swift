@@ -40,6 +40,7 @@ public struct MainContentView: View {
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
     @ObservedObject private var libraryManager = SentenceLibraryManager.shared
     @ObservedObject private var statusCenter = MainStatusCenter.shared
+    @ObservedObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     
@@ -54,12 +55,13 @@ public struct MainContentView: View {
     @State private var playlistAnimationToken = UUID()
     @State private var isWaveformsVisible: Bool = true
     @State private var isSubtitleEditVisible: Bool = false
+    @State private var isVideoSubtitleFontSettingsPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @AppStorage("MacAboboo.ShowStatusBar") private var isStatusBarVisible: Bool = false
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "macaboboo_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "macaboboo_playlist_width") : 360
     
     public init() {}
-    
+
     public var body: some View {
         VStack(spacing: 0) {
             HSplitView {
@@ -196,38 +198,7 @@ public struct MainContentView: View {
                     "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File (⌘1 / ⌘2 / ⌘3 / ⌘4)"
                 ))
                 
-                // 2. 播放倍速切换下拉菜单
-                Menu {
-                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
-                        Button(action: { engine.playbackRate = speed }) {
-                            if abs(engine.playbackRate - speed) < 0.01 {
-                                Label(String(format: "%.2fx", speed), systemImage: "checkmark")
-                            } else {
-                                Text(String(format: "%.2fx", speed))
-                            }
-                        }
-                    }
-                    
-                    Divider()
-                    
-                    Button(action: { engine.playbackRate = 1.0 }) {
-                        Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "gauge.with.needle")
-                        Text(String(format: "%.2fx", engine.playbackRate))
-                            .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    }
-                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
-                }
-                .help(MacAbobooShortcutCatalog.help(
-                    lang.text("调节播放语速", "Playback rate"),
-                    shortcut: .playbackRateMenu
-                ))
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-
-                // 3. 单句复读次数下拉菜单
+                // 2. 单句复读次数下拉菜单
                 Menu {
                     ForEach(repeatOptions, id: \.count) { option in
                         Button(action: {
@@ -255,7 +226,7 @@ public struct MainContentView: View {
                 ))
                 .keyboardShortcut("c", modifiers: [.command, .shift])
 
-                // 4. 句末跟读停顿下拉菜单
+                // 3. 句末跟读停顿下拉菜单
                 Menu {
                     ForEach(shadowingPauseOptions, id: \.ratio) { option in
                         Button(action: {
@@ -281,8 +252,91 @@ public struct MainContentView: View {
                     shortcut: .shadowingPauseMenu
                 ))
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            }
+
+            // 2. 变速播放单独成组，位于播放控制组和视频字幕组之间。
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                        Button(action: { engine.playbackRate = speed }) {
+                            if abs(engine.playbackRate - speed) < 0.01 {
+                                Label(String(format: "%.2fx", speed), systemImage: "checkmark")
+                            } else {
+                                Text(String(format: "%.2fx", speed))
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    Button(action: { engine.playbackRate = 1.0 }) {
+                        Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "gauge.with.needle")
+                        Text(String(format: "%.2fx", engine.playbackRate))
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
+                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
+                }
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("调节播放语速", "Playback rate"),
+                    shortcut: .playbackRateMenu
+                ))
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+
+            // 3. 视频播放区原文、译文和字体设置为同一组。
+            ToolbarItemGroup(placement: .primaryAction) {
+
+                // 视频播放区字幕控制：原文、译文分别显示/隐藏，
+                // 字体设置在 popover 中独立配置两种字幕的字体与样式。
+                Button {
+                    videoSubtitleSettings.showOriginal.toggle()
+                } label: {
+                    Image(systemName: videoSubtitleSettings.showOriginal ? "text.bubble.fill" : "text.bubble")
+                }
+                .help(MacAbobooShortcutCatalog.help(
+                    videoSubtitleSettings.showOriginal
+                        ? lang.text("隐藏视频原文字幕", "Hide video original subtitles")
+                        : lang.text("显示视频原文字幕", "Show video original subtitles"),
+                    shortcut: .toggleVideoOriginalSubtitle
+                ))
+                .keyboardShortcut("o", modifiers: [.command, .option])
+
+                Button {
+                    videoSubtitleSettings.showTranslation.toggle()
+                } label: {
+                    Image(systemName: videoSubtitleSettings.showTranslation ? "character.bubble.fill" : "character.bubble")
+                }
+                .help(MacAbobooShortcutCatalog.help(
+                    videoSubtitleSettings.showTranslation
+                        ? lang.text("隐藏视频译文字幕", "Hide video translated subtitles")
+                        : lang.text("显示视频译文字幕", "Show video translated subtitles"),
+                    shortcut: .toggleVideoTranslationSubtitle
+                ))
+                .keyboardShortcut("t", modifiers: [.command, .option])
+
+                Button {
+                    isVideoSubtitleFontSettingsPresented.toggle()
+                } label: {
+                    Image(systemName: "textformat")
+                }
+                .help(MacAbobooShortcutCatalog.help(
+                    lang.text("设置视频字幕字体", "Set video subtitle fonts"),
+                    shortcut: .videoSubtitleFontSettings
+                ))
+                .keyboardShortcut("f", modifiers: [.command, .option])
+                .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) {
+                    VideoSubtitleFontSettingsPopover()
+                }
                 
-                // 5. 工作区视图显示/隐藏开关（标准工具栏动作按钮，无持久背景色）
+            }
+
+            // 4. 工作区视图显示/隐藏开关，使用系统原生工具栏分组。
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button(action: {
                     togglePlaylist()
                 }) {

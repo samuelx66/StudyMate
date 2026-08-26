@@ -99,6 +99,13 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
         onTimeUpdate?(time, duration)
     }
 
+    func emitFinished(at time: Double? = nil) {
+        if let time {
+            currentTime = max(0, min(time, duration))
+        }
+        onFinished?()
+    }
+
     func emitError(_ error: Error) {
         onError?(error)
     }

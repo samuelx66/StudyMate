@@ -191,6 +191,28 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.segments.count, 2)
     }
 
+    func testSegmentMutationsRefreshSecondaryViewportWhenActiveIDIsRetained() {
+        let engine = makeTestPlaybackEngine()
+        engine.duration = 60
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 4)
+        let second = SentenceSegment(index: 2, startTime: 4, endTime: 8)
+        engine.segments = [first, second]
+        engine.activeSegmentIndex = 0
+
+        let initialEnd = engine.secondaryViewport.end
+        engine.splitSegment(at: 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertLessThan(engine.secondaryViewport.end, initialEnd)
+
+        engine.mergeSegmentWithNext(at: 0)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.secondaryViewport.end, initialEnd, accuracy: 0.0001)
+
+        engine.deleteSegment(at: 1)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.secondaryViewport.end, initialEnd, accuracy: 0.0001)
+    }
+
     func testBoundaryAnchorsMoveIndependently() {
         let engine = makeTestPlaybackEngine()
         engine.duration = 60.0
@@ -930,6 +952,38 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(native.currentTime, 16.0, accuracy: 0.001)
         XCTAssertEqual(engine.primaryViewport.start, initialViewport.start, accuracy: 0.001)
         XCTAssertEqual(engine.primaryViewport.end, initialViewport.end, accuracy: 0.001)
+    }
+
+    func testSingleSegmentModeRepeatsLastSentenceWhenBackendFinishesWithoutFinalTimeTick() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("last-sentence-finished-callback.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .singleSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 20)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+
+        // AVPlayer/libmpv may report finished without a preceding time update
+        // at the exact final subtitle boundary.
+        native.emitFinished(at: 20)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 16.0, accuracy: 0.001)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(native.isPlaying)
     }
 
     func testPauseAfterSegmentMode() async throws {

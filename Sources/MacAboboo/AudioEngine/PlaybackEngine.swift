@@ -320,6 +320,30 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         backend.onFinished = { [weak self, weak backend] in
             guard let self, self.activeBackend === backend else { return }
             let hadPlaybackIntent = self.wantsPlayback
+
+            // The final sentence can end at the media duration, so some
+            // backends deliver `onFinished` before a final time tick reaches
+            // handlePlaybackBoundary.  In single-sentence mode that callback
+            // must start another cycle of the selected sentence instead of
+            // taking the normal natural-end path and stopping playback.
+            let backendTime = backend?.currentTime ?? self.currentTime
+            if self.loopMode == .singleSegment,
+               hadPlaybackIntent,
+               !self.isSeeking,
+               let activeIndex = self.activeSegmentIndex,
+               self.segments.indices.contains(activeIndex),
+               activeIndex == self.segments.count - 1 {
+                let activeSegment = self.segments[activeIndex]
+                if activeSegment.endTime > 0,
+                   max(self.currentTime, backendTime) >= activeSegment.endTime - 0.05 {
+                    self.isWaveformFrozenAtNaturalEnd = false
+                    self.canResumePlaybackFromSegmentSelection = false
+                    self.wantsPlayback = true
+                    self.triggerSentenceRepeat(for: activeSegment)
+                    return
+                }
+            }
+
             self.isPlaying = false
             if self.loopMode == .all {
                 // 全篇循环是一次不连续的时间跳转。媒体结束时主波形通常还停在
@@ -2639,6 +2663,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments.sort { $0.startTime < $1.startTime }
         reindexSegments()
         activeSegmentIndex = segments.firstIndex(where: { $0.id == newSeg.id })
+        refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
     }
 
@@ -2652,6 +2677,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         } else {
             activeSegmentIndex = min(index, segments.count - 1)
         }
+        refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
     }
 
@@ -2705,6 +2731,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments.insert(contentsOf: [seg1, seg2], at: idx)
         reindexSegments()
         activeSegmentIndex = idx
+        refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
     }
 
@@ -2744,6 +2771,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments.insert(contentsOf: [seg1, seg2], at: idx)
         reindexSegments()
         activeSegmentIndex = idx
+        refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
     }
 
@@ -2771,6 +2799,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segments[index] = merged
         reindexSegments()
         activeSegmentIndex = index
+        refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
     }
 
@@ -2787,6 +2816,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func mergeSegmentWithPrevious(id: UUID) {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
         mergeSegmentWithPrevious(at: idx)
+    }
+
+    /// 删除、拆分或合并后，即使活动句仍然使用同一个 UUID，也必须重新
+    /// 计算次波形图视口，因为该句的起止时间可能已经发生变化。
+    private func refreshSecondaryViewportAfterSegmentMutation() {
+        guard activeSegmentIndex != nil else {
+            lastSecondarySegmentId = nil
+            secondaryViewport = (0, 5)
+            return
+        }
+        updateSecondaryViewportForActiveSegment(force: true)
     }
 
     public func updateSegmentText(id: UUID, text: String, translation: String? = nil) {

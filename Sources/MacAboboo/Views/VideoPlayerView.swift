@@ -67,6 +67,10 @@ public struct VideoPlayerView: View {
                     EmptyMediaPlaceholder()
                 }
 
+                // 当前断句的原文与译文覆盖层。它独立于播放控制面板，
+                // 两行字幕可分别拖动，位置和字体由工具栏设置持久化管理。
+                VideoSubtitleOverlay(engine: engine)
+
                 if engine.isMediaLoading {
                     VStack(spacing: 8) {
                         ProgressView()
