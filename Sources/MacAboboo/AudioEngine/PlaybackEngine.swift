@@ -321,27 +321,28 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard let self, self.activeBackend === backend else { return }
             let hadPlaybackIntent = self.wantsPlayback
 
-            // The final sentence can end at the media duration, so some
-            // backends deliver `onFinished` before a final time tick reaches
-            // handlePlaybackBoundary.  In single-sentence mode that callback
-            // must start another cycle of the selected sentence instead of
-            // taking the normal natural-end path and stopping playback.
-            let backendTime = backend?.currentTime ?? self.currentTime
+            // Some backends deliver `onFinished` without a final time tick,
+            // and their last reported time can still be a stale frame.  In
+            // single-sentence mode the end callback itself is authoritative:
+            // repeat the currently active sentence instead of relying on a
+            // fragile timestamp comparison before entering the natural-end
+            // stop path.
             if self.loopMode == .singleSegment,
                hadPlaybackIntent,
-               !self.isSeeking,
-               let activeIndex = self.activeSegmentIndex,
-               self.segments.indices.contains(activeIndex),
-               activeIndex == self.segments.count - 1 {
-                let activeSegment = self.segments[activeIndex]
-                if activeSegment.endTime > 0,
-                   max(self.currentTime, backendTime) >= activeSegment.endTime - 0.05 {
-                    self.isWaveformFrozenAtNaturalEnd = false
-                    self.canResumePlaybackFromSegmentSelection = false
-                    self.wantsPlayback = true
-                    self.triggerSentenceRepeat(for: activeSegment)
-                    return
+               !self.segments.isEmpty {
+                let targetIndex: Int
+                if let activeIndex = self.activeSegmentIndex,
+                   self.segments.indices.contains(activeIndex) {
+                    targetIndex = activeIndex
+                } else {
+                    targetIndex = self.segments.count - 1
                 }
+                self.isWaveformFrozenAtNaturalEnd = false
+                self.canResumePlaybackFromSegmentSelection = false
+                self.wantsPlayback = true
+                self.isPlaying = false
+                self.triggerSentenceRepeat(for: self.segments[targetIndex])
+                return
             }
 
             self.isPlaying = false

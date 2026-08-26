@@ -977,7 +977,45 @@ final class PlaybackEngineTests: XCTestCase {
 
         // AVPlayer/libmpv may report finished without a preceding time update
         // at the exact final subtitle boundary.
+        // Deliberately report a stale time to ensure the finished callback,
+        // rather than a fragile end-time comparison, drives the repeat.
+        native.emitFinished(at: 0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 16.0, accuracy: 0.001)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(native.isPlaying)
+    }
+
+    func testSingleSegmentFinishDuringPendingSeekStillRestartsCurrentSentence() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("last-sentence-pending-seek.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20, automaticallyCompletesSeeks: false)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .singleSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 16, endTime: 20)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.jumpToSegment(at: 1)
+        engine.play()
+
+        // A real backend can report the item-end notification while the
+        // final precise seek is still being settled. The notification must
+        // not fall through to the natural-end stop path.
         native.emitFinished(at: 20)
+        native.completeNextSeek() // superseded selection seek
+        native.completeNextSeek() // repeat seek requested by onFinished
         await Task.yield()
 
         XCTAssertEqual(engine.activeSegmentIndex, 1)
