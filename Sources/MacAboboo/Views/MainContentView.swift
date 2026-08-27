@@ -712,14 +712,21 @@ public struct MainContentView: View {
     private func handleCloseCurrentMediaRequest(_: Notification) {
         hidePlaylist()
         engine.closeCurrentMedia()
-        // 主窗口是独立的媒体工作区；关闭媒体后销毁它，再按需打开欢迎窗口。
+        // 主窗口是独立的媒体工作区；关闭媒体后完全销毁并释放主窗口，再重新载入欢迎首屏。
         if let mainWindow = NSApp.windows.first(where: {
             $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-main-window")
         }) {
+            mainWindow.orderOut(nil)
             mainWindow.close()
         }
         DispatchQueue.main.async {
             openWindow(id: "welcome")
+            if let welcomeWindow = NSApp.windows.first(where: {
+                $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
+            }) {
+                welcomeWindow.makeKeyAndOrderFront(nil)
+            }
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 

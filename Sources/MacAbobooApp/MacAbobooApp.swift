@@ -134,6 +134,14 @@ struct MacAbobooApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
 
+            CommandGroup(replacing: .saveItem) {
+                Button(languageManager.text("关闭", "Close")) {
+                    closeCurrentMediaAction()
+                }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(engine.currentMedia == nil)
+            }
+
             // 显示菜单：控制主窗口底部的紧凑状态栏。
             CommandGroup(after: .toolbar) {
                 Button {
@@ -361,6 +369,14 @@ struct MacAbobooApp: App {
             $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
         }) else { return }
         welcomeWindow.close()
+    }
+
+    private func closeCurrentMediaAction() {
+        if engine.currentMedia != nil {
+            NotificationCenter.default.post(name: .macAbobooCloseCurrentMedia, object: nil)
+        } else if let keyWindow = NSApp.keyWindow {
+            keyWindow.performClose(nil)
+        }
     }
 }
 
