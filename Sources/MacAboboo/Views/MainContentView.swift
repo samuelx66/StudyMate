@@ -10,9 +10,9 @@ extension Notification.Name {
 public struct MainContentView: View {
     /// 波形图、字幕编辑区和断句列表使用的过渡参数。
     private static let workspacePanelAnimation = Animation.easeInOut(duration: 0.22)
-    /// 播放列表的滑入/滑出速度为原来的 50%：时长从 0.22 秒加倍到 0.44 秒。
-    private static let playlistPanelAnimationDuration: Double = 0.44
-    private static let playlistPanelAnimation = Animation.easeInOut(duration: playlistPanelAnimationDuration)
+    /// 播放列表侧拉门平滑物理阻尼动画参数（模拟真实侧拉抽屉滑入门效）
+    private static let playlistPanelAnimationDuration: Double = 0.32
+    private static let playlistPanelAnimation = Animation.spring(response: 0.34, dampingFraction: 0.85)
 
     private static func slideAndFadeTransition(from edge: Edge) -> AnyTransition {
         .asymmetric(
@@ -226,8 +226,9 @@ public struct MainContentView: View {
     private var playlistOverlay: some View {
         if isPlaylistMounted {
             ZStack(alignment: .topTrailing) {
-                // 点击播放列表之外的任意内容区域时自动收起，并阻止点击穿透到底层。
-                Color.clear
+                // 点击播放列表之外的任意内容区域时自动收起，带柔和的暗色毛玻璃遮罩（侧拉门背景景深）
+                Color.black
+                    .opacity(0.16 * playlistRevealProgress)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -235,15 +236,9 @@ public struct MainContentView: View {
                     }
 
                 playlistPanel
-                    // 固定右边缘、动画左边界：这是 IINA 播放列表的抽屉式展开方式。
-                    // 外层窄框负责裁剪，内部面板仍保持完整宽度，因此材质、阴影和内容
-                    // 都不会发生缩放或淡入淡出。
-                    .frame(
-                        width: max(1, CGFloat(playlistWidth) * playlistRevealProgress),
-                        alignment: .trailing
-                    )
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .clipped()
+                    .frame(width: CGFloat(playlistWidth))
+                    .frame(maxHeight: .infinity, alignment: .topTrailing)
+                    .offset(x: (1.0 - playlistRevealProgress) * CGFloat(playlistWidth))
                     .zIndex(1)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -258,6 +253,9 @@ public struct MainContentView: View {
             playlistWidth: $playlistWidth,
             onResizeEnded: {
                 UserDefaults.standard.set(playlistWidth, forKey: "macaboboo_playlist_width")
+            },
+            onClose: {
+                hidePlaylist()
             }
         )
         .frame(width: CGFloat(playlistWidth))

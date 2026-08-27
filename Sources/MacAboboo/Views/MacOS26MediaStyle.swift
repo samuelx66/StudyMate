@@ -302,17 +302,16 @@ extension View {
         }
     }
 
-    /// Sidebar/overlay surface.  This is the one place where the media
-    /// workspace intentionally uses Liquid Glass on macOS 26.
+    /// 侧栏/抽屉导航面板表面：采用高不透明度底色 (94%) 叠加超厚磨砂材质 (.ultraThickMaterial)，
+    /// 确保阻隔底层复杂多媒体内容透光干扰的同时，保持纯正的 macOS 原生质感。
     @ViewBuilder
     func macabobooNavigationSurface(cornerRadius: CGFloat = 0) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(
-                .regular,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-        } else {
-            self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        self.background {
+            ZStack {
+                MacAbobooMediaStyle.windowBackground.opacity(0.94)
+                Rectangle().fill(.ultraThickMaterial)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
     }
 }

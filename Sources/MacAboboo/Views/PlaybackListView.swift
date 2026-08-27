@@ -2,12 +2,13 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// 主窗口右侧播放列表（支持单击选中、双击切换、左侧拖拽拉伸宽度、磨砂半透明玻璃质感、平面化 Header）
+/// 主窗口右侧播放列表（遵循 macOS 26 Liquid Glass 设计规范：侧拉门毛玻璃质感、卡片式行项、动态播报徽标与平滑拖拽调整）
 public struct PlaybackListView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var historyStore: PlaybackHistoryStore
     @Binding var playlistWidth: Double
     var onResizeEnded: () -> Void
+    var onClose: () -> Void
     @ObservedObject private var lang = LanguageManager.shared
     
     @State private var selectedMediaURL: URL? = nil
@@ -18,42 +19,67 @@ public struct PlaybackListView: View {
         engine: PlaybackEngine,
         historyStore: PlaybackHistoryStore,
         playlistWidth: Binding<Double> = .constant(360),
-        onResizeEnded: @escaping () -> Void = {}
+        onResizeEnded: @escaping () -> Void = {},
+        onClose: @escaping () -> Void = {}
     ) {
         self.engine = engine
         self.historyStore = historyStore
         self._playlistWidth = playlistWidth
         self.onResizeEnded = onResizeEnded
+        self.onClose = onClose
     }
 
     public var body: some View {
         ZStack(alignment: .leading) {
             // 播放列表内容区
             VStack(spacing: 0) {
-                // 顶部 Header（同平面，无凸起阴影与独立底色，仅保留底部分割线）
-                HStack(spacing: 6) {
+                // 顶部 Header（macOS 26 悬浮磨砂玻璃工具条）
+                HStack(spacing: 8) {
                     Label(lang.text("播放列表", "Playlist"), systemImage: "music.note.list")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("(\(historyStore.entries.count))")
-                        .font(.caption)
+                        .font(.system(size: 13, weight: .bold))
+
+                    Text("\(historyStore.entries.count)")
+                        .font(.system(size: 10.5, weight: .bold).monospacedDigit())
                         .foregroundStyle(.secondary)
-                    
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+
                     Spacer()
-                    
+
+                    // 添加文件按钮
                     Button(action: addFiles) {
                         Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
+                            .font(.system(size: 11, weight: .semibold))
                     }
                     .macabobooChromeButton(shape: .circle)
                     .help(lang.text("添加音视频文件", "Add audio or video files"))
+
+                    // 清空列表按钮
+                    if !historyStore.entries.isEmpty {
+                        Button {
+                            historyStore.removeAll()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11, weight: .regular))
+                        }
+                        .macabobooChromeButton(shape: .circle)
+                        .help(lang.text("清空播放列表", "Clear playlist"))
+                    }
+
+                    // 关闭侧拉抽屉按钮
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .macabobooChromeButton(shape: .circle)
+                    .help(lang.text("收起播放列表", "Close playlist"))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
 
                 Divider()
+                    .opacity(0.6)
 
                 if historyStore.entries.isEmpty {
                     ContentUnavailableView {
@@ -70,12 +96,13 @@ public struct PlaybackListView: View {
                     .frame(maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 2) {
+                        LazyVStack(spacing: 3) {
                             ForEach(historyStore.entries) { entry in
                                 playbackRow(entry)
                             }
                         }
-                        .padding(6)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
                     }
                 }
             }
@@ -97,7 +124,7 @@ public struct PlaybackListView: View {
                 .fill(MacAbobooMediaStyle.separator.opacity(0.45))
                 .frame(width: 1)
         }
-        .shadow(color: Color.black.opacity(0.18), radius: 14, x: -4, y: 2)
+        .shadow(color: Color.black.opacity(0.24), radius: 22, x: -7, y: 0)
         .task(id: historyStore.entries.map(\.mediaPath)) {
             let paths = historyStore.entries.map(\.mediaPath)
             let result = await Task.detached(priority: .utility) {
@@ -112,48 +139,93 @@ public struct PlaybackListView: View {
         let isCurrent = engine.currentMedia?.url.standardizedFileURL == entry.mediaURL
         let isSelected = selectedMediaURL == entry.mediaURL
         let exists = fileExistence[entry.mediaPath] ?? true
+        let isHovered = hoveredMediaURL == entry.mediaURL
 
-        return HStack(spacing: 8) {
-            Image(systemName: mediaIcon(for: entry.mediaURL))
-                .font(.system(size: 12))
-                .frame(width: 18)
-                .foregroundStyle(isCurrent ? Color.accentColor : (exists ? Color.secondary : Color.red))
+        return HStack(spacing: 10) {
+            // 媒体类型徽章（macOS 26 玻璃质感圆角微标）
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        isCurrent
+                            ? Color.accentColor.opacity(0.18)
+                            : (exists ? Color.primary.opacity(0.06) : Color.red.opacity(0.12))
+                    )
+                    .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 2) {
+                Image(systemName: mediaIcon(for: entry.mediaURL))
+                    .font(.system(size: 13))
+                    .foregroundStyle(
+                        isCurrent
+                            ? Color.accentColor
+                            : (exists ? Color.primary.opacity(0.7) : Color.red)
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(entry.filename)
-                    .font(.system(size: 11.5, weight: isCurrent ? .semibold : .regular))
-                    .foregroundStyle(exists ? (isSelected ? Color.primary : (isCurrent ? Color.accentColor : Color.primary)) : Color.secondary)
+                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .foregroundStyle(
+                        exists
+                            ? (isCurrent ? Color.accentColor : Color.primary)
+                            : Color.secondary
+                    )
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
                 if !exists {
-                    Text(lang.text("原文件已不存在", "Original file is missing"))
-                        .font(.caption2)
-                        .foregroundStyle(.red)
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                        Text(lang.text("原文件已不存在或移动", "Original file is missing"))
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(.red.opacity(0.85))
+                } else {
+                    Text(entry.mediaURL.deletingLastPathComponent().lastPathComponent)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary.opacity(0.7))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
 
             if isCurrent {
+                // 正在播放动效指示器
                 Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption2)
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Color.accentColor)
+                    .padding(.trailing, 2)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(
                     isSelected
-                        ? Color.accentColor.opacity(0.18)
+                        ? Color.accentColor.opacity(0.16)
                         : (isCurrent
                             ? Color.accentColor.opacity(0.08)
-                            : (hoveredMediaURL == entry.mediaURL ? Color.primary.opacity(0.06) : Color.clear))
+                            : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
                 )
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? Color.accentColor.opacity(0.65) : (isCurrent ? Color.accentColor.opacity(0.3) : .clear), lineWidth: 1)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    isSelected
+                        ? Color.accentColor.opacity(0.5)
+                        : (isCurrent ? Color.accentColor.opacity(0.25) : (isHovered ? Color.primary.opacity(0.08) : Color.clear)),
+                    lineWidth: 1
+                )
+        )
+        .overlay(alignment: .leading) {
+            if isCurrent {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: 3.5, height: 18)
+                    .padding(.leading, 3)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
@@ -170,12 +242,12 @@ public struct PlaybackListView: View {
         .onHover { hovering in
             hoveredMediaURL = hovering ? entry.mediaURL : nil
         }
-        .animation(.easeOut(duration: 0.12), value: hoveredMediaURL == entry.mediaURL)
+        .animation(.easeOut(duration: 0.12), value: isHovered)
         .contextMenu {
             Button(role: .destructive) {
                 Task { await engine.removeFromPlaybackHistory(entry.mediaURL) }
             } label: {
-                Label(lang.text("删除", "Delete"), systemImage: "trash")
+                Label(lang.text("从列表中移除", "Remove from List"), systemImage: "trash")
             }
 
             Button {
@@ -184,8 +256,10 @@ public struct PlaybackListView: View {
                 Label(lang.text("在访达中显示", "Show in Finder"), systemImage: "folder")
             }
 
+            Divider()
+
             Button(action: addFiles) {
-                Label(lang.text("添加文件", "Add Files"), systemImage: "plus")
+                Label(lang.text("添加文件…", "Add Files…"), systemImage: "plus")
             }
         }
         .help(entry.mediaPath)
