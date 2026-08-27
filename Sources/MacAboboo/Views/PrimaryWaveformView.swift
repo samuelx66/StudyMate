@@ -41,9 +41,9 @@ public struct PrimaryWaveformView: View {
                     }) {
                         Image(systemName: "minus.magnifyingglass")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .macabobooChromeButton(shape: .circle)
                     .focusable(false)
                     .help(lang.localized(.zoomOut))
                     
@@ -58,9 +58,9 @@ public struct PrimaryWaveformView: View {
                     }) {
                         Image(systemName: "plus.magnifyingglass")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .macabobooChromeButton(shape: .circle)
                     .focusable(false)
                     .help(lang.localized(.zoomIn))
                     
@@ -70,9 +70,9 @@ public struct PrimaryWaveformView: View {
                     }) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.caption)
-                            .foregroundColor(zoomLevel == 1.0 ? .secondary.opacity(0.4) : .secondary)
+                            .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.plain)
+                    .macabobooChromeButton(shape: .circle)
                     .focusable(false)
                     .disabled(zoomLevel == 1.0)
                     .help(lang.localized(.resetZoom))
@@ -89,7 +89,7 @@ public struct PrimaryWaveformView: View {
                 ZStack(alignment: .leading) {
                     // 背景
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(nsColor: .controlBackgroundColor))
+                        .fill(.regularMaterial)
                     
                     // 1. 断句区间背景底色
                     WaveformSentenceSegmentsOverlay(
@@ -143,14 +143,13 @@ public struct PrimaryWaveformView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        .stroke(MacAbobooMediaStyle.separator, lineWidth: 1)
                 )
             }
             .frame(height: 77)
         }
         .padding(4)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
-        .cornerRadius(6)
+        .macabobooContentSurface(cornerRadius: 6)
     }
 }
 

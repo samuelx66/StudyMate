@@ -34,7 +34,7 @@ public struct SecondaryWaveformView: View {
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
-                            .background(Color.blue)
+                            .background(MacAbobooMediaStyle.accent)
                             .foregroundColor(.white)
                             .cornerRadius(3)
                         
@@ -134,12 +134,12 @@ public struct SecondaryWaveformView: View {
                     ZStack(alignment: .leading) {
                         // 背景底板
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(nsColor: .controlBackgroundColor))
+                            .fill(.regularMaterial)
                         
                         // 选中区间高亮底色 (居中于 (startX + endX)/2)
                         let selectionW = max(2, endX - startX)
                         Rectangle()
-                            .fill(Color.blue.opacity(0.12))
+                            .fill(MacAbobooMediaStyle.accent.opacity(0.12))
                             .frame(width: selectionW, height: height)
                             .position(x: startX + selectionW / 2.0, y: height / 2.0)
                         
@@ -183,13 +183,13 @@ public struct SecondaryWaveformView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                            .stroke(MacAbobooMediaStyle.separator, lineWidth: 1)
                     )
                 } else {
                     // 无断句选中时的占位
                     ZStack {
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                            .fill(.regularMaterial)
                         
                         Text(lang.text("在列表中选择断句以微调波形", "Select a sentence in the list to fine-tune it"))
                             .font(.caption)
@@ -200,8 +200,7 @@ public struct SecondaryWaveformView: View {
             .frame(height: 70)
         }
         .padding(4)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
-        .cornerRadius(6)
+        .macabobooContentSurface(cornerRadius: 6)
     }
     
     private func nudgeStart(by delta: Double) {

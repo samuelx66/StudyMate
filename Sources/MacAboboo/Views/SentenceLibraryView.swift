@@ -60,17 +60,6 @@ public struct SentenceLibraryView: View {
                     }
                     .help(lang.text("新建句库", "New Library"))
 
-                    Button { chooseLibraryToImport() } label: {
-                        Image(systemName: "square.and.arrow.down")
-                    }
-                    .help(lang.text("导入句库", "Import Library"))
-
-                    Button { chooseLibraryExportDestination() } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .disabled(manager.currentLibrary == nil || manager.isWorking)
-                    .help(lang.text("导出当前句库", "Export Current Library"))
-
                     Spacer()
 
                     Button(role: .destructive) { confirmLibraryDeletion = true } label: {
@@ -426,43 +415,6 @@ public struct SentenceLibraryView: View {
         }
     }
 
-    private func chooseLibraryExportDestination() {
-        guard let library = manager.currentLibrary else { return }
-        let panel = NSSavePanel()
-        panel.canCreateDirectories = true
-        panel.allowedContentTypes = [UTType(filenameExtension: "mablib") ?? .data]
-        panel.nameFieldStringValue = library.name + ".mablib"
-        if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                do {
-                    try await manager.exportCurrentLibrary(to: url)
-                    notice = SentenceLibraryNotice(
-                        title: lang.text("句库导出完成", "Library Exported"),
-                        message: url.path
-                    )
-                } catch {
-                    notice = SentenceLibraryNotice(title: lang.text("导出失败", "Export Failed"), message: error.localizedDescription)
-                }
-            }
-        }
-    }
-
-    private func chooseLibraryToImport() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "mablib") ?? .data]
-        if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                do {
-                    try await manager.importLibrary(from: url)
-                } catch {
-                    notice = SentenceLibraryNotice(title: lang.text("导入失败", "Import Failed"), message: error.localizedDescription)
-                }
-            }
-        }
-    }
 }
 
 private struct SentenceLibraryEntryRow: View {

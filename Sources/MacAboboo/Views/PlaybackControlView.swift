@@ -38,11 +38,11 @@ public struct PlaybackControlView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .macabobooContentSurface(cornerRadius: 0)
         .overlay(
             Rectangle()
                 .frame(height: 1)
-                .foregroundColor(Color(nsColor: .separatorColor)),
+                .foregroundColor(MacAbobooMediaStyle.separator),
             alignment: .top
         )
     }

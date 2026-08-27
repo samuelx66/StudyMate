@@ -86,6 +86,31 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(history.entries.isEmpty)
     }
 
+    func testClosingCurrentMediaReturnsToEmptyWorkspaceAndPreservesHistory() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let native = TestMediaPlayerBackend(duration: 12)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 12),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")),
+            playbackHistoryStore: history
+        )
+
+        engine.loadMedia(from: mediaURL)
+        XCTAssertEqual(engine.currentMedia?.url, mediaURL.standardizedFileURL)
+
+        engine.closeCurrentMedia()
+
+        XCTAssertNil(engine.currentMedia)
+        XCTAssertTrue(engine.segments.isEmpty)
+        XCTAssertNil(native.loadedURL)
+        XCTAssertEqual(history.lastOpenedMediaURL, mediaURL.standardizedFileURL)
+    }
+
     func testOpeningAndRemovingMediaUpdatesPlaylistAndSuppressesProjectRecreation() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1195,6 +1220,41 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 1)
         XCTAssertEqual(engine.currentRepeatCount, 1)
         XCTAssertEqual(native.currentTime, 1, accuracy: 0.001)
+    }
+
+    func testShadowingPauseIgnoresQueuedEndFrameAndKeepsCurrentSentenceSelected() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("shadowing-pause-stale-end.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 2
+        engine.shadowingPauseRatio = 0.25
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        native.emitTime(1.0)
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        // A decoder can deliver a queued end frame after pause(). It must not
+        // briefly select sentence #2 while sentence #1 is waiting to repeat.
+        native.emitTime(1.05)
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertTrue(engine.isShadowingPaused)
+        engine.pause()
     }
 
     func testDelayedPreSeekEndFrameDoesNotResetShadowingRepeatCycle() async throws {

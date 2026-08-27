@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import MacAbobooKit
 #endif
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var keyMonitor: Any?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
@@ -52,6 +52,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sender.activate(ignoringOtherApps: true)
         return true
     }
+
+    /// 主窗口有媒体时，系统“文件 > 关闭”和红色关闭按钮都只关闭媒体工作区，
+    /// 并返回欢迎首屏；首屏本身仍保留 macOS 默认的关闭窗口行为。
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender.identifier == NSUserInterfaceItemIdentifier("macaboboo-main-window"),
+              PlaybackEngine.shared.currentMedia != nil else {
+            return true
+        }
+        NotificationCenter.default.post(name: .macAbobooCloseCurrentMedia, object: nil)
+        return false
+    }
 }
 
 @main
@@ -72,20 +83,28 @@ struct MacAbobooApp: App {
     }
     
     var body: some Scene {
-        WindowGroup {
+        // 欢迎页是应用定义的第一个窗口场景，因此 macOS 启动时只创建它；
+        // 主媒体窗口作为第二个场景，仅在用户打开文件时按需创建。
+        WindowGroup(id: "welcome") {
+            WelcomeScreenView(
+                historyStore: PlaybackHistoryStore.shared,
+                onOpen: openFileAction,
+                onOpenLibrary: { openWindow(id: "sentence-library") },
+                onContinue: openMediaInMain,
+                onOpenHistoryItem: openMediaInMain
+            )
+            .background(WelcomeWindowAccessor())
+            .onOpenURL { handleIncomingURL($0) }
+        }
+        .defaultSize(width: 800, height: 520)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+
+        WindowGroup(id: "main") {
             MainContentView()
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
-                .onOpenURL { url in
-                    if url.pathExtension.lowercased() == "mablib" {
-                        Task {
-                            try? await sentenceLibraryManager.importLibrary(from: url)
-                            openWindow(id: "sentence-library")
-                        }
-                    } else {
-                        PlaybackEngine.shared.loadMedia(from: url)
-                    }
-                }
+                .onOpenURL { handleIncomingURL($0) }
         }
         .defaultSize(width: 1050, height: 720)
         .windowStyle(.titleBar)
@@ -311,12 +330,41 @@ struct MacAbobooApp: App {
         ]
         
         if panel.runModal() == .OK, let url = panel.url {
+            openMediaInMain(url)
+        }
+    }
+
+    /// 从欢迎页或文件关联打开媒体时，先创建独立的主窗口，再把媒体交给主窗口的引擎。
+    private func openMediaInMain(_ url: URL) {
+        closeWelcomeWindow()
+        openWindow(id: "main")
+        DispatchQueue.main.async {
             engine.loadMedia(from: url)
         }
     }
+
+    private func handleIncomingURL(_ url: URL) {
+        if url.pathExtension.lowercased() == "mablib" {
+            MainStatusCenter.shared.showError(
+                languageManager.text(
+                    "句库仅支持从断句列表加入句子。",
+                    "Sentence libraries only accept sentences added from the segment list."
+                )
+            )
+        } else {
+            openMediaInMain(url)
+        }
+    }
+
+    private func closeWelcomeWindow() {
+        guard let welcomeWindow = NSApp.windows.first(where: {
+            $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
+        }) else { return }
+        welcomeWindow.close()
+    }
 }
 
-/// 原生 NSWindow 尺寸控制与配置注入器
+/// 主媒体窗口的原生配置。主窗口只在用户打开媒体后创建。
 struct WindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -325,7 +373,7 @@ struct WindowAccessor: NSViewRepresentable {
         }
         return view
     }
-    
+
     func updateNSView(_ nsView: NSView, context: Context) {
         configureWindow(nsView.window)
     }
@@ -335,14 +383,69 @@ struct WindowAccessor: NSViewRepresentable {
 
         window.title = "MacAboboo"
         window.titleVisibility = .hidden
-        window.toolbarStyle = .unifiedCompact
+        window.titlebarAppearsTransparent = false
+        window.styleMask.remove(.fullSizeContentView)
         window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable])
+        window.tabbingMode = .disallowed
+        window.identifier = NSUserInterfaceItemIdentifier("macaboboo-main-window")
         window.minSize = NSSize(width: 800, height: 550)
         window.maxSize = NSSize(width: 10000, height: 10000)
         window.showsResizeIndicator = true
         window.isMovableByWindowBackground = false
-        window.tabbingMode = .disallowed
+        window.toolbarStyle = .unifiedCompact
+        window.toolbar?.isVisible = true
 
+        // SwiftUI 可能在首帧后重新安装窗口代理，因此每次更新都重新绑定，
+        // 保证“文件 > 关闭”和红色关闭按钮都能回到欢迎窗口。
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            window.delegate = appDelegate
+        }
+    }
+}
+
+/// 欢迎窗口使用透明标题栏和 full-size content view，让左右两块背景颜色一直延伸到顶部；
+/// 交通灯仍保留在标题栏位置。
+struct WelcomeWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { [weak view] in
+            configureWindow(view?.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configureWindow(nsView.window)
+    }
+
+    private func configureWindow(_ window: NSWindow?) {
+        guard let window else { return }
+        let fixedSize = NSSize(width: 800, height: 520)
+
+        window.title = "MacAboboo"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isOpaque = true
+        window.backgroundColor = NSColor(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0, alpha: 1.0)
+        window.styleMask.insert([.titled, .closable, .miniaturizable, .fullSizeContentView])
+        window.styleMask.remove(.resizable)
+        window.toolbar?.isVisible = false
+        window.minSize = fixedSize
+        window.maxSize = fixedSize
+        window.showsResizeIndicator = false
+        window.isMovableByWindowBackground = true
+        window.tabbingMode = .disallowed
+        window.identifier = NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
+        window.standardWindowButton(.closeButton)?.isEnabled = true
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
+        // 欢迎页尺寸固定，因此最大化按钮保留位置但不可执行。
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+
+        if abs(window.contentRect(forFrameRect: window.frame).width - fixedSize.width) > 1
+            || abs(window.contentRect(forFrameRect: window.frame).height - fixedSize.height) > 1 {
+            window.setContentSize(fixedSize)
+        }
     }
 }
 

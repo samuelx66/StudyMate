@@ -135,6 +135,8 @@ private struct DraggableVideoSubtitle: View {
     let containerSize: CGSize
 
     @State private var dragStart: CGPoint?
+    @State private var isHovering = false
+    @State private var isDragging = false
 
     private var position: CGPoint {
         switch track {
@@ -192,6 +194,16 @@ private struct DraggableVideoSubtitle: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(.black.opacity(0.46), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        isHovering || isDragging
+                            ? Color.accentColor.opacity(isDragging ? 0.9 : 0.7)
+                            : Color.clear,
+                        lineWidth: isDragging ? 1.4 : 1
+                    )
+            )
+            .scaleEffect(isDragging ? 1.01 : 1)
             .shadow(color: .black.opacity(0.75), radius: 3, x: 0, y: 1)
             .frame(maxWidth: max(180, containerSize.width * 0.88))
             .position(
@@ -201,6 +213,7 @@ private struct DraggableVideoSubtitle: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
+                        isDragging = true
                         if dragStart == nil { dragStart = position }
                         guard let start = dragStart else { return }
                         let width = max(1, containerSize.width)
@@ -211,8 +224,10 @@ private struct DraggableVideoSubtitle: View {
                     }
                     .onEnded { _ in
                         dragStart = nil
+                        isDragging = false
                     }
             )
+            .onHover { isHovering = $0 }
             .help("拖动字幕调整位置")
     }
 

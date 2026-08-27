@@ -1,0 +1,207 @@
+import SwiftUI
+import AppKit
+
+/// Shared visual language for the media workspace.
+///
+/// macOS 26 uses Liquid Glass only for the functional chrome (toolbar,
+/// controls and transient navigation surfaces).  Media content remains on a
+/// standard material so that the waveform, video and subtitles keep their
+/// contrast.  The fallback deliberately uses the same semantic AppKit colors
+/// on macOS 14 instead of hard-coded light/dark values.
+enum MacAbobooMediaStyle {
+    static let separator = Color(nsColor: .separatorColor)
+    static let panelBackground = Color(nsColor: .controlBackgroundColor)
+    static let windowBackground = Color(nsColor: .windowBackgroundColor)
+    static let selectedBackground = Color(nsColor: .selectedContentBackgroundColor)
+    static let secondaryLabel = Color(nsColor: .secondaryLabelColor)
+    static let accent = Color.accentColor
+}
+
+enum MacAbobooControlShape {
+    case rounded
+    case capsule
+    case circle
+}
+
+/// Button style used by controls that sit on top of media or inside custom
+/// panels.  On macOS 26 it provides the native interactive Liquid Glass
+/// surface (including hover, pressed and keyboard-focus feedback).  On macOS
+/// 14 it keeps an equivalent semantic material and pressed-state treatment.
+struct MacAbobooChromeButtonStyle: ButtonStyle {
+    let prominent: Bool
+    let shape: MacAbobooControlShape
+
+    init(prominent: Bool = false, shape: MacAbobooControlShape = .rounded) {
+        self.prominent = prominent
+        self.shape = shape
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        if #available(macOS 26.0, *) {
+            switch shape {
+            case .circle:
+                configuration.label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .glassEffect(
+                        (prominent
+                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
+                            : Glass.regular).interactive(),
+                        in: Circle()
+                    )
+                    .opacity(configuration.isPressed ? 0.78 : 1)
+                    .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            case .capsule:
+                configuration.label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .glassEffect(
+                        (prominent
+                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
+                            : Glass.regular).interactive(),
+                        in: Capsule()
+                    )
+                    .opacity(configuration.isPressed ? 0.78 : 1)
+            case .rounded:
+                configuration.label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .glassEffect(
+                        (prominent
+                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
+                            : Glass.regular).interactive(),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .opacity(configuration.isPressed ? 0.78 : 1)
+            }
+        } else {
+            MacAbobooFallbackControlBody(
+                label: configuration.label,
+                prominent: prominent,
+                shape: shape,
+                isPressed: configuration.isPressed
+            )
+        }
+    }
+}
+
+private struct MacAbobooFallbackControlBody<Label: View>: View {
+    let label: Label
+    let prominent: Bool
+    let shape: MacAbobooControlShape
+    let isPressed: Bool
+    @State private var isHovering = false
+
+    var body: some View {
+        Group {
+            switch shape {
+            case .circle:
+                label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .background(Circle().fill(fillColor))
+                    .overlay(Circle().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .opacity(isPressed ? 0.72 : 1)
+                    .scaleEffect(isPressed ? 0.96 : 1)
+            case .capsule:
+                label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .padding(.horizontal, 8)
+                    .background(Capsule().fill(fillColor))
+                    .overlay(Capsule().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .opacity(isPressed ? 0.72 : 1)
+            case .rounded:
+                label
+                    .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fillColor))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .opacity(isPressed ? 0.72 : 1)
+            }
+        }
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+    }
+
+    private var fillColor: Color {
+        if prominent { return MacAbobooMediaStyle.accent }
+        return isHovering
+            ? MacAbobooMediaStyle.panelBackground.opacity(0.92)
+            : MacAbobooMediaStyle.panelBackground
+    }
+}
+
+/// Selectable list-row treatment.  Rows are content, not navigation chrome,
+/// so they use semantic fills instead of a separate glass capsule.  The
+/// ButtonStyle still supplies a real pressed state for mouse and trackpad
+/// input, which the old plain-button implementation did not provide.
+struct MacAbobooSelectableRowButtonStyle: ButtonStyle {
+    let isActive: Bool
+    let isHovered: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        let activeBg = colorScheme == .dark
+            ? Color(red: 45.0 / 255.0, green: 45.0 / 255.0, blue: 48.0 / 255.0)
+            : Color(red: 242.0 / 255.0, green: 242.0 / 255.0, blue: 242.0 / 255.0)
+
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        isActive
+                            ? activeBg
+                            : (configuration.isPressed
+                                ? MacAbobooMediaStyle.selectedBackground.opacity(0.18)
+                                : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.992 : 1)
+    }
+}
+
+extension View {
+    /// Apply a functional Liquid Glass button on macOS 26 and a semantic
+    /// borderless control on macOS 14.  Keeping this as a view modifier makes
+    /// it safe to use for toolbar/menu-adjacent controls without duplicating
+    /// availability checks throughout the media views.
+    @ViewBuilder
+    func macabobooChromeButton(
+        prominent: Bool = false,
+        shape: MacAbobooControlShape = .rounded
+    ) -> some View {
+        self.buttonStyle(MacAbobooChromeButtonStyle(prominent: prominent, shape: shape))
+    }
+
+    /// Standard material for media content panels.  It intentionally does not
+    /// use Liquid Glass: Apple recommends standard materials for rich content
+    /// layers such as video and waveforms.
+    @ViewBuilder
+    func macabobooContentSurface(cornerRadius: CGFloat = 8) -> some View {
+        if #available(macOS 26.0, *) {
+            self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(MacAbobooMediaStyle.separator.opacity(0.46), lineWidth: 0.7)
+                )
+        } else {
+            self.background(MacAbobooMediaStyle.panelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(MacAbobooMediaStyle.separator.opacity(0.65), lineWidth: 0.7)
+                )
+        }
+    }
+
+    /// Sidebar/overlay surface.  This is the one place where the media
+    /// workspace intentionally uses Liquid Glass on macOS 26.
+    @ViewBuilder
+    func macabobooNavigationSurface(cornerRadius: CGFloat = 0) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}

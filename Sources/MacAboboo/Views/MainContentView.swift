@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+extension Notification.Name {
+    public static let macAbobooCloseCurrentMedia = Notification.Name("MacAboboo.CloseCurrentMedia")
+}
+
 /// 主视窗内容容器（波形图置顶、视频视窗自动扩展占满剩余空间、底部控制栏、可自由调整窗口大小）
 public struct MainContentView: View {
     /// 波形图、字幕编辑区和断句列表使用的过渡参数。
@@ -63,69 +67,22 @@ public struct MainContentView: View {
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 0) {
-            HSplitView {
-            // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部控制栏）
-            VStack(spacing: 0) {
-                // 1. 顶部：主次双波形图工作区（支持折叠/展开动画）
-                if isWaveformsVisible {
-                    VStack(spacing: 4) {
-                        PrimaryWaveformView(engine: engine)
-                        SecondaryWaveformView(engine: engine)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 4)
-                    .padding(.bottom, 2)
-                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
-                    .transition(Self.slideAndFadeTransition(from: .top))
-                }
-                
-                // 2. 中间：音视频播放视窗（波形图/字幕区折叠时自适应最大化填满全部可用纵向空间）
-                VideoPlayerView(engine: engine)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                // 2.5 字幕编辑区（原文 + 译文双行输入，支持折叠/展开动画，焦点离开时自动保存）
-                if isSubtitleEditVisible {
-                    SubtitleEditView(engine: engine)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .move(edge: .bottom).combined(with: .opacity)
-                        ))
-                }
-            }
-            .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
-            
-            // 右侧断句侧边栏
-            if isSidebarVisible {
-                SegmentListView(engine: engine)
-                    .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
-                    .transition(Self.slideAndFadeTransition(from: .trailing))
-            }
-
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if shouldShowStatusBar {
-                PlaybackStatusBar(
-                    engine: engine,
-                    libraryManager: libraryManager,
-                    statusCenter: statusCenter
-                )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        // 允许用户自由拖拽缩放窗口大小，最小尺寸 800x550，无最大限制
-        .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        workspaceContent
+            // 媒体工作区允许自由调整窗口大小，最小尺寸 800×550。
+            .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
         .background(WindowTextInputFocusDismissalBridge())
         .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
-        .overlay(alignment: .topTrailing) {
-            playlistOverlay
-        }
+        .overlay(alignment: .topTrailing) { playlistOverlay }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleMediaDrop)
+        .overlay(dropTargetOverlay)
         .onAppear {
-            engine.restoreLastOpenedMediaIfNeeded()
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .macAbobooCloseCurrentMedia),
+            perform: handleCloseCurrentMediaRequest
+        )
         .onChange(of: isWaveformsVisible) { _, visible in
             engine.setHighFrequencyPresentationEnabled(visible && scenePhase == .active)
         }
@@ -133,32 +90,14 @@ public struct MainContentView: View {
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && phase == .active)
         }
         // 顶部工具栏 (紧凑型设计)
-        .toolbar {
+        .modifier(MainWindowToolbarModifier(toolbar: windowToolbar, isVisible: engine.currentMedia != nil))
+        /*
             ToolbarItem(placement: .navigation) {
-                Button {
-                    openWindow(id: "sentence-library")
-                } label: {
-                    Label(lang.text("句库", "Sentence Library"), systemImage: "books.vertical")
-                }
-                .help(MacAbobooShortcutCatalog.help(
-                    lang.text("打开句库", "Open sentence library"),
-                    shortcut: .openSentenceLibrary
-                ))
-                .keyboardShortcut("l", modifiers: [.command])
+                sentenceLibraryToolbarButton
             }
 
             ToolbarItem(placement: .navigation) {
-                // 打开文件按钮
-                Button(action: openFileDialog) {
-                    Label(lang.localized(.openFile), systemImage: "folder.badge.plus")
-                }
-                .help(MacAbobooShortcutCatalog.help(
-                    lang.text(
-                        "打开音视频文件（MP3、WAV、M4A、FLAC、MKV、MP4、MOV、WebM、AVI）",
-                        "Open audio or video (MP3, WAV, M4A, FLAC, MKV, MP4, MOV, WebM, AVI)"
-                    ),
-                    shortcut: .openMedia
-                ))
+                openMediaToolbarButton
             }
             
             if let media = engine.currentMedia {
@@ -166,7 +105,7 @@ public struct MainContentView: View {
                     HStack(spacing: 5) {
                         Image(systemName: media.isVideo ? "video.fill" : "music.note")
                             .font(.caption)
-                            .foregroundColor(.blue)
+                            .foregroundColor(MacAbobooMediaStyle.accent)
                         Text(media.title)
                             .font(.caption.bold())
                             .lineLimit(1)
@@ -218,7 +157,7 @@ public struct MainContentView: View {
                         Text(repeatCountToolbarLabel)
                             .font(.system(size: 11, weight: .medium).monospacedDigit())
                     }
-                    .foregroundColor(engine.repeatCountLimit == 1 ? .primary : .blue)
+                    .foregroundColor(engine.repeatCountLimit == 1 ? .primary : MacAbobooMediaStyle.accent)
                 }
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("设置单句复读次数", "Set sentence repeat count"),
@@ -289,7 +228,7 @@ public struct MainContentView: View {
                 Button {
                     isVideoSubtitleFontSettingsPresented.toggle()
                 } label: {
-                    Image(systemName: "textformat")
+                    Image(systemName: "textformat.size")
                 }
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("设置视频字幕字体", "Set video subtitle fonts"),
@@ -326,7 +265,7 @@ public struct MainContentView: View {
                         Text(String(format: "%.2fx", engine.playbackRate))
                             .font(.system(size: 11, weight: .medium).monospacedDigit())
                     }
-                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? .blue : .primary)
+                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? MacAbobooMediaStyle.accent : .primary)
                 }
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("调节播放语速", "Playback rate"),
@@ -392,32 +331,197 @@ public struct MainContentView: View {
                 ))
                 .keyboardShortcut("l", modifiers: [.option])
             }
-        }
-        // 支持直接拖拽音视频文件到窗口
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let validURL = url {
-                    DispatchQueue.main.async {
-                        engine.loadMedia(from: validURL)
-                    }
-                }
-            }
-            return true
-        }
-        .overlay(
-            Group {
-                if isDropTargeted {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.blue, lineWidth: 3)
-                        .background(Color.blue.opacity(0.1))
-                }
-            }
-        )
+        */
     }
 
     /// 有后台任务或错误时即使用户关闭了常驻状态栏，也临时显示状态栏，
     /// 避免进度和错误没有任何可见出口；任务结束/错误关闭后恢复用户的隐藏设置。
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+        navigationToolbar
+        practiceToolbar
+        subtitleToolbar
+        speedToolbar
+        workspaceVisibilityToolbar
+    }
+
+    @ToolbarContentBuilder
+    private var navigationToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            sentenceLibraryToolbarButton
+        }
+        ToolbarItem(placement: .navigation) {
+            openMediaToolbarButton
+        }
+        if let media = engine.currentMedia {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 5) {
+                    Image(systemName: media.isVideo ? "video.fill" : "music.note")
+                        .font(.caption)
+                        .foregroundColor(MacAbobooMediaStyle.accent)
+                    Text(media.title)
+                        .font(.caption.bold())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 220)
+                    Text("(\(media.formattedDuration))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+    }
+
+    private var practiceToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Picker("", selection: $engine.loopMode) {
+                ForEach(PlaybackLoopMode.allCases) { mode in
+                    Image(systemName: mode.iconName)
+                        .help(MacAbobooShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
+                        .accessibilityLabel(mode.localized(with: lang))
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .help(lang.text(
+                "播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）",
+                "Playback mode: Continuous Play / Repeat Sentence / Pause After Sentence / Loop Entire File (⌘1 / ⌘2 / ⌘3 / ⌘4)"
+            ))
+
+            Menu {
+                ForEach(repeatOptions, id: \.count) { option in
+                    Button {
+                        engine.repeatCountLimit = option.count
+                        engine.currentRepeatCount = 1
+                    } label: {
+                        engine.repeatCountLimit == option.count
+                            ? Label(option.label, systemImage: "checkmark")
+                            : Label(option.label, systemImage: "")
+                    }
+                }
+            } label: {
+                Label(repeatCountToolbarLabel, systemImage: "repeat.circle")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(engine.repeatCountLimit == 1 ? .primary : MacAbobooMediaStyle.accent)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("设置单句复读次数", "Set sentence repeat count"), shortcut: .repeatCountMenu))
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+
+            Menu {
+                ForEach(shadowingPauseOptions, id: \.ratio) { option in
+                    Button {
+                        engine.shadowingPauseRatio = option.ratio
+                    } label: {
+                        abs(engine.shadowingPauseRatio - option.ratio) < 0.001
+                            ? Label(option.label, systemImage: "checkmark")
+                            : Label(option.label, systemImage: "")
+                    }
+                }
+            } label: {
+                Label(shadowingPauseToolbarLabel, systemImage: "pause.circle")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(engine.shadowingPauseRatio == 0 ? .primary : .green)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+    }
+
+    private var subtitleToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button { videoSubtitleSettings.showOriginal.toggle() } label: {
+                Image(systemName: videoSubtitleSettings.showOriginal ? "text.bubble.fill" : "text.bubble")
+            }
+            .help(MacAbobooShortcutCatalog.help(
+                videoSubtitleSettings.showOriginal ? lang.text("隐藏视频原文字幕", "Hide video original subtitles") : lang.text("显示视频原文字幕", "Show video original subtitles"),
+                shortcut: .toggleVideoOriginalSubtitle
+            ))
+            .keyboardShortcut("o", modifiers: [.command, .option])
+
+            Button { videoSubtitleSettings.showTranslation.toggle() } label: {
+                Image(systemName: videoSubtitleSettings.showTranslation ? "character.bubble.fill" : "character.bubble")
+            }
+            .help(MacAbobooShortcutCatalog.help(
+                videoSubtitleSettings.showTranslation ? lang.text("隐藏视频译文字幕", "Hide video translated subtitles") : lang.text("显示视频译文字幕", "Show video translated subtitles"),
+                shortcut: .toggleVideoTranslationSubtitle
+            ))
+            .keyboardShortcut("t", modifiers: [.command, .option])
+
+            Button { isVideoSubtitleFontSettingsPresented.toggle() } label: {
+                Image(systemName: "textformat.size")
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("设置视频字幕字体", "Set video subtitle fonts"), shortcut: .videoSubtitleFontSettings))
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) {
+                VideoSubtitleFontSettingsPopover()
+            }
+        }
+    }
+
+    private var speedToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                    Button { engine.playbackRate = speed } label: {
+                        abs(engine.playbackRate - speed) < 0.01
+                            ? Label(String(format: "%.2fx", speed), systemImage: "checkmark")
+                            : Label(String(format: "%.2fx", speed), systemImage: "")
+                    }
+                }
+                Divider()
+                Button { engine.playbackRate = 1.0 } label: {
+                    Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise")
+                }
+            } label: {
+                Label(String(format: "%.2fx", engine.playbackRate), systemImage: "gauge.with.needle")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(abs(engine.playbackRate - 1.0) > 0.001 ? MacAbobooMediaStyle.accent : .primary)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("调节播放语速", "Playback rate"), shortcut: .playbackRateMenu))
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        }
+    }
+
+    private var workspaceVisibilityToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                withAnimation(Self.workspacePanelAnimation) { isWaveformsVisible.toggle() }
+            } label: {
+                Image(systemName: "waveform.path.ecg")
+            }
+            .help(MacAbobooShortcutCatalog.help(
+                isWaveformsVisible ? lang.text("隐藏波形图工作区", "Hide waveforms") : lang.text("显示波形图工作区", "Show waveforms"),
+                shortcut: .toggleWaveforms
+            ))
+            .keyboardShortcut("w", modifiers: [.option])
+
+            Button {
+                withAnimation(Self.workspacePanelAnimation) { isSubtitleEditVisible.toggle() }
+            } label: {
+                Image(systemName: "captions.bubble")
+            }
+            .help(MacAbobooShortcutCatalog.help(
+                isSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"),
+                shortcut: .toggleSubtitleEditor
+            ))
+            .keyboardShortcut("s", modifiers: [.option])
+
+            Button(action: togglePlaylist) {
+                Image(systemName: "music.note.list")
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("显示或隐藏播放列表", "Show or hide playlist"), shortcut: .togglePlaylist))
+            .keyboardShortcut("p", modifiers: [.option])
+
+            Button {
+                withAnimation(Self.workspacePanelAnimation) { isSidebarVisible.toggle() }
+            } label: {
+                Image(systemName: "sidebar.right")
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"), shortcut: .toggleSegmentList))
+            .keyboardShortcut("l", modifiers: [.option])
+        }
+    }
+
     private var shouldShowStatusBar: Bool {
         isStatusBarVisible
             || engine.isExtractingWaveform
@@ -428,6 +532,114 @@ public struct MainContentView: View {
             || libraryManager.lastErrorMessage != nil
             || statusCenter.progress != nil
             || statusCenter.errorMessage != nil
+    }
+
+    private var windowToolbar: MainWindowToolbar {
+        MainWindowToolbar(
+            engine: engine,
+            lang: lang,
+            videoSubtitleSettings: videoSubtitleSettings,
+            isWaveformsVisible: $isWaveformsVisible,
+            isSubtitleEditVisible: $isSubtitleEditVisible,
+            isVideoSubtitleFontSettingsPresented: $isVideoSubtitleFontSettingsPresented,
+            isSidebarVisible: $isSidebarVisible,
+            onOpenLibrary: { openWindow(id: "sentence-library") },
+            onOpenMedia: openFileDialog,
+            onTogglePlaylist: togglePlaylist
+        )
+    }
+
+    private var sentenceLibraryToolbarButton: some View {
+        Button(action: { openWindow(id: "sentence-library") }) {
+            Image(systemName: "books.vertical")
+        }
+        .help(MacAbobooShortcutCatalog.help(
+            lang.text("打开句库", "Open sentence library"),
+            shortcut: .openSentenceLibrary
+        ))
+        .keyboardShortcut("l", modifiers: [.command])
+    }
+
+    private var openMediaToolbarButton: some View {
+        Button(action: openFileDialog) {
+            Image(systemName: "folder.badge.plus")
+        }
+        .help(MacAbobooShortcutCatalog.help(
+            lang.text(
+                "打开音视频文件（MP3、WAV、M4A、FLAC、MKV、MP4、MOV、WebM、AVI）",
+                "Open audio or video (MP3, WAV, M4A, FLAC, MKV, MP4, MOV, WebM, AVI)"
+            ),
+            shortcut: .openMedia
+        ))
+    }
+
+    @ViewBuilder
+    private var dropTargetOverlay: some View {
+        if isDropTargeted {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(MacAbobooMediaStyle.accent, lineWidth: 3)
+                .background(MacAbobooMediaStyle.accent.opacity(0.1))
+        }
+    }
+
+    private var workspaceContent: some View {
+        VStack(spacing: 0) {
+            HSplitView {
+                // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部控制栏）
+                VStack(spacing: 0) {
+                    if isWaveformsVisible {
+                        VStack(spacing: 4) {
+                            PrimaryWaveformView(engine: engine)
+                            SecondaryWaveformView(engine: engine)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+                        .macabobooContentSurface(cornerRadius: 8)
+                        .transition(Self.slideAndFadeTransition(from: .top))
+                    }
+
+                    VideoPlayerView(engine: engine)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if isSubtitleEditVisible {
+                        SubtitleEditView(engine: engine)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
+                            ))
+                    }
+                }
+                .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
+
+                if isSidebarVisible {
+                    SegmentListView(engine: engine)
+                        .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                        .transition(Self.slideAndFadeTransition(from: .trailing))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if shouldShowStatusBar {
+                PlaybackStatusBar(
+                    engine: engine,
+                    libraryManager: libraryManager,
+                    statusCenter: statusCenter
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func handleMediaDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let validURL = url else { return }
+            DispatchQueue.main.async {
+                engine.loadMedia(from: validURL)
+            }
+        }
+        return true
     }
     
     @ViewBuilder
@@ -492,6 +704,20 @@ public struct MainContentView: View {
         }
     }
 
+    private func handleCloseCurrentMediaRequest(_: Notification) {
+        hidePlaylist()
+        engine.closeCurrentMedia()
+        // 主窗口是独立的媒体工作区；关闭媒体后销毁它，再按需打开欢迎窗口。
+        if let mainWindow = NSApp.windows.first(where: {
+            $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-main-window")
+        }) {
+            mainWindow.close()
+        }
+        DispatchQueue.main.async {
+            openWindow(id: "welcome")
+        }
+    }
+
     private func togglePlaylist() {
         if isPlaylistVisible {
             hidePlaylist()
@@ -550,6 +776,159 @@ public struct MainContentView: View {
         
         if panel.runModal() == .OK, let url = panel.url {
             engine.loadMedia(from: url)
+        }
+    }
+}
+
+private struct MainWindowToolbarModifier: ViewModifier {
+    let toolbar: MainWindowToolbar
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        Group {
+            if isVisible {
+                content
+                    .tint(MacAbobooMediaStyle.accent)
+                    .toolbar { toolbar }
+            } else {
+                content
+            }
+        }
+    }
+}
+
+/// 将工具栏从主视图的超长泛型表达式中隔离出来，避免 Release 优化编译器
+/// 因 SwiftUI 类型推断复杂度而失败；所有动作仍回调至主窗口状态。
+private struct MainWindowToolbar: ToolbarContent {
+    @ObservedObject var engine: PlaybackEngine
+    @ObservedObject var lang: LanguageManager
+    @ObservedObject var videoSubtitleSettings: VideoSubtitleSettings
+    @Binding var isWaveformsVisible: Bool
+    @Binding var isSubtitleEditVisible: Bool
+    @Binding var isVideoSubtitleFontSettingsPresented: Bool
+    @Binding var isSidebarVisible: Bool
+    let onOpenLibrary: () -> Void
+    let onOpenMedia: () -> Void
+    let onTogglePlaylist: () -> Void
+
+    private var repeatOptions: [(label: String, count: Int)] {
+        [(lang.text("1次", "1×"), 1), (lang.text("2次", "2×"), 2),
+         (lang.text("3次", "3×"), 3), (lang.text("5次", "5×"), 5),
+         (lang.text("10次", "10×"), 10), (lang.text("无限", "∞"), 0)]
+    }
+
+    private var shadowingPauseOptions: [(label: String, ratio: Double)] {
+        [(lang.text("关闭", "Off"), 0), ("0.25×", 0.25), ("0.5×", 0.5),
+         ("0.75×", 0.75), ("1×", 1), ("1.5×", 1.5), ("2×", 2)]
+    }
+
+    private var repeatLabel: String {
+        engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)×"
+    }
+
+    private var pauseLabel: String {
+        engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
+    }
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button(action: onOpenLibrary) { Image(systemName: "books.vertical") }
+                .help(MacAbobooShortcutCatalog.help(lang.text("打开句库", "Open sentence library"), shortcut: .openSentenceLibrary))
+                .keyboardShortcut("l", modifiers: [.command])
+        }
+        ToolbarItem(placement: .navigation) {
+            Button(action: onOpenMedia) { Image(systemName: "folder.badge.plus") }
+                .help(MacAbobooShortcutCatalog.help(lang.text("打开音视频文件", "Open audio or video"), shortcut: .openMedia))
+        }
+        if let media = engine.currentMedia {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 5) {
+                    Image(systemName: media.isVideo ? "video.fill" : "music.note").font(.caption).foregroundColor(MacAbobooMediaStyle.accent)
+                    Text(media.title).font(.caption.bold()).lineLimit(1).truncationMode(.middle).frame(maxWidth: 220)
+                    Text("(\(media.formattedDuration))").font(.caption2).foregroundColor(.secondary)
+                }
+            }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Picker("", selection: $engine.loopMode) {
+                ForEach(PlaybackLoopMode.allCases) { mode in
+                    Image(systemName: mode.iconName).tag(mode).help(MacAbobooShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
+                }
+            }
+            .pickerStyle(.segmented)
+            .help(lang.text("播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）", "Playback mode"))
+
+            Menu {
+                ForEach(repeatOptions, id: \.count) { option in
+                    Button { engine.repeatCountLimit = option.count; engine.currentRepeatCount = 1 } label: {
+                        if engine.repeatCountLimit == option.count { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
+                    }
+                }
+            } label: {
+                Label(repeatLabel, systemImage: "repeat.circle").font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(engine.repeatCountLimit == 1 ? .primary : MacAbobooMediaStyle.accent)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("设置单句复读次数", "Set sentence repeat count"), shortcut: .repeatCountMenu))
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+
+            Menu {
+                ForEach(shadowingPauseOptions, id: \.ratio) { option in
+                    Button { engine.shadowingPauseRatio = option.ratio } label: {
+                        if abs(engine.shadowingPauseRatio - option.ratio) < 0.001 { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
+                    }
+                }
+            } label: {
+                Label(pauseLabel, systemImage: "pause.circle").font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(engine.shadowingPauseRatio == 0 ? .primary : .green)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button { videoSubtitleSettings.showOriginal.toggle() } label: { Image(systemName: videoSubtitleSettings.showOriginal ? "text.bubble.fill" : "text.bubble") }
+                .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showOriginal ? lang.text("隐藏视频原文字幕", "Hide video original subtitles") : lang.text("显示视频原文字幕", "Show video original subtitles"), shortcut: .toggleVideoOriginalSubtitle))
+                .keyboardShortcut("o", modifiers: [.command, .option])
+            Button { videoSubtitleSettings.showTranslation.toggle() } label: { Image(systemName: videoSubtitleSettings.showTranslation ? "character.bubble.fill" : "character.bubble") }
+                .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showTranslation ? lang.text("隐藏视频译文字幕", "Hide video translated subtitles") : lang.text("显示视频译文字幕", "Show video translated subtitles"), shortcut: .toggleVideoTranslationSubtitle))
+                .keyboardShortcut("t", modifiers: [.command, .option])
+            Button { isVideoSubtitleFontSettingsPresented.toggle() } label: { Image(systemName: "textformat.size") }
+                .help(MacAbobooShortcutCatalog.help(lang.text("设置视频字幕字体", "Set video subtitle fonts"), shortcut: .videoSubtitleFontSettings))
+                .keyboardShortcut("f", modifiers: [.command, .option])
+                .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) { VideoSubtitleFontSettingsPopover() }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                    Button { engine.playbackRate = speed } label: {
+                        if abs(engine.playbackRate - speed) < 0.01 { Label(String(format: "%.2fx", speed), systemImage: "checkmark") } else { Text(String(format: "%.2fx", speed)) }
+                    }
+                }
+                Divider()
+                Button { engine.playbackRate = 1 } label: { Label(lang.text("恢复原速 (1.00x)", "Reset to 1.00x"), systemImage: "arrow.counterclockwise") }
+            } label: {
+                Label(String(format: "%.2fx", engine.playbackRate), systemImage: "gauge.with.needle").font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(abs(engine.playbackRate - 1) > 0.001 ? MacAbobooMediaStyle.accent : .primary)
+            }
+            .help(MacAbobooShortcutCatalog.help(lang.text("调节播放语速", "Playback rate"), shortcut: .playbackRateMenu))
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button { withAnimation(.easeInOut(duration: 0.22)) { isWaveformsVisible.toggle() } } label: { Image(systemName: "waveform.path.ecg") }
+                .help(MacAbobooShortcutCatalog.help(isWaveformsVisible ? lang.text("隐藏波形图工作区", "Hide waveforms") : lang.text("显示波形图工作区", "Show waveforms"), shortcut: .toggleWaveforms))
+                .keyboardShortcut("w", modifiers: [.option])
+            Button { withAnimation(.easeInOut(duration: 0.22)) { isSubtitleEditVisible.toggle() } } label: { Image(systemName: "captions.bubble") }
+                .help(MacAbobooShortcutCatalog.help(isSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"), shortcut: .toggleSubtitleEditor))
+                .keyboardShortcut("s", modifiers: [.option])
+            Button(action: onTogglePlaylist) { Image(systemName: "music.note.list") }
+                .help(MacAbobooShortcutCatalog.help(lang.text("显示或隐藏播放列表", "Show or hide playlist"), shortcut: .togglePlaylist))
+                .keyboardShortcut("p", modifiers: [.option])
+            Button { withAnimation(.easeInOut(duration: 0.22)) { isSidebarVisible.toggle() } } label: { Image(systemName: "sidebar.right") }
+                .help(MacAbobooShortcutCatalog.help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"), shortcut: .toggleSegmentList))
+                .keyboardShortcut("l", modifiers: [.option])
         }
     }
 }
@@ -638,7 +1017,7 @@ private struct PlaybackStatusBar: View {
                 Divider()
                     .frame(height: 14)
                 Label(String(format: "%.2fx", engine.playbackRate), systemImage: "gauge.with.needle")
-                    .foregroundColor(.blue)
+                    .foregroundColor(MacAbobooMediaStyle.accent)
             }
 
             if engine.repeatCountLimit != 1 {
@@ -680,11 +1059,11 @@ private struct PlaybackStatusBar: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 3)
         .frame(minHeight: 26)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .macabobooContentSurface(cornerRadius: 0)
         .overlay(
             Rectangle()
                 .frame(height: 1)
-                .foregroundColor(Color(nsColor: .separatorColor)),
+                .foregroundColor(MacAbobooMediaStyle.separator),
             alignment: .top
         )
     }
@@ -736,9 +1115,9 @@ private struct StatusBarProgressView: View {
             if canCancel {
                 Button(action: onCancel) {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .frame(width: 18, height: 18)
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .help(lang.text("取消当前任务", "Cancel current task"))
             }
         }
@@ -768,9 +1147,9 @@ private struct StatusBarErrorView: View {
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.plain)
+            .macabobooChromeButton(shape: .circle)
             .help("关闭提示")
         }
         .padding(.horizontal, 6)

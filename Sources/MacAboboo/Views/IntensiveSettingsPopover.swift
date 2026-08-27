@@ -226,27 +226,6 @@ public struct IntensiveSettingsPopover: View {
             Divider()
 
             settingsGroupTitle(
-                lang.text("波形边界编辑", "Waveform Boundary Editing"),
-                systemImage: "hand.tap"
-            )
-
-            Toggle(isOn: $engine.boundarySnapHapticFeedback) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(lang.text("边界吸附触觉反馈", "Boundary Snap Haptic Feedback"))
-                        .font(.body.weight(.medium))
-                    Text(lang.text(
-                        "拖动橙色或绿色标线吸附到声学边界时提供触摸反馈。",
-                        "Provides haptic feedback when an orange or green marker snaps to an acoustic boundary."
-                    ))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-
-            Divider()
-
-            settingsGroupTitle(
                 lang.text("字幕生成", "Subtitle Generation"),
                 systemImage: "captions.bubble"
             )
@@ -744,7 +723,7 @@ public struct IntensiveSettingsPopover: View {
             )) {
                 Text(lang.text("系统解码", "System")).tag(DecoderEngineMode.system)
                 Text(lang.text("扩展解码", "Extended")).tag(DecoderEngineMode.mpv)
-                Text(lang.text("智能混合", "Hybrid")).tag(DecoderEngineMode.hybrid)
+                Text(lang.text("智能混合（推荐）", "Hybrid (Recommended)")).tag(DecoderEngineMode.hybrid)
             }
             .pickerStyle(.segmented)
 

@@ -11,6 +11,7 @@ public struct PlaybackListView: View {
     @ObservedObject private var lang = LanguageManager.shared
     
     @State private var selectedMediaURL: URL? = nil
+    @State private var hoveredMediaURL: URL? = nil
     @State private var fileExistence: [String: Bool] = [:]
 
     public init(
@@ -46,7 +47,7 @@ public struct PlaybackListView: View {
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .macabobooChromeButton(shape: .circle)
                     .help(lang.text("添加音视频文件", "Add audio or video files"))
                 }
                 .padding(.horizontal, 12)
@@ -64,6 +65,7 @@ public struct PlaybackListView: View {
                         ))
                     } actions: {
                         Button(lang.text("添加文件…", "Add Files…"), action: addFiles)
+                            .macabobooChromeButton(prominent: true)
                     }
                     .frame(maxHeight: .infinity)
                 } else {
@@ -89,10 +91,10 @@ public struct PlaybackListView: View {
                 Spacer()
             }
         }
-        .background(.regularMaterial)
+        .macabobooNavigationSurface(cornerRadius: 0)
         .overlay(alignment: .leading) {
             Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.45))
+                .fill(MacAbobooMediaStyle.separator.opacity(0.45))
                 .frame(width: 1)
         }
         .shadow(color: Color.black.opacity(0.18), radius: 14, x: -4, y: 2)
@@ -140,8 +142,14 @@ public struct PlaybackListView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.accentColor.opacity(0.18) : (isCurrent ? Color.accentColor.opacity(0.08) : Color.clear))
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(
+                    isSelected
+                        ? Color.accentColor.opacity(0.18)
+                        : (isCurrent
+                            ? Color.accentColor.opacity(0.08)
+                            : (hoveredMediaURL == entry.mediaURL ? Color.primary.opacity(0.06) : Color.clear))
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 6)
@@ -159,6 +167,10 @@ public struct PlaybackListView: View {
                 selectedMediaURL = entry.mediaURL
             }
         )
+        .onHover { hovering in
+            hoveredMediaURL = hovering ? entry.mediaURL : nil
+        }
+        .animation(.easeOut(duration: 0.12), value: hoveredMediaURL == entry.mediaURL)
         .contextMenu {
             Button(role: .destructive) {
                 Task { await engine.removeFromPlaybackHistory(entry.mediaURL) }

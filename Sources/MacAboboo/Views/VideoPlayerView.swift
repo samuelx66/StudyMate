@@ -79,7 +79,11 @@ public struct VideoPlayerView: View {
                             .font(.caption)
                     }
                     .padding(12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(MacAbobooMediaStyle.separator.opacity(0.5), lineWidth: 0.7)
+                    )
                 }
                 
                 // 悬浮式播放控制面板（IINA 风格，支持在画面区域内随意拖放）
@@ -125,7 +129,7 @@ public struct VideoPlayerView: View {
             .cornerRadius(10)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    .stroke(MacAbobooMediaStyle.separator, lineWidth: 1)
             )
             .onContinuousHover { phase in
                 switch phase {
@@ -247,7 +251,7 @@ struct AudioVisualPlaceholder: View {
                 
                 Text(duration)
                     .font(.caption)
-                    .foregroundColor(.gray)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding()

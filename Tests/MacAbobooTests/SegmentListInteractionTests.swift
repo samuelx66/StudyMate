@@ -116,4 +116,17 @@ final class SegmentListInteractionTests: XCTestCase {
 
         XCTAssertTrue(criteria.matches(segment))
     }
+
+    func testSentenceFiltersSupportInclusiveIndexRange() {
+        var criteria = SegmentListFilterCriteria()
+        criteria.requiresIndexRange = true
+        criteria.startIndexText = "5"
+        criteria.endIndexText = "3"
+
+        XCTAssertFalse(criteria.matches(SentenceSegment(index: 2, startTime: 0, endTime: 1)))
+        XCTAssertTrue(criteria.matches(SentenceSegment(index: 3, startTime: 0, endTime: 1)))
+        XCTAssertTrue(criteria.matches(SentenceSegment(index: 4, startTime: 0, endTime: 1)))
+        XCTAssertTrue(criteria.matches(SentenceSegment(index: 5, startTime: 0, endTime: 1)))
+        XCTAssertFalse(criteria.matches(SentenceSegment(index: 6, startTime: 0, endTime: 1)))
+    }
 }

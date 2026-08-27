@@ -16,16 +16,38 @@ public struct FloatingVideoOSDView: View {
     }
     
     public var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 8) {
+                    osdControls
+                }
+            } else {
+                osdControls
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(MacAbobooMediaStyle.separator.opacity(0.45), lineWidth: 0.8)
+        )
+        .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
+        .frame(maxWidth: 540)
+    }
+
+    private var osdControls: some View {
         HStack(spacing: 8) {
             // 1. 重播当前句
             Button(action: { engine.repeatCurrentSegment() }) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
                     .frame(width: 26, height: 26)
-                    .background(Circle().fill(Color.primary.opacity(0.06)))
             }
-            .buttonStyle(.plain)
+            .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
                 lang.localized(.repeatSentence),
                 shortcut: .repeatCurrentSegment
@@ -35,11 +57,9 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.previousSegment() }) {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
                     .frame(width: 26, height: 26)
-                    .background(Circle().fill(Color.primary.opacity(0.06)))
             }
-            .buttonStyle(.plain)
+            .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
                 lang.localized(.previousSentence),
                 shortcut: .previousSegment
@@ -47,18 +67,11 @@ public struct FloatingVideoOSDView: View {
             
             // 3. 播放 / 暂停 大按钮（实心强调色背景 + 白色图标）
             Button(action: { engine.togglePlayPause() }) {
-                ZStack {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 30, height: 30)
-                        .shadow(color: Color.accentColor.opacity(0.30), radius: 3, x: 0, y: 1)
-                    
-                    Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                }
+                Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 30, height: 30)
             }
-            .buttonStyle(.plain)
+            .macabobooChromeButton(prominent: true, shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
                 engine.isPlaying ? lang.localized(.pause) : lang.localized(.play),
                 shortcut: .playPause
@@ -68,11 +81,9 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.nextSegment() }) {
                 Image(systemName: "forward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
                     .frame(width: 26, height: 26)
-                    .background(Circle().fill(Color.primary.opacity(0.06)))
             }
-            .buttonStyle(.plain)
+            .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
                 lang.localized(.nextSentence),
                 shortcut: .nextSegment
@@ -115,10 +126,9 @@ public struct FloatingVideoOSDView: View {
                 }) {
                     Image(systemName: engine.volume == 0 ? "speaker.slash.fill" : (engine.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.primary)
                         .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("静音 / 取消静音", "Mute / Unmute"),
                     shortcut: .mute
@@ -136,18 +146,6 @@ public struct FloatingVideoOSDView: View {
             }
             .padding(.trailing, 2)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 0.8)
-        )
-        .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
-        .frame(maxWidth: 540)
     }
 }
 

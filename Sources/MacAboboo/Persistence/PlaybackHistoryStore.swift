@@ -139,6 +139,12 @@ public final class PlaybackHistoryStore: ObservableObject {
         if entries.count != previousCount { persist() }
     }
 
+    public func removeAll() {
+        guard !entries.isEmpty else { return }
+        entries.removeAll()
+        persist()
+    }
+
     private func persist() {
         let snapshot = entries
         let destination = storageURL

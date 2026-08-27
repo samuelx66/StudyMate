@@ -821,6 +821,74 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         loadMedia(from: mediaURL)
     }
 
+    /// 关闭当前媒体工作区并回到欢迎首屏。播放历史和已保存工程保留，
+    /// 因而用户仍可从首屏的“继续播放”或历史条目重新打开媒体。
+    public func closeCurrentMedia() {
+        guard currentMedia != nil else { return }
+
+        debouncedSaveTask?.cancel()
+        persistCurrentProject()
+
+        mediaSessionID = UUID()
+        segmentationRequestID = UUID()
+        seekGeneration &+= 1
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
+        previewSeekTask?.cancel()
+        previewSeekTask = nil
+        shadowingTask?.cancel()
+        shadowingTask = nil
+        waveformTask?.cancel()
+        waveformTask = nil
+        sidecarTask?.cancel()
+        sidecarTask = nil
+        segmentationTask?.cancel()
+        segmentationTask = nil
+        cancelAutomaticTranslation()
+
+        isBackendReady = false
+        isSeeking = false
+        pendingPreviewSeekTime = nil
+        previewEndTime = nil
+        pendingResumePlayback = false
+        pendingResumeTime = 0
+        activeBackend.pause()
+        nativeBackend.teardown()
+        mpvBackend.teardown()
+
+        securityScopedMediaURL?.stopAccessingSecurityScopedResource()
+        securityScopedMediaURL = nil
+        currentMedia = nil
+        segments = []
+        waveformData = .empty
+        acousticBoundaryTimes = []
+        activeSegmentIndex = nil
+        lastSecondarySegmentId = nil
+        boundaryDragWorkingSegments = nil
+        activeBoundarySnapMarker = nil
+        currentTime = 0
+        duration = 0
+        primaryViewport = (0, 15)
+        secondaryViewport = (0, 5)
+        currentRepeatCount = 1
+        isPlaying = false
+        wantsPlayback = false
+        isShadowingPaused = false
+        shadowingCountdownRemaining = 0
+        isWaveformFrozenAtNaturalEnd = false
+        canResumePlaybackFromSegmentSelection = false
+        isExtractingWaveform = false
+        waveformExtractionProgress = 0
+        isAITranscribing = false
+        aiTranscriptionProgress = 0
+        aiTranscriptionStatusText = ""
+        hasCompletedSegmentation = false
+        segmentOrigin = .none
+        lastErrorMessage = nil
+        segmentationWarningMessage = nil
+        translationErrorMessage = nil
+    }
+
     /// 加载音视频文件（优先从 ~/Library/Application Support/MacAboboo/Projects/ 独立工程文件瞬间读取）
     public func loadMedia(from url: URL) {
         // An explicit open (including a URL supplied by Finder) always wins
@@ -2123,6 +2191,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard time >= currentSeg.endTime - 0.005 else { return }
             currentRepeatCount += 1
             seekToTargetSegment(currentSeg)
+            return
+        }
+
+        // A shadowing pause intentionally freezes the current sentence while
+        // the decoder is paused.  AVPlayer/libmpv can still deliver one or
+        // more queued end-time frames during that interval; treating those
+        // stale frames as normal timeline progress would briefly select the
+        // next sentence and make both waveforms flicker before the repeat
+        // seek starts.
+        if isShadowingPaused {
             return
         }
 

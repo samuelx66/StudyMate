@@ -41,13 +41,17 @@ struct SegmentListFilterCriteria: Equatable {
     var requiresWord = false
     var wordText = ""
     var requiresBookmark = false
+    var requiresIndexRange = false
+    var startIndexText = ""
+    var endIndexText = ""
 
     var hasActiveFilters: Bool {
         requiresOriginal ||
         requiresTranslation ||
         requiresMinimumDuration ||
         requiresWord ||
-        requiresBookmark
+        requiresBookmark ||
+        requiresIndexRange
     }
 
     func matches(_ segment: SentenceSegment) -> Bool {
@@ -73,6 +77,19 @@ struct SegmentListFilterCriteria: Equatable {
         if requiresBookmark && !segment.isBookmarked {
             return false
         }
+        if requiresIndexRange {
+            let start = parsedIndex(from: startIndexText)
+            let end = parsedIndex(from: endIndexText)
+            if let start, let end {
+                let lower = min(start, end)
+                let upper = max(start, end)
+                guard (lower...upper).contains(segment.index) else { return false }
+            } else if let start {
+                guard segment.index >= start else { return false }
+            } else if let end {
+                guard segment.index <= end else { return false }
+            }
+        }
         return true
     }
 
@@ -81,6 +98,13 @@ struct SegmentListFilterCriteria: Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: ".")
         guard let value = Double(normalized), value >= 0, value.isFinite else { return nil }
+        return value
+    }
+
+    private func parsedIndex(from text: String) -> Int? {
+        guard let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)), value > 0 else {
+            return nil
+        }
         return value
     }
 
@@ -120,6 +144,8 @@ public struct SegmentListView: View {
     @State private var showSettingsPopover: Bool = false
     @State private var showTranslationPopover: Bool = false
     @State private var filterCriteria = SegmentListFilterCriteria()
+    /// “反选”不是反转勾选框状态，而是把当前筛选条件取补集。
+    @State private var isFilterInverted = false
     @State private var showFilterPopover: Bool = false
     @State private var showRegenerateOriginalConfirmation: Bool = false
     @State private var selectedSegmentIDs: Set<UUID> = []
@@ -164,6 +190,7 @@ public struct SegmentListView: View {
                     Image(systemName: followState.shouldFollow
                         ? "book.pages.fill"
                         : "book.closed")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(followState.shouldFollow ? .primary : .secondary)
                         .help(MacAbobooShortcutCatalog.help(
                             followState.shouldFollow
@@ -172,7 +199,7 @@ public struct SegmentListView: View {
                             shortcut: .followActiveSentence
                         ))
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
                     followState.shouldFollow
@@ -189,9 +216,10 @@ public struct SegmentListView: View {
                     Image(systemName: filterCriteria.hasActiveFilters
                         ? "line.3.horizontal.decrease.circle.fill"
                         : "line.3.horizontal.decrease.circle")
-                        .foregroundColor(filterCriteria.hasActiveFilters ? .blue : .secondary)
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(filterCriteria.hasActiveFilters ? MacAbobooMediaStyle.accent : .secondary)
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("筛选句子", "Filter sentences"),
@@ -214,9 +242,10 @@ public struct SegmentListView: View {
                     showRegenerateOriginalConfirmation = true
                 } label: {
                     Image(systemName: "waveform.and.mic")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .disabled(
                     engine.currentMedia == nil
@@ -240,9 +269,10 @@ public struct SegmentListView: View {
                     showTranslationPopover = true
                 } label: {
                     Image(systemName: "character.book.closed")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
                 .help(MacAbobooShortcutCatalog.help(
@@ -264,13 +294,14 @@ public struct SegmentListView: View {
                 // 导入字幕按钮
                 Button(action: { showImportSheet = true }) {
                     Image(systemName: "captions.bubble")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                         .help(MacAbobooShortcutCatalog.help(
                             lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
                             shortcut: .importSubtitles
                         ))
                 }
-                .buttonStyle(.plain)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
@@ -298,9 +329,11 @@ public struct SegmentListView: View {
                     ))
                 } label: {
                     Image(systemName: "square.and.arrow.up")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                 }
                 .menuStyle(.borderlessButton)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
                 .help(MacAbobooShortcutCatalog.help(
@@ -350,9 +383,11 @@ public struct SegmentListView: View {
                     }
                 } label: {
                     Image(systemName: "text.badge.plus")
-                        .foregroundColor(isAddingToLibrary ? .blue : .secondary)
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(isAddingToLibrary ? MacAbobooMediaStyle.accent : .secondary)
                 }
                 .menuStyle(.borderlessButton)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
                     selectedSegmentIDs.isEmpty
@@ -382,6 +417,7 @@ public struct SegmentListView: View {
                     ))
                 } label: {
                     Image(systemName: "wand.and.stars")
+                        .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                         .help(MacAbobooShortcutCatalog.help(
                             lang.text("选择断句模式", "Choose segmentation mode"),
@@ -389,6 +425,7 @@ public struct SegmentListView: View {
                         ))
                 }
                 .menuStyle(.borderlessButton)
+                .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("选择断句模式", "Choose segmentation mode"),
@@ -398,7 +435,7 @@ public struct SegmentListView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .macabobooContentSurface(cornerRadius: 0)
 
             // 搜索过滤栏
             HStack {
@@ -411,10 +448,10 @@ public struct SegmentListView: View {
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
                             .font(.caption)
+                            .frame(width: 18, height: 18)
                     }
-                    .buttonStyle(.plain)
+                    .macabobooChromeButton(shape: .circle)
                     .help(MacAbobooShortcutCatalog.help(
                         lang.text("清除搜索", "Clear search"),
                         shortcut: .clearSearch
@@ -423,7 +460,11 @@ public struct SegmentListView: View {
                 }
             }
             .padding(6)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(MacAbobooMediaStyle.separator.opacity(0.5), lineWidth: 0.7)
+            )
             .cornerRadius(6)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -527,7 +568,7 @@ public struct SegmentListView: View {
                 }
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(MacAbobooMediaStyle.windowBackground)
         .frame(minWidth: 220)
         .sheet(isPresented: $showImportSheet) {
             SubtitleImportSheet(engine: engine)
@@ -566,6 +607,9 @@ public struct SegmentListView: View {
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
         .onChange(of: searchText) { _, _ in refreshDisplayedSegments() }
         .onChange(of: filterCriteria) { _, _ in
+            if !filterCriteria.hasActiveFilters {
+                isFilterInverted = false
+            }
             refreshDisplayedSegments(selectMatching: filterCriteria.hasActiveFilters)
         }
         .alert(item: $exportNotice) { notice in
@@ -673,7 +717,10 @@ public struct SegmentListView: View {
 
     private func refreshDisplayedSegments(selectMatching: Bool = false) {
         let criteriaMatches = engine.segments.filter { filterCriteria.matches($0) }
-        var list = criteriaMatches
+        let criteriaResult = isFilterInverted && filterCriteria.hasActiveFilters
+            ? engine.segments.filter { !filterCriteria.matches($0) }
+            : criteriaMatches
+        var list = criteriaResult
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
             list = list.filter {
@@ -685,9 +732,9 @@ public struct SegmentListView: View {
         if selectMatching && filterCriteria.hasActiveFilters {
             selectedSegmentIDs = Set(list.map(\.id))
         } else if filterCriteria.hasActiveFilters {
-            // 底层句子被编辑、合并或星标状态变化后，移除已不再符合条件的隐藏选择；
+            // 底层句子被编辑、合并或星标状态变化后，移除已不再符合当前结果的隐藏选择；
             // 但保留用户对仍符合条件句子的手动取消勾选。搜索词不参与此集合，避免搜索栏改变导出范围。
-            selectedSegmentIDs.formIntersection(criteriaMatches.lazy.map(\.id))
+            selectedSegmentIDs.formIntersection(criteriaResult.lazy.map(\.id))
         } else {
             selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
         }
@@ -717,8 +764,11 @@ public struct SegmentListView: View {
     }
 
     private func invertDisplayedSegmentSelection() {
-        let displayedIDs = Set(displayedSegments.map(\.id))
-        selectedSegmentIDs = selectedSegmentIDs.symmetricDifference(displayedIDs)
+        guard filterCriteria.hasActiveFilters else { return }
+        // 反选作用于“筛选条件的结果集”，不是当前勾选状态：
+        // 例如 20 句中筛出 3 句时，反选会显示并选中另外 17 句。
+        isFilterInverted.toggle()
+        refreshDisplayedSegments(selectMatching: true)
     }
 
     private func chooseIndividualExportDestination() {
@@ -881,6 +931,27 @@ private struct SegmentFilterPopover: View {
                 Text(lang.text("只显示带星标的句子", "Only starred sentences"))
             }
             .toggleStyle(.checkbox)
+
+            HStack(spacing: 6) {
+                Toggle(isOn: $criteria.requiresIndexRange) {
+                    Text(lang.text("只显示编号", "Only sentence numbers"))
+                }
+                .toggleStyle(.checkbox)
+
+                Text("#")
+                    .foregroundColor(.secondary)
+                TextField("x", text: $criteria.startIndexText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 46)
+                    .disabled(!criteria.requiresIndexRange)
+
+                Text(lang.text("到 #", "to #"))
+                    .foregroundColor(.secondary)
+                TextField("y", text: $criteria.endIndexText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 46)
+                    .disabled(!criteria.requiresIndexRange)
+            }
 
             Divider()
 
@@ -1075,7 +1146,7 @@ struct SegmentRowView: View {
 
                 // 左侧活跃状态指示竖条
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(isActive ? Color.blue : Color.clear)
+                    .fill(isActive ? MacAbobooMediaStyle.accent : Color.clear)
                     .frame(width: 3)
                     .padding(.vertical, 2)
 
@@ -1085,20 +1156,22 @@ struct SegmentRowView: View {
                         Button(action: onToggleBookmark) {
                             Image(systemName: seg.isBookmarked ? "star.fill" : "star")
                                 .font(.system(size: 10))
+                                .frame(width: 20, height: 20)
                                 .foregroundColor(seg.isBookmarked ? .yellow : .gray.opacity(0.4))
                         }
-                        .buttonStyle(.plain)
+                        .macabobooChromeButton(shape: .circle)
                         .help(MacAbobooShortcutCatalog.help(
                             lang.text("切换难句星标", "Toggle difficulty star"),
                             shortcut: .toggleDifficultyBookmark
                         ))
+                        .zIndex(3)
 
                         // 序号
                         Text("#\(seg.index)")
                             .font(.caption2.bold())
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(isActive ? Color.blue : Color.gray.opacity(0.2))
+                            .background(isActive ? MacAbobooMediaStyle.accent : Color.gray.opacity(0.2))
                             .foregroundColor(isActive ? .white : .primary)
                             .cornerRadius(3)
 
@@ -1142,8 +1215,9 @@ struct SegmentRowView: View {
                             }) {
                                 Image(systemName: "pencil")
                                     .font(.system(size: 9))
+                                    .frame(width: 20, height: 20)
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.text("编辑原文和译文", "Edit original text and translation"),
                                 shortcut: .editSentence
@@ -1153,8 +1227,9 @@ struct SegmentRowView: View {
                             Button(action: onSplit) {
                                 Image(systemName: "rectangle.split.2x1")
                                     .font(.system(size: 9))
+                                    .frame(width: 20, height: 20)
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.text("在中间拆分此句", "Split this sentence at its midpoint"),
                                 shortcut: .splitSentence
@@ -1164,9 +1239,10 @@ struct SegmentRowView: View {
                             Button(action: onMergePrevious) {
                                 Image(systemName: "arrow.triangle.merge")
                                     .font(.system(size: 9))
+                                    .frame(width: 20, height: 20)
                                     .scaleEffect(x: -1, y: 1)
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.text("合并上一句", "Merge with previous sentence"),
                                 shortcut: .mergePreviousSentence
@@ -1177,9 +1253,10 @@ struct SegmentRowView: View {
                             Button(action: onMergeNext) {
                                 Image(systemName: "arrow.triangle.merge")
                                     .font(.system(size: 9))
+                                    .frame(width: 20, height: 20)
                                     .rotationEffect(.degrees(180))
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.localized(.mergeSegment),
                                 shortcut: .mergeNextSentence
@@ -1189,9 +1266,10 @@ struct SegmentRowView: View {
                             Button(action: onToggleNavigationBookmark) {
                                 Image(systemName: seg.isNavigationBookmarked ? "bookmark.fill" : "bookmark")
                                     .font(.system(size: 9))
-                                    .foregroundColor(seg.isNavigationBookmarked ? .blue : .secondary)
+                                    .frame(width: 20, height: 20)
+                                    .foregroundColor(seg.isNavigationBookmarked ? MacAbobooMediaStyle.accent : .secondary)
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.text(
                                     seg.isNavigationBookmarked ? "移出书签" : "加入书签",
@@ -1204,9 +1282,10 @@ struct SegmentRowView: View {
                             Button(action: onDelete) {
                                 Image(systemName: "trash")
                                     .font(.system(size: 9))
+                                    .frame(width: 20, height: 20)
                                     .foregroundColor(.red)
                             }
-                            .buttonStyle(.plain)
+                            .macabobooChromeButton(shape: .circle)
                             .help(MacAbobooShortcutCatalog.help(
                                 lang.localized(.deleteSegment),
                                 shortcut: .deleteSentence
@@ -1214,6 +1293,7 @@ struct SegmentRowView: View {
                             .allowsHitTesting(isHovering)
                         }
                         .opacity(isHovering ? 1 : 0)
+                        .zIndex(3)
                     }
 
                     // 第二行：分为两个区域，左边显示原文，右边显示译文
@@ -1256,21 +1336,9 @@ struct SegmentRowView: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isActive ? Color.blue.opacity(0.14) : (isHovering ? Color.primary.opacity(0.04) : Color.clear))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isActive ? Color.blue.opacity(0.55) : Color.clear, lineWidth: 1)
-            )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help(MacAbobooShortcutCatalog.help(
-            lang.text("选中此句并定位播放", "Select and seek to this sentence"),
-            shortcut: .selectSentence
-        ))
+        .buttonStyle(MacAbobooSelectableRowButtonStyle(isActive: isActive, isHovered: isHovering))
         .onHover { inside in
             isHovering = inside
         }

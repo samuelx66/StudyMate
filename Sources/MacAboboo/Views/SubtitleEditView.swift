@@ -44,7 +44,7 @@ public struct SubtitleEditView: View {
                 HStack(spacing: 8) {
                     Text(lang.text("原文", "Original"))
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.blue)
+                        .foregroundColor(MacAbobooMediaStyle.accent)
                         .frame(width: 32, alignment: .trailing)
                     
                     TextField(lang.text("输入原文台词或字幕…", "Enter original text or subtitles…"), text: $originalText)
@@ -62,8 +62,8 @@ public struct SubtitleEditView: View {
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.15))
-                        .foregroundColor(.blue)
+                        .background(MacAbobooMediaStyle.accent.opacity(0.15))
+                        .foregroundColor(MacAbobooMediaStyle.accent)
                         .cornerRadius(4)
                 }
                 
@@ -108,7 +108,7 @@ public struct SubtitleEditView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .macabobooContentSurface(cornerRadius: 6)
         .onAppear {
             loadActiveSegment()
         }

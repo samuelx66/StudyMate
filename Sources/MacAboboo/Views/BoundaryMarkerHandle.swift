@@ -103,9 +103,12 @@ public struct BoundaryMarkerHandle: View {
                         .font(.system(size: 7, weight: .bold).monospacedDigit())
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)
-                        .background(Color.black.opacity(0.85))
-                        .foregroundColor(.white)
-                        .cornerRadius(3)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .foregroundStyle(.primary)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .stroke(color.opacity(0.7), lineWidth: 0.6)
+                        )
                         .offset(y: 1)
                 }
             }
