@@ -314,75 +314,92 @@ private struct RecentMediaFileRow: View {
         }
     }
 
-    /// 路径面包屑格式化：如 🏠 ▸ Documents ▸ English
+    private var isUnderHome: Bool {
+        let parentURL = entry.mediaURL.deletingLastPathComponent()
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        return parentURL.path.hasPrefix(homePath)
+    }
+
+    /// 路径面包屑格式化：如 Documents ▸ English
     private var pathBreadcrumb: String {
         let parentURL = entry.mediaURL.deletingLastPathComponent()
         let homePath = FileManager.default.homeDirectoryForCurrentUser.path
 
         if parentURL.path == homePath {
-            return "🏠"
+            return ""
         } else if parentURL.path.hasPrefix(homePath) {
             let relativePath = String(parentURL.path.dropFirst(homePath.count))
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let components = relativePath.components(separatedBy: "/")
             if components.isEmpty || components.first?.isEmpty == true {
-                return "🏠"
+                return ""
             }
-            return "🏠 ▸ " + components.joined(separator: " ▸ ")
+            return components.joined(separator: " ▸ ")
         } else {
-            return "📁 ▸ " + parentURL.lastPathComponent
+            return parentURL.lastPathComponent
         }
     }
 
     var body: some View {
-        Button {
+        HStack(spacing: 10) {
+            // 缩略图标徽章（选中时白色底块，未选中时半透明底块）
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isSelected ? Color.white : Color.secondary.opacity(0.15))
+                    .frame(width: 28, height: 28)
+
+                Image(systemName: isVideo ? "video.fill" : "waveform")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            }
+
+            // 文件名与路径
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.filename)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 3) {
+                    Image(systemName: isUnderHome ? "house" : "folder")
+                        .font(.system(size: 9))
+
+                    if !pathBreadcrumb.isEmpty {
+                        Text("▸")
+                            .font(.system(size: 8))
+                        Text(pathBreadcrumb)
+                            .font(.system(size: 10.5))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+                .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+            }
+
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(
+                    isSelected
+                        ? Color.accentColor
+                        : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
+                )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
             onSelect()
             onOpen()
-        } label: {
-            HStack(spacing: 10) {
-                // 缩略图标徽章（选中时白色底块，未选中时半透明底块）
-                ZStack {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white : Color.secondary.opacity(0.15))
-                        .frame(width: 28, height: 28)
-
-                    Image(systemName: isVideo ? "video.fill" : "waveform")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                }
-
-                // 文件名与路径
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.filename)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Text(pathBreadcrumb)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-
-                Spacer(minLength: 4)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(
-                        isSelected
-                            ? Color.accentColor
-                            : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
-                    )
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .focusable(false)
+        .simultaneousGesture(
+            TapGesture(count: 1).onEnded {
+                onSelect()
+            }
+        )
         .contextMenu {
             Button(lang.text("在访达中显示", "Reveal in Finder")) {
                 onRevealInFinder()

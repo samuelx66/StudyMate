@@ -49,6 +49,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public private(set) var isMediaLoading: Bool = false
     @Published public var lastErrorMessage: String?
     @Published public private(set) var segmentationWarningMessage: String?
+    /// During the native window zoom animation the media window is laid out
+    /// repeatedly.  This flag only controls presentation refresh frequency and
+    /// waveform rendering quality while that animation is in progress; it
+    /// never pauses playback or changes the playback/segmentation state.
+    @Published public private(set) var isWindowResizing: Bool = false
     @Published public var playbackRate: Float = 1.0 {
         didSet {
             activeBackend.playbackRate = playbackRate
@@ -222,6 +227,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var explicitSegmentSelection: ExplicitSegmentSelection?
     private var isBackendReady = false
     private var wantsPlayback = false
+    /// The user's normal presentation preference.  A temporary window resize
+    /// throttle must not overwrite it, otherwise hiding/showing the waveforms
+    /// during a resize could accidentally leave playback at the reduced rate.
+    private var highFrequencyPresentationEnabled = true
     /// 自然播放到最后一句后，允许用户点击任意断句重新开始播放。
     /// 该状态只在自然结束时保留；用户主动暂停/停止后必须清除，避免
     /// 普通的暂停状态在点击断句时意外自动播放。
@@ -793,6 +802,21 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
+        highFrequencyPresentationEnabled = enabled
+        applyPresentationRefreshPolicy()
+    }
+
+    /// Temporarily lower presentation refresh work while AppKit animates a
+    /// window zoom.  Audio playback, decoder state and sentence boundaries are
+    /// intentionally untouched; only high-frequency UI callbacks are reduced.
+    public func setWindowResizing(_ resizing: Bool) {
+        guard isWindowResizing != resizing else { return }
+        isWindowResizing = resizing
+        applyPresentationRefreshPolicy()
+    }
+
+    private func applyPresentationRefreshPolicy() {
+        let enabled = highFrequencyPresentationEnabled && !isWindowResizing
         nativeBackend.setHighFrequencyPresentationEnabled(enabled)
         mpvBackend.setHighFrequencyPresentationEnabled(enabled)
     }

@@ -106,7 +106,8 @@ public struct PrimaryWaveformView: View {
                         startTime: viewport.start,
                         endTime: viewport.end,
                         width: width,
-                        height: height
+                        height: height,
+                        isWindowResizing: engine.isWindowResizing
                     )
                     
                     // 3. 60fps 平滑播放游标

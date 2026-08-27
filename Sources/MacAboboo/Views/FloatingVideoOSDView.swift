@@ -46,6 +46,7 @@ public struct FloatingVideoOSDView: View {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
                     .frame(width: 26, height: 26)
+                    .contentShape(Circle())
             }
             .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
@@ -58,6 +59,7 @@ public struct FloatingVideoOSDView: View {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .frame(width: 26, height: 26)
+                    .contentShape(Circle())
             }
             .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
@@ -70,6 +72,7 @@ public struct FloatingVideoOSDView: View {
                 Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 12, weight: .bold))
                     .frame(width: 30, height: 30)
+                    .contentShape(Circle())
             }
             .macabobooChromeButton(prominent: true, shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
@@ -82,6 +85,7 @@ public struct FloatingVideoOSDView: View {
                 Image(systemName: "forward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .frame(width: 26, height: 26)
+                    .contentShape(Circle())
             }
             .macabobooChromeButton(shape: .circle)
             .help(MacAbobooShortcutCatalog.help(
@@ -127,6 +131,7 @@ public struct FloatingVideoOSDView: View {
                     Image(systemName: engine.volume == 0 ? "speaker.slash.fill" : (engine.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
                         .font(.system(size: 11, weight: .medium))
                         .frame(width: 20, height: 20)
+                        .contentShape(Circle())
                 }
                 .macabobooChromeButton(shape: .circle)
                 .help(MacAbobooShortcutCatalog.help(

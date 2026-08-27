@@ -42,34 +42,42 @@ struct MacAbobooChromeButtonStyle: ButtonStyle {
             case .circle:
                 configuration.label
                     .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .contentShape(Circle())
                     .glassEffect(
                         (prominent
                             ? Glass.regular.tint(MacAbobooMediaStyle.accent)
                             : Glass.regular).interactive(),
                         in: Circle()
                     )
+                    .contentShape(Circle())
                     .opacity(configuration.isPressed ? 0.78 : 1)
                     .scaleEffect(configuration.isPressed ? 0.96 : 1)
             case .capsule:
                 configuration.label
                     .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .contentShape(Capsule())
                     .glassEffect(
                         (prominent
                             ? Glass.regular.tint(MacAbobooMediaStyle.accent)
                             : Glass.regular).interactive(),
                         in: Capsule()
                     )
+                    .contentShape(Capsule())
                     .opacity(configuration.isPressed ? 0.78 : 1)
+                    .scaleEffect(configuration.isPressed ? 0.96 : 1)
             case .rounded:
                 configuration.label
                     .foregroundStyle(prominent ? Color.white : Color.primary)
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .glassEffect(
                         (prominent
                             ? Glass.regular.tint(MacAbobooMediaStyle.accent)
                             : Glass.regular).interactive(),
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .opacity(configuration.isPressed ? 0.78 : 1)
+                    .scaleEffect(configuration.isPressed ? 0.96 : 1)
             }
         } else {
             MacAbobooFallbackControlBody(
@@ -97,6 +105,7 @@ private struct MacAbobooFallbackControlBody<Label: View>: View {
                     .foregroundStyle(prominent ? Color.white : Color.primary)
                     .background(Circle().fill(fillColor))
                     .overlay(Circle().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .contentShape(Circle())
                     .opacity(isPressed ? 0.72 : 1)
                     .scaleEffect(isPressed ? 0.96 : 1)
             case .capsule:
@@ -105,6 +114,7 @@ private struct MacAbobooFallbackControlBody<Label: View>: View {
                     .padding(.horizontal, 8)
                     .background(Capsule().fill(fillColor))
                     .overlay(Capsule().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .contentShape(Capsule())
                     .opacity(isPressed ? 0.72 : 1)
             case .rounded:
                 label
@@ -114,6 +124,7 @@ private struct MacAbobooFallbackControlBody<Label: View>: View {
                     .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fillColor))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .opacity(isPressed ? 0.72 : 1)
             }
         }

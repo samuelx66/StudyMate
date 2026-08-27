@@ -637,14 +637,17 @@ final class MPVHostView: NSView {
         super.setFrameSize(newSize)
         mpvLayer.frame = NSRect(origin: .zero, size: newSize)
         mpvLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        mpvLayer.setNeedsDisplay()
+        // setFrameSize and layout can both run for the same geometry change.
+        // Route both through the layer's coalescing display request so a
+        // window zoom cannot enqueue duplicate full-size libmpv renders.
+        mpvLayer.requestDisplay()
     }
     
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let win = window {
             mpvLayer.contentsScale = win.backingScaleFactor
-            mpvLayer.setNeedsDisplay()
+            mpvLayer.requestDisplay()
         }
     }
     
@@ -652,6 +655,6 @@ final class MPVHostView: NSView {
         super.layout()
         mpvLayer.frame = self.bounds
         mpvLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        mpvLayer.setNeedsDisplay()
+        mpvLayer.requestDisplay()
     }
 }

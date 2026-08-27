@@ -629,6 +629,11 @@ public struct MainContentView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .transaction { transaction in
+            if engine.isWindowResizing {
+                transaction.animation = nil
+            }
+        }
     }
 
     private func handleMediaDrop(_ providers: [NSItemProvider]) -> Bool {

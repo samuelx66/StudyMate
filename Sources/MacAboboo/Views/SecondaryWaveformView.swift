@@ -149,7 +149,8 @@ public struct SecondaryWaveformView: View {
                             startTime: viewport.start,
                             endTime: viewport.end,
                             width: width,
-                            height: height
+                            height: height,
+                            isWindowResizing: engine.isWindowResizing
                         )
                         
                         // 60fps 平滑游标

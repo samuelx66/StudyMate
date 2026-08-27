@@ -63,19 +63,26 @@ public struct WaveformCanvas: View {
     let endTime: Double
     let width: CGFloat
     let height: CGFloat
+    /// Window zoom changes the canvas width every animation frame.  Keeping a
+    /// coarser sampling bucket during that short interval lets the existing
+    /// waveform stretch with the window instead of synchronously resampling
+    /// the PCM data for every pixel-sized width change.
+    let isWindowResizing: Bool
     
     public init(
         waveformData: WaveformData,
         startTime: Double,
         endTime: Double,
         width: CGFloat,
-        height: CGFloat
+        height: CGFloat,
+        isWindowResizing: Bool = false
     ) {
         self.waveformData = waveformData
         self.startTime = startTime
         self.endTime = endTime
         self.width = width
         self.height = height
+        self.isWindowResizing = isWindowResizing
     }
     
     public var body: some View {
@@ -85,7 +92,15 @@ public struct WaveformCanvas: View {
             let barWidth: CGFloat = 2.4
             let spacing: CGFloat = 1.4
             let totalBarSlot = barWidth + spacing
-            let barCount = max(10, Int(size.width / totalBarSlot))
+            // During the native window zoom animation the available width
+            // changes continuously.  Quantizing the sampling width to a
+            // 32-point grid keeps the cache bucket stable across small frame
+            // changes while the path is still drawn at the exact current
+            // width.  The final non-resizing frame restores full resolution.
+            let samplingWidth = isWindowResizing
+                ? max(32, (size.width / 32).rounded() * 32)
+                : size.width
+            let barCount = max(10, Int(samplingWidth / totalBarSlot))
             
             let resampled = WaveformRenderCache.peaks(
                 waveform: waveformData,
@@ -169,30 +184,40 @@ public struct WaveformSentenceSegmentsOverlay: View {
     
     public var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
-
         let segments = Array(visibleSegments)
+
         Canvas { context, size in
+            guard !segments.isEmpty, size.width > 0, size.height > 0 else { return }
+
+            var evenSegmentsPath = Path()
+            var oddSegmentsPath = Path()
+            var activeSegmentPath: Path?
+
             for seg in segments {
                 let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
                 let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
                 let segW = max(2, segX2 - segX1)
                 let rect = CGRect(x: segX1, y: 0, width: segW, height: height)
                 let isActive = engine.activeSegmentIndex == (seg.index - 1)
-                let fillColor = isActive
-                    ? Color.blue.opacity(0.24)
-                    : (seg.index % 2 == 0 ? Color.primary.opacity(0.025) : Color.primary.opacity(0.05))
 
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: 4),
-                    with: .color(fillColor)
-                )
                 if isActive {
-                    context.stroke(
-                        Path(roundedRect: rect, cornerRadius: 4),
-                        with: .color(Color.blue.opacity(0.75)),
-                        lineWidth: 1.5
-                    )
+                    activeSegmentPath = Path(roundedRect: rect, cornerRadius: 4)
+                } else if seg.index % 2 == 0 {
+                    evenSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
+                } else {
+                    oddSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
                 }
+            }
+
+            if !evenSegmentsPath.isEmpty {
+                context.fill(evenSegmentsPath, with: .color(Color.primary.opacity(0.025)))
+            }
+            if !oddSegmentsPath.isEmpty {
+                context.fill(oddSegmentsPath, with: .color(Color.primary.opacity(0.05)))
+            }
+            if let activePath = activeSegmentPath {
+                context.fill(activePath, with: .color(Color.blue.opacity(0.24)))
+                context.stroke(activePath, with: .color(Color.blue.opacity(0.75)), lineWidth: 1.5)
             }
         }
         .frame(width: width, height: height)

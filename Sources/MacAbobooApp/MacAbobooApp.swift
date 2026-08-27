@@ -366,40 +366,145 @@ struct MacAbobooApp: App {
 
 /// 主媒体窗口的原生配置。主窗口只在用户打开媒体后创建。
 struct WindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+    func makeNSView(context: Context) -> MainWindowAccessorView {
+        let view = MainWindowAccessorView(frame: .zero)
         DispatchQueue.main.async { [weak view] in
             configureWindow(view?.window)
         }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ nsView: MainWindowAccessorView, context: Context) {
         configureWindow(nsView.window)
     }
 
     private func configureWindow(_ window: NSWindow?) {
         guard let window = window else { return }
 
-        window.title = "MacAboboo"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = false
-        window.styleMask.remove(.fullSizeContentView)
-        window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable])
-        window.tabbingMode = .disallowed
-        window.identifier = NSUserInterfaceItemIdentifier("macaboboo-main-window")
-        window.minSize = NSSize(width: 800, height: 550)
-        window.maxSize = NSSize(width: 10000, height: 10000)
-        window.showsResizeIndicator = true
-        window.isMovableByWindowBackground = false
-        window.toolbarStyle = .unifiedCompact
-        window.toolbar?.isVisible = true
+        // SwiftUI can update the representable while AppKit is animating a
+        // native title-bar zoom.  Only assign a window property when its value
+        // is actually different; repeatedly mutating style/toolbar state here
+        // can trigger extra layout passes during every zoom frame.
+        if window.title != "MacAboboo" { window.title = "MacAboboo" }
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
+        if window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = false }
+        if window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.remove(.fullSizeContentView)
+        }
+        for style in [NSWindow.StyleMask.titled, .closable, .miniaturizable, .resizable]
+            where !window.styleMask.contains(style) {
+            window.styleMask.insert(style)
+        }
+        if window.tabbingMode != .disallowed { window.tabbingMode = .disallowed }
+        let identifier = NSUserInterfaceItemIdentifier("macaboboo-main-window")
+        if window.identifier != identifier { window.identifier = identifier }
+        if window.minSize.width != 800 || window.minSize.height != 550 {
+            window.minSize = NSSize(width: 800, height: 550)
+        }
+        if window.maxSize.width != 10000 || window.maxSize.height != 10000 {
+            window.maxSize = NSSize(width: 10000, height: 10000)
+        }
+        if !window.showsResizeIndicator { window.showsResizeIndicator = true }
+        if window.isMovableByWindowBackground { window.isMovableByWindowBackground = false }
+        if window.toolbarStyle != .unifiedCompact { window.toolbarStyle = .unifiedCompact }
+        if let toolbar = window.toolbar, !toolbar.isVisible { toolbar.isVisible = true }
 
         // SwiftUI 可能在首帧后重新安装窗口代理，因此每次更新都重新绑定，
         // 保证“文件 > 关闭”和红色关闭按钮都能回到欢迎窗口。
-        if let appDelegate = NSApp.delegate as? AppDelegate {
+        if let appDelegate = NSApp.delegate as? AppDelegate,
+           window.delegate !== appDelegate {
             window.delegate = appDelegate
         }
+    }
+}
+
+/// Observes the main media window's native zoom/resize lifecycle.  The
+/// observer does not alter the window frame; it only asks PlaybackEngine to
+/// lower presentation refresh work while AppKit is animating the frame.
+final class MainWindowAccessorView: NSView {
+    private weak var observedWindow: NSWindow?
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var resizeEndWorkItem: DispatchWorkItem?
+    private var isResizeActive = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            attach(to: window)
+        } else {
+            removeObservers()
+        }
+    }
+
+    private func attach(to window: NSWindow) {
+        guard observedWindow !== window else { return }
+        removeObservers()
+        observedWindow = window
+
+        let center = NotificationCenter.default
+        notificationTokens = [
+            center.addObserver(
+                forName: NSWindow.willStartLiveResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.beginResize()
+            },
+            center.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                // Standard title-bar zoom does not consistently emit the live
+                // resize pair on every macOS release.  didResize is therefore
+                // also treated as resize intent and debounced below.
+                self?.beginResize()
+            },
+            center.addObserver(
+                forName: NSWindow.didEndLiveResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleResizeEnd(after: 0.06)
+            }
+        ]
+    }
+
+    private func beginResize() {
+        if !isResizeActive {
+            isResizeActive = true
+            PlaybackEngine.shared.setWindowResizing(true)
+        }
+        scheduleResizeEnd(after: 0.16)
+    }
+
+    private func scheduleResizeEnd(after delay: TimeInterval) {
+        resizeEndWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.resizeEndWorkItem = nil
+            guard self.isResizeActive else { return }
+            self.isResizeActive = false
+            PlaybackEngine.shared.setWindowResizing(false)
+        }
+        resizeEndWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func removeObservers() {
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
+        notificationTokens.removeAll(keepingCapacity: true)
+        resizeEndWorkItem?.cancel()
+        resizeEndWorkItem = nil
+        observedWindow = nil
+        if isResizeActive {
+            isResizeActive = false
+            PlaybackEngine.shared.setWindowResizing(false)
+        }
+    }
+
+    deinit {
+        removeObservers()
     }
 }
 

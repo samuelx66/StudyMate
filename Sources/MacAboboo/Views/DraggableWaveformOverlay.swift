@@ -161,24 +161,31 @@ private struct WaveformBoundaryCanvas: View {
             // from the mouse event while dragging. Do not leave a coalesced
             // SwiftUI line underneath it.
             guard !isBoundaryDragging else { return }
+
+            var startPath = Path()
+            var endPath = Path()
+
             for segment in segments {
                 let isActive = activeSegmentIndex == (segment.index - 1)
                 guard !isSecondaryView || isActive else { continue }
                 let startX = CGFloat((segment.startTime - viewportStart) / span) * width + 1
                 let endX = CGFloat((segment.endTime - viewportStart) / span) * width - 1
 
-                var startPath = Path()
                 startPath.move(to: CGPoint(x: startX, y: 0))
                 startPath.addLine(to: CGPoint(x: startX, y: height))
+
+                endPath.move(to: CGPoint(x: endX, y: 0))
+                endPath.addLine(to: CGPoint(x: endX, y: height))
+            }
+
+            if !startPath.isEmpty {
                 context.stroke(
                     startPath,
                     with: .color(Color(nsColor: .systemGreen)),
                     lineWidth: 2
                 )
-
-                var endPath = Path()
-                endPath.move(to: CGPoint(x: endX, y: 0))
-                endPath.addLine(to: CGPoint(x: endX, y: height))
+            }
+            if !endPath.isEmpty {
                 context.stroke(
                     endPath,
                     with: .color(Color(nsColor: .systemOrange)),

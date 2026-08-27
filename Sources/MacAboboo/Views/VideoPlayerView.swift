@@ -159,6 +159,8 @@ public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
         let container = TrackingVideoContainerView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
+        container.layer?.needsDisplayOnBoundsChange = false
+        container.layerContentsRedrawPolicy = .onSetNeedsDisplay
         container.onHoverChanged = onHoverChanged
         embed(playerView, in: container)
         return container
@@ -172,14 +174,14 @@ public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
     private func embed(_ view: NSView, in container: NSView) {
         if view.superview != container {
             container.subviews.forEach { $0.removeFromSuperview() }
-            view.translatesAutoresizingMaskIntoConstraints = false
+            view.wantsLayer = true
+            view.layer?.needsDisplayOnBoundsChange = false
+            view.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            view.autoresizingMask = [.width, .height]
+            view.frame = container.bounds
             container.addSubview(view)
-            NSLayoutConstraint.activate([
-                view.topAnchor.constraint(equalTo: container.topAnchor),
-                view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ])
+        } else if view.frame != container.bounds {
+            view.frame = container.bounds
         }
     }
 }
