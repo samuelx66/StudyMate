@@ -405,7 +405,7 @@ public struct IntensiveSettingsPopover: View {
         VStack(alignment: .leading, spacing: 18) {
             settingsGroupTitle(
                 lang.text("翻译功能", "Translation"),
-                systemImage: "character.book.closed"
+                systemImage: "translate"
             )
 
             Toggle(isOn: $translationSettings.isAutomaticTranslationEnabled) {
@@ -807,7 +807,7 @@ public struct IntensiveSettingsPopover: View {
         case .segmentation:
             return "waveform.path.ecg"
         case .translation:
-            return "character.book.closed"
+            return "translate"
         case .decoder:
             return "cpu"
         }

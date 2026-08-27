@@ -345,10 +345,8 @@ struct MacAbobooApp: App {
     /// 从欢迎页或文件关联打开媒体时，先创建独立的主窗口，再把媒体交给主窗口的引擎。
     private func openMediaInMain(_ url: URL) {
         closeWelcomeWindow()
+        engine.loadMedia(from: url)
         openWindow(id: "main")
-        DispatchQueue.main.async {
-            engine.loadMedia(from: url)
-        }
     }
 
     private func handleIncomingURL(_ url: URL) {
@@ -383,18 +381,14 @@ struct MacAbobooApp: App {
 /// 主媒体窗口的原生配置。主窗口只在用户打开媒体后创建。
 struct WindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> MainWindowAccessorView {
-        let view = MainWindowAccessorView(frame: .zero)
-        DispatchQueue.main.async { [weak view] in
-            configureWindow(view?.window)
-        }
-        return view
+        MainWindowAccessorView(frame: .zero)
     }
 
     func updateNSView(_ nsView: MainWindowAccessorView, context: Context) {
-        configureWindow(nsView.window)
+        Self.configureWindow(nsView.window)
     }
 
-    private func configureWindow(_ window: NSWindow?) {
+    static func configureWindow(_ window: NSWindow?) {
         guard let window = window else { return }
 
         // SwiftUI can update the representable while AppKit is animating a
@@ -447,6 +441,7 @@ final class MainWindowAccessorView: NSView {
         super.viewDidMoveToWindow()
         if let window {
             attach(to: window)
+            WindowAccessor.configureWindow(window)
         } else {
             removeObservers()
         }
@@ -527,19 +522,15 @@ final class MainWindowAccessorView: NSView {
 /// 欢迎窗口使用透明标题栏和 full-size content view，让左右两块背景颜色一直延伸到顶部；
 /// 交通灯仍保留在标题栏位置。
 struct WelcomeWindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        DispatchQueue.main.async { [weak view] in
-            configureWindow(view?.window)
-        }
-        return view
+    func makeNSView(context: Context) -> WelcomeWindowAccessorView {
+        WelcomeWindowAccessorView(frame: .zero)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        configureWindow(nsView.window)
+    func updateNSView(_ nsView: WelcomeWindowAccessorView, context: Context) {
+        Self.configureWindow(nsView.window)
     }
 
-    private func configureWindow(_ window: NSWindow?) {
+    static func configureWindow(_ window: NSWindow?) {
         guard let window else { return }
         let fixedSize = NSSize(width: 800, height: 520)
 
@@ -548,7 +539,11 @@ struct WelcomeWindowAccessor: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isOpaque = true
-        window.backgroundColor = NSColor(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0, alpha: 1.0)
+        window.backgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 24 / 255, green: 24 / 255, blue: 27 / 255, alpha: 1.0)
+                : NSColor(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0, alpha: 1.0)
+        }
         window.styleMask.insert([.titled, .closable, .miniaturizable, .fullSizeContentView])
         window.styleMask.remove(.resizable)
         window.toolbar?.isVisible = false
@@ -566,6 +561,15 @@ struct WelcomeWindowAccessor: NSViewRepresentable {
         if abs(window.contentRect(forFrameRect: window.frame).width - fixedSize.width) > 1
             || abs(window.contentRect(forFrameRect: window.frame).height - fixedSize.height) > 1 {
             window.setContentSize(fixedSize)
+        }
+    }
+}
+
+final class WelcomeWindowAccessorView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            WelcomeWindowAccessor.configureWindow(window)
         }
     }
 }

@@ -9,13 +9,15 @@ public struct SubtitleImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.undoManager) private var undoManager
     
-    @State private var selectedTab: Int = 0 // 0: 文件导入 (SRT/LRC/VTT), 1: 纯文本粘贴对齐
+    @State private var selectedTab: Int = 0 // 0: 文件导入 (SRT/LRC/VTT), 1: 纯文本智能对齐 (TXT / 粘贴)
+    @State private var plainTextMode: Int = 0 // 0: 文本输入, 1: 分句预览
     @State private var importedItems: [ParsedSubtitleItem] = []
     @State private var plainTextContent: String = ""
     @State private var splitSentencesPreview: [String] = []
     @State private var selectedFileName: String = ""
     @State private var subtitleImportTarget: SubtitleImportTarget = .automatic
     @State private var isFileTargeted: Bool = false
+    @State private var isPlainTextTargeted: Bool = false
     @State private var isParsing: Bool = false
     @State private var importErrorMessage: String?
     @State private var showReplacementConfirmation = false
@@ -30,18 +32,18 @@ public struct SubtitleImportSheet: View {
     public var body: some View {
         VStack(spacing: 0) {
             // 头部标题栏
-            HStack {
+            HStack(spacing: 12) {
                 Label(lang.text("导入字幕或文章文本", "Import Subtitles or Text"), systemImage: "captions.bubble")
                     .font(.headline)
                 
-                Spacer()
+                Spacer(minLength: 8)
                 
                 Picker("", selection: $selectedTab) {
                     Text(lang.text("字幕文件（SRT / LRC / VTT）", "Subtitle File (SRT / LRC / VTT)")).tag(0)
                     Text(lang.text("纯文本智能对齐（TXT / 粘贴）", "Align Plain Text (TXT / Paste)")).tag(1)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                .frame(minWidth: 380)
             }
             .padding(14)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -83,7 +85,7 @@ public struct SubtitleImportSheet: View {
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
         }
-        .frame(width: 620, height: 480)
+        .frame(width: 660, height: 500)
         .onAppear { targetMediaID = engine.currentMedia?.id }
         .onDisappear { parsingTask?.cancel() }
         .confirmationDialog(
@@ -220,38 +222,112 @@ public struct SubtitleImportSheet: View {
     
     private var plainTextImportView: some View {
         VStack(spacing: 8) {
-            Text(lang.text(
-                "粘贴文章或课文，系统会自动分句并与音频语音段对齐：",
-                "Paste an article or lesson. It will be split into sentences and aligned with detected speech:"
-            ))
+            // 工具栏：说明与动作按钮
+            HStack {
+                Text(lang.text(
+                    "粘贴文章或载入 TXT，系统将自动分句并与音频语音（VAD）对齐：",
+                    "Paste text or load a TXT file to align with audio speech (VAD):"
+                ))
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
+                
+                Spacer()
+                
+                Button(lang.text("选择 TXT 文件…", "Choose TXT File…")) {
+                    selectPlainTextFile()
+                }
+                .controlSize(.small)
+                
+                if !plainTextContent.isEmpty {
+                    Button(lang.text("清空", "Clear")) {
+                        plainTextContent = ""
+                        splitSentencesPreview = []
+                        plainTextMode = 0
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
             
-            TextEditor(text: $plainTextContent)
-                .font(.system(.body, design: .monospaced))
-                .padding(6)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
+            if !splitSentencesPreview.isEmpty {
+                Picker("", selection: $plainTextMode) {
+                    Text(lang.text("文本编辑", "Edit Text")).tag(0)
+                    Text(lang.text("分句预览（\(splitSentencesPreview.count) 句）", "Sentence Preview (\(splitSentencesPreview.count))")).tag(1)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 14)
+            }
+            
+            if plainTextMode == 0 || splitSentencesPreview.isEmpty {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $plainTextContent)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(6)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(isPlainTextTargeted ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isPlainTextTargeted ? 2 : 1)
+                        )
+                    
+                    if plainTextContent.isEmpty {
+                        Text(lang.text("在此处粘贴课文、歌词或演讲稿，或者拖入 .txt 文件…", "Paste text, lyrics, or transcripts here, or drop a .txt file…"))
+                            .font(.body)
+                            .foregroundColor(.secondary.opacity(0.6))
+                            .padding(12)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .padding(.horizontal, 14)
                 .onChange(of: plainTextContent) { _, newText in
                     splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(newText)
                 }
+                .onDrop(of: [.fileURL], isTargeted: $isPlainTextTargeted) { providers in
+                    guard let provider = providers.first else { return false }
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        if let validURL = url {
+                            DispatchQueue.main.async {
+                                loadPlainText(from: validURL)
+                            }
+                        }
+                    }
+                    return true
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(splitSentencesPreview.enumerated()), id: \.offset) { index, sentence in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("#\(index + 1)")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.blue)
+                                    .frame(width: 34, alignment: .leading)
+                                Text(sentence)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(8)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                            .cornerRadius(5)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             
             if !splitSentencesPreview.isEmpty {
-                HStack {
-                    Text(lang.text(
-                        "识别到 \(splitSentencesPreview.count) 个独立句子",
-                        "Detected \(splitSentencesPreview.count) sentences"
-                    ))
-                        .font(.caption.bold())
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
+                        .font(.caption)
+                    Text(lang.text(
+                        "已识别 \(splitSentencesPreview.count) 个独立断句，点击下方“对齐并应用”即可与音频时间轴对齐",
+                        "Detected \(splitSentencesPreview.count) sentences ready to align with audio"
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                     Spacer()
                 }
                 .padding(.horizontal, 14)
@@ -264,6 +340,32 @@ public struct SubtitleImportSheet: View {
 
     private var previewSubtitleItems: [ParsedSubtitleItem] {
         subtitleImportTarget.apply(to: importedItems)
+    }
+    
+    private func selectPlainTextFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [
+            UTType.plainText,
+            UTType.text
+        ]
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            loadPlainText(from: url)
+        }
+    }
+    
+    private func loadPlainText(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        if let content = try? String(contentsOf: url, encoding: .utf8) {
+            plainTextContent = content
+            splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(content)
+        } else if let content = try? String(contentsOf: url, encoding: .unicode) {
+            plainTextContent = content
+            splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(content)
+        }
     }
     
     private func selectSubtitleFile() {

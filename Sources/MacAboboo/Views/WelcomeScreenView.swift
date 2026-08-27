@@ -49,14 +49,20 @@ public struct WelcomeScreenView: View {
 
     private var leftColumnBackground: Color {
         colorScheme == .dark
-            ? Color(nsColor: .underPageBackgroundColor)
+            ? Color(red: 32 / 255, green: 32 / 255, blue: 35 / 255)
             : Color.white
     }
 
     private var rightColumnBackground: Color {
         colorScheme == .dark
-            ? Color(red: 38 / 255, green: 38 / 255, blue: 42 / 255)
+            ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
             : Color(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0)
+    }
+
+    private var columnSeparatorColor: Color {
+        colorScheme == .dark
+            ? Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255)
+            : Color(red: 216.0 / 255.0, green: 216.0 / 255.0, blue: 216.0 / 255.0)
     }
 
     public var body: some View {
@@ -66,9 +72,9 @@ public struct WelcomeScreenView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(leftColumnBackground)
 
-            // 分割线（紧密贴合，绝无空隙）
+            // 分割线（紧密贴合，深浅色模式自适应融合）
             Rectangle()
-                .fill(Color(nsColor: .separatorColor))
+                .fill(columnSeparatorColor)
                 .frame(width: 1)
                 .frame(maxHeight: .infinity)
 

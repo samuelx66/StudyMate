@@ -147,6 +147,9 @@ public struct SegmentListView: View {
     /// “反选”不是反转勾选框状态，而是把当前筛选条件取补集。
     @State private var isFilterInverted = false
     @State private var showFilterPopover: Bool = false
+    @State private var showExportPopover: Bool = false
+    @State private var showAddToLibraryPopover: Bool = false
+    @State private var showSegmentationPopover: Bool = false
     @State private var showRegenerateOriginalConfirmation: Bool = false
     @State private var selectedSegmentIDs: Set<UUID> = []
     @State private var isAddingToLibrary: Bool = false
@@ -196,11 +199,9 @@ public struct SegmentListView: View {
                 Button(action: {
                     followState.toggle()
                 }) {
-                    Image(systemName: followState.shouldFollow
-                        ? "book.pages.fill"
-                        : "book.closed")
+                    Image(systemName: "target")
                         .frame(width: 24, height: 24)
-                        .foregroundColor(followState.shouldFollow ? .primary : .secondary)
+                        .foregroundColor(followState.shouldFollow ? .primary : .secondary.opacity(0.45))
                         .help(MacAbobooShortcutCatalog.help(
                             followState.shouldFollow
                                 ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
@@ -242,6 +243,7 @@ public struct SegmentListView: View {
                         displayedCount: displayedSegments.count,
                         selectedCount: selectedDisplayedCount,
                         onSelectAll: selectDisplayedSegments,
+                        onDeselectAll: deselectDisplayedSegments,
                         onInvertSelection: invertDisplayedSegmentSelection
                     )
                 }
@@ -262,22 +264,14 @@ public struct SegmentListView: View {
                         || engine.isAITranscribing
                         || engine.isAutoTranslating
                 )
-                .help(MacAbobooShortcutCatalog.help(
-                    validSelectedSegmentIDs.isEmpty
-                        ? lang.text("重新生成全部句子的原文", "Regenerate original text for all sentences")
-                        : lang.text(
-                            "重新生成已选 \(validSelectedSegmentIDs.count) 个句子的原文",
-                            "Regenerate original text for \(validSelectedSegmentIDs.count) selected sentences"
-                        ),
-                    shortcut: .regenerateOriginalText
-                ))
+                .help(regenerateOriginalHelpText)
                 .keyboardShortcut("t", modifiers: [.command, .shift])
 
                 // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
                 Button {
                     showTranslationPopover = true
                 } label: {
-                    Image(systemName: "character.book.closed")
+                    Image(systemName: "translate")
                         .frame(width: 24, height: 24)
                         .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
                 }
@@ -302,7 +296,7 @@ public struct SegmentListView: View {
 
                 // 导入字幕按钮
                 Button(action: { showImportSheet = true }) {
-                    Image(systemName: "captions.bubble")
+                    Image(systemName: "arrow.down.doc")
                         .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                         .help(MacAbobooShortcutCatalog.help(
@@ -318,84 +312,46 @@ public struct SegmentListView: View {
                 ))
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
-                // 将已选断句统一导出为音频和字幕
-                Menu {
-                    Button(lang.text("逐句导出 M4A＋LRC…", "Export separate M4A + LRC…")) {
-                        chooseIndividualExportDestination()
-                    }
-                    .keyboardShortcut("e", modifiers: [.command])
-                    .help(MacAbobooShortcutCatalog.help(
-                        lang.text("逐句导出 M4A＋LRC…", "Export separate M4A + LRC…"),
-                        shortcut: .exportSeparate
-                    ))
-                    Button(lang.text("合并导出 M4A＋LRC…", "Export merged M4A + LRC…")) {
-                        chooseMergedExportDestination()
-                    }
-                    .keyboardShortcut("e", modifiers: [.command, .shift])
-                    .help(MacAbobooShortcutCatalog.help(
-                        lang.text("合并导出 M4A＋LRC…", "Export merged M4A + LRC…"),
-                        shortcut: .exportMerged
-                    ))
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                }
-                .menuStyle(.borderlessButton)
-                .macabobooChromeButton(shape: .circle)
-                .focusable(false)
-                .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
-                .help(MacAbobooShortcutCatalog.help(
-                    selectedSegmentIDs.isEmpty
-                        ? lang.text("请先勾选要导出的句子", "Select sentences to export")
-                        : lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
-                    shortcut: .exportMenu
-                ))
-                .keyboardShortcut("e", modifiers: [.command, .option])
-
-                // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
-                Menu {
+                // 将已选断句统一导出为音频和字幕（仅在勾选句子时显示并启用）
+                if !selectedSegmentIDs.isEmpty {
                     Button {
-                        addSelectedSegmentsToLibrary()
+                        showExportPopover = true
                     } label: {
-                        Label(
-                            lang.text(
-                                "加入“\(libraryManager.currentLibrary?.name ?? "默认句库")”",
-                                "Add to “\(libraryManager.currentLibrary?.name ?? "Default Library")”"
-                            ),
-                            systemImage: "text.badge.plus"
+                        Image(systemName: "square.and.arrow.up")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                    }
+                    .macabobooChromeButton(shape: .circle)
+                    .focusable(false)
+                    .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
+                    .help(MacAbobooShortcutCatalog.help(
+                        lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
+                        shortcut: .exportMenu
+                    ))
+                    .keyboardShortcut("e", modifiers: [.command, .option])
+                    .popover(isPresented: $showExportPopover, arrowEdge: .top) {
+                        SegmentExportPopoverView(
+                            onExportSeparate: {
+                                showExportPopover = false
+                                chooseIndividualExportDestination()
+                            },
+                            onExportMerged: {
+                                showExportPopover = false
+                                chooseMergedExportDestination()
+                            },
+                            lang: lang
                         )
                     }
-                    .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || isAddingToLibrary)
+                }
 
-                    if libraryManager.libraries.count > 1 {
-                        Menu(lang.text("切换句库", "Switch Library")) {
-                            ForEach(libraryManager.libraries) { library in
-                                Button {
-                                    libraryManager.selectLibrary(library.id)
-                                } label: {
-                                    if library.id == libraryManager.currentLibraryID {
-                                        Label(library.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(library.name)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-                    Button {
-                        openWindow(id: "sentence-library")
-                    } label: {
-                        Label(lang.text("打开句库…", "Open Sentence Library…"), systemImage: "books.vertical")
-                    }
+                // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
+                Button {
+                    showAddToLibraryPopover = true
                 } label: {
                     Image(systemName: "text.badge.plus")
                         .frame(width: 24, height: 24)
                         .foregroundColor(isAddingToLibrary ? MacAbobooMediaStyle.accent : .secondary)
                 }
-                .menuStyle(.borderlessButton)
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
@@ -405,35 +361,36 @@ public struct SegmentListView: View {
                     shortcut: .addToSentenceLibrary
                 ))
                 .keyboardShortcut("a", modifiers: [.command, .option])
+                .popover(isPresented: $showAddToLibraryPopover, arrowEdge: .top) {
+                    SegmentAddToLibraryPopoverView(
+                        currentLibraryName: libraryManager.currentLibrary?.name ?? lang.text("默认句库", "Default Library"),
+                        hasSelectedSegments: !selectedSegmentIDs.isEmpty && engine.currentMedia != nil,
+                        isAdding: isAddingToLibrary,
+                        libraries: libraryManager.libraries,
+                        currentLibraryID: libraryManager.currentLibraryID,
+                        onAddToCurrentLibrary: {
+                            showAddToLibraryPopover = false
+                            addSelectedSegmentsToLibrary()
+                        },
+                        onSelectLibrary: { libraryID in
+                            libraryManager.selectLibrary(libraryID)
+                        },
+                        onOpenLibrary: {
+                            showAddToLibraryPopover = false
+                            openWindow(id: "sentence-library")
+                        },
+                        lang: lang
+                    )
+                }
 
                 // 用户只决定速度优先还是质量优先；句长与证据权重由算法分析。
-                Menu {
-                    Button(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)")) {
-                        engine.performSegmentation(mode: .fast)
-                    }
-                    .keyboardShortcut("1", modifiers: [.command, .control])
-                    .help(MacAbobooShortcutCatalog.help(
-                        lang.text("快速断句", "Fast segmentation"),
-                        shortcut: .fastSegmentation
-                    ))
-                    Button(lang.text("智能断句（推荐）", "Intelligent segmentation (Recommended)")) {
-                        engine.performSegmentation(mode: .intelligent)
-                    }
-                    .keyboardShortcut("2", modifiers: [.command, .control])
-                    .help(MacAbobooShortcutCatalog.help(
-                        lang.text("智能断句", "Intelligent segmentation"),
-                        shortcut: .intelligentSegmentation
-                    ))
+                Button {
+                    showSegmentationPopover = true
                 } label: {
                     Image(systemName: "wand.and.stars")
                         .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
-                        .help(MacAbobooShortcutCatalog.help(
-                            lang.text("选择断句模式", "Choose segmentation mode"),
-                            shortcut: .segmentationMenu
-                        ))
                 }
-                .menuStyle(.borderlessButton)
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
@@ -441,6 +398,19 @@ public struct SegmentListView: View {
                     shortcut: .segmentationMenu
                 ))
                 .keyboardShortcut("g", modifiers: [.command, .shift])
+                .popover(isPresented: $showSegmentationPopover, arrowEdge: .top) {
+                    SegmentSegmentationPopoverView(
+                        onFastSegmentation: {
+                            showSegmentationPopover = false
+                            engine.performSegmentation(mode: .fast)
+                        },
+                        onIntelligentSegmentation: {
+                            showSegmentationPopover = false
+                            engine.performSegmentation(mode: .intelligent)
+                        },
+                        lang: lang
+                    )
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -776,8 +746,22 @@ public struct SegmentListView: View {
         selectedSegmentIDs.intersection(cachedSegmentIDs)
     }
 
+    private var regenerateOriginalHelpText: String {
+        let count = validSelectedSegmentIDs.count
+        let desc = count == 0
+            ? lang.text("重新生成全部句子的原文", "Regenerate original text for all sentences")
+            : lang.text("重新生成已选 \(count) 个句子的原文", "Regenerate original text for \(count) selected sentences")
+        return MacAbobooShortcutCatalog.help(desc, shortcut: .regenerateOriginalText)
+    }
+
     private func selectDisplayedSegments() {
         selectedSegmentIDs.formUnion(displayedSegments.map(\.id))
+        updateSelectedDisplayedCount()
+        selectionRevision &+= 1
+    }
+
+    private func deselectDisplayedSegments() {
+        selectedSegmentIDs.subtract(displayedSegments.map(\.id))
         updateSelectedDisplayedCount()
         selectionRevision &+= 1
     }
@@ -908,7 +892,12 @@ private struct SegmentFilterPopover: View {
     let displayedCount: Int
     let selectedCount: Int
     let onSelectAll: () -> Void
+    let onDeselectAll: () -> Void
     let onInvertSelection: () -> Void
+
+    private var isAllSelected: Bool {
+        displayedCount > 0 && selectedCount == displayedCount
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -981,13 +970,18 @@ private struct SegmentFilterPopover: View {
             Divider()
 
             HStack(spacing: 8) {
-                Button(lang.text("全选", "Select All"), action: onSelectAll)
-                    .disabled(displayedCount == 0 || selectedCount == displayedCount)
-                    .keyboardShortcut("a", modifiers: [.command])
-                    .help(MacAbobooShortcutCatalog.help(
-                        lang.text("全选", "Select All"),
-                        shortcut: .selectAllVisibleSentences
-                    ))
+                Button(
+                    isAllSelected ? lang.text("清除", "Clear") : lang.text("全选", "Select All"),
+                    action: isAllSelected ? onDeselectAll : onSelectAll
+                )
+                .disabled(displayedCount == 0)
+                .keyboardShortcut("a", modifiers: [.command])
+                .help(MacAbobooShortcutCatalog.help(
+                    isAllSelected
+                        ? lang.text("清除选择", "Clear Selection")
+                        : lang.text("全选", "Select All"),
+                    shortcut: .selectAllVisibleSentences
+                ))
                 Button(lang.text("反选", "Invert Selection"), action: onInvertSelection)
                     .disabled(displayedCount == 0)
                     .keyboardShortcut("i", modifiers: [.command, .option])
@@ -1004,6 +998,164 @@ private struct SegmentFilterPopover: View {
         }
         .padding(14)
         .frame(width: 310)
+    }
+}
+
+private struct SegmentExportPopoverView: View {
+    let onExportSeparate: () -> Void
+    let onExportMerged: () -> Void
+    @ObservedObject var lang: LanguageManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(lang.text("导出音频与字幕", "Export Audio & Subtitles"))
+                .font(.headline)
+                .padding(.bottom, 2)
+
+            Button(action: onExportSeparate) {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.on.doc")
+                        .frame(width: 16)
+                    Text(lang.text("逐句导出 M4A＋LRC…", "Export separate M4A + LRC…"))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Button(action: onExportMerged) {
+                HStack(spacing: 8) {
+                    Image(systemName: "rectangle.stack")
+                        .frame(width: 16)
+                    Text(lang.text("合并导出 M4A＋LRC…", "Export merged M4A + LRC…"))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+        }
+        .padding(12)
+        .frame(minWidth: 200)
+    }
+}
+
+private struct SegmentAddToLibraryPopoverView: View {
+    let currentLibraryName: String
+    let hasSelectedSegments: Bool
+    let isAdding: Bool
+    let libraries: [SentenceLibraryDescriptor]
+    let currentLibraryID: UUID?
+    let onAddToCurrentLibrary: () -> Void
+    let onSelectLibrary: (UUID) -> Void
+    let onOpenLibrary: () -> Void
+    @ObservedObject var lang: LanguageManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(lang.text("句库操作", "Sentence Library"))
+                .font(.headline)
+                .padding(.bottom, 2)
+
+            Button(action: onAddToCurrentLibrary) {
+                HStack(spacing: 8) {
+                    Image(systemName: "text.badge.plus")
+                        .frame(width: 16)
+                    Text(
+                        lang.text(
+                            "加入“\(currentLibraryName)”",
+                            "Add to “\(currentLibraryName)”"
+                        )
+                    )
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasSelectedSegments || isAdding)
+            .padding(.vertical, 4)
+
+            if libraries.count > 1 {
+                Divider()
+                Text(lang.text("切换当前句库", "Switch Library"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                ForEach(libraries) { library in
+                    Button {
+                        onSelectLibrary(library.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: library.id == currentLibraryID ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(library.id == currentLibraryID ? MacAbobooMediaStyle.accent : .secondary)
+                                .frame(width: 16)
+                            Text(library.name)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 2)
+                }
+            }
+
+            Divider()
+
+            Button(action: onOpenLibrary) {
+                HStack(spacing: 8) {
+                    Image(systemName: "books.vertical")
+                        .frame(width: 16)
+                    Text(lang.text("打开句库管理…", "Open Sentence Library…"))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+        }
+        .padding(12)
+        .frame(minWidth: 220)
+    }
+}
+
+private struct SegmentSegmentationPopoverView: View {
+    let onFastSegmentation: () -> Void
+    let onIntelligentSegmentation: () -> Void
+    @ObservedObject var lang: LanguageManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(lang.text("断句模式", "Segmentation Mode"))
+                .font(.headline)
+                .padding(.bottom, 2)
+
+            Button(action: onFastSegmentation) {
+                HStack(spacing: 8) {
+                    Image(systemName: "bolt.fill")
+                        .frame(width: 16)
+                    Text(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)"))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Button(action: onIntelligentSegmentation) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .frame(width: 16)
+                    Text(lang.text("智能断句（推荐）", "Intelligent segmentation (Recommended)"))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+        }
+        .padding(12)
+        .frame(minWidth: 220)
     }
 }
 
