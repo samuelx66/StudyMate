@@ -152,7 +152,16 @@ public struct SegmentListView: View {
     @State private var isAddingToLibrary: Bool = false
     @State private var exportNotice: SegmentExportNotice?
     @State private var cachedDisplayedSegments: [SentenceSegment] = []
+    /// The list rows are isolated behind a lightweight revision token.  The
+    /// parent still observes the engine for toolbar state, but a progress or
+    /// playback-count update no longer forces the LazyVStack to rebuild all
+    /// visible rows.
+    @State private var displayedSegmentsRevision: Int = 0
+    @State private var selectionRevision: Int = 0
+    @State private var cachedSegmentIDs: Set<UUID> = []
+    @State private var selectedDisplayedCountValue: Int = 0
     @State private var followState = SegmentListFollowState()
+    @State private var isUserScrolling = false
     @State private var scrollSuppressionToken = UUID()
     @State private var shortcutEditRequest: UUID?
 
@@ -231,7 +240,7 @@ public struct SegmentListView: View {
                         criteria: $filterCriteria,
                         lang: lang,
                         displayedCount: displayedSegments.count,
-                        selectedCount: selectedSegmentIDs.intersection(Set(displayedSegments.map(\.id))).count,
+                        selectedCount: selectedDisplayedCount,
                         onSelectAll: selectDisplayedSegments,
                         onInvertSelection: invertDisplayedSegmentSelection
                     )
@@ -492,66 +501,63 @@ public struct SegmentListView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(displayedSegments) { seg in
-                                let isActive: Bool = {
-                                    guard let index = engine.activeSegmentIndex,
-                                          index >= 0,
-                                          index < engine.segments.count else { return false }
-                                    return engine.segments[index].id == seg.id
-                                }()
-                                SegmentRowView(
-                                    seg: seg,
-                                    isActive: isActive,
-                                    isSelectedForExport: selectedSegmentIDs.contains(seg.id),
-                                    onToggleExportSelection: {
-                                        if selectedSegmentIDs.contains(seg.id) {
-                                            selectedSegmentIDs.remove(seg.id)
-                                        } else {
-                                            selectedSegmentIDs.insert(seg.id)
-                                        }
-                                    },
-                                    onSelect: {
-                                        engine.jumpToSegment(id: seg.id)
-                                    },
-                                    onToggleBookmark: {
-                                        engine.toggleBookmark(for: seg.id)
-                                    },
-                                    onToggleNavigationBookmark: {
-                                        engine.toggleNavigationBookmark(for: seg.id)
-                                    },
-                                    onSplit: {
-                                        engine.splitSegment(id: seg.id, at: (seg.startTime + seg.endTime) / 2.0)
-                                    },
-                                    onMergePrevious: {
-                                        engine.mergeSegmentWithPrevious(id: seg.id)
-                                    },
-                                    onMergeNext: {
-                                        engine.mergeSegmentWithNext(id: seg.id)
-                                    },
-                                    onDelete: {
-                                        engine.deleteSegment(id: seg.id)
-                                    },
-                                    onSaveText: { originalText, translationText in
-                                        engine.updateSegmentText(
-                                            id: seg.id,
-                                            text: originalText,
-                                            translation: translationText
-                                        )
-                                    },
-                                    editRequest: $shortcutEditRequest
+                        SegmentListRowsView(
+                            segments: displayedSegments,
+                            activeSegmentID: activeSegmentID,
+                            selectedSegmentIDs: selectedSegmentIDs,
+                            engineIdentity: ObjectIdentifier(engine),
+                            language: lang.currentLanguage,
+                            isScrolling: isUserScrolling,
+                            displayedSegmentsRevision: displayedSegmentsRevision,
+                            selectionRevision: selectionRevision,
+                            onToggleExportSelection: { id in
+                                if selectedSegmentIDs.contains(id) {
+                                    selectedSegmentIDs.remove(id)
+                                } else {
+                                    selectedSegmentIDs.insert(id)
+                                }
+                                updateSelectedDisplayedCount()
+                                selectionRevision &+= 1
+                            },
+                            onSelect: { id in
+                                engine.jumpToSegment(id: id)
+                            },
+                            onToggleBookmark: { id in
+                                engine.toggleBookmark(for: id)
+                            },
+                            onToggleNavigationBookmark: { id in
+                                engine.toggleNavigationBookmark(for: id)
+                            },
+                            onSplit: { id, midpoint in
+                                engine.splitSegment(id: id, at: midpoint)
+                            },
+                            onMergePrevious: { id in
+                                engine.mergeSegmentWithPrevious(id: id)
+                            },
+                            onMergeNext: { id in
+                                engine.mergeSegmentWithNext(id: id)
+                            },
+                            onDelete: { id in
+                                engine.deleteSegment(id: id)
+                            },
+                            onSaveText: { id, originalText, translationText in
+                                engine.updateSegmentText(
+                                    id: id,
+                                    text: originalText,
+                                    translation: translationText
                                 )
-                                .id(seg.id)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 6)
-                        .background(
-                            ScrollViewInteractionObserver {
+                            },
+                            onUserScroll: {
                                 markUserScroll()
-                            }
-                            .frame(width: 1, height: 1)
+                            },
+                            onScrollStateChanged: { scrolling in
+                                if isUserScrolling != scrolling {
+                                    isUserScrolling = scrolling
+                                }
+                            },
+                            editRequest: $shortcutEditRequest
                         )
+                        .equatable()
                     }
                     .onChange(of: engine.activeSegmentIndex) { _, newIndex in
                         guard followState.shouldFollow else { return }
@@ -669,6 +675,8 @@ public struct SegmentListView: View {
         } else {
             selectedSegmentIDs.insert(id)
         }
+        updateSelectedDisplayedCount()
+        selectionRevision &+= 1
     }
 
     private func selectActiveSentence() {
@@ -716,10 +724,11 @@ public struct SegmentListView: View {
     }
 
     private func refreshDisplayedSegments(selectMatching: Bool = false) {
-        let criteriaMatches = engine.segments.filter { filterCriteria.matches($0) }
-        let criteriaResult = isFilterInverted && filterCriteria.hasActiveFilters
-            ? engine.segments.filter { !filterCriteria.matches($0) }
-            : criteriaMatches
+        let hasActiveFilters = filterCriteria.hasActiveFilters
+        let criteriaResult = engine.segments.filter { segment in
+            let matches = filterCriteria.matches(segment)
+            return isFilterInverted && hasActiveFilters ? !matches : matches
+        }
         var list = criteriaResult
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
@@ -729,6 +738,8 @@ public struct SegmentListView: View {
             }
         }
         cachedDisplayedSegments = list
+        cachedSegmentIDs = Set(engine.segments.lazy.map(\.id))
+        displayedSegmentsRevision &+= 1
         if selectMatching && filterCriteria.hasActiveFilters {
             selectedSegmentIDs = Set(list.map(\.id))
         } else if filterCriteria.hasActiveFilters {
@@ -738,6 +749,8 @@ public struct SegmentListView: View {
         } else {
             selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
         }
+        updateSelectedDisplayedCount()
+        selectionRevision &+= 1
     }
 
     private func markUserScroll() {
@@ -755,12 +768,24 @@ public struct SegmentListView: View {
         engine.segments.filter { selectedSegmentIDs.contains($0.id) }
     }
 
+    private var selectedDisplayedCount: Int {
+        selectedDisplayedCountValue
+    }
+
     private var validSelectedSegmentIDs: Set<UUID> {
-        selectedSegmentIDs.intersection(Set(engine.segments.map(\.id)))
+        selectedSegmentIDs.intersection(cachedSegmentIDs)
     }
 
     private func selectDisplayedSegments() {
         selectedSegmentIDs.formUnion(displayedSegments.map(\.id))
+        updateSelectedDisplayedCount()
+        selectionRevision &+= 1
+    }
+
+    private func updateSelectedDisplayedCount() {
+        selectedDisplayedCountValue = cachedDisplayedSegments.reduce(into: 0) { count, segment in
+            if selectedSegmentIDs.contains(segment.id) { count += 1 }
+        }
     }
 
     private func invertDisplayedSegmentSelection() {
@@ -987,20 +1012,24 @@ private struct SegmentFilterPopover: View {
 /// programmatic `scrollTo`, so playback following can be paused safely.
 private struct ScrollViewInteractionObserver: NSViewRepresentable {
     let onUserScroll: () -> Void
+    let onScrollStateChanged: (Bool) -> Void
 
     func makeNSView(context: Context) -> ScrollInteractionNSView {
         let view = ScrollInteractionNSView()
         view.onUserScroll = onUserScroll
+        view.onScrollStateChanged = onScrollStateChanged
         return view
     }
 
     func updateNSView(_ nsView: ScrollInteractionNSView, context: Context) {
         nsView.onUserScroll = onUserScroll
+        nsView.onScrollStateChanged = onScrollStateChanged
     }
 }
 
 private final class ScrollInteractionNSView: NSView {
     var onUserScroll: (() -> Void)?
+    var onScrollStateChanged: ((Bool) -> Void)?
     private weak var observedScrollView: NSScrollView?
     private var notificationTokens: [NSObjectProtocol] = []
     private var isLiveScrolling = false
@@ -1046,6 +1075,7 @@ private final class ScrollInteractionNSView: NSView {
                 guard let self, !self.isLiveScrolling else { return }
                 self.isLiveScrolling = true
                 self.onUserScroll?()
+                self.onScrollStateChanged?(true)
                 self.scheduleLiveScrollReset()
             },
             center.addObserver(
@@ -1061,8 +1091,9 @@ private final class ScrollInteractionNSView: NSView {
                 if !self.isLiveScrolling {
                     self.isLiveScrolling = true
                     self.onUserScroll?()
+                    self.onScrollStateChanged?(true)
+                    self.scheduleLiveScrollReset()
                 }
-                self.scheduleLiveScrollReset()
             },
             center.addObserver(
                 forName: NSScrollView.didEndLiveScrollNotification,
@@ -1073,17 +1104,26 @@ private final class ScrollInteractionNSView: NSView {
                 self.liveScrollResetWorkItem?.cancel()
                 self.liveScrollResetWorkItem = nil
                 self.isLiveScrolling = false
+                self.onScrollStateChanged?(false)
             }
         ]
     }
 
     private func scheduleLiveScrollReset() {
+        // `didLiveScroll` can be delivered for every trackpad tick.  Keep one
+        // long-lived fallback only for the rare case where AppKit omits the
+        // matching didEnd notification; do not allocate/cancel a work item on
+        // every pixel of a gesture.
+        guard liveScrollResetWorkItem == nil else { return }
         liveScrollResetWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.isLiveScrolling = false
+            guard let self else { return }
+            self.liveScrollResetWorkItem = nil
+            self.isLiveScrolling = false
+            self.onScrollStateChanged?(false)
         }
         liveScrollResetWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
     }
 
     private func removeObservers() {
@@ -1094,6 +1134,7 @@ private final class ScrollInteractionNSView: NSView {
         liveScrollResetWorkItem = nil
         observedScrollView = nil
         isLiveScrolling = false
+        onScrollStateChanged?(false)
     }
 
     deinit {
@@ -1107,11 +1148,103 @@ private struct SegmentExportNotice: Identifiable {
     let message: String
 }
 
+/// The scrollable row container is equatable by explicit, low-cost revision
+/// tokens.  `SegmentListView` also observes the engine for its toolbar, but
+/// repeat counters, progress text, and other unrelated engine changes no
+/// longer rebuild the complete LazyVStack tree.
+private struct SegmentListRowsView: View, Equatable {
+    let segments: [SentenceSegment]
+    let activeSegmentID: UUID?
+    let selectedSegmentIDs: Set<UUID>
+    let engineIdentity: ObjectIdentifier
+    let language: AppLanguage
+    let isScrolling: Bool
+    let displayedSegmentsRevision: Int
+    let selectionRevision: Int
+    let onToggleExportSelection: (UUID) -> Void
+    let onSelect: (UUID) -> Void
+    let onToggleBookmark: (UUID) -> Void
+    let onToggleNavigationBookmark: (UUID) -> Void
+    let onSplit: (UUID, Double) -> Void
+    let onMergePrevious: (UUID) -> Void
+    let onMergeNext: (UUID) -> Void
+    let onDelete: (UUID) -> Void
+    let onSaveText: (UUID, String, String) -> Void
+    let onUserScroll: () -> Void
+    let onScrollStateChanged: (Bool) -> Void
+    @Binding var editRequest: UUID?
+
+    static func == (lhs: SegmentListRowsView, rhs: SegmentListRowsView) -> Bool {
+        // Function values intentionally do not participate in equality.  All
+        // callbacks target the same engine and are recreated by the parent;
+        // the visible data is represented by the revision tokens below.
+        lhs.displayedSegmentsRevision == rhs.displayedSegmentsRevision
+            && lhs.selectionRevision == rhs.selectionRevision
+            && lhs.activeSegmentID == rhs.activeSegmentID
+            && lhs.engineIdentity == rhs.engineIdentity
+            && lhs.language.rawValue == rhs.language.rawValue
+            && lhs.isScrolling == rhs.isScrolling
+            && lhs.editRequest == rhs.editRequest
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 2) {
+            ForEach(segments) { seg in
+                SegmentRowView(
+                    seg: seg,
+                    isActive: activeSegmentID == seg.id,
+                    isSelectedForExport: selectedSegmentIDs.contains(seg.id),
+                    isScrolling: isScrolling,
+                    onToggleExportSelection: {
+                        onToggleExportSelection(seg.id)
+                    },
+                    onSelect: {
+                        onSelect(seg.id)
+                    },
+                    onToggleBookmark: {
+                        onToggleBookmark(seg.id)
+                    },
+                    onToggleNavigationBookmark: {
+                        onToggleNavigationBookmark(seg.id)
+                    },
+                    onSplit: {
+                        onSplit(seg.id, (seg.startTime + seg.endTime) / 2.0)
+                    },
+                    onMergePrevious: {
+                        onMergePrevious(seg.id)
+                    },
+                    onMergeNext: {
+                        onMergeNext(seg.id)
+                    },
+                    onDelete: {
+                        onDelete(seg.id)
+                    },
+                    onSaveText: { originalText, translationText in
+                        onSaveText(seg.id, originalText, translationText)
+                    },
+                    editRequest: $editRequest
+                )
+                .id(seg.id)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            ScrollViewInteractionObserver(
+                onUserScroll: onUserScroll,
+                onScrollStateChanged: onScrollStateChanged
+            )
+            .frame(width: 1, height: 1)
+        )
+    }
+}
+
 /// 单行断句单元格
 struct SegmentRowView: View {
     let seg: SentenceSegment
     let isActive: Bool
     let isSelectedForExport: Bool
+    let isScrolling: Bool
     let onToggleExportSelection: () -> Void
     let onSelect: () -> Void
     let onToggleBookmark: () -> Void
@@ -1208,91 +1341,93 @@ struct SegmentRowView: View {
                             .font(.system(size: 9).monospacedDigit())
                             .foregroundColor(.secondary.opacity(0.8))
 
-                        // 悬停操作按钮（始终占位，避免显示/隐藏引起行宽变化晃动）
-                        HStack(spacing: 4) {
-                            Button(action: {
-                                beginEditing()
-                            }) {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                            }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.text("编辑原文和译文", "Edit original text and translation"),
-                                shortcut: .editSentence
-                            ))
-                            .allowsHitTesting(isHovering)
+                        // 悬停操作按钮：未悬停时只保留固定宽度的占位，不创建
+                        // 玻璃按钮和帮助提示，避免长列表中每行常驻一整套控件。
+                        ZStack(alignment: .trailing) {
+                            if isHovering && !isScrolling {
+                                HStack(spacing: 4) {
+                                    Button(action: {
+                                        beginEditing()
+                                    }) {
+                                        Image(systemName: "pencil")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.text("编辑原文和译文", "Edit original text and translation"),
+                                        shortcut: .editSentence
+                                    ))
 
-                            Button(action: onSplit) {
-                                Image(systemName: "rectangle.split.2x1")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                            }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.text("在中间拆分此句", "Split this sentence at its midpoint"),
-                                shortcut: .splitSentence
-                            ))
-                            .allowsHitTesting(isHovering)
+                                    Button(action: onSplit) {
+                                        Image(systemName: "rectangle.split.2x1")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.text("在中间拆分此句", "Split this sentence at its midpoint"),
+                                        shortcut: .splitSentence
+                                    ))
 
-                            Button(action: onMergePrevious) {
-                                Image(systemName: "arrow.triangle.merge")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                                    .scaleEffect(x: -1, y: 1)
-                            }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.text("合并上一句", "Merge with previous sentence"),
-                                shortcut: .mergePreviousSentence
-                            ))
-                            .disabled(seg.index <= 1)
-                            .allowsHitTesting(isHovering && seg.index > 1)
+                                    Button(action: onMergePrevious) {
+                                        Image(systemName: "arrow.triangle.merge")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                            .scaleEffect(x: -1, y: 1)
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.text("合并上一句", "Merge with previous sentence"),
+                                        shortcut: .mergePreviousSentence
+                                    ))
+                                    .disabled(seg.index <= 1)
 
-                            Button(action: onMergeNext) {
-                                Image(systemName: "arrow.triangle.merge")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                                    .rotationEffect(.degrees(180))
-                            }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.localized(.mergeSegment),
-                                shortcut: .mergeNextSentence
-                            ))
-                            .allowsHitTesting(isHovering)
+                                    Button(action: onMergeNext) {
+                                        Image(systemName: "arrow.triangle.merge")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                            .rotationEffect(.degrees(180))
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.localized(.mergeSegment),
+                                        shortcut: .mergeNextSentence
+                                    ))
 
-                            Button(action: onToggleNavigationBookmark) {
-                                Image(systemName: seg.isNavigationBookmarked ? "bookmark.fill" : "bookmark")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                                    .foregroundColor(seg.isNavigationBookmarked ? MacAbobooMediaStyle.accent : .secondary)
-                            }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.text(
-                                    seg.isNavigationBookmarked ? "移出书签" : "加入书签",
-                                    seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
-                                ),
-                                shortcut: .toggleNavigationBookmark
-                            ))
-                            .allowsHitTesting(isHovering)
+                                    Button(action: onToggleNavigationBookmark) {
+                                        Image(systemName: seg.isNavigationBookmarked ? "bookmark.fill" : "bookmark")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                            .foregroundColor(seg.isNavigationBookmarked ? MacAbobooMediaStyle.accent : .secondary)
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.text(
+                                            seg.isNavigationBookmarked ? "移出书签" : "加入书签",
+                                            seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
+                                        ),
+                                        shortcut: .toggleNavigationBookmark
+                                    ))
 
-                            Button(action: onDelete) {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 9))
-                                    .frame(width: 20, height: 20)
-                                    .foregroundColor(.red)
+                                    Button(action: onDelete) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 9))
+                                            .frame(width: 20, height: 20)
+                                            .foregroundColor(.red)
+                                    }
+                                    .macabobooChromeButton(shape: .circle)
+                                    .help(MacAbobooShortcutCatalog.help(
+                                        lang.localized(.deleteSegment),
+                                        shortcut: .deleteSentence
+                                    ))
+                                }
                             }
-                            .macabobooChromeButton(shape: .circle)
-                            .help(MacAbobooShortcutCatalog.help(
-                                lang.localized(.deleteSegment),
-                                shortcut: .deleteSentence
-                            ))
-                            .allowsHitTesting(isHovering)
                         }
-                        .opacity(isHovering ? 1 : 0)
+                        // Six 20pt controls plus five 4pt gaps.  Keeping this
+                        // placeholder width prevents text from shifting when
+                        // the pointer enters or leaves a row.
+                        .frame(width: 140, height: 20, alignment: .trailing)
                         .zIndex(3)
                     }
 
