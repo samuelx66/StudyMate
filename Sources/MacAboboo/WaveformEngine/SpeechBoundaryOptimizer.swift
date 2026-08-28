@@ -1246,11 +1246,11 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         // A long recording can contain hundreds of thousands of waveform bins.
         // A bounded evenly-spaced sample gives the same robust lower percentile
         // without sorting the full array once per SpeakerKit interval.
-        let stride = max(1, waveform.peaks.count / 20_000)
+        let stride = max(1, waveform.peakCount / 20_000)
         var samples: [Float] = []
-        samples.reserveCapacity((waveform.peaks.count + stride - 1) / stride)
-        for index in Swift.stride(from: 0, to: waveform.peaks.count, by: stride) {
-            samples.append(waveform.peaks[index])
+        samples.reserveCapacity((waveform.peakCount + stride - 1) / stride)
+        for index in Swift.stride(from: 0, to: waveform.peakCount, by: stride) {
+            samples.append(waveform.peak(at: index))
         }
         samples.sort()
         return samples[min(samples.count - 1, Int(Double(samples.count) * 0.10))]
@@ -1266,10 +1266,10 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         let lower = max(0, min(start, waveform.duration))
         let upper = max(lower, min(end, waveform.duration))
         let startIndex = max(0, Int(lower * waveform.sampleRate))
-        let endIndex = min(waveform.peaks.count, max(startIndex + 1, Int(ceil(upper * waveform.sampleRate))))
+        let endIndex = min(waveform.peakCount, max(startIndex + 1, Int(ceil(upper * waveform.sampleRate))))
         guard endIndex > startIndex else { return false }
 
-        let segmentPeaks = waveform.peaks[startIndex..<endIndex]
+        let segmentPeaks = (startIndex..<endIndex).map { waveform.peak(at: $0) }
         let sum = segmentPeaks.reduce(0, +)
         let mean = sum / Float(segmentPeaks.count)
         let peak = segmentPeaks.max() ?? 0
@@ -1600,17 +1600,17 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
     ) -> Double? {
         guard !waveform.isEmpty, waveform.sampleRate > 0 else { return nil }
         let startIndex = max(0, Int((range.lowerBound * waveform.sampleRate).rounded(.up)))
-        let endIndex = min(waveform.peaks.count - 1, Int((range.upperBound * waveform.sampleRate).rounded(.down)))
+        let endIndex = min(waveform.peakCount - 1, Int((range.upperBound * waveform.sampleRate).rounded(.down)))
         guard endIndex >= startIndex else { return nil }
         let radius = max(1, Int(waveform.sampleRate * 0.04))
         var bestIndex = startIndex
         var bestScore = Double.greatestFiniteMagnitude
         for index in startIndex...endIndex {
             let localStart = max(0, index - radius)
-            let localEnd = min(waveform.peaks.count - 1, index + radius)
+            let localEnd = min(waveform.peakCount - 1, index + radius)
             var energy: Double = 0
             for sampleIndex in localStart...localEnd {
-                energy += Double(waveform.peaks[sampleIndex])
+                energy += Double(waveform.peak(at: sampleIndex))
             }
             energy /= Double(localEnd - localStart + 1)
             let time = Double(index) / waveform.sampleRate

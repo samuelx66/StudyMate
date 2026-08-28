@@ -1,7 +1,7 @@
 import Foundation
 
 /// 纯文本句法拆分与音频 VAD 时间轴对齐引擎
-public final class TextAlignmentEngine {
+public final class TextAlignmentEngine: Sendable {
     public static let shared = TextAlignmentEngine()
     
     public init() {}

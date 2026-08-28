@@ -109,7 +109,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private let autoGenerateSubtitlesKey = "MacAboboo.AutoGenerateSubtitles"
     private let speechRecognitionLanguageKey = "MacAboboo.SpeechRecognitionLanguage"
     private let expectedSpeakerCountKey = "MacAboboo.ExpectedSpeakerCount"
-    private let boundarySnapHapticFeedbackKey = "MacAboboo.BoundarySnapHapticFeedback"
     @Published public var autoGenerateSubtitles: Bool {
         didSet {
             UserDefaults.standard.set(autoGenerateSubtitles, forKey: autoGenerateSubtitlesKey)
@@ -126,12 +125,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var expectedSpeakerCount: Int? {
         didSet {
             UserDefaults.standard.set(expectedSpeakerCount ?? 0, forKey: expectedSpeakerCountKey)
-        }
-    }
-    /// 在边界吸附成功时提供 macOS 触觉反馈；默认开启，可在设置中关闭。
-    @Published public var boundarySnapHapticFeedback: Bool {
-        didSet {
-            UserDefaults.standard.set(boundarySnapHapticFeedback, forKey: boundarySnapHapticFeedbackKey)
         }
     }
 
@@ -183,7 +176,31 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// `segments` array.  Publishing a new full array for every NSEvent makes
     /// SwiftUI rebuild the waveform tree and is the main source of the
     /// visible marker lag.  The working copy is committed once on release.
-    private var boundaryDragWorkingSegments: [SentenceSegment]?
+    private final class BoundaryDragSession {
+        /// 拖动期间只保存被触及的一个或两个句子。此前即使没有发布
+        /// `segments`，每个 mouseDragged 仍会因 Array 写时复制而复制整份
+        /// 句子和字幕数组；长材料下这仍会造成标线落后于指针。
+        let baseSegments: [SentenceSegment]
+        var overrides: [Int: SentenceSegment] = [:]
+
+        init(segments: [SentenceSegment]) {
+            self.baseSegments = segments
+        }
+
+        func segment(at index: Int) -> SentenceSegment {
+            overrides[index] ?? baseSegments[index]
+        }
+
+        func resolvedSegments() -> [SentenceSegment] {
+            guard !overrides.isEmpty else { return baseSegments }
+            var result = baseSegments
+            for (index, segment) in overrides where result.indices.contains(index) {
+                result[index] = segment
+            }
+            return result
+        }
+    }
+    private var boundaryDragSession: BoundaryDragSession?
     private var shadowingTask: Task<Void, Never>?
     private var debouncedSaveTask: Task<Void, Never>?
     private var waveformTask: Task<Void, Never>?
@@ -201,13 +218,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// occasionally lose its callback while switching sentences quickly. A
     /// bounded fallback keeps the engine from remaining in `isSeeking` forever.
     private var seekTimeoutTask: Task<Void, Never>?
-    private struct BoundarySnapMarker: Equatable {
-        let segmentID: UUID
-        let isStart: Bool
-        let timeMilliseconds: Int64
-    }
     private var acousticBoundaryTimes: [Double] = []
-    private var activeBoundarySnapMarker: BoundarySnapMarker?
     private struct ExplicitSegmentSelection {
         let segmentID: UUID
         var hasCompletedSeek: Bool
@@ -294,7 +305,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.speechRecognitionLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
         let savedSpeakerCount = UserDefaults.standard.integer(forKey: expectedSpeakerCountKey)
         self.expectedSpeakerCount = (2...8).contains(savedSpeakerCount) ? savedSpeakerCount : nil
-        self.boundarySnapHapticFeedback = (UserDefaults.standard.object(forKey: boundarySnapHapticFeedbackKey) as? Bool) ?? true
         super.init()
         self.nativeBackend.volume = self.volume
         self.nativeBackend.playbackRate = self.playbackRate
@@ -302,6 +312,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.mpvBackend.playbackRate = self.playbackRate
         setupBackendCallbacks(for: nativeBackend)
         setupBackendCallbacks(for: mpvBackend)
+        projectFileManager.setErrorHandler { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.lastErrorMessage = message
+            }
+        }
+        playbackHistoryStore?.setPersistenceErrorHandler { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.lastErrorMessage = message
+            }
+        }
     }
 
     private func setupBackendCallbacks(for backend: MediaPlayerBackend) {
@@ -536,21 +556,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func beginBoundaryDrag(from source: BoundaryDragSource) {
-        boundaryDragWorkingSegments = segments
+        boundaryDragSession = BoundaryDragSession(segments: segments)
         isBoundaryDragging = true
         boundaryDragSource = source
         // Keep the current playback state while the boundary is dragged.  The
         // playback clock is suppressed separately in `handlePlaybackBoundary`
         // so a temporary marker position cannot advance/repeat a sentence,
         // while the audio/video stream itself continues uninterrupted.
-        activeBoundarySnapMarker = nil
     }
 
     public func endBoundaryDrag() {
         commitBoundaryDragIfNeeded()
         isBoundaryDragging = false
         boundaryDragSource = nil
-        activeBoundarySnapMarker = nil
         debouncedSaveTask?.cancel()
         persistCurrentProject()
     }
@@ -602,7 +620,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // A direct programmatic call keeps the historical immediate-update
         // behavior.  Only the live mouse-drag path uses the un-published
         // working copy to avoid a SwiftUI rebuild on every pointer event.
-        var editedSegments = boundaryDragWorkingSegments ?? segments
+        if let session = boundaryDragSession {
+            updateBoundaryDrag(session: session, id: id, proposed: proposed, isStart: isStart)
+            return
+        }
+        var editedSegments = segments
         guard let index = editedSegments.firstIndex(where: { $0.id == id }) else { return }
 
         let minimumDuration = 0.05
@@ -617,7 +639,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let target = raw
 
             if crossesPreviousBoundary {
-                activeBoundarySnapMarker = nil
                 var previous = editedSegments[index - 1]
                 let lowerBound = previous.startTime + minimumDuration
                 let upperBound = current.endTime - minimumDuration
@@ -640,7 +661,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let target = raw
 
             if crossesNextBoundary {
-                activeBoundarySnapMarker = nil
                 var next = editedSegments[index + 1]
                 let lowerBound = current.startTime + minimumDuration
                 let upperBound = next.endTime - minimumDuration
@@ -660,11 +680,60 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         editedSegments[index] = current
-        if isBoundaryDragging {
-            boundaryDragWorkingSegments = editedSegments
+        segments = editedSegments
+    }
+
+    private func updateBoundaryDrag(
+        session: BoundaryDragSession,
+        id: UUID,
+        proposed: Double,
+        isStart: Bool
+    ) {
+        guard let index = session.baseSegments.firstIndex(where: { $0.id == id }) else { return }
+        let minimumDuration = 0.05
+        let mediaBound = duration > 0 ? duration : Double.greatestFiniteMagnitude
+        var current = session.segment(at: index)
+
+        if isStart {
+            let target = max(0, min(proposed, current.endTime - minimumDuration))
+            let crossesPreviousBoundary = index > 0 && target < session.segment(at: index - 1).endTime
+            if crossesPreviousBoundary {
+                var previous = session.segment(at: index - 1)
+                let lowerBound = previous.startTime + minimumDuration
+                let upperBound = current.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                let boundary = max(lowerBound, min(target, upperBound))
+                previous.endTime = boundary
+                current.startTime = boundary
+                session.overrides[index - 1] = previous
+            } else {
+                let lowerBound = index > 0 ? session.segment(at: index - 1).endTime : 0
+                let upperBound = current.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                current.startTime = max(lowerBound, min(target, upperBound))
+            }
         } else {
-            segments = editedSegments
+            let target = min(mediaBound, max(current.startTime + minimumDuration, proposed))
+            let crossesNextBoundary = index + 1 < session.baseSegments.count && target > session.segment(at: index + 1).startTime
+            if crossesNextBoundary {
+                var next = session.segment(at: index + 1)
+                let lowerBound = current.startTime + minimumDuration
+                let upperBound = next.endTime - minimumDuration
+                guard lowerBound <= upperBound else { return }
+                let boundary = min(upperBound, max(target, lowerBound))
+                current.endTime = boundary
+                next.startTime = boundary
+                session.overrides[index + 1] = next
+            } else {
+                let lowerBound = current.startTime + minimumDuration
+                let upperBound = index + 1 < session.baseSegments.count
+                    ? min(mediaBound, session.segment(at: index + 1).startTime)
+                    : mediaBound
+                guard lowerBound <= upperBound else { return }
+                current.endTime = min(upperBound, max(target, lowerBound))
+            }
         }
+        session.overrides[index] = current
     }
 
     /// Publishes the final marker positions once, after the pointer is
@@ -672,8 +741,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// without paying the cost of publishing an entire segment array per
     /// mouseDragged event.
     private func commitBoundaryDragIfNeeded() {
-        guard let working = boundaryDragWorkingSegments else { return }
-        boundaryDragWorkingSegments = nil
+        guard let session = boundaryDragSession else { return }
+        boundaryDragSession = nil
+        let working = session.resolvedSegments()
         if segments != working {
             segments = working
         }
@@ -903,8 +973,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         activeSegmentIndex = nil
         explicitSegmentSelection = nil
         lastSecondarySegmentId = nil
-        boundaryDragWorkingSegments = nil
-        activeBoundarySnapMarker = nil
+        boundaryDragSession = nil
         currentTime = 0
         duration = 0
         primaryViewport = (0, 15)
@@ -999,8 +1068,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentOrigin = .none
         hasCompletedSegmentation = false
         acousticBoundaryTimes = []
-        activeBoundarySnapMarker = nil
-        boundaryDragWorkingSegments = nil
+        boundaryDragSession = nil
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
@@ -1061,9 +1129,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.waveformData = savedWaveform
                     self.waveformExtractionProgress = 1
                     if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
-                    if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
-                        self.persistCurrentProject(includeWaveform: true)
-                    }
                     return
                 }
                 self.extractWaveform(from: mediaURL, sessionID: sessionID)
@@ -1081,9 +1146,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             showProgress: true,
                             waveformData: savedWaveform
                         )
-                    }
-                    if compatibleProject.schemaVersion < MediaProjectFile.currentSchemaVersion || compatibleProject.waveformCacheFile == nil {
-                        self.persistCurrentProject(includeWaveform: true)
                     }
                     return
                 }
@@ -1103,7 +1165,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 && boundary >= 0
                 && (effectiveDuration <= 0 || boundary <= effectiveDuration)
         }
-        activeBoundarySnapMarker = nil
         segments = normalizedSegments(project.segments, duration: effectiveDuration)
 
         let restoredPosition = min(max(0, project.lastPosition), effectiveDuration)
@@ -1138,24 +1199,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
             return nil
         }.value
-    }
-
-    /// 自动检测并加载同名侧边字幕文件
-    public func detectAndLoadSidecarSubtitle(for mediaUrl: URL) -> Bool {
-        let base = mediaUrl.deletingPathExtension()
-        let candidates = ["srt", "lrc", "vtt"]
-
-        for ext in candidates {
-            let subURL = base.appendingPathExtension(ext)
-            if FileManager.default.fileExists(atPath: subURL.path) {
-                if let items = try? SubtitleParser.shared.parse(from: subURL), !items.isEmpty {
-                    cancelSegmentation()
-                    applySubtitleItems(items, origin: .sidecar, persist: true)
-                    return true
-                }
-            }
-        }
-        return false
     }
 
     /// 异步提取波形数据（支持断点增量更新与取消保护）
@@ -1231,7 +1274,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         cancelAutomaticTranslation()
         modelIdleUnloadTask?.cancel()
         acousticBoundaryTimes = []
-        activeBoundarySnapMarker = nil
 
         let modelManager = WhisperModelManager.shared
         let modelURL = mode.requiresTranscription
@@ -1301,7 +1343,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.segmentOrigin = mode.requiresTranscription ? .ai : .vad
                 self.hasCompletedSegmentation = true
                 self.acousticBoundaryTimes = output.acousticBoundaryTimes
-                self.activeBoundarySnapMarker = nil
                 self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
                 self.segmentationWarningMessage = output.warnings.first
                 self.persistCurrentProject()
@@ -1431,7 +1472,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     modelURL: modelURL,
                     language: recognitionLanguage,
                     configuration: SpeechSegmentationMode.intelligent.profile.vad,
-                    useInternalVAD: false,
                     speechWindows: speechWindows,
                     hardWindowBoundaries: hardBoundaries,
                     isolatedSpeechWindows: true
@@ -1742,7 +1782,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentOrigin = .imported
         hasCompletedSegmentation = true
         acousticBoundaryTimes = []
-        activeBoundarySnapMarker = nil
         activeSegmentIndex = segments.isEmpty ? nil : 0
         persistCurrentProject()
     }
@@ -1762,7 +1801,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.segmentOrigin = origin
         self.hasCompletedSegmentation = true
         self.acousticBoundaryTimes = []
-        self.activeBoundarySnapMarker = nil
         self.activeSegmentIndex = 0
         if persist { persistCurrentProject() }
     }
@@ -1907,9 +1945,42 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 ? "删除该文件的工程记录失败：\(error.localizedDescription)"
                 : "Unable to delete project records for this file: \(error.localizedDescription)"
         }
-        // PCMCache 是可再生的派生数据，删除历史记录时清理主缓存和旧版
-        // 缓存；原始音视频文件本身不会受到影响。
+        // PCMCache 是可再生的派生数据，删除历史记录时清理当前缓存；
+        // 原始音视频文件本身不会受到影响。
         await AudioPCMExtractor.shared.removeCache(for: standardizedURL)
+    }
+
+    /// 清空播放列表时也清除每个媒体的工程文件、波形文件与 PCM 派生缓存。
+    /// 原始音视频不会被触碰；当前媒体的后台任务会先取消，防止清理后又写回。
+    public func clearPlaybackHistory() async {
+        guard let playbackHistoryStore else { return }
+        let mediaURLs = playbackHistoryStore.entries.map(\.mediaURL)
+        guard !mediaURLs.isEmpty else { return }
+
+        if let currentURL = currentMedia?.url.standardizedFileURL,
+           mediaURLs.contains(currentURL) {
+            debouncedSaveTask?.cancel()
+            waveformTask?.cancel()
+            waveformTask = nil
+            sidecarTask?.cancel()
+            sidecarTask = nil
+            segmentationTask?.cancel()
+            segmentationTask = nil
+            segmentationRequestID = UUID()
+            suppressCurrentProjectPersistence = true
+        }
+
+        playbackHistoryStore.removeAll()
+        for mediaURL in mediaURLs {
+            do {
+                try await projectFileManager.deleteProjectAsync(for: mediaURL)
+            } catch {
+                lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                    ? "删除工程记录失败：\(error.localizedDescription)"
+                    : "Unable to delete project records: \(error.localizedDescription)"
+            }
+            await AudioPCMExtractor.shared.removeCache(for: mediaURL)
+        }
     }
 
     // MARK: - 播放控制与极速 Seek
@@ -2024,78 +2095,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         pendingPreviewSeekTime = nil
         previewSeekTask?.cancel()
         previewSeekTask = nil
-    }
-
-    /// Returns a nearby high-confidence acoustic boundary, or the original
-    /// target when no safe snap exists.  Snapping is deliberately constrained
-    /// by the same non-overlap bounds used by `updateSegmentAnchor`.
-    public func snappedBoundaryTime(id: UUID, proposed: Double, isStart: Bool) -> Double {
-        guard proposed.isFinite,
-              let idx = segments.firstIndex(where: { $0.id == id }) else { return proposed }
-        let segment = segments[idx]
-        let lowerBound = isStart
-            ? (idx > 0 ? segments[idx - 1].endTime : 0)
-            : segment.startTime + 0.05
-        let upperBound = isStart
-            ? segment.endTime - 0.05
-            : (idx < segments.count - 1
-                ? min(duration > 0 ? duration : Double.greatestFiniteMagnitude, segments[idx + 1].startTime)
-                : (duration > 0 ? duration : Double.greatestFiniteMagnitude))
-        guard lowerBound <= upperBound else { return proposed }
-        let clamped = max(lowerBound, min(proposed, upperBound))
-        let snapWindow = 0.03
-
-        let acousticCandidate = acousticBoundaryTimes
-            .filter { abs($0 - clamped) <= snapWindow }
-            .min { abs($0 - clamped) < abs($1 - clamped) }
-        let candidate = acousticCandidate ?? localWaveformValley(near: clamped, window: snapWindow)
-        guard let candidate,
-              abs(candidate - clamped) <= snapWindow else {
-            activeBoundarySnapMarker = nil
-            return clamped
-        }
-
-        let snapped = max(lowerBound, min(candidate, upperBound))
-        guard abs(snapped - clamped) <= snapWindow else {
-            activeBoundarySnapMarker = nil
-            return clamped
-        }
-
-        let marker = BoundarySnapMarker(
-            segmentID: id,
-            isStart: isStart,
-            timeMilliseconds: Int64((snapped * 1000).rounded())
-        )
-        if activeBoundarySnapMarker != marker {
-            activeBoundarySnapMarker = marker
-            if boundarySnapHapticFeedback {
-                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-            }
-        }
-        return snapped
-    }
-
-    private func localWaveformValley(near time: Double, window: Double) -> Double? {
-        guard !waveformData.isEmpty,
-              waveformData.sampleRate.isFinite,
-              waveformData.sampleRate > 0,
-              time.isFinite else { return nil }
-        let peaks = waveformData.peaks
-        guard peaks.count >= 5 else { return nil }
-        let center = Int((time * waveformData.sampleRate).rounded())
-        let radius = max(1, Int((window * waveformData.sampleRate).rounded(.up)))
-        let lower = max(1, center - radius)
-        let upper = min(peaks.count - 2, center + radius)
-        guard lower <= upper else { return nil }
-        let index = (lower...upper).min { peaks[$0] < peaks[$1] }
-        guard let index else { return nil }
-        let flankRadius = max(2, radius)
-        let left = peaks[max(0, index - flankRadius)]
-        let right = peaks[min(peaks.count - 1, index + flankRadius)]
-        let flank = max(left, right)
-        let energy = peaks[index]
-        guard energy <= 0.20 || energy <= flank * 0.72 else { return nil }
-        return Double(index) / waveformData.sampleRate
     }
 
     /// Seek to a sentence start while preserving that sentence as the active
@@ -2231,10 +2230,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         if isBoundaryDragging {
             guard loopMode == .singleSegment,
                   let activeIdx = activeSegmentIndex,
-                  (boundaryDragWorkingSegments ?? segments).indices.contains(activeIdx),
+                  (boundaryDragSession?.baseSegments ?? segments).indices.contains(activeIdx),
                   isPlaying,
                   !isShadowingPaused else { return }
-            let currentSeg = (boundaryDragWorkingSegments ?? segments)[activeIdx]
+            let currentSeg = boundaryDragSession?.segment(at: activeIdx) ?? segments[activeIdx]
             guard time >= currentSeg.endTime - 0.005 else { return }
             currentRepeatCount += 1
             seekToTargetSegment(currentSeg)

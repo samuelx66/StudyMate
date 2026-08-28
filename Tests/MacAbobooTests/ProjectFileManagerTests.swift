@@ -105,24 +105,21 @@ final class ProjectFileManagerTests: XCTestCase {
         XCTAssertFalse(loaded?.isCompatible(with: dummyMediaURL) ?? true)
     }
 
-    func testLegacyProjectWithoutAcousticBoundariesLoadsWithEmptyEvidence() throws {
+    func testUnsupportedProjectSchemaIsIgnored() throws {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacAboboo-LegacyProjectTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("MacAboboo-UnsupportedProjectTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let mediaURL = directory.appendingPathComponent("legacy.mp3")
+        let mediaURL = directory.appendingPathComponent("unsupported.mp3")
         try Data("media".utf8).write(to: mediaURL)
         let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
         let metadataURL = manager.projectFileURL(for: mediaURL)
-        let legacyJSON = """
-        {"schemaVersion":3,"mediaPath":"\(mediaURL.path)","mediaTitle":"legacy","duration":5,"lastPosition":0,"segments":[],"hasCompletedSegmentation":true,"updatedAt":"1970-01-01T00:00:00Z"}
+        let unsupportedJSON = """
+        {"schemaVersion":3,"mediaPath":"\(mediaURL.path)","mediaTitle":"unsupported","duration":5,"lastPosition":0,"segments":[],"hasCompletedSegmentation":true,"updatedAt":"1970-01-01T00:00:00Z"}
         """
-        try Data(legacyJSON.utf8).write(to: metadataURL)
+        try Data(unsupportedJSON.utf8).write(to: metadataURL)
 
-        let loaded = try XCTUnwrap(manager.loadProject(for: mediaURL))
-        XCTAssertEqual(loaded.schemaVersion, 3)
-        XCTAssertTrue(loaded.acousticBoundaryTimes.isEmpty)
-        XCTAssertTrue(loaded.hasCompletedSegmentation)
+        XCTAssertNil(manager.loadProject(for: mediaURL))
     }
 
     func testRapidSavesPersistLatestMetadataSnapshot() throws {

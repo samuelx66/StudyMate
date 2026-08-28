@@ -3,9 +3,9 @@ import XCTest
 
 @MainActor
 final class SentenceLibraryPlayerTests: XCTestCase {
-    func testPlayingEntryLoadsAndSeeksIndependentBackendToSentenceRange() async throws {
+    func testPlayingEntryLoadsIndependentClipFromZero() async throws {
         let mediaURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacAboboo-LibraryPlayer-\(UUID().uuidString).mp4")
+            .appendingPathComponent("MacAboboo-LibraryPlayer-\(UUID().uuidString).m4a")
         try Data("test-media".utf8).write(to: mediaURL)
         defer { try? FileManager.default.removeItem(at: mediaURL) }
 
@@ -13,22 +13,22 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         let player = SentenceLibraryPlayer(nativeBackend: backend)
         let entry = makeEntry(path: mediaURL.path, start: 12.5, end: 14.75)
 
-        player.play(entry)
+        player.play(entry, mediaURL: mediaURL)
         for _ in 0..<4 { await Task.yield() }
 
         XCTAssertEqual(backend.loadedURL, mediaURL)
-        XCTAssertEqual(backend.currentTime, 12.5, accuracy: 0.001)
+        XCTAssertEqual(backend.currentTime, 0, accuracy: 0.001)
         XCTAssertTrue(backend.isPlaying)
         XCTAssertTrue(player.isPlaying)
         XCTAssertEqual(player.duration, 2.25, accuracy: 0.001)
 
-        backend.emitTime(14.75)
+        backend.emitTime(2.25)
         XCTAssertFalse(backend.isPlaying)
         XCTAssertFalse(player.isPlaying)
         XCTAssertEqual(player.currentTime, 2.25, accuracy: 0.001)
     }
 
-    func testMissingSourceReportsReadableErrorWithoutLoadingBackend() {
+    func testMissingIndependentClipReportsReadableErrorWithoutLoadingBackend() {
         let backend = TestMediaPlayerBackend()
         let player = SentenceLibraryPlayer(nativeBackend: backend)
 
@@ -150,7 +150,8 @@ final class SentenceLibraryPlayerTests: XCTestCase {
             sourceMediaName: URL(fileURLWithPath: path).lastPathComponent,
             sourceMediaPath: path,
             startTime: start,
-            endTime: end
+            endTime: end,
+            mediaFilename: "clip-\(UUID().uuidString).m4a"
         )
     }
 }

@@ -229,7 +229,6 @@ public actor SpeechSegmentationPipeline {
                 modelURL: modelURL,
                 language: request.recognitionLanguage,
                 configuration: profile.vad,
-                useInternalVAD: false,
                 speechWindows: speechWindows,
                 hardWindowBoundaries: windowPlan.hardBoundaries
             ) { progress in

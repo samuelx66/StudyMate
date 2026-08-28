@@ -21,7 +21,6 @@ public actor AudioPCMExtractor {
     private struct CacheDescriptor: Sendable {
         let key: String
         let fileURL: URL?
-        let legacyFileURL: URL?
     }
 
     private struct DecodeFlight {
@@ -44,31 +43,27 @@ public actor AudioPCMExtractor {
 
     private let memoryCache = NSCache<NSString, PCMCacheBox>()
     private let cacheDirectory: URL?
-    private let legacyCacheDirectory: URL?
     private var inFlight: [String: DecodeFlight] = [:]
     private var diskWrites: [String: DiskWriteFlight] = [:]
 
     public init() {
         self.init(
             cacheDirectoryOverride: nil,
-            legacyCacheDirectoryOverride: nil,
             pruneDefaultCache: true
         )
     }
 
     /// 测试和离线工具可以注入独立缓存目录；正式应用仍使用默认的
     /// `~/Library/Application Support/MacAboboo/PCMCache` 路径。
-    init(cacheDirectory: URL, legacyCacheDirectory: URL? = nil) {
+    init(cacheDirectory: URL) {
         self.init(
             cacheDirectoryOverride: cacheDirectory,
-            legacyCacheDirectoryOverride: legacyCacheDirectory,
             pruneDefaultCache: false
         )
     }
 
     private init(
         cacheDirectoryOverride: URL?,
-        legacyCacheDirectoryOverride: URL?,
         pruneDefaultCache: Bool
     ) {
         memoryCache.countLimit = 2
@@ -96,14 +91,6 @@ public actor AudioPCMExtractor {
         } else {
             cacheDirectory = nil
         }
-        if let legacyCacheDirectoryOverride {
-            try? FileManager.default.createDirectory(at: legacyCacheDirectoryOverride, withIntermediateDirectories: true)
-            legacyCacheDirectory = legacyCacheDirectoryOverride
-        } else {
-            legacyCacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("MacAboboo", isDirectory: true)
-                .appendingPathComponent("PCM", isDirectory: true)
-        }
     }
 
     public func extract(
@@ -113,8 +100,7 @@ public actor AudioPCMExtractor {
         try Task.checkCancellation()
         let descriptor = Self.cacheDescriptor(
             for: url,
-            cacheDirectory: cacheDirectory,
-            legacyCacheDirectory: legacyCacheDirectory
+            cacheDirectory: cacheDirectory
         )
         let memoryKey = descriptor.key as NSString
 
@@ -129,21 +115,6 @@ public actor AudioPCMExtractor {
             progress?(1)
             return cached
         }
-        if let legacyURL = descriptor.legacyFileURL,
-           let cached = Self.readDiskCache(from: legacyURL) {
-            cacheInMemoryIfReasonable(cached, key: memoryKey)
-            if let cacheURL = descriptor.fileURL {
-                let writeTask = Self.scheduleDiskWrite(cached, to: cacheURL)
-                let writeID = registerDiskWrite(writeTask, for: descriptor.key)
-                Task.detached { [weak self] in
-                    _ = await writeTask.value
-                    await self?.clearDiskWrite(for: descriptor.key, id: writeID)
-                }
-            }
-            progress?(1)
-            return cached
-        }
-
         let waiterID = UUID()
         let flightID: UUID
         let decodeTask: Task<AudioPCMData, Error>
@@ -212,8 +183,7 @@ public actor AudioPCMExtractor {
 
     private static func cacheDescriptor(
         for url: URL,
-        cacheDirectory: URL?,
-        legacyCacheDirectory: URL?
+        cacheDirectory: URL?
     ) -> CacheDescriptor {
         let standardizedURL = url.standardizedFileURL
         let values = try? standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
@@ -232,8 +202,7 @@ public actor AudioPCMExtractor {
             .map { String(format: "%02x", $0) }
             .joined()
         let fileURL = cacheDirectory?.appendingPathComponent("\(digest).pcmcache")
-        let legacyFileURL = legacyCacheDirectory?.appendingPathComponent("\(digest).pcmcache")
-        return CacheDescriptor(key: digest, fileURL: fileURL, legacyFileURL: legacyFileURL)
+        return CacheDescriptor(key: digest, fileURL: fileURL)
     }
 
     private static func cacheCost(for pcm: AudioPCMData) -> Int {
@@ -252,15 +221,14 @@ public actor AudioPCMExtractor {
         memoryCache.removeAllObjects()
     }
 
-    /// 删除媒体对应的内存、主缓存、旧版缓存及未完成的临时写入。
+    /// 删除媒体对应的内存缓存、磁盘缓存及未完成的临时写入。
     ///
     /// 播放列表删除只移除历史记录，不会删除原始音视频；但 PCM 是由原始
     /// 媒体派生的可再生缓存，因此应随历史记录一并清理，避免长期占用磁盘。
     public func removeCache(for url: URL) async {
         let descriptor = Self.cacheDescriptor(
             for: url,
-            cacheDirectory: cacheDirectory,
-            legacyCacheDirectory: legacyCacheDirectory
+            cacheDirectory: cacheDirectory
         )
         memoryCache.removeObject(forKey: descriptor.key as NSString)
 
@@ -277,7 +245,7 @@ public actor AudioPCMExtractor {
 
         Self.removeCacheFiles(
             for: descriptor.key,
-            in: [cacheDirectory, legacyCacheDirectory].compactMap { $0 }
+            in: cacheDirectory.map { [$0] } ?? []
         )
     }
 

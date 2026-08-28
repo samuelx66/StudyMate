@@ -8,8 +8,6 @@ extension Notification.Name {
 
 /// 主视窗内容容器（波形图置顶、视频视窗自动扩展占满剩余空间、底部控制栏、可自由调整窗口大小）
 public struct MainContentView: View {
-    /// 波形图、字幕编辑区和断句列表使用的过渡参数。
-    private static let workspacePanelAnimation = Animation.easeInOut(duration: 0.22)
     /// 播放列表侧拉门平滑物理阻尼动画参数（模拟真实侧拉抽屉滑入门效）
     private static let playlistPanelAnimationDuration: Double = 0.32
     private static let playlistPanelAnimation = Animation.spring(response: 0.34, dampingFraction: 0.85)
@@ -19,24 +17,6 @@ public struct MainContentView: View {
             insertion: .move(edge: edge).combined(with: .opacity),
             removal: .move(edge: edge).combined(with: .opacity)
         )
-    }
-
-    private var repeatOptions: [(label: String, count: Int)] {
-        [(lang.text("1次", "1×"), 1), (lang.text("2次", "2×"), 2),
-         (lang.text("3次", "3×"), 3), (lang.text("5次", "5×"), 5),
-         (lang.text("10次", "10×"), 10), (lang.text("无限", "∞"), 0)]
-    }
-
-    private var shadowingPauseOptions: [(label: String, ratio: Double)] {
-        [
-            (lang.text("关闭", "Off"), 0),
-            ("0.25×", 0.25),
-            ("0.5×", 0.5),
-            ("0.75×", 0.75),
-            ("1×", 1.0),
-            ("1.5×", 1.5),
-            ("2×", 2.0)
-        ]
     }
 
     @StateObject private var engine = PlaybackEngine.shared
@@ -131,30 +111,6 @@ public struct MainContentView: View {
             onOpenMedia: openFileDialog,
             onTogglePlaylist: togglePlaylist
         )
-    }
-
-    private var sentenceLibraryToolbarButton: some View {
-        Button(action: { openWindow(id: "sentence-library") }) {
-            Image(systemName: "books.vertical")
-        }
-        .help(MacAbobooShortcutCatalog.help(
-            lang.text("打开句库", "Open sentence library"),
-            shortcut: .openSentenceLibrary
-        ))
-        .keyboardShortcut("l", modifiers: [.command])
-    }
-
-    private var openMediaToolbarButton: some View {
-        Button(action: openFileDialog) {
-            Image(systemName: "folder.badge.plus")
-        }
-        .help(MacAbobooShortcutCatalog.help(
-            lang.text(
-                "打开音视频文件（MP3、WAV、M4A、FLAC、MKV、MP4、MOV、WebM、AVI）",
-                "Open audio or video (MP3, WAV, M4A, FLAC, MKV, MP4, MOV, WebM, AVI)"
-            ),
-            shortcut: .openMedia
-        ))
     }
 
     @ViewBuilder
@@ -354,14 +310,6 @@ public struct MainContentView: View {
         }
     }
 
-    private var repeatCountToolbarLabel: String {
-        engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)×"
-    }
-
-    private var shadowingPauseToolbarLabel: String {
-        engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
-    }
-    
     /// 弹出 macOS 原生打开文件面板
     private func openFileDialog() {
         let panel = NSOpenPanel()

@@ -5,13 +5,10 @@ import Foundation
 /// DeepSeek 和 Gemini 是内置服务；第三方模型可选择 OpenAI 或 Anthropic 协议。
 /// 这里的 ID 表示请求协议适配器，服务名称和 Base URL 由用户配置。
 public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, Sendable {
-    /// 仅用于兼容旧版本配置；新的第三方 OpenAI 风格服务使用 `.openAICompatible`。
     case deepSeek = "deepseek"
     case gemini = "gemini"
     case openAICompatible = "openai-compatible"
     case anthropic = "anthropic"
-    /// 兼容旧版本配置；新界面不再显示此协议。
-    case customHTTP = "custom-http"
 
     public var id: String { rawValue }
 
@@ -21,7 +18,6 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
         case .gemini: return "Gemini"
         case .openAICompatible: return "OpenAI"
         case .anthropic: return "Anthropic"
-        case .customHTTP: return "自定义 HTTP"
         }
     }
 
@@ -29,7 +25,7 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
         switch self {
         case .deepSeek: return "deepseek-v4-flash"
         case .gemini: return "gemini-3.7-flash"
-        case .openAICompatible, .anthropic, .customHTTP: return "model-name"
+        case .openAICompatible, .anthropic: return "model-name"
         }
     }
 
@@ -44,8 +40,6 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
             return "https://api.example.com/v1"
         case .anthropic:
             return "https://api.anthropic.com"
-        case .customHTTP:
-            return "https://example.com"
         }
     }
 
@@ -55,7 +49,7 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
             return .apiKeyHeader
         case .anthropic:
             return .apiKeyHeader
-        case .deepSeek, .openAICompatible, .customHTTP:
+        case .deepSeek, .openAICompatible:
             return .bearer
         }
     }
@@ -64,7 +58,6 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
         switch self {
         case .gemini: return "x-goog-api-key"
         case .anthropic: return "x-api-key"
-        case .customHTTP: return "X-API-Key"
         case .deepSeek, .openAICompatible: return "Authorization"
         }
     }
@@ -83,13 +76,9 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
             return "candidates.0.content.parts.0.text"
         case .anthropic:
             return "content.0.text"
-        case .deepSeek, .openAICompatible, .customHTTP:
+        case .deepSeek, .openAICompatible:
             return "choices.0.message.content"
         }
-    }
-
-    public var keychainAccount: String {
-        "translation-api-key-\(rawValue)"
     }
 
     public var defaultServiceName: String {
@@ -98,7 +87,6 @@ public enum TranslationProviderID: String, CaseIterable, Codable, Identifiable, 
         case .gemini: return "Gemini 翻译"
         case .openAICompatible: return "OpenAI 翻译"
         case .anthropic: return "Anthropic 翻译"
-        case .customHTTP: return "自定义翻译服务"
         }
     }
 
@@ -177,7 +165,6 @@ public struct TranslationServiceProfile: Codable, Equatable, Identifiable, Senda
     public var modelListJSONPath: String
     public var modelIDJSONPath: String
     public var translationResponseJSONPath: String
-    public var targetLanguage: TranslationTargetLanguage
 
     public var isBuiltIn: Bool { provider.isBuiltIn }
 
@@ -185,7 +172,6 @@ public struct TranslationServiceProfile: Codable, Equatable, Identifiable, Senda
         case id, name, provider, model, serverURL, modelsURL, translationURL
         case authentication, authenticationHeader
         case modelListJSONPath, modelIDJSONPath, translationResponseJSONPath
-        case targetLanguage
     }
 
     public init(
@@ -200,8 +186,7 @@ public struct TranslationServiceProfile: Codable, Equatable, Identifiable, Senda
         authenticationHeader: String? = nil,
         modelListJSONPath: String? = nil,
         modelIDJSONPath: String? = nil,
-        translationResponseJSONPath: String? = nil,
-        targetLanguage: TranslationTargetLanguage = .simplifiedChinese
+        translationResponseJSONPath: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -227,48 +212,28 @@ public struct TranslationServiceProfile: Codable, Equatable, Identifiable, Senda
             translationResponseJSONPath,
             fallback: provider.defaultTranslationResponseJSONPath
         )
-        self.targetLanguage = targetLanguage
     }
 
-    /// 兼容旧版本仅保存 provider/model/serverURL 的 profile。
+    /// 当前配置格式要求所有服务字段完整存在；损坏或过期配置会被忽略，
+    /// 不在运行时补齐旧字段。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(UUID.self, forKey: .id)
         self.name = try container.decode(String.self, forKey: .name)
         self.provider = try container.decode(TranslationProviderID.self, forKey: .provider)
         self.model = try container.decode(String.self, forKey: .model)
-        let decodedServerURL = try container.decodeIfPresent(String.self, forKey: .serverURL)
-        self.serverURL = Self.normalizedRequiredURL(decodedServerURL, fallback: provider.defaultServerURL)
+        self.serverURL = try container.decode(String.self, forKey: .serverURL)
         self.modelsURL = Self.normalizedOptional(
             try container.decodeIfPresent(String.self, forKey: .modelsURL)
         )
         self.translationURL = Self.normalizedOptional(
             try container.decodeIfPresent(String.self, forKey: .translationURL)
         )
-        self.authentication = try container.decodeIfPresent(
-            TranslationAuthenticationMethod.self,
-            forKey: .authentication
-        ) ?? provider.defaultAuthentication
-        self.authenticationHeader = Self.normalizedRequired(
-            try container.decodeIfPresent(String.self, forKey: .authenticationHeader),
-            fallback: provider.defaultAuthenticationHeader
-        )
-        self.modelListJSONPath = Self.normalizedRequired(
-            try container.decodeIfPresent(String.self, forKey: .modelListJSONPath),
-            fallback: provider.defaultModelListJSONPath
-        )
-        self.modelIDJSONPath = Self.normalizedRequired(
-            try container.decodeIfPresent(String.self, forKey: .modelIDJSONPath),
-            fallback: provider.defaultModelIDJSONPath
-        )
-        self.translationResponseJSONPath = Self.normalizedRequired(
-            try container.decodeIfPresent(String.self, forKey: .translationResponseJSONPath),
-            fallback: provider.defaultTranslationResponseJSONPath
-        )
-        self.targetLanguage = try container.decodeIfPresent(
-            TranslationTargetLanguage.self,
-            forKey: .targetLanguage
-        ) ?? .simplifiedChinese
+        self.authentication = try container.decode(TranslationAuthenticationMethod.self, forKey: .authentication)
+        self.authenticationHeader = try container.decode(String.self, forKey: .authenticationHeader)
+        self.modelListJSONPath = try container.decode(String.self, forKey: .modelListJSONPath)
+        self.modelIDJSONPath = try container.decode(String.self, forKey: .modelIDJSONPath)
+        self.translationResponseJSONPath = try container.decode(String.self, forKey: .translationResponseJSONPath)
     }
 
     public static func builtInDefaults() -> [TranslationServiceProfile] {

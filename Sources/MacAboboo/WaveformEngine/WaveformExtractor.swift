@@ -78,7 +78,7 @@ public final class WaveformExtractor: @unchecked Sendable {
     }
 
     private func cacheCost(for data: WaveformData) -> Int {
-        let elementCount = data.peaks.count + data.minPeaks.count + data.maxPeaks.count
+        let elementCount = data.minPeaks.count + data.maxPeaks.count
         guard elementCount <= Int.max / MemoryLayout<Float>.size else { return Int.max }
         return elementCount * MemoryLayout<Float>.size
     }

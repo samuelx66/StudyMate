@@ -14,8 +14,7 @@ public actor TranslationService {
             .deepSeek: OpenAICompatibleTranslationProvider(id: .deepSeek),
             .gemini: GeminiTranslationProvider(),
             .openAICompatible: OpenAICompatibleTranslationProvider(id: .openAICompatible),
-            .anthropic: AnthropicTranslationProvider(),
-            .customHTTP: OpenAICompatibleTranslationProvider(id: .customHTTP)
+            .anthropic: AnthropicTranslationProvider()
         ],
         batchSize: Int = 100
     ) {

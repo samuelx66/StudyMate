@@ -10,8 +10,9 @@ public struct WelcomeScreenView: View {
 
     let onOpen: () -> Void
     let onOpenLibrary: () -> Void
-    let onContinue: (URL) -> Void
     let onOpenHistoryItem: (URL) -> Void
+    let onRemoveHistoryItem: (URL) -> Void
+    let onClearHistory: () -> Void
 
     @State private var selectedURL: URL?
     @State private var hoveredURL: URL?
@@ -23,14 +24,16 @@ public struct WelcomeScreenView: View {
         historyStore: PlaybackHistoryStore,
         onOpen: @escaping () -> Void,
         onOpenLibrary: @escaping () -> Void,
-        onContinue: @escaping (URL) -> Void,
-        onOpenHistoryItem: @escaping (URL) -> Void
+        onOpenHistoryItem: @escaping (URL) -> Void,
+        onRemoveHistoryItem: @escaping (URL) -> Void,
+        onClearHistory: @escaping () -> Void
     ) {
         self.historyStore = historyStore
         self.onOpen = onOpen
         self.onOpenLibrary = onOpenLibrary
-        self.onContinue = onContinue
         self.onOpenHistoryItem = onOpenHistoryItem
+        self.onRemoveHistoryItem = onRemoveHistoryItem
+        self.onClearHistory = onClearHistory
     }
 
     private var appVersion: String {
@@ -134,7 +137,7 @@ public struct WelcomeScreenView: View {
             // 3. 核心操作列表（Pixelmator Pro 风格）
             VStack(alignment: .leading, spacing: 18) {
                 WelcomePrimaryActionRow(
-                    systemImage: "plus.app",
+                    systemImage: "plus",
                     title: lang.text("打开音视频文件", "Open Media File"),
                     subtitle: lang.text("从本地选择音视频开启智能断句与精听", "Select local audio or video to start learning"),
                     action: onOpen
@@ -195,10 +198,15 @@ public struct WelcomeScreenView: View {
                                     NSWorkspace.shared.activateFileViewerSelecting([entry.mediaURL])
                                 },
                                 onRemove: {
-                                    historyStore.remove(entry.mediaURL)
                                     if selectedURL == entry.mediaURL {
-                                        selectedURL = sortedHistory.first?.mediaURL
+                                        selectedURL = sortedHistory.first(where: {
+                                            $0.mediaURL.standardizedFileURL != entry.mediaURL.standardizedFileURL
+                                        })?.mediaURL
                                     }
+                                    onRemoveHistoryItem(entry.mediaURL)
+                                },
+                                onClearHistory: {
+                                    onClearHistory()
                                 }
                             )
                             .onHover { hovering in
@@ -249,7 +257,7 @@ private struct WelcomePrimaryActionRow: View {
                         .stroke(Color.accentColor, lineWidth: 1.6)
                         .frame(width: 26, height: 26)
 
-                    Image(systemName: iconGlyphName)
+                    Image(systemName: systemImage)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
                 }
@@ -284,18 +292,6 @@ private struct WelcomePrimaryActionRow: View {
         }
     }
 
-    private var iconGlyphName: String {
-        switch systemImage {
-        case "plus.app", "plus.square":
-            return "plus"
-        case "books.vertical":
-            return "books.vertical"
-        case "folder":
-            return "folder"
-        default:
-            return systemImage
-        }
-    }
 }
 
 // MARK: - 右侧最近打开媒体项行组件（Pixelmator Pro 胶囊选中风格）
@@ -308,6 +304,7 @@ private struct RecentMediaFileRow: View {
     let onOpen: () -> Void
     let onRevealInFinder: () -> Void
     let onRemove: () -> Void
+    let onClearHistory: () -> Void
 
     @ObservedObject private var lang = LanguageManager.shared
 
@@ -415,7 +412,7 @@ private struct RecentMediaFileRow: View {
                 onRemove()
             }
             Button(lang.text("清空最近打开记录", "Clear Recents"), role: .destructive) {
-                PlaybackHistoryStore.shared.removeAll()
+                onClearHistory()
             }
         }
     }

@@ -33,8 +33,7 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
         id = try container.decode(UUID.self, forKey: .id)
         let rawPath = try container.decode(String.self, forKey: .mediaPath)
         mediaPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
-        addedAt = try container.decodeIfPresent(Date.self, forKey: .addedAt) ?? .distantPast
-        // Older history files do not contain this key and remain readable.
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
         lastOpenedAt = try container.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
     }
 
@@ -64,6 +63,7 @@ public final class PlaybackHistoryStore: ObservableObject {
 
     private let storageURL: URL
     private let ioQueue = DispatchQueue(label: "com.macaboboo.playback-history", qos: .utility)
+    private var persistenceErrorHandler: (@Sendable (String) -> Void)?
 
     /// 注入目录仅用于测试；正式数据保存在 Application Support/MacAboboo。
     public init(storageDirectory: URL? = nil) {
@@ -104,18 +104,15 @@ public final class PlaybackHistoryStore: ObservableObject {
         persist()
     }
 
-    /// The most recently opened media, with a legacy fallback to the last
-    /// history entry created before `lastOpenedAt` was introduced.
+    /// The most recently opened media. Entries without an explicit successful
+    /// open are not used as the automatic restore target.
     public var lastOpenedMediaURL: URL? {
-        if let latest = entries
+        entries
             .compactMap({ entry -> (Date, URL)? in
                 guard let lastOpenedAt = entry.lastOpenedAt else { return nil }
                 return (lastOpenedAt, entry.mediaURL)
             })
-            .max(by: { $0.0 < $1.0 }) {
-            return latest.1
-        }
-        return entries.last?.mediaURL
+            .max(by: { $0.0 < $1.0 })?.1
     }
 
     public func add(_ mediaURLs: [URL]) {
@@ -145,11 +142,17 @@ public final class PlaybackHistoryStore: ObservableObject {
         persist()
     }
 
+    /// 历史记录在后台写入；失败时由播放引擎转交状态栏，而不是静默打印。
+    public func setPersistenceErrorHandler(_ handler: (@Sendable (String) -> Void)?) {
+        persistenceErrorHandler = handler
+    }
+
     private func persist() {
         let snapshot = entries
         let destination = storageURL
+        let errorHandler = persistenceErrorHandler
         ioQueue.async {
-            Self.persist(snapshot, to: destination)
+            Self.persist(snapshot, to: destination, errorHandler: errorHandler)
         }
     }
 
@@ -158,7 +161,11 @@ public final class PlaybackHistoryStore: ObservableObject {
         ioQueue.sync {}
     }
 
-    private nonisolated static func persist(_ entries: [PlaybackHistoryEntry], to storageURL: URL) {
+    private nonisolated static func persist(
+        _ entries: [PlaybackHistoryEntry],
+        to storageURL: URL,
+        errorHandler: (@Sendable (String) -> Void)?
+    ) {
         do {
             try FileManager.default.createDirectory(
                 at: storageURL.deletingLastPathComponent(),
@@ -169,7 +176,7 @@ public final class PlaybackHistoryStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(entries).write(to: storageURL, options: .atomic)
         } catch {
-            print("Failed to save playback history: \(error)")
+            errorHandler?("保存播放历史失败：\(error.localizedDescription)")
         }
     }
 

@@ -60,12 +60,10 @@ final class TranslationTests: XCTestCase {
 
     func testProviderDefaultsAreIndependent() {
         XCTAssertNotEqual(TranslationProviderID.deepSeek.defaultModel, TranslationProviderID.gemini.defaultModel)
-        XCTAssertNotEqual(TranslationProviderID.deepSeek.keychainAccount, TranslationProviderID.gemini.keychainAccount)
         XCTAssertEqual(TranslationProviderID.deepSeek.defaultServerURL, "https://api.deepseek.com")
         XCTAssertEqual(TranslationProviderID.gemini.defaultServerURL, "https://generativelanguage.googleapis.com/v1beta")
         XCTAssertTrue(TranslationProviderID.allCases.contains(.openAICompatible))
         XCTAssertTrue(TranslationProviderID.allCases.contains(.anthropic))
-        XCTAssertTrue(TranslationProviderID.allCases.contains(.customHTTP))
         XCTAssertEqual(TranslationProviderID.gemini.defaultAuthentication, .apiKeyHeader)
         XCTAssertEqual(TranslationProviderID.deepSeek.defaultAuthentication, .bearer)
         XCTAssertEqual(TranslationProviderID.anthropic.defaultServerURL, "https://api.anthropic.com")
@@ -92,13 +90,13 @@ final class TranslationTests: XCTestCase {
             "https://api.deepseek.com/models"
         )
 
-        let legacyGeminiBase = TranslationEndpointBuilder.baseURL(
+        let geminiBase = TranslationEndpointBuilder.baseURL(
             rawValue: "https://generativelanguage.googleapis.com/v1beta/models/",
             defaultValue: TranslationProviderID.gemini.defaultServerURL,
             removingSuffixes: ["/models"]
         )!
         XCTAssertEqual(
-            TranslationEndpointBuilder.appending("models/gemini-2.5-flash", to: legacyGeminiBase)?.absoluteString,
+            TranslationEndpointBuilder.appending("models/gemini-2.5-flash", to: geminiBase)?.absoluteString,
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash"
         )
 
@@ -113,7 +111,7 @@ final class TranslationTests: XCTestCase {
         XCTAssertEqual(
             TranslationEndpointBuilder.resolveModelEndpoint(
                 rawValue: "/models/{model}:generateContent",
-                relativeTo: legacyGeminiBase,
+                relativeTo: geminiBase,
                 model: "gemini/flash test",
                 defaultEndpoint: { nil }
             )?.absoluteString,
@@ -159,14 +157,8 @@ final class TranslationTests: XCTestCase {
         XCTAssertEqual(anthropicModels.first?.displayName, "Claude Sonnet")
     }
 
-    func testLegacyServiceProfileDefaultsToProviderServerURL() throws {
+    func testServiceProfilePersistsExplicitServerURL() throws {
         let id = UUID()
-        let legacyJSON = Data("""
-        {"id":"\(id.uuidString)","name":"旧服务","provider":"deepseek","model":"deepseek-v4-flash","targetLanguage":"zh-Hans"}
-        """.utf8)
-        let profile = try JSONDecoder().decode(TranslationServiceProfile.self, from: legacyJSON)
-        XCTAssertEqual(profile.serverURL, TranslationProviderID.deepSeek.defaultServerURL)
-
         let custom = TranslationServiceProfile(
             id: id,
             name: "自定义代理",
@@ -178,7 +170,7 @@ final class TranslationTests: XCTestCase {
             provider: custom.provider,
             model: custom.model,
             apiKey: "key",
-            targetLanguage: custom.targetLanguage,
+            targetLanguage: .simplifiedChinese,
             serverURL: custom.serverURL
         )
         XCTAssertEqual(configuration.serverURL, "https://example.test/v1")
@@ -196,8 +188,7 @@ final class TranslationTests: XCTestCase {
             authenticationHeader: "X-Token",
             modelListJSONPath: "result.models",
             modelIDJSONPath: "name",
-            translationResponseJSONPath: "output.0.text",
-            targetLanguage: .english
+            translationResponseJSONPath: "output.0.text"
         )
 
         let data = try JSONEncoder().encode(profile)

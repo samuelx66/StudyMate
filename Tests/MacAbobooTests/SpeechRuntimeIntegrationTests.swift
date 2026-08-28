@@ -12,11 +12,16 @@ final class SpeechRuntimeIntegrationTests: XCTestCase {
         let pcm = try await AudioPCMExtractor.shared.extract(from: URL(fileURLWithPath: audioPath))
         XCTAssertFalse(pcm.isEmpty)
         print("[SpeechRuntimeIntegrationTests] decoded \(pcm.samples.count) samples")
+        let analysis = try await NativeSpeechRuntime.shared.detectVoiceActivityAnalysis(
+            pcm: pcm,
+            configuration: SpeechSegmentationMode.intelligent.profile.vad
+        )
         let timeline = try await NativeSpeechRuntime.shared.transcribe(
             pcm: pcm,
             modelURL: URL(fileURLWithPath: modelPath),
             language: "en",
             configuration: SpeechSegmentationMode.intelligent.profile.vad,
+            speechWindows: analysis.segments,
             progress: { _ in }
         )
 
@@ -55,7 +60,6 @@ final class SpeechRuntimeIntegrationTests: XCTestCase {
                 modelURL: URL(fileURLWithPath: modelPath),
                 language: "en",
                 configuration: profile.vad,
-                useInternalVAD: false,
                 speechWindows: plan.windows,
                 hardWindowBoundaries: plan.hardBoundaries,
                 progress: { _ in }

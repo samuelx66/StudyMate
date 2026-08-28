@@ -1326,19 +1326,6 @@ private struct SegmentListRowsView: View, Equatable {
     let onScrollStateChanged: (Bool) -> Void
     @Binding var editRequest: UUID?
 
-    static func == (lhs: SegmentListRowsView, rhs: SegmentListRowsView) -> Bool {
-        // Function values intentionally do not participate in equality.  All
-        // callbacks target the same engine and are recreated by the parent;
-        // the visible data is represented by the revision tokens below.
-        lhs.displayedSegmentsRevision == rhs.displayedSegmentsRevision
-            && lhs.selectionRevision == rhs.selectionRevision
-            && lhs.activeSegmentID == rhs.activeSegmentID
-            && lhs.engineIdentity == rhs.engineIdentity
-            && lhs.language.rawValue == rhs.language.rawValue
-            && lhs.isScrolling == rhs.isScrolling
-            && lhs.editRequest == rhs.editRequest
-    }
-
     var body: some View {
         LazyVStack(spacing: 2) {
             ForEach(segments) { seg in
@@ -1391,6 +1378,21 @@ private struct SegmentListRowsView: View, Equatable {
     }
 }
 
+extension SegmentListRowsView {
+    static func == (lhs: SegmentListRowsView, rhs: SegmentListRowsView) -> Bool {
+        // Function values intentionally do not participate in equality.  All
+        // callbacks target the same engine and are recreated by the parent;
+        // the visible data is represented by the revision tokens below.
+        lhs.displayedSegmentsRevision == rhs.displayedSegmentsRevision
+            && lhs.selectionRevision == rhs.selectionRevision
+            && lhs.activeSegmentID == rhs.activeSegmentID
+            && lhs.engineIdentity == rhs.engineIdentity
+            && lhs.language.rawValue == rhs.language.rawValue
+            && lhs.isScrolling == rhs.isScrolling
+            && lhs.editRequest == rhs.editRequest
+    }
+}
+
 /// 单行断句单元格
 struct SegmentRowView: View {
     let seg: SentenceSegment
@@ -1414,8 +1416,7 @@ struct SegmentRowView: View {
     @ObservedObject private var lang = LanguageManager.shared
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 0) {
+        HStack(spacing: 0) {
                 Toggle("", isOn: Binding(
                     get: { isSelectedForExport },
                     set: { _ in onToggleExportSelection() }
@@ -1622,10 +1623,16 @@ struct SegmentRowView: View {
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
-            }
-            .contentShape(Rectangle())
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onSelect)
+                .accessibilityAddTraits(.isButton)
         }
-        .buttonStyle(MacAbobooSelectableRowButtonStyle(isActive: isActive, isHovered: isHovering))
+        .contentShape(Rectangle())
+        // 行内的复选框和六个操作按钮不能嵌套在父 Button 内；嵌套 Button
+        // 会让 AppKit 事件与辅助功能焦点在不同 macOS 版本中不稳定。行本身
+        // 使用明确的点按手势，子控件保持各自独立的点击语义。
+        .accessibilityElement(children: .contain)
+        .macabobooSelectableRowSurface(isActive: isActive, isHovered: isHovering)
         .onHover { inside in
             isHovering = inside
         }

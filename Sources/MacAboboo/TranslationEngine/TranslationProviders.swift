@@ -722,35 +722,3 @@ public struct AnthropicTranslationProvider: TranslationProvider {
         )
     }
 }
-
-/// 旧名称保留为 DeepSeek 的兼容包装，避免外部调用方升级时失效。
-public struct DeepSeekTranslationProvider: TranslationProvider {
-    public let id: TranslationProviderID = .deepSeek
-    private let implementation: OpenAICompatibleTranslationProvider
-
-    public init(
-        httpClient: TranslationHTTPClient = TranslationHTTPClient(),
-        endpoint: URL? = nil,
-        serverURL: URL? = nil
-    ) {
-        self.implementation = OpenAICompatibleTranslationProvider(
-            id: .deepSeek,
-            httpClient: httpClient,
-            serverURL: serverURL,
-            endpoint: endpoint
-        )
-    }
-
-    public func translate(
-        request: TranslationBatchRequest,
-        configuration: TranslationConfiguration
-    ) async throws -> [TranslationResult] {
-        try await implementation.translate(request: request, configuration: configuration)
-    }
-
-    public func listModels(
-        configuration: TranslationConfiguration
-    ) async throws -> [TranslationModelDescriptor] {
-        try await implementation.listModels(configuration: configuration)
-    }
-}

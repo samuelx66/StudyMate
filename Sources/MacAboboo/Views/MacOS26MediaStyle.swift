@@ -169,6 +169,37 @@ struct MacAbobooSelectableRowButtonStyle: ButtonStyle {
     }
 }
 
+/// 与 `MacAbobooSelectableRowButtonStyle` 使用同一套视觉状态，但不要求把
+/// 子控件嵌套进父 Button。断句行含有复选框和多个独立按钮时使用此版本。
+private struct MacAbobooSelectableRowSurface: ViewModifier {
+    let isActive: Bool
+    let isHovered: Bool
+    @GestureState private var isPressed = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let activeBackground = colorScheme == .dark
+            ? Color(red: 45.0 / 255.0, green: 45.0 / 255.0, blue: 48.0 / 255.0)
+            : Color(red: 242.0 / 255.0, green: 242.0 / 255.0, blue: 242.0 / 255.0)
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        isActive
+                            ? activeBackground
+                            : (isPressed
+                                ? MacAbobooMediaStyle.selectedBackground.opacity(0.18)
+                                : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
+                    )
+            )
+            .scaleEffect(isPressed ? 0.992 : 1)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressed) { _, state, _ in state = true }
+            )
+    }
+}
+
 extension View {
     /// Apply a functional Liquid Glass button on macOS 26 and a semantic
     /// borderless control on macOS 14.  Keeping this as a view modifier makes
@@ -182,102 +213,10 @@ extension View {
         self.buttonStyle(MacAbobooChromeButtonStyle(prominent: prominent, shape: shape))
     }
 
-    /// Applies the identical chrome background, border, hit testing, and hover feedback
-    /// to non-Button views such as Menu labels, keeping toolbar styling uniform.
-    @ViewBuilder
-    func macabobooChromeSurface(
-        prominent: Bool = false,
-        shape: MacAbobooControlShape = .rounded
-    ) -> some View {
-        self.modifier(MacAbobooChromeSurfaceModifier(prominent: prominent, shape: shape))
-    }
-}
-
-struct MacAbobooChromeSurfaceModifier: ViewModifier {
-    let prominent: Bool
-    let shape: MacAbobooControlShape
-    @State private var isHovering = false
-
-    init(prominent: Bool = false, shape: MacAbobooControlShape = .rounded) {
-        self.prominent = prominent
-        self.shape = shape
+    func macabobooSelectableRowSurface(isActive: Bool, isHovered: Bool) -> some View {
+        modifier(MacAbobooSelectableRowSurface(isActive: isActive, isHovered: isHovered))
     }
 
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            switch shape {
-            case .circle:
-                content
-                    .foregroundStyle(prominent ? Color.white : Color.primary)
-                    .contentShape(Circle())
-                    .glassEffect(
-                        (prominent
-                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
-                            : Glass.regular).interactive(),
-                        in: Circle()
-                    )
-                    .contentShape(Circle())
-            case .capsule:
-                content
-                    .foregroundStyle(prominent ? Color.white : Color.primary)
-                    .contentShape(Capsule())
-                    .glassEffect(
-                        (prominent
-                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
-                            : Glass.regular).interactive(),
-                        in: Capsule()
-                    )
-                    .contentShape(Capsule())
-            case .rounded:
-                content
-                    .foregroundStyle(prominent ? Color.white : Color.primary)
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .glassEffect(
-                        (prominent
-                            ? Glass.regular.tint(MacAbobooMediaStyle.accent)
-                            : Glass.regular).interactive(),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        } else {
-            Group {
-                switch shape {
-                case .circle:
-                    content
-                        .foregroundStyle(prominent ? Color.white : Color.primary)
-                        .background(Circle().fill(fillColor))
-                        .overlay(Circle().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
-                        .contentShape(Circle())
-                case .capsule:
-                    content
-                        .foregroundStyle(prominent ? Color.white : Color.primary)
-                        .padding(.horizontal, 8)
-                        .background(Capsule().fill(fillColor))
-                        .overlay(Capsule().stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
-                        .contentShape(Capsule())
-                case .rounded:
-                    content
-                        .foregroundStyle(prominent ? Color.white : Color.primary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fillColor))
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(MacAbobooMediaStyle.separator.opacity(0.55), lineWidth: 0.7))
-                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-            }
-            .onHover { isHovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: isHovering)
-        }
-    }
-
-    private var fillColor: Color {
-        if prominent { return MacAbobooMediaStyle.accent }
-        return isHovering
-            ? MacAbobooMediaStyle.panelBackground.opacity(0.92)
-            : MacAbobooMediaStyle.panelBackground
-    }
 }
 
 extension View {

@@ -42,9 +42,21 @@ private enum WaveformRenderCache {
             max(quantizedStart, Double(endBucket) * grid)
         )
 
-        let middle = waveform.peaks.isEmpty ? 0 : waveform.peaks[waveform.peaks.count / 2]
-        let signature = "\(waveform.peaks.first ?? 0)|\(middle)|\(waveform.peaks.last ?? 0)"
-        let key = "\(waveform.peaks.count)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(grid.bitPattern)|\(startBucket)|\(endBucket)|\(count)" as NSString
+        // 采样多个固定位置而不是仅首/中/尾三个峰值。缓存仍是 O(1) 建键，
+        // 但不同媒体刚好拥有相同三点时不会复用到错误的重采样波形。
+        let signature: String
+        if waveform.peakCount == 0 {
+            signature = "empty"
+        } else {
+            let lastIndex = waveform.peakCount - 1
+            var samples: [String] = []
+            samples.reserveCapacity(9)
+            for position in 0...8 {
+                samples.append(String(waveform.peak(at: (lastIndex * position) / 8)))
+            }
+            signature = samples.joined(separator: "|")
+        }
+        let key = "\(waveform.peakCount)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(grid.bitPattern)|\(startBucket)|\(endBucket)|\(count)" as NSString
         if let cached = cache.object(forKey: key) { return cached.peaks }
         let result = waveform.resample(
             startTime: quantizedStart,
@@ -349,110 +361,6 @@ public struct SecondaryWaveformPlayhead: View {
                     .frame(width: 2, height: height)
                     .position(x: CGFloat(progress) * width, y: height / 2)
             }
-        }
-    }
-}
-
-/// 鼠标左右键与悬停原生事件拦截视图（仅修改断句起止，不触发播放）
-public struct WaveformMouseInteractionOverlay: NSViewRepresentable {
-    let viewportStart: Double
-    let viewportEnd: Double
-    let onLeftClick: (Double) -> Void
-    let onRightClick: (Double) -> Void
-    let onHover: (Double?) -> Void
-    
-    public init(
-        viewportStart: Double,
-        viewportEnd: Double,
-        onLeftClick: @escaping (Double) -> Void,
-        onRightClick: @escaping (Double) -> Void,
-        onHover: @escaping (Double?) -> Void
-    ) {
-        self.viewportStart = viewportStart
-        self.viewportEnd = viewportEnd
-        self.onLeftClick = onLeftClick
-        self.onRightClick = onRightClick
-        self.onHover = onHover
-    }
-    
-    public func makeNSView(context: Context) -> MouseCaptureNSView {
-        let view = MouseCaptureNSView()
-        view.viewportStart = viewportStart
-        view.viewportEnd = viewportEnd
-        view.onLeftClick = onLeftClick
-        view.onRightClick = onRightClick
-        view.onHover = onHover
-        return view
-    }
-    
-    public func updateNSView(_ nsView: MouseCaptureNSView, context: Context) {
-        nsView.viewportStart = viewportStart
-        nsView.viewportEnd = viewportEnd
-        nsView.onLeftClick = onLeftClick
-        nsView.onRightClick = onRightClick
-        nsView.onHover = onHover
-    }
-    
-    public class MouseCaptureNSView: NSView {
-        var viewportStart: Double = 0
-        var viewportEnd: Double = 1
-        var onLeftClick: ((Double) -> Void)?
-        var onRightClick: ((Double) -> Void)?
-        var onHover: ((Double?) -> Void)?
-        
-        private var trackingArea: NSTrackingArea?
-        
-        public override var mouseDownCanMoveWindow: Bool {
-            return false
-        }
-        
-        public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-            return true
-        }
-        
-        public override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            if let trackingArea = trackingArea {
-                removeTrackingArea(trackingArea)
-            }
-            let options: NSTrackingArea.Options = [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited]
-            trackingArea = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
-            addTrackingArea(trackingArea!)
-        }
-        
-        private func calculateTime(from event: NSEvent) -> Double {
-            let location = convert(event.locationInWindow, from: nil)
-            let ratio = max(0, min(1, location.x / max(1, bounds.width)))
-            return viewportStart + Double(ratio) * (viewportEnd - viewportStart)
-        }
-        
-        public override func mouseDown(with event: NSEvent) {
-            let t = calculateTime(from: event)
-            onLeftClick?(t)
-        }
-        
-        public override func mouseDragged(with event: NSEvent) {
-            let t = calculateTime(from: event)
-            onLeftClick?(t)
-        }
-        
-        public override func rightMouseDown(with event: NSEvent) {
-            let t = calculateTime(from: event)
-            onRightClick?(t)
-        }
-        
-        public override func rightMouseDragged(with event: NSEvent) {
-            let t = calculateTime(from: event)
-            onRightClick?(t)
-        }
-        
-        public override func mouseMoved(with event: NSEvent) {
-            let t = calculateTime(from: event)
-            onHover?(t)
-        }
-        
-        public override func mouseExited(with event: NSEvent) {
-            onHover?(nil)
         }
     }
 }

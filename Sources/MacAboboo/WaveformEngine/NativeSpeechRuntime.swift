@@ -182,7 +182,6 @@ public actor NativeSpeechRuntime {
         modelURL: URL,
         language: String,
         configuration: VoiceActivityConfiguration,
-        useInternalVAD: Bool = true,
         speechWindows: [VoiceActivitySegment] = [],
         hardWindowBoundaries: [Double] = [],
         isolatedSpeechWindows: Bool = false,
@@ -198,7 +197,6 @@ public actor NativeSpeechRuntime {
                     modelURL: modelURL,
                     language: language,
                     configuration: configuration,
-                    useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
                     hardWindowBoundaries: hardWindowBoundaries,
                     isolatedSpeechWindows: isolatedSpeechWindows,
@@ -216,7 +214,6 @@ public actor NativeSpeechRuntime {
                     modelURL: modelURL,
                     language: language,
                     configuration: configuration,
-                    useInternalVAD: useInternalVAD,
                     speechWindows: speechWindows,
                     hardWindowBoundaries: hardWindowBoundaries,
                     isolatedSpeechWindows: isolatedSpeechWindows,
@@ -232,7 +229,6 @@ public actor NativeSpeechRuntime {
         modelURL: URL,
         language: String,
         configuration: VoiceActivityConfiguration,
-        useInternalVAD: Bool,
         speechWindows: [VoiceActivitySegment],
         hardWindowBoundaries: [Double],
         isolatedSpeechWindows: Bool,
@@ -253,29 +249,14 @@ public actor NativeSpeechRuntime {
             whisperConfiguration.enable_tinydiarize = false
             whisperConfiguration.vad = Self.nativeVADConfiguration(configuration)
 
-            // Stable whisper.cpp v1.9.1 does not expose the development
-            // build's original-timeline mapping for internal VAD token times.
-            // Run the same bundled Silero model first and transcribe its
-            // external windows so all returned timestamps stay on the source
-            // media timeline.
-            let internalVoiceAnalysis = useInternalVAD
-                ? try self.detectVoiceActivityLocked(
-                    pcm: pcm,
-                    configuration: configuration,
-                    cancellation: cancellation
-                )
-                : VoiceActivityAnalysis(segments: [], probabilities: [], frameDuration: 0)
-            let effectiveSpeechWindows = useInternalVAD ? internalVoiceAnalysis.segments : speechWindows
-
-            // External Silero/SpeakerKit regions are used as Whisper's input
-            // windows. This keeps noise and long silent stretches out of the
-            // recognizer without allowing Whisper's own VAD windows to become
-            // public sentence boundaries. A full-file pass remains available
-            // for legacy callers that do not provide external windows.
-            let ranges = effectiveSpeechWindows.isEmpty
+            // Silero/SpeakerKit regions are the only Whisper input windows.
+            // This keeps noise and long silent stretches out of the recognizer
+            // without allowing Whisper's own VAD windows to become public
+            // sentence boundaries.
+            let ranges = speechWindows.isEmpty
                 ? []
                 : Self.transcriptionRanges(
-                    effectiveSpeechWindows,
+                    speechWindows,
                     duration: pcm.duration,
                     sampleCount: pcm.samples.count,
                     hardBoundaries: hardWindowBoundaries,
@@ -404,10 +385,9 @@ public actor NativeSpeechRuntime {
                 allTokens,
                 isolatedSpeechWindows: isolatedSpeechWindows
             )
-            let voiceSegments = useInternalVAD ? internalVoiceAnalysis.segments : speechWindows
             return SpeechRecognitionTimeline(
                 tokens: tokens,
-                voiceSegments: voiceSegments,
+                voiceSegments: speechWindows,
                 detectedLanguage: detectedLanguage
             )
             } onCancel: {

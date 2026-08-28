@@ -142,30 +142,56 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: mediaURL).path))
     }
 
-    func testRemovingPCMCacheDeletesCurrentAndLegacyFiles() async throws {
+    func testClearingPlaybackHistoryDeletesAllProjectRecordsButNotSourceMedia() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.mp3")
+        let secondURL = directory.appendingPathComponent("second.mp3")
+        try Data("first".utf8).write(to: firstURL)
+        try Data("second".utf8).write(to: secondURL)
+        let projects = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: projects,
+            playbackHistoryStore: history
+        )
+
+        engine.loadMedia(from: firstURL)
+        engine.persistCurrentProject()
+        history.recordPlayed(secondURL)
+        projects.saveProject(for: secondURL, title: "Second", duration: 10, lastPosition: 0, segments: [])
+        projects.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projects.projectFileURL(for: firstURL).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projects.projectFileURL(for: secondURL).path))
+
+        await engine.clearPlaybackHistory()
+
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: firstURL).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: secondURL).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    func testRemovingPCMCacheDeletesCurrentFiles() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let mediaURL = directory.appendingPathComponent("cache-source.mp4")
         try Data("media".utf8).write(to: mediaURL)
         let cacheDirectory = directory.appendingPathComponent("PCMCache", isDirectory: true)
-        let legacyDirectory = directory.appendingPathComponent("LegacyPCM", isDirectory: true)
-        let extractor = AudioPCMExtractor(cacheDirectory: cacheDirectory, legacyCacheDirectory: legacyDirectory)
-        let cacheURLs = try pcmCacheURLs(
-            for: mediaURL,
-            cacheDirectory: cacheDirectory,
-            legacyDirectory: legacyDirectory
-        )
-        for cacheURL in cacheURLs {
-            try Data("pcm-cache".utf8).write(to: cacheURL, options: .atomic)
-        }
+        let extractor = AudioPCMExtractor(cacheDirectory: cacheDirectory)
+        let cacheURL = try pcmCacheURL(for: mediaURL, cacheDirectory: cacheDirectory)
+        try Data("pcm-cache".utf8).write(to: cacheURL, options: .atomic)
         let temporaryURL = cacheDirectory.appendingPathComponent(
-            "\(cacheURLs[0].deletingPathExtension().lastPathComponent).pcmcache.tmp-test"
+            "\(cacheURL.deletingPathExtension().lastPathComponent).pcmcache.tmp-test"
         )
         try Data("temporary".utf8).write(to: temporaryURL, options: .atomic)
 
         await extractor.removeCache(for: mediaURL)
 
-        XCTAssertTrue(cacheURLs.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
     }
@@ -1476,11 +1502,6 @@ final class PlaybackEngineTests: XCTestCase {
         }
         XCTAssertEqual(engine.currentTime, 4.5, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(native.seekCount, 1)
-        XCTAssertEqual(
-            engine.snappedBoundaryTime(id: savedSegment.id, proposed: 4.49, isStart: false),
-            4.5,
-            accuracy: 0.001
-        )
     }
 
     func testPlayRequestWaitsForPendingSeekAndResumesAfterCompletion() async throws {
@@ -1560,29 +1581,6 @@ final class PlaybackEngineTests: XCTestCase {
 
         engine.autoGenerateSubtitles = false
         XCTAssertFalse(engine.autoGenerateSubtitles)
-    }
-
-    func testBoundarySnapHapticFeedbackDefaultsOnAndPersists() {
-        let key = "MacAboboo.BoundarySnapHapticFeedback"
-        let previous = UserDefaults.standard.object(forKey: key)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-        }
-
-        UserDefaults.standard.removeObject(forKey: key)
-        let defaultEngine = makeTestPlaybackEngine()
-        XCTAssertTrue(defaultEngine.boundarySnapHapticFeedback)
-
-        defaultEngine.boundarySnapHapticFeedback = false
-        XCTAssertFalse(defaultEngine.boundarySnapHapticFeedback)
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: key))
-
-        let restoredEngine = makeTestPlaybackEngine()
-        XCTAssertFalse(restoredEngine.boundarySnapHapticFeedback)
     }
 
     func testSameNameSidecarOverridesSavedProjectSegmentsAndReusesWaveform() async throws {
@@ -1725,11 +1723,10 @@ final class PlaybackEngineTests: XCTestCase {
         return directory
     }
 
-    private func pcmCacheURLs(
+    private func pcmCacheURL(
         for mediaURL: URL,
-        cacheDirectory: URL,
-        legacyDirectory: URL
-    ) throws -> [URL] {
+        cacheDirectory: URL
+    ) throws -> URL {
         let standardizedURL = mediaURL.standardizedFileURL
         let values = try standardizedURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let fileSize = values.fileSize ?? -1
@@ -1747,8 +1744,7 @@ final class PlaybackEngineTests: XCTestCase {
             .map { String(format: "%02x", $0) }
             .joined()
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
         let filename = "\(digest).pcmcache"
-        return [cacheDirectory.appendingPathComponent(filename), legacyDirectory.appendingPathComponent(filename)]
+        return cacheDirectory.appendingPathComponent(filename)
     }
 }

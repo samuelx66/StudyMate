@@ -63,8 +63,7 @@ public final class TranslationSettings: ObservableObject {
     private let lastTranslationServiceKey = "MacAboboo.Translation.LastExecutionServiceID"
     private let lastTranslationTargetLanguageKey = "MacAboboo.Translation.LastExecutionTargetLanguage"
 
-    /// 保留原有 UserDefaults 键名，避免升级后丢失用户的开关状态；语义改为
-    /// “允许手动翻译”，不再代表打开设置后立即执行翻译。
+    /// 该开关只表示允许用户手动翻译，不会在打开设置或完成断句时自动联网。
     @Published public var isAutomaticTranslationEnabled: Bool {
         didSet { defaults.set(isAutomaticTranslationEnabled, forKey: enabledKey) }
     }
@@ -104,33 +103,9 @@ public final class TranslationSettings: ObservableObject {
         self.keychain = .shared
         self.isAutomaticTranslationEnabled = (defaults.object(forKey: enabledKey) as? Bool) ?? false
 
-        let decodedServices = Self.decodeServices(from: defaults.data(forKey: servicesKey))
-        let initialServices: [TranslationServiceProfile]
-        if let decodedServices, !decodedServices.isEmpty {
-            // 保证升级后的配置始终保留两个内置入口；用户添加的自定义 profile
-            // 仍按原顺序保留，且不会因为补齐内置项而丢失。
-            var migratedServices = decodedServices
-            for builtIn in TranslationServiceProfile.builtInDefaults()
-                where !migratedServices.contains(where: { $0.provider == builtIn.provider }) {
-                migratedServices.insert(builtIn, at: min(migratedServices.count, 1))
-            }
-            initialServices = migratedServices
-        } else {
-            let legacyProvider = TranslationProviderID(
-                rawValue: defaults.string(forKey: "MacAboboo.Translation.Provider") ?? ""
-            ) ?? .deepSeek
-            let legacyLanguage = TranslationTargetLanguage(
-                rawValue: defaults.string(forKey: "MacAboboo.Translation.TargetLanguage") ?? ""
-            ) ?? .simplifiedChinese
-            var migratedServices = TranslationServiceProfile.builtInDefaults()
-            if let index = migratedServices.firstIndex(where: { $0.provider == legacyProvider }) {
-                let legacyModelKey = "MacAboboo.Translation.Model.\(legacyProvider.rawValue)"
-                migratedServices[index].model = defaults.string(forKey: legacyModelKey)
-                    ?? legacyProvider.defaultModel
-                migratedServices[index].targetLanguage = legacyLanguage
-            }
-            initialServices = migratedServices
-        }
+        let initialServices = Self.decodeServices(from: defaults.data(forKey: servicesKey))
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? TranslationServiceProfile.builtInDefaults()
 
         self.services = initialServices
 
@@ -147,24 +122,9 @@ public final class TranslationSettings: ObservableObject {
             initialServices.contains(where: { $0.id == id }) ? id : nil
         } ?? resolvedSelectedServiceID
 
-        let migratedTargetLanguage = resolvedSelectedServiceID.flatMap { id in
-            initialServices.first(where: { $0.id == id })?.targetLanguage
-        } ?? .simplifiedChinese
         self.lastTranslationTargetLanguage = TranslationTargetLanguage(
             rawValue: defaults.string(forKey: lastTranslationTargetLanguageKey) ?? ""
-        ) ?? migratedTargetLanguage
-
-        // 第一次迁移时，把旧的“按服务商”钥匙串密钥复制到对应的服务配置；
-        // 旧条目保留，以便旧版本回滚时仍然可以读取。
-        if decodedServices == nil {
-            for profile in services {
-                let legacyKey = keychain.read(account: profile.provider.keychainAccount)
-                if let legacyKey, !legacyKey.isEmpty,
-                   keychain.read(account: keychainAccount(for: profile.id)) == nil {
-                    keychain.write(legacyKey, account: keychainAccount(for: profile.id))
-                }
-            }
-        }
+        ) ?? .simplifiedChinese
         persistServices()
     }
 
@@ -194,23 +154,6 @@ public final class TranslationSettings: ObservableObject {
         defaults.set(language.rawValue, forKey: lastTranslationTargetLanguageKey)
     }
 
-    /// 兼容旧调用方的派生属性。新界面使用 `services` 和 `selectedServiceID`，
-    /// 这些属性只作用于当前选中的服务配置。
-    public var selectedProvider: TranslationProviderID {
-        get { selectedService?.provider ?? .deepSeek }
-        set { updateService(id: selectedServiceID, provider: newValue) }
-    }
-
-    public var selectedModel: String {
-        get { selectedService?.model ?? "" }
-        set { updateService(id: selectedServiceID, model: newValue) }
-    }
-
-    public var targetLanguage: TranslationTargetLanguage {
-        get { selectedService?.targetLanguage ?? .simplifiedChinese }
-        set { updateService(id: selectedServiceID, targetLanguage: newValue) }
-    }
-
     public var hasAPIKey: Bool {
         guard let selectedServiceID else { return false }
         return hasAPIKey(for: selectedServiceID)
@@ -222,16 +165,7 @@ public final class TranslationSettings: ObservableObject {
     }
 
     public func apiKey(for serviceID: UUID) -> String {
-        if let value = keychain.read(account: keychainAccount(for: serviceID)), !value.isEmpty {
-            return value
-        }
-        // 对从旧版本直接升级、但尚未走完整迁移的服务配置做一次惰性迁移。
-        guard let profile = services.first(where: { $0.id == serviceID }),
-              let legacyValue = keychain.read(account: profile.provider.keychainAccount) else {
-            return ""
-        }
-        keychain.write(legacyValue, account: keychainAccount(for: serviceID))
-        return legacyValue
+        keychain.read(account: keychainAccount(for: serviceID)) ?? ""
     }
 
     public func hasAPIKey(for serviceID: UUID) -> Bool {
@@ -256,12 +190,12 @@ public final class TranslationSettings: ObservableObject {
 
     public func configuration() -> TranslationConfiguration? {
         guard let selectedServiceID else { return nil }
-        return configuration(for: selectedServiceID)
+        return configuration(for: selectedServiceID, targetLanguage: lastTranslationTargetLanguage)
     }
 
     public func configuration(
         for serviceID: UUID,
-        targetLanguage: TranslationTargetLanguage? = nil
+        targetLanguage: TranslationTargetLanguage
     ) -> TranslationConfiguration? {
         guard let profile = services.first(where: { $0.id == serviceID }) else { return nil }
         let key = apiKey(for: serviceID).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -271,7 +205,7 @@ public final class TranslationSettings: ObservableObject {
             provider: profile.provider,
             model: model,
             apiKey: key,
-            targetLanguage: targetLanguage ?? profile.targetLanguage,
+            targetLanguage: targetLanguage,
             serverURL: profile.serverURL,
             modelsURL: profile.modelsURL,
             translationURL: profile.translationURL,
@@ -311,7 +245,7 @@ public final class TranslationSettings: ObservableObject {
             provider: profile.provider,
             model: model,
             apiKey: apiKey,
-            targetLanguage: profile.targetLanguage,
+            targetLanguage: lastTranslationTargetLanguage,
             serverURL: profile.serverURL,
             modelsURL: profile.modelsURL,
             translationURL: profile.translationURL,
@@ -370,8 +304,7 @@ public final class TranslationSettings: ObservableObject {
         authenticationHeader: String? = nil,
         modelListJSONPath: String? = nil,
         modelIDJSONPath: String? = nil,
-        translationResponseJSONPath: String? = nil,
-        targetLanguage: TranslationTargetLanguage = .simplifiedChinese
+        translationResponseJSONPath: String? = nil
     ) -> UUID {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let serviceName = normalizedName.isEmpty
@@ -390,8 +323,7 @@ public final class TranslationSettings: ObservableObject {
             authenticationHeader: authenticationHeader,
             modelListJSONPath: modelListJSONPath,
             modelIDJSONPath: modelIDJSONPath,
-            translationResponseJSONPath: translationResponseJSONPath,
-            targetLanguage: targetLanguage
+            translationResponseJSONPath: translationResponseJSONPath
         )
         services.append(profile)
         selectedServiceID = profile.id
@@ -465,8 +397,7 @@ public final class TranslationSettings: ObservableObject {
         authenticationHeader: String? = nil,
         modelListJSONPath: String? = nil,
         modelIDJSONPath: String? = nil,
-        translationResponseJSONPath: String? = nil,
-        targetLanguage: TranslationTargetLanguage? = nil
+        translationResponseJSONPath: String? = nil
     ) {
         guard let id, let index = services.firstIndex(where: { $0.id == id }) else { return }
         if let name {
@@ -504,9 +435,6 @@ public final class TranslationSettings: ObservableObject {
         }
         if let model {
             services[index].model = model
-        }
-        if let targetLanguage {
-            services[index].targetLanguage = targetLanguage
         }
         if let serverURL {
             let normalized = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)

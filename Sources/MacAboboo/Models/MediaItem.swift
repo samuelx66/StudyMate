@@ -1,7 +1,7 @@
 import Foundation
 
 /// 媒体文件元信息模型
-public struct MediaItem: Identifiable, Equatable {
+public struct MediaItem: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let url: URL
     public let title: String

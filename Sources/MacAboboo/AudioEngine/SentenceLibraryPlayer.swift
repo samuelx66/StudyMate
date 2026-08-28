@@ -49,10 +49,10 @@ public final class SentenceLibraryPlayer: ObservableObject {
     }
 
     public func play(_ entry: SentenceLibraryEntry, mediaURL: URL? = nil) {
-        let sourceURL = mediaURL ?? URL(fileURLWithPath: entry.sourceMediaPath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+        guard let sourceURL = mediaURL,
+              FileManager.default.fileExists(atPath: sourceURL.path) else {
             stop()
-            errorMessage = "找不到句子的来源媒体文件。"
+            errorMessage = "找不到句库中的独立音频片段。"
             return
         }
 
@@ -62,7 +62,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         extendedBackend?.pause()
         currentEntry = entry
         duration = max(0.05, entry.endTime - entry.startTime)
-        playbackStartTime = mediaURL == nil ? entry.startTime : 0
+        playbackStartTime = 0
         playbackEndTime = playbackStartTime + duration
         handledEndGeneration = nil
         isRestartSeeking = false
@@ -141,7 +141,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                         mayUseExtendedFallback: false
                     )
                 } else {
-                    self.errorMessage = "无法解码这个句子的来源媒体文件。"
+                    self.errorMessage = "无法解码这个句库音频片段。"
                 }
                 return
             }
@@ -232,11 +232,10 @@ public final class SentenceLibraryPlayer: ObservableObject {
     }
 
     private func restartCurrentEntry(entry: SentenceLibraryEntry) {
-        let mediaURL = playlist.first(where: { $0.entry.id == entry.id })?.mediaURL
-        let sourceURL = mediaURL ?? URL(fileURLWithPath: entry.sourceMediaPath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+        guard let sourceURL = playlist.first(where: { $0.entry.id == entry.id })?.mediaURL,
+              FileManager.default.fileExists(atPath: sourceURL.path) else {
             isPlaying = false
-            errorMessage = "找不到句子的来源媒体文件。"
+            errorMessage = "找不到句库中的独立音频片段。"
             return
         }
         let generation = UUID()
@@ -244,7 +243,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         handledEndGeneration = nil
         isRestartSeeking = true
         activeBackend.pause()
-        playbackStartTime = mediaURL == nil ? entry.startTime : 0
+        playbackStartTime = 0
         playbackEndTime = playbackStartTime + duration
         currentTime = 0
         activeBackend.seek(to: playbackStartTime) { [weak self] in

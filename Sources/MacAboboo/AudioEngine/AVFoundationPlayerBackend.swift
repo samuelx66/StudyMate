@@ -264,12 +264,13 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
             }
         }
 
-        // A valid asset can occasionally omit the completion callback while
-        // seeking to a non-keyframe. Start the same bounded recovery path
-        // proactively, without waiting for the engine's outer timeout.
+        // A valid inter-frame seek can take a few hundred milliseconds. Give
+        // the zero-tolerance request time to finish before replacing it with
+        // a tolerant fallback; otherwise a slow-but-correct seek loses its
+        // requested sentence boundary on complex MP4 files.
         seekRecoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 700_000_000)
             guard generation == self.seekGeneration, self.isSeekingInternal else { return }
             self.beginSeekFallback(
                 generation: generation,

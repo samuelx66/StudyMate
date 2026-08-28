@@ -3,21 +3,6 @@ import XCTest
 @testable import MacAbobooKit
 
 final class SegmentMediaExporterTests: XCTestCase {
-    func testConcatenatedSRTRebasesTimelineAndIncludesBothLanguages() {
-        let segments = [
-            SentenceSegment(index: 2, startTime: 8.0, endTime: 9.25, text: "Second line", translation: "第二句"),
-            SentenceSegment(index: 5, startTime: 15.0, endTime: 17.0, text: "Fifth line", translation: "第五句")
-        ]
-
-        let srt = SubtitleExporter.shared.exportToConcatenatedSRT(segments: segments)
-
-        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:00:01,250"))
-        XCTAssertTrue(srt.contains("00:00:01,250 --> 00:00:03,250"))
-        XCTAssertTrue(srt.contains("Second line\n第二句"))
-        XCTAssertTrue(srt.contains("Fifth line\n第五句"))
-        XCTAssertFalse(srt.contains("00:00:08,000"))
-    }
-
     func testConcatenatedLRCRebasesTimelineAndIncludesBothLanguages() {
         let segments = [
             SentenceSegment(index: 2, startTime: 8.0, endTime: 9.25, text: "Second line", translation: "第二句"),

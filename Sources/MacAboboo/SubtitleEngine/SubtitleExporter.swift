@@ -1,63 +1,10 @@
 import Foundation
 
 /// 字幕与断句导出引擎
-public final class SubtitleExporter {
+public final class SubtitleExporter: Sendable {
     public static let shared = SubtitleExporter()
     
     public init() {}
-    
-    /// 导出为标准 SRT 格式字符串
-    public func exportToSRT(segments: [SentenceSegment], includeTranslation: Bool = true) -> String {
-        exportToSRT(
-            segments: segments,
-            timings: segments.map { ($0.startTime, $0.endTime) },
-            includeTranslation: includeTranslation
-        )
-    }
-
-    /// 将若干不连续的断句按导出后的连续音频重新排列时间轴。
-    public func exportToConcatenatedSRT(
-        segments: [SentenceSegment],
-        includeTranslation: Bool = true
-    ) -> String {
-        var cursor = 0.0
-        let timings = segments.map { segment -> (Double, Double) in
-            let start = cursor
-            cursor += segment.duration
-            return (start, cursor)
-        }
-        return exportToSRT(
-            segments: segments,
-            timings: timings,
-            includeTranslation: includeTranslation
-        )
-    }
-
-    private func exportToSRT(
-        segments: [SentenceSegment],
-        timings: [(Double, Double)],
-        includeTranslation: Bool
-    ) -> String {
-        var srtContent = ""
-        
-        for (i, pair) in zip(segments, timings).enumerated() {
-            let seg = pair.0
-            let index = i + 1
-            let startSRT = formatSRTTimestamp(pair.1.0)
-            let endSRT = formatSRTTimestamp(pair.1.1)
-            
-            srtContent += "\(index)\n"
-            srtContent += "\(startSRT) --> \(endSRT)\n"
-            srtContent += "\(seg.text)\n"
-            
-            if includeTranslation && !seg.translation.isEmpty {
-                srtContent += "\(seg.translation)\n"
-            }
-            srtContent += "\n"
-        }
-        
-        return srtContent
-    }
     
     /// 导出为标准双语 LRC 歌词格式字符串。原文和译文使用相同时间戳，
     /// MacAboboo 再次导入时会自动组合成同一条双语字幕。
@@ -127,19 +74,6 @@ public final class SubtitleExporter {
         text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-    }
-    
-    /// 格式化为 00:01:23,456
-    private func formatSRTTimestamp(_ seconds: Double) -> String {
-        let safeSecs = seconds.isFinite ? max(0, seconds) : 0
-        let rounded = Int((safeSecs * 1000).rounded())
-        let totalMs = rounded % 1000
-        let totalSecs = rounded / 1000
-        let hours = totalSecs / 3600
-        let mins = (totalSecs / 60) % 60
-        let secs = totalSecs % 60
-        
-        return String(format: "%02d:%02d:%02d,%03d", hours, mins, secs, totalMs)
     }
     
     /// 格式化为 01:23.45

@@ -58,7 +58,7 @@ public struct PlaybackListView: View {
                     // 清空列表按钮
                     if !historyStore.entries.isEmpty {
                         Button {
-                            historyStore.removeAll()
+                            Task { await engine.clearPlaybackHistory() }
                         } label: {
                             Image(systemName: "trash")
                                 .font(.system(size: 11, weight: .regular))

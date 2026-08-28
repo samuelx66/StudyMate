@@ -70,7 +70,6 @@ struct MacAbobooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
     @StateObject private var engine = PlaybackEngine.shared
-    @StateObject private var sentenceLibraryManager = SentenceLibraryManager.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("MacAboboo.ShowStatusBar") private var showStatusBar = false
@@ -91,8 +90,13 @@ struct MacAbobooApp: App {
                 historyStore: PlaybackHistoryStore.shared,
                 onOpen: openFileAction,
                 onOpenLibrary: { openWindow(id: "sentence-library") },
-                onContinue: openMediaInMain,
-                onOpenHistoryItem: openMediaInMain
+                onOpenHistoryItem: openMediaInMain,
+                onRemoveHistoryItem: { url in
+                    Task { await engine.removeFromPlaybackHistory(url) }
+                },
+                onClearHistory: {
+                    Task { await engine.clearPlaybackHistory() }
+                }
             )
             .background(WelcomeWindowAccessor())
             .onOpenURL { handleIncomingURL($0) }
@@ -293,7 +297,8 @@ struct MacAbobooApp: App {
         .windowResizability(.contentMinSize)
 
         Window(languageManager.text("句库", "Sentence Library"), id: "sentence-library") {
-            SentenceLibraryView(manager: sentenceLibraryManager)
+            // 句库窗口独立按需创建；欢迎页启动时不读取数据库或创建默认句库。
+            SentenceLibraryView(manager: SentenceLibraryManager.shared)
                 .environmentObject(languageManager)
         }
         .defaultSize(width: 980, height: 680)

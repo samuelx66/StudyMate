@@ -1,9 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// 单个媒体的工程元数据。schema 1 的旧文件仍可直接读取；schema 2 将大体积波形拆分为二进制缓存；
-/// schema 3 明确记录断句是否已经完成，schema 4 保存声学/说话人边界证据，
-/// 避免工程重载后只能退回到局部波形谷值吸附。
+/// 单个媒体的当前工程元数据。工程文件只接受当前 schema，
+/// 不读取或迁移旧版本工程。
 public struct MediaProjectFile: Codable, Sendable {
     public static let currentSchemaVersion = 4
 
@@ -22,7 +21,6 @@ public struct MediaProjectFile: Codable, Sendable {
     public let updatedAt: Date
 
     public init(
-        schemaVersion: Int = MediaProjectFile.currentSchemaVersion,
         mediaPath: String,
         mediaTitle: String,
         duration: Double,
@@ -36,7 +34,7 @@ public struct MediaProjectFile: Codable, Sendable {
         acousticBoundaryTimes: [Double] = [],
         updatedAt: Date = Date()
     ) {
-        self.schemaVersion = schemaVersion
+        self.schemaVersion = Self.currentSchemaVersion
         self.mediaPath = mediaPath
         self.mediaTitle = mediaTitle
         self.duration = duration.isFinite ? max(0, duration) : 0
@@ -69,24 +67,31 @@ public struct MediaProjectFile: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        let decodedSchemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard decodedSchemaVersion == Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "不支持的工程文件版本。"
+            )
+        }
+        schemaVersion = decodedSchemaVersion
         mediaPath = try container.decode(String.self, forKey: .mediaPath)
-        mediaTitle = try container.decodeIfPresent(String.self, forKey: .mediaTitle) ?? URL(fileURLWithPath: mediaPath).deletingPathExtension().lastPathComponent
-        let decodedDuration = try container.decodeIfPresent(Double.self, forKey: .duration) ?? 0
+        mediaTitle = try container.decode(String.self, forKey: .mediaTitle)
+        let decodedDuration = try container.decode(Double.self, forKey: .duration)
         duration = decodedDuration.isFinite ? max(0, decodedDuration) : 0
-        let decodedPosition = try container.decodeIfPresent(Double.self, forKey: .lastPosition) ?? 0
+        let decodedPosition = try container.decode(Double.self, forKey: .lastPosition)
         lastPosition = decodedPosition.isFinite ? max(0, decodedPosition) : 0
-        segments = try container.decodeIfPresent([SentenceSegment].self, forKey: .segments) ?? []
+        segments = try container.decode([SentenceSegment].self, forKey: .segments)
         waveformData = try container.decodeIfPresent(WaveformData.self, forKey: .waveformData)
         waveformCacheFile = try container.decodeIfPresent(String.self, forKey: .waveformCacheFile)
         mediaFileSize = try container.decodeIfPresent(Int64.self, forKey: .mediaFileSize)
         mediaModificationDate = try container.decodeIfPresent(Date.self, forKey: .mediaModificationDate)
-        hasCompletedSegmentation = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedSegmentation)
-            ?? !segments.isEmpty
+        hasCompletedSegmentation = try container.decode(Bool.self, forKey: .hasCompletedSegmentation)
         acousticBoundaryTimes = Self.normalizedAcousticBoundaryTimes(
-            try container.decodeIfPresent([Double].self, forKey: .acousticBoundaryTimes) ?? []
+            try container.decode([Double].self, forKey: .acousticBoundaryTimes)
         )
-        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -142,8 +147,13 @@ public final class ProjectFileManager: @unchecked Sendable {
     private let projectsDirectory: URL
     private let fileQueue = DispatchQueue(label: "com.macaboboo.project.filemanager", qos: .utility)
     private let pendingLock = NSLock()
+    private let errorHandlerLock = NSLock()
     private var pendingSaves: [String: SaveRequest] = [:]
     private var isDrainScheduled = false
+    private var errorHandler: (@Sendable (String) -> Void)?
+    /// 由串行文件队列访问。避免每次字幕失焦保存都重新读取、解码同一份 JSON；
+    /// 应用自身是工程文件的唯一写入者，首次读取仍以磁盘为准。
+    private var persistedMetadataCache: [String: MediaProjectFile] = [:]
 
     private struct SaveRequest: Sendable {
         let mediaURL: URL
@@ -205,6 +215,21 @@ public final class ProjectFileManager: @unchecked Sendable {
 
     public func waveformFileURL(for mediaURL: URL) -> URL {
         projectsDirectory.appendingPathComponent(projectBaseName(for: mediaURL) + ".waveform")
+    }
+
+    /// 工程读写失败仍在后台队列发生；通过此回调让上层显示状态栏错误，
+    /// 不再把可能丢失的工程状态静默留在控制台。
+    public func setErrorHandler(_ handler: (@Sendable (String) -> Void)?) {
+        errorHandlerLock.lock()
+        errorHandler = handler
+        errorHandlerLock.unlock()
+    }
+
+    private func reportError(_ message: String) {
+        errorHandlerLock.lock()
+        let handler = errorHandler
+        errorHandlerLock.unlock()
+        handler?(message)
     }
 
     private func projectBaseName(for mediaURL: URL) -> String {
@@ -312,11 +337,14 @@ public final class ProjectFileManager: @unchecked Sendable {
         let metadataURL = projectFileURL(for: request.mediaURL)
         let waveformURL = waveformFileURL(for: request.mediaURL)
         do {
-            var existingMetadata: MediaProjectFile?
-            if let existingData = try? Data(contentsOf: metadataURL) {
+            var existingMetadata = persistedMetadataCache[request.mediaURL.path]
+            if existingMetadata == nil, let existingData = try? Data(contentsOf: metadataURL) {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
                 existingMetadata = try? decoder.decode(MediaProjectFile.self, from: existingData)
+                if let existingMetadata {
+                    persistedMetadataCache[request.mediaURL.path] = existingMetadata
+                }
             }
             let existingMetadataIsCompatible = existingMetadata?.isCompatible(with: request.mediaURL) == true
             var hasWaveformCache = existingMetadataIsCompatible
@@ -366,8 +394,9 @@ public final class ProjectFileManager: @unchecked Sendable {
             let data = try encoder.encode(project)
             try FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
             try data.write(to: metadataURL, options: .atomic)
+            persistedMetadataCache[request.mediaURL.path] = project
         } catch {
-            print("Failed to save project file: \(error)")
+            reportError("保存工程文件失败：\(error.localizedDescription)")
         }
     }
 
@@ -451,6 +480,7 @@ public final class ProjectFileManager: @unchecked Sendable {
         for url in relatedFiles {
             try FileManager.default.removeItem(at: url)
         }
+        persistedMetadataCache.removeValue(forKey: standardizedURL.path)
     }
 
     private func loadProjectDirect(for mediaURL: URL) -> MediaProjectFile? {
@@ -476,8 +506,7 @@ public final class ProjectFileManager: @unchecked Sendable {
                 }
             }
 
-            return MediaProjectFile(
-                schemaVersion: metadata.schemaVersion,
+            let project = MediaProjectFile(
                 mediaPath: metadata.mediaPath,
                 mediaTitle: metadata.mediaTitle,
                 duration: metadata.duration,
@@ -491,8 +520,10 @@ public final class ProjectFileManager: @unchecked Sendable {
                 acousticBoundaryTimes: metadata.acousticBoundaryTimes,
                 updatedAt: metadata.updatedAt
             )
+            persistedMetadataCache[mediaURL.standardizedFileURL.path] = project
+            return project
         } catch {
-            print("Failed to load project file: \(error)")
+            reportError("读取工程文件失败：\(error.localizedDescription)")
             return nil
         }
     }
@@ -507,10 +538,10 @@ public final class ProjectFileManager: @unchecked Sendable {
     private func encodeWaveformCache(_ waveform: WaveformData) -> Data {
         var data = Data("MABWAVE2".utf8)
         data.appendLittleEndian(UInt32(2))
-        data.appendLittleEndian(UInt64(waveform.peaks.count))
+        data.appendLittleEndian(UInt64(waveform.peakCount))
         data.appendLittleEndian(waveform.duration.bitPattern)
         data.appendLittleEndian(waveform.sampleRate.bitPattern)
-        for index in waveform.peaks.indices {
+        for index in 0..<waveform.peakCount {
             data.appendLittleEndian(waveform.minPeaks[index].bitPattern)
             data.appendLittleEndian(waveform.maxPeaks[index].bitPattern)
         }

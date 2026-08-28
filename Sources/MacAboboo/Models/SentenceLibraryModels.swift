@@ -2,7 +2,7 @@ import Foundation
 
 public struct SentenceLibraryDescriptor: Identifiable, Codable, Equatable, Hashable, Sendable {
     public static let formatIdentifier = "com.macaboboo.sentence-library"
-    public static let currentFormatVersion = 2
+    public static let currentFormatVersion = 3
 
     public let format: String
     public let version: Int
@@ -38,8 +38,7 @@ public struct SentenceLibraryEntry: Identifiable, Equatable, Hashable, Sendable 
     public let createdAt: Date
     public let previewFilename: String?
     /// 句库包内 `Media/` 目录中的独立 AAC M4A 片段文件名。
-    /// 旧版本句库为空时，播放器才回退到来源文件和原始时间戳。
-    public let mediaFilename: String?
+    public let mediaFilename: String
 
     public init(
         id: UUID = UUID(),
@@ -51,8 +50,8 @@ public struct SentenceLibraryEntry: Identifiable, Equatable, Hashable, Sendable 
         startTime: Double,
         endTime: Double,
         createdAt: Date = Date(),
-        previewFilename: String? = nil,
-        mediaFilename: String? = nil
+        mediaFilename: String,
+        previewFilename: String? = nil
     ) {
         self.id = id
         self.originalText = originalText

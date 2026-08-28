@@ -2,8 +2,6 @@ import Foundation
 
 /// 波形数据结构（支持快速分段插值与多分辨率提取）
 public struct WaveformData: Equatable, Codable, Sendable {
-    /// 归一化振幅数据 (0.0 ~ 1.0)
-    public let peaks: [Float]
     /// 最小振幅 (用于真实双极性波形 -1.0 ~ 0.0)
     public let minPeaks: [Float]
     /// 最大振幅 (用于真实双极性波形 0.0 ~ 1.0)
@@ -23,7 +21,6 @@ public struct WaveformData: Equatable, Codable, Sendable {
         let sanitizedPeaks = peaks.map { value in
             value.isFinite ? min(1, max(0, abs(value))) : 0
         }
-        self.peaks = sanitizedPeaks
         if minPeaks.count == sanitizedPeaks.count {
             self.minPeaks = minPeaks.map { $0.isFinite ? min(0, max(-1, $0)) : 0 }
         } else {
@@ -39,8 +36,9 @@ public struct WaveformData: Equatable, Codable, Sendable {
     }
 
     /// Internal fast path for PCM/cache output that has already validated the
-    /// array lengths and finite sample range. Avoids copying three complete
-    /// waveform arrays for long recordings.
+    /// array lengths and finite sample range. `peaks` is retained only as an
+    /// input compatibility parameter: the value is exactly derivable from
+    /// the bipolar envelope and is no longer stored as a third long array.
     init(
         uncheckedPeaks peaks: [Float],
         minPeaks: [Float],
@@ -48,7 +46,6 @@ public struct WaveformData: Equatable, Codable, Sendable {
         duration: Double,
         sampleRate: Double
     ) {
-        self.peaks = peaks
         self.minPeaks = minPeaks
         self.maxPeaks = maxPeaks
         self.duration = duration
@@ -72,7 +69,6 @@ public struct WaveformData: Equatable, Codable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(peaks, forKey: .peaks)
         try container.encode(minPeaks, forKey: .minPeaks)
         try container.encode(maxPeaks, forKey: .maxPeaks)
         try container.encode(duration, forKey: .duration)
@@ -82,7 +78,20 @@ public struct WaveformData: Equatable, Codable, Sendable {
     public static let empty = WaveformData(peaks: [], duration: 0, sampleRate: 100)
     
     public var isEmpty: Bool {
-        peaks.isEmpty || duration <= 0
+        minPeaks.isEmpty || duration <= 0
+    }
+
+    /// 与旧 API 兼容的派生值。生产渲染和断句代码使用 `peakCount` / `peak(at:)`
+    /// 避免在长媒体处理中临时生成整个数组。
+    public var peaks: [Float] {
+        zip(minPeaks, maxPeaks).map { max(abs($0), abs($1)) }
+    }
+
+    public var peakCount: Int { minPeaks.count }
+
+    public func peak(at index: Int) -> Float {
+        guard minPeaks.indices.contains(index), maxPeaks.indices.contains(index) else { return 0 }
+        return max(abs(minPeaks[index]), abs(maxPeaks[index]))
     }
     
     /// 获取指定时间范围内的重采样峰值数组，适合直接渲染到指定像素宽度
@@ -92,7 +101,7 @@ public struct WaveformData: Equatable, Codable, Sendable {
     ///   - targetCount: 目标输出的柱状图/点数（如屏幕宽度像素数 / 柱宽）
     /// - Returns: 归一化 (min, max) 数组
     public func resample(startTime: Double, endTime: Double, targetCount: Int) -> [(min: Float, max: Float)] {
-        guard targetCount > 0, !peaks.isEmpty, duration > 0 else {
+        guard targetCount > 0, !minPeaks.isEmpty, duration > 0 else {
             return []
         }
         
@@ -105,7 +114,7 @@ public struct WaveformData: Equatable, Codable, Sendable {
         }
         
         let startIdx = Int(clampedStart * sampleRate)
-        let endIdx = min(peaks.count, Int(ceil(clampedEnd * sampleRate)))
+        let endIdx = min(peakCount, Int(ceil(clampedEnd * sampleRate)))
         
         guard endIdx > startIdx else {
             return Array(repeating: (min: 0, max: 0), count: targetCount)
@@ -121,7 +130,7 @@ public struct WaveformData: Equatable, Codable, Sendable {
             let binStart = startIdx + Int(Double(i) * samplesPerBin)
             let binEnd = min(endIdx, startIdx + Int(Double(i + 1) * samplesPerBin) + 1)
             
-            if binStart >= peaks.count {
+            if binStart >= peakCount {
                 result.append((min: 0, max: 0))
                 continue
             }
@@ -130,7 +139,7 @@ public struct WaveformData: Equatable, Codable, Sendable {
             var binMax: Float = 0
             
             if binStart < binEnd {
-                for s in binStart..<min(binEnd, peaks.count) {
+                for s in binStart..<min(binEnd, peakCount) {
                     let pMax = maxPeaks[s]
                     let pMin = minPeaks[s]
                     if pMax > binMax { binMax = pMax }

@@ -208,8 +208,8 @@ public final class SentenceLibraryManager: ObservableObject {
                     startTime: segment.startTime,
                     endTime: segment.endTime,
                     createdAt: timestamp,
-                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg",
-                    mediaFilename: mediaFilename
+                    mediaFilename: mediaFilename,
+                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg"
                 ))
             }
             try Task.checkCancellation()
@@ -240,25 +240,6 @@ public final class SentenceLibraryManager: ObservableObject {
         }.value
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
-    }
-
-    public func exportCurrentLibrary(to destinationURL: URL) async throws {
-        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        isWorking = true
-        defer { isWorking = false }
-        try await Task.detached(priority: .utility) { [store] in
-            try store.exportLibrary(id: libraryID, to: destinationURL)
-        }.value
-    }
-
-    public func importLibrary(from sourceURL: URL) async throws {
-        isWorking = true
-        defer { isWorking = false }
-        let descriptor = try await Task.detached(priority: .utility) { [store] in
-            try store.importLibrary(from: sourceURL)
-        }.value
-        await reloadLibraries(createDefaultIfNeeded: false)
-        selectLibrary(descriptor.id)
     }
 
     public func deleteCurrentLibrary() async throws {

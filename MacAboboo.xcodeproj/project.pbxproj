@@ -44,7 +44,6 @@
 		DB9014F6D3F387E2BE2453F6 /* MacOS26MediaStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12059F6238C0D512DBB927AC /* MacOS26MediaStyle.swift */; };
 		3376DFD638A9DDE7FA911ECC /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A918BD816D849ACFA171768E /* MainContentView.swift */; };
 		01EEE1BF9D80EC602166F116 /* MainStatusCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BADC7EBE4EFF069F5D4B0CAD /* MainStatusCenter.swift */; };
-		46AE8A1CFC34502E22B3F1E9 /* PlaybackControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */; };
 		E80F9787BE0201AAD3C60E4D /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67A44BC18300FC764615A465 /* PlaybackListView.swift */; };
 		37D7A9622E21A398EF88CFDD /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */; };
 		F9BA472A6AB510D5649CE226 /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */; };
@@ -63,7 +62,6 @@
 		6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */; };
 		1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */; };
 		86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */; };
-		8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */; };
 		C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */; };
 		CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */; };
 		2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */; };
@@ -116,7 +114,6 @@
 		12059F6238C0D512DBB927AC /* MacOS26MediaStyle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MacOS26MediaStyle.swift"; sourceTree = "<group>"; };
 		A918BD816D849ACFA171768E /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MainContentView.swift"; sourceTree = "<group>"; };
 		BADC7EBE4EFF069F5D4B0CAD /* MainStatusCenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/MainStatusCenter.swift"; sourceTree = "<group>"; };
-		9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackControlView.swift"; sourceTree = "<group>"; };
 		67A44BC18300FC764615A465 /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
 		ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
 		94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
@@ -135,7 +132,6 @@
 		4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/MacAbobooResourceBundle.swift"; sourceTree = "<group>"; };
 		583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
 		C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
-		3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
 		95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
 		F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
 		3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
@@ -221,7 +217,6 @@
 				12059F6238C0D512DBB927AC /* MacOS26MediaStyle.swift */,
 				A918BD816D849ACFA171768E /* MainContentView.swift */,
 				BADC7EBE4EFF069F5D4B0CAD /* MainStatusCenter.swift */,
-				9FB2E806A41C8FEBB8B5F100 /* PlaybackControlView.swift */,
 				67A44BC18300FC764615A465 /* PlaybackListView.swift */,
 				ECD5D07EFD0A8E74A878DEEA /* PrimaryWaveformView.swift */,
 				94DC8FAA4E010A3AD40AC65E /* SecondaryWaveformView.swift */,
@@ -240,7 +235,6 @@
 				4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */,
 				583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */,
 				C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */,
-				3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */,
 				95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */,
 				F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */,
 				3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */,
@@ -377,7 +371,6 @@
 				DB9014F6D3F387E2BE2453F6 /* MacOS26MediaStyle.swift in Sources */,
 				3376DFD638A9DDE7FA911ECC /* MainContentView.swift in Sources */,
 				01EEE1BF9D80EC602166F116 /* MainStatusCenter.swift in Sources */,
-				46AE8A1CFC34502E22B3F1E9 /* PlaybackControlView.swift in Sources */,
 				E80F9787BE0201AAD3C60E4D /* PlaybackListView.swift in Sources */,
 				37D7A9622E21A398EF88CFDD /* PrimaryWaveformView.swift in Sources */,
 				F9BA472A6AB510D5649CE226 /* SecondaryWaveformView.swift in Sources */,
@@ -396,7 +389,6 @@
 				6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */,
 				1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */,
 				86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */,
-				8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */,
 				C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */,
 				CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */,
 				2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */,
@@ -500,7 +492,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 162;
+				CURRENT_PROJECT_VERSION = 165;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -510,7 +502,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.161;
+				MARKETING_VERSION = 1.0.164;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -525,7 +517,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 162;
+				CURRENT_PROJECT_VERSION = 165;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -534,7 +526,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.161;
+				MARKETING_VERSION = 1.0.164;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

@@ -1,42 +1,50 @@
 # MacAboboo
 
-MacAboboo 是一款面向 macOS 的原生英语听力学习与音视频复读工具，目标是提供类似 Windows Aboboo 的学习体验。项目使用 Swift、SwiftUI、AppKit 和 AVFoundation 构建，界面以中文为主，并为多语言扩展预留空间。
+MacAboboo 是一款面向 macOS 的原生英语听力学习与音视频复读工具，使用 Swift、SwiftUI、AppKit 和 AVFoundation 构建。
 
-## 当前能力
+## 当前功能
 
-- 音频、视频播放与毫秒级定位
-- AVFoundation、libmpv 及混合播放后端
-- 主波形图与当前句子的放大波形图
-- 断句列表、原文/译文编辑与即时保存
-- 连续播放、单句重复、句后停顿和全篇循环
-- SRT、LRC、文本导入及时间轴生成
-- 手动切句、合并句子和波形锚点微调
-- 本地音频 PCM 与波形缓存
-- 三种断句预设：
-  - 高精度多人对话
-  - 快速断句
-  - 纯语义断句
+- 音频、视频播放，系统解码、扩展解码和智能混合解码
+- 主波形图与当前句次波形图，支持直接拖动句首/句尾边界
+- 快速断句与智能断句两种模式
+- 原文、译文字幕编辑、导入和 LRC 导出
+- 连续播放、单句重复、句后停顿、全篇循环
+- 句子筛选、批量导出 AAC M4A 与双语 LRC
+- 多句库管理：独立 M4A 片段、预览图、搜索、日期/来源筛选和试听
+- DeepSeek、Gemini，以及 OpenAI/Anthropic 协议的自定义翻译服务
+- 独立的 800×520 双栏欢迎首页、播放列表、快捷键和状态栏进度提示
 
-## 自动断句
+## 断句流程
 
-自动断句使用统一的语音分段流水线：
+两种断句模式共用同一份 16 kHz、Float32、单声道 PCM：
 
-1. 将媒体解码为 16 kHz、Float32、单声道 PCM。
-2. 使用 Silero VAD 检测语音区间。
-3. 在需要时使用 SpeakerKit / Pyannote Core ML 进行说话人分离。
-4. 在高精度和纯语义模式下，通过进程内 whisper.cpp 获取词级时间戳。
-5. 使用全局边界优化器综合停顿、声学边界、语义信息、说话人切换和最大句长约束。
+1. PCM 按媒体路径、文件大小和修改时间缓存，波形和断句复用同一解码结果；超出 128MB 的 PCM 不额外驻留内存缓存。
+2. Silero VAD 输出逐帧概率和语音区间。
+3. SpeakerKit 在本地使用随应用提供的 Core ML 模型分析说话人轮次和重叠语音。
+4. 智能断句额外通过应用内 whisper.cpp 获取词级时间戳、标点和语义证据。
+5. 全局边界优化器综合声学停顿、VAD 概率、说话人变化、Whisper 结果和句长硬上限，生成不重叠的断句。
 
-旧任务、媒体切换和用户取消都会取消对应的异步任务，避免过期结果覆盖当前工程。
+快速断句只运行 Silero 与 SpeakerKit，优先速度和资源占用；智能断句完整联动 Silero、SpeakerKit 与 Whisper，适合需要更精准语义边界的材料。
+
+## 数据与隐私
+
+- AI 识别、Silero、SpeakerKit 和 Whisper 均在本机运行；SpeakerKit 模型随应用打包，不需要首次联网下载。
+- Whisper 模型按需下载到 `~/Library/Application Support/MacAboboo/Models/`。
+- PCM、工程和句库数据保存在 `~/Library/Application Support/MacAboboo/`。
+- 从播放列表或欢迎页移除媒体、或清空播放列表时，只保留原始音视频文件；对应工程、波形和 PCM 派生缓存会一并清理。
+- 工程和播放历史的后台保存失败会显示在状态栏，不会再被静默忽略。
+- API Key 仅保存在 macOS 钥匙串；翻译请求只在用户明确点击“开始翻译”后发送。
+- 句库使用当前版本的 `.mablib` 目录包：`manifest.json`、`Library.sqlite3`、`Previews/` 和每句独立的 `Media/*.m4a`。播放不依赖原始音视频；原文与译文检索由 SQLite FTS5 全文索引加速，并保持短关键词的精确匹配。
+- 本版本只读取当前数据格式，不保留旧工程、旧句库、旧翻译配置或旧 PCM 缓存的迁移/兼容路径。
 
 ## 项目结构
 
 ```text
 Sources/
   CSpeechRuntime/       whisper.cpp C API 封装
-  MacAboboo/            核心播放、波形、断句和模型管理模块
+  MacAboboo/            播放、波形、断句、字幕、翻译和句库模块
   MacAbobooApp/         macOS 应用入口
-Tests/                  单元测试与语音断句集成测试
+Tests/                  单元测试与集成测试
 Vendor/Whisper/         whisper.cpp macOS XCFramework
 Scripts/                工程生成、图标和应用打包脚本
 ```
@@ -44,25 +52,21 @@ Scripts/                工程生成、图标和应用打包脚本
 ## 环境要求
 
 - macOS 14 或更高版本
-- Xcode，支持 Swift 5.9
+- Xcode（支持 Swift 5.9）
 - Apple Silicon 或 Intel Mac
-
-项目依赖的 Silero、SpeakerKit 和 Whisper 运行资源位于应用资源或 `Vendor/` 目录中。Whisper 模型由应用按需管理，默认存放在：
-
-```text
-~/Library/Application Support/MacAboboo/Models/
-```
 
 ## 构建与测试
 
 使用 Xcode 打开 `MacAboboo.xcodeproj`，选择 `MacAboboo` scheme 后运行。
 
-也可以使用 Swift Package Manager 构建和测试：
+也可以使用 Swift Package Manager：
 
 ```bash
 swift build
 swift test
 ```
+
+发布包由 `Scripts/` 中的构建脚本生成到 `dist/`，同时包含应用需要的模型、动态库和资源。
 
 ## 许可证
 

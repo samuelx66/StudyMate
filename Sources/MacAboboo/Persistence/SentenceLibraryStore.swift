@@ -21,8 +21,8 @@ public enum SentenceLibraryError: LocalizedError {
 
 /// `.mablib` 是可携带目录包：manifest.json 保存格式版本，Library.sqlite3
 /// 保存可检索字段，Previews/ 保存 JPEG，Media/ 保存每条句子的独立 AAC M4A 片段。
-/// 图片、媒体与索引分离，可避免数据库因大对象频繁增删而膨胀；整个目录包复制、
-/// 导出或导入后，句库播放不再依赖原始音视频文件。
+/// 图片、媒体与索引分离，可避免数据库因大对象频繁增删而膨胀；
+/// 句库播放不依赖原始音视频文件。
 public final class SentenceLibraryStore: @unchecked Sendable {
     public static let shared = SentenceLibraryStore()
 
@@ -56,7 +56,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 .compactMap(readManifest)
                 .filter {
                     $0.format == SentenceLibraryDescriptor.formatIdentifier &&
-                    $0.version <= SentenceLibraryDescriptor.currentFormatVersion
+                    $0.version == SentenceLibraryDescriptor.currentFormatVersion
                 }
                 .sorted { $0.updatedAt > $1.updatedAt }
         }
@@ -92,8 +92,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             return try withDatabase(libraryID: libraryID) { db in
                 var clauses: [String] = []
                 let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                // FTS5 trigram 保持中文、英文片段与现有 LIKE 子串搜索的语义；
+                // 单个或两个字符没有完整 trigram，仍精确回退到 LIKE。
+                let usesFullTextIndex = query.count >= 3
                 if !query.isEmpty {
-                    clauses.append("(original_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR translation LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+                    if usesFullTextIndex {
+                        clauses.append("entries_fts MATCH ?")
+                    } else {
+                        clauses.append("(original_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR translation LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+                    }
                 }
                 if createdAfter != nil { clauses.append("created_at >= ?") }
                 if createdBefore != nil { clauses.append("created_at < ?") }
@@ -105,15 +112,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 let orderSQL: String
                 switch sortOrder {
                 case .newestFirst:
-                    orderSQL = "created_at DESC, rowid DESC"
+                    orderSQL = "entries.created_at DESC, entries.rowid DESC"
                 case .oldestFirst:
-                    orderSQL = "created_at ASC, rowid ASC"
+                    orderSQL = "entries.created_at ASC, entries.rowid ASC"
                 }
                 let sql = """
-                SELECT id, original_text, translation, note, source_media_name,
-                       source_media_path, start_time, end_time, created_at, preview_filename,
-                       media_filename
-                FROM entries\(whereSQL)
+                SELECT entries.id, entries.original_text, entries.translation, entries.note, entries.source_media_name,
+                       entries.source_media_path, entries.start_time, entries.end_time, entries.created_at, entries.preview_filename,
+                       entries.media_filename
+                FROM entries\(usesFullTextIndex ? " JOIN entries_fts ON entries_fts.rowid = entries.rowid" : "")\(whereSQL)
                 ORDER BY \(orderSQL);
                 """
                 var statement: OpaquePointer?
@@ -121,12 +128,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 defer { sqlite3_finalize(statement) }
                 var position: Int32 = 1
                 if !query.isEmpty {
-                    let escaped = query
-                        .replacingOccurrences(of: "\\", with: "\\\\")
-                        .replacingOccurrences(of: "%", with: "\\%")
-                        .replacingOccurrences(of: "_", with: "\\_")
-                    bind("%\(escaped)%", at: position, to: statement); position += 1
-                    bind("%\(escaped)%", at: position, to: statement); position += 1
+                    if usesFullTextIndex {
+                        // 作为短语传入，特殊字符不会被解释成 MATCH 运算符。
+                        let phrase = query.lowercased().replacingOccurrences(of: "\"", with: "\"\"")
+                        bind("\"\(phrase)\"", at: position, to: statement); position += 1
+                    } else {
+                        let escaped = query
+                            .replacingOccurrences(of: "\\", with: "\\\\")
+                            .replacingOccurrences(of: "%", with: "\\%")
+                            .replacingOccurrences(of: "_", with: "\\_")
+                        bind("%\(escaped)%", at: position, to: statement); position += 1
+                        bind("%\(escaped)%", at: position, to: statement); position += 1
+                    }
                 }
                 if let createdAfter {
                     sqlite3_bind_double(statement, position, createdAfter.timeIntervalSince1970)
@@ -153,8 +166,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         startTime: sqlite3_column_double(statement, 6),
                         endTime: sqlite3_column_double(statement, 7),
                         createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
-                        previewFilename: optionalText(statement, 9),
-                        mediaFilename: optionalText(statement, 10)
+                        mediaFilename: text(statement, 10),
+                        previewFilename: optionalText(statement, 9)
                     ))
                 }
                 return result
@@ -188,7 +201,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         entries: [SentenceLibraryEntry],
         previewData: [UUID: Data],
         to libraryID: UUID,
-        mediaURLs: [UUID: URL] = [:],
+        mediaURLs: [UUID: URL],
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
         guard !entries.isEmpty else { return }
@@ -208,7 +221,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     }
                 }
                 for entry in entries {
-                    guard let mediaFilename = entry.mediaFilename else { continue }
+                    let mediaFilename = entry.mediaFilename
                     guard let sourceURL = mediaURLs[entry.id], fileManager.fileExists(atPath: sourceURL.path) else {
                         throw SentenceLibraryError.database("缺少句子媒体片段：\(mediaFilename)")
                     }
@@ -261,11 +274,10 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                             } else {
                                 sqlite3_bind_null(statement, 10)
                             }
-                            if storedMediaFilenames.contains(entry.mediaFilename ?? ""), let filename = entry.mediaFilename {
-                                bind(filename, at: 11, to: statement)
-                            } else {
-                                sqlite3_bind_null(statement, 11)
+                            guard storedMediaFilenames.contains(entry.mediaFilename) else {
+                                throw SentenceLibraryError.database("句子媒体片段未完成写入。")
                             }
+                            bind(entry.mediaFilename, at: 11, to: statement)
                             guard sqlite3_step(statement) == SQLITE_DONE else {
                                 throw databaseError(db)
                             }
@@ -323,43 +335,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    public func exportLibrary(id: UUID, to destinationURL: URL) throws {
-        try queue.sync {
-            try validateLibrary(id: id)
-            let source = packageURL(for: id)
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
-            try fileManager.copyItem(at: source, to: destinationURL)
-        }
-    }
-
-    @discardableResult
-    public func importLibrary(from sourceURL: URL) throws -> SentenceLibraryDescriptor {
-        try queue.sync {
-            guard let descriptor = readManifest(at: sourceURL),
-                  descriptor.format == SentenceLibraryDescriptor.formatIdentifier,
-                  descriptor.version <= SentenceLibraryDescriptor.currentFormatVersion,
-                  fileManager.fileExists(atPath: sourceURL.appendingPathComponent("Library.sqlite3").path) else {
-                throw SentenceLibraryError.invalidLibrary
-            }
-            let destination = packageURL(for: descriptor.id)
-            if fileManager.fileExists(atPath: destination.path) {
-                try validateLibrary(id: descriptor.id)
-                return readManifest(at: destination) ?? descriptor
-            }
-            do {
-                try fileManager.copyItem(at: sourceURL, to: destination)
-                try validateLibrary(id: descriptor.id)
-                try withDatabase(libraryID: descriptor.id) { _ in () }
-            } catch {
-                try? fileManager.removeItem(at: destination)
-                throw error
-            }
-            return descriptor
-        }
-    }
-
     public func deleteLibrary(id: UUID) throws {
         try queue.sync {
             try validateLibrary(id: id)
@@ -373,7 +348,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     }
 
     public func mediaURL(for entry: SentenceLibraryEntry, libraryID: UUID) -> URL? {
-        guard let filename = entry.mediaFilename else { return nil }
+        let filename = entry.mediaFilename
         guard URL(fileURLWithPath: filename).lastPathComponent == filename, !filename.isEmpty else { return nil }
         let url = mediaURL(for: libraryID).appendingPathComponent(filename)
         return fileManager.fileExists(atPath: url.path) ? url : nil
@@ -408,7 +383,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         guard let descriptor = readManifest(at: packageURL(for: id)),
               descriptor.id == id,
               descriptor.format == SentenceLibraryDescriptor.formatIdentifier,
-              descriptor.version <= SentenceLibraryDescriptor.currentFormatVersion else {
+              descriptor.version == SentenceLibraryDescriptor.currentFormatVersion else {
             throw SentenceLibraryError.invalidLibrary
         }
     }
@@ -442,8 +417,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         id: id,
                         originalText: "", translation: "", sourceMediaName: "", sourceMediaPath: "",
                         startTime: 0, endTime: 0.05,
-                        previewFilename: optionalText(statement, 1),
-                        mediaFilename: optionalText(statement, 2)
+                        mediaFilename: text(statement, 2),
+                        previewFilename: optionalText(statement, 1)
                     ))
                 }
             }
@@ -491,14 +466,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 end_time REAL NOT NULL,
                 created_at REAL NOT NULL,
                 preview_filename TEXT,
-                media_filename TEXT
+                media_filename TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
-            PRAGMA user_version=2;
+            \(Self.ftsSchemaSQL)
+            PRAGMA user_version=4;
             """, in: db)
-        } else if version == 1 {
-            try execute("ALTER TABLE entries ADD COLUMN media_filename TEXT; PRAGMA user_version=2;", in: db)
+        } else if version == 3 {
+            try execute(Self.ftsSchemaSQL, in: db)
+            try execute("PRAGMA user_version=4;", in: db)
+        } else if version != 4 {
+            throw SentenceLibraryError.invalidLibrary
         }
     }
 
@@ -546,4 +525,33 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+
+    /// 外部内容表避免复制句库其余字段；触发器保证新增、修改和删除时索引
+    /// 与主表同一事务保持一致。
+    private static let ftsSchemaSQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+        original_text,
+        translation,
+        content='entries',
+        content_rowid='rowid',
+        tokenize='trigram case_sensitive 0'
+    );
+    CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts(rowid, original_text, translation)
+        VALUES (new.rowid, lower(new.original_text), lower(new.translation));
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation)
+        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation));
+    END;
+    CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE OF original_text, translation ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation)
+        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation));
+        INSERT INTO entries_fts(rowid, original_text, translation)
+        VALUES (new.rowid, lower(new.original_text), lower(new.translation));
+    END;
+    INSERT INTO entries_fts(rowid, original_text, translation)
+        SELECT rowid, lower(original_text), lower(translation) FROM entries
+        WHERE rowid NOT IN (SELECT rowid FROM entries_fts);
+    """
 }

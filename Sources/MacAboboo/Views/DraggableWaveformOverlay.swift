@@ -13,7 +13,7 @@ public struct DraggableWaveformOverlay: View {
     let onBoundaryDragEnded: () -> Void
     /// 选中标线所属句子时只更新编辑目标，不执行 Seek/播放。
     /// 普通波形点击仍使用 `onSelectSegment`，两者的行为必须分开。
-    let onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
+    let onSelectSegmentForBoundaryDrag: (UUID) -> Void
     let onPanViewport: ((Double) -> Void)?
     
     public init(
@@ -25,7 +25,7 @@ public struct DraggableWaveformOverlay: View {
         isSecondaryView: Bool = false,
         onBoundaryDragBegan: @escaping () -> Void = {},
         onBoundaryDragEnded: @escaping () -> Void = {},
-        onSelectSegmentForBoundaryDrag: ((UUID) -> Void)? = nil,
+        onSelectSegmentForBoundaryDrag: @escaping (UUID) -> Void,
         onPanViewport: ((Double) -> Void)? = nil
     ) {
         self.engine = engine
@@ -278,7 +278,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
     let isBoundaryDragging: Bool
     let onBoundaryDragBegan: () -> Void
     let onBoundaryDragEnded: () -> Void
-    let onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
+        let onSelectSegmentForBoundaryDrag: (UUID) -> Void
     let onPanViewport: ((Double) -> Void)?
     
     let onSelectSegment: (UUID) -> Void
@@ -895,12 +895,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         }
 
         private func selectSegmentForBoundaryDrag(_ id: UUID) {
-            if let onSelectSegmentForBoundaryDrag {
-                onSelectSegmentForBoundaryDrag(id)
-            } else {
-                // 保留旧调用方的兼容行为；主界面已使用专用的“编辑目标”回调。
-                onSelectSegment?(id)
-            }
+            onSelectSegmentForBoundaryDrag?(id)
         }
 
         private func selectBoundarySegmentAfterDragIfNeeded() {

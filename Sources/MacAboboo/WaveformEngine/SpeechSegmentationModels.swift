@@ -124,10 +124,8 @@ public struct AudioPCMData: Sendable {
         let targetRate = max(10, min(1_000, samplesPerSecond))
         let samplesPerBin = max(1, Int(Double(sampleRate) / targetRate))
         let estimatedBins = samples.count / samplesPerBin + 1
-        var peaks: [Float] = []
         var minima: [Float] = []
         var maxima: [Float] = []
-        peaks.reserveCapacity(estimatedBins)
         minima.reserveCapacity(estimatedBins)
         maxima.reserveCapacity(estimatedBins)
 
@@ -143,12 +141,11 @@ public struct AudioPCMData: Sendable {
                 vDSP_maxv(bin, 1, &maximum, vDSP_Length(count))
                 minima.append(minimum)
                 maxima.append(maximum)
-                peaks.append(max(abs(minimum), abs(maximum)))
                 index += count
             }
         }
         return WaveformData(
-            uncheckedPeaks: peaks,
+            uncheckedPeaks: [],
             minPeaks: minima,
             maxPeaks: maxima,
             duration: duration,
