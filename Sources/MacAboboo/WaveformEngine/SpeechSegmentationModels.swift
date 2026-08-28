@@ -252,10 +252,12 @@ public actor SpeechInferenceResourceScheduler {
         let continuation: CheckedContinuation<Void, Error>
     }
 
-    private var availablePermits = 1
+    private var availablePermits: Int
     private var waiters: [Waiter] = []
 
-    public init() {}
+    public init(permits: Int = 1) {
+        self.availablePermits = max(1, permits)
+    }
 
     public func withExclusiveStage<T: Sendable>(
         _ operation: @escaping @Sendable () async throws -> T

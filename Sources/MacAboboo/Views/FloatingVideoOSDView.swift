@@ -93,11 +93,8 @@ public struct FloatingVideoOSDView: View {
                 shortcut: .nextSegment
             ))
             
-            // 5. 播放时间
-            Text(SentenceSegment.formatTimecode(isScrubbing ? engine.clock.currentTime : engine.currentTime))
-                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                .foregroundColor(.primary)
-                .frame(minWidth: 54, alignment: .trailing)
+            // 5. 播放时间 (独立监听高频时钟，避免 OSD 其余组件频繁重绘)
+            OSDTimecodeText(clock: engine.clock)
             
             // 6. 播放进度条（横向自适应扩展）
             OSDTimelineSlider(
@@ -192,5 +189,17 @@ private struct OSDTimelineSlider: View {
                 }
             }
         )
+    }
+}
+
+/// 独立隔离的高频时间码文本视图
+private struct OSDTimecodeText: View {
+    @ObservedObject var clock: PlaybackClock
+
+    var body: some View {
+        Text(SentenceSegment.formatTimecode(clock.currentTime))
+            .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+            .foregroundColor(.primary)
+            .frame(minWidth: 54, alignment: .trailing)
     }
 }

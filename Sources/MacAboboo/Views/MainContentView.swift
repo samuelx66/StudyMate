@@ -63,6 +63,10 @@ public struct MainContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleMediaDrop)
         .overlay(dropTargetOverlay)
         .onAppear {
+            // SwiftUI may reuse the scene's view storage when the main window
+            // is reopened.  Reset the one-shot close guard here; otherwise a
+            // second “文件 > 关闭” is ignored after the first close cycle.
+            isClosingCurrentMedia = false
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
             // 主窗口内容已经开始渲染后，才销毁欢迎页场景，避免两个窗口同时
             // 长时间存在，也避免欢迎页提前关闭导致主窗口首帧无宿主窗口。
@@ -254,6 +258,9 @@ public struct MainContentView: View {
         Task { @MainActor in
             // 先完整保存并释放媒体工作区资源，再销毁主窗口场景。
             await engine.closeCurrentMedia()
+            // Allow the same main-window scene to be used for the next media
+            // session instead of leaving its local guard permanently locked.
+            isClosingCurrentMedia = false
             dismissMainWindowThenShowWelcome()
         }
     }

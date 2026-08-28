@@ -271,16 +271,16 @@ public actor AudioPCMExtractor {
         let byteCount = sampleCount * MemoryLayout<Float>.size
         guard data.count == cacheHeaderSize + byteCount else { return nil }
 
-        var samples = [Float](repeating: 0, count: sampleCount)
-        samples.withUnsafeMutableBytes { destination in
+        let samples = [Float](unsafeUninitializedCapacity: sampleCount) { buffer, initializedCount in
             data.withUnsafeBytes { source in
                 guard let sourceBase = source.baseAddress,
-                      let destinationBase = destination.baseAddress else { return }
-                destinationBase.copyMemory(
+                      let destinationBase = buffer.baseAddress else { return }
+                UnsafeMutableRawPointer(destinationBase).copyMemory(
                     from: sourceBase.advanced(by: cacheHeaderSize),
                     byteCount: byteCount
                 )
             }
+            initializedCount = sampleCount
         }
 
         // v2 缓存只由本应用的 Float32 解码器原子写入；头部和长度已经完整校验，

@@ -1363,6 +1363,7 @@ private struct SegmentListRowsView: View, Equatable {
                     },
                     editRequest: $editRequest
                 )
+                .equatable()
                 .id(seg.id)
             }
         }
@@ -1394,7 +1395,7 @@ extension SegmentListRowsView {
 }
 
 /// 单行断句单元格
-struct SegmentRowView: View {
+struct SegmentRowView: View, Equatable {
     let seg: SentenceSegment
     let isActive: Bool
     let isSelectedForExport: Bool
@@ -1414,6 +1415,15 @@ struct SegmentRowView: View {
     @State private var isEditing: Bool = false
     @State private var editSessionID = UUID()
     @ObservedObject private var lang = LanguageManager.shared
+
+    static func == (lhs: SegmentRowView, rhs: SegmentRowView) -> Bool {
+        lhs.seg == rhs.seg
+            && lhs.isActive == rhs.isActive
+            && lhs.isSelectedForExport == rhs.isSelectedForExport
+            && lhs.isScrolling == rhs.isScrolling
+            && lhs.editRequest == rhs.editRequest
+            && lhs.lang.currentLanguage.rawValue == rhs.lang.currentLanguage.rawValue
+    }
 
     var body: some View {
         HStack(spacing: 0) {
