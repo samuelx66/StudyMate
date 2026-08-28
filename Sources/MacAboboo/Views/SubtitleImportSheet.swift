@@ -8,7 +8,7 @@ public struct SubtitleImportSheet: View {
     @ObservedObject var lang = LanguageManager.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.undoManager) private var undoManager
-    
+
     @State private var selectedTab: Int = 0 // 0: 文件导入 (SRT/LRC/VTT/ASS/SSA/TXT), 1: 纯文本智能对齐 (TXT / 粘贴)
     @State private var plainTextMode: Int = 0 // 0: 文本输入, 1: 分句预览
     @State private var importedItems: [ParsedSubtitleItem] = []
@@ -24,22 +24,22 @@ public struct SubtitleImportSheet: View {
     @State private var pendingImportKind = 0
     @State private var targetMediaID: UUID?
     @State private var parsingTask: Task<Void, Never>?
-    
+
     public init(engine: PlaybackEngine) {
         self.engine = engine
     }
-    
+
     public var body: some View {
         VStack(spacing: 0) {
             // 头部标题栏
             HStack(spacing: 12) {
                 Label(lang.text("导入字幕或文章文本", "Import Subtitles or Text"), systemImage: "captions.bubble")
                     .font(.headline)
-                
+
                 Spacer(minLength: 8)
-                
+
                 Picker("", selection: $selectedTab) {
-                    Text(lang.text("字幕文件（SRT / LRC / VTT / ASS / SSA / TXT）", "Subtitle File (SRT / LRC / VTT / ASS / SSA / TXT)")).tag(0)
+                    Text(lang.text("字幕文件", "Subtitle File")).tag(0)
                     Text(lang.text("纯文本智能对齐（TXT / 粘贴）", "Align Plain Text (TXT / Paste)")).tag(1)
                 }
                 .pickerStyle(.segmented)
@@ -47,27 +47,27 @@ public struct SubtitleImportSheet: View {
             }
             .padding(14)
             .background(Color(nsColor: .controlBackgroundColor))
-            
+
             Divider()
-            
+
             // 主体内容区
             if selectedTab == 0 {
                 fileImportView
             } else {
                 plainTextImportView
             }
-            
+
             Divider()
-            
+
             // 底部操作栏
             HStack {
                 Button(lang.text("取消", "Cancel")) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                
+
                 Spacer()
-                
+
                 if selectedTab == 0 {
                     Button(action: { requestApply(kind: 0) }) {
                         Text(lang.text("应用此字幕（\(importedItems.count) 句）", "Apply \(importedItems.count) Cues"))
@@ -93,14 +93,14 @@ public struct SubtitleImportSheet: View {
             isPresented: $showReplacementConfirmation,
             titleVisibility: .visible
         ) {
-            Button(lang.text("替换（可撤销）", "Replace (Undo Available)"), role: .destructive) {
+            Button(lang.text("替换", "Replace"), role: .destructive) {
                 performPendingImport()
             }
             Button(lang.text("取消", "Cancel"), role: .cancel) {}
         } message: {
             Text(lang.text(
-                "导入会替换当前 \(engine.segments.count) 个断句；之后可以使用“撤销”。",
-                "This import replaces \(engine.segments.count) sentences. You can undo it afterward."
+                "导入会替换当前 \(engine.segments.count) 个断句；之后不可以撤销。",
+                "This import replaces \(engine.segments.count) sentences. You can‘t undo it afterward."
             ))
         }
         .alert(lang.text("导入失败", "Import Failed"), isPresented: Binding(
@@ -112,9 +112,9 @@ public struct SubtitleImportSheet: View {
             Text(importErrorMessage ?? "")
         }
     }
-    
+
     // MARK: - 字幕文件导入视图
-    
+
     private var fileImportView: some View {
         VStack(spacing: 12) {
             if importedItems.isEmpty {
@@ -124,10 +124,10 @@ public struct SubtitleImportSheet: View {
                     Image(systemName: "doc.badge.plus")
                         .font(.system(size: 48))
                         .foregroundColor(.blue)
-                    
+
                     Text(lang.text("拖拽 SRT、LRC、VTT、ASS、SSA 或 TXT 字幕文件到此处", "Drop an SRT, LRC, VTT, ASS, SSA, or TXT file here"))
                         .font(.headline)
-                    
+
                     Button(lang.text("选择字幕文件…", "Choose Subtitle File…")) {
                         selectSubtitleFile()
                     }
@@ -165,9 +165,9 @@ public struct SubtitleImportSheet: View {
                         Text(lang.text("文件：\(selectedFileName)", "File: \(selectedFileName)"))
                             .font(.caption.bold())
                             .foregroundColor(.secondary)
-                        
+
                         Spacer()
-                        
+
                         Button(lang.text("重新选择", "Choose Again")) {
                             importedItems = []
                             selectedFileName = ""
@@ -185,7 +185,7 @@ public struct SubtitleImportSheet: View {
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 14)
-                    
+
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 4) {
                             ForEach(previewSubtitleItems, id: \.index) { item in
@@ -217,9 +217,9 @@ public struct SubtitleImportSheet: View {
             }
         }
     }
-    
+
     // MARK: - 纯文本导入与智能对齐视图
-    
+
     private var plainTextImportView: some View {
         VStack(spacing: 8) {
             // 工具栏：说明与动作按钮
@@ -230,14 +230,14 @@ public struct SubtitleImportSheet: View {
                 ))
                 .font(.caption)
                 .foregroundColor(.secondary)
-                
+
                 Spacer()
-                
+
                 Button(lang.text("选择 TXT 文件…", "Choose TXT File…")) {
                     selectPlainTextFile()
                 }
                 .controlSize(.small)
-                
+
                 if !plainTextContent.isEmpty {
                     Button(lang.text("清空", "Clear")) {
                         plainTextContent = ""
@@ -249,7 +249,7 @@ public struct SubtitleImportSheet: View {
             }
             .padding(.horizontal, 14)
             .padding(.top, 8)
-            
+
             if !splitSentencesPreview.isEmpty {
                 Picker("", selection: $plainTextMode) {
                     Text(lang.text("文本编辑", "Edit Text")).tag(0)
@@ -258,7 +258,7 @@ public struct SubtitleImportSheet: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 14)
             }
-            
+
             if plainTextMode == 0 || splitSentencesPreview.isEmpty {
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $plainTextContent)
@@ -270,7 +270,7 @@ public struct SubtitleImportSheet: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(isPlainTextTargeted ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isPlainTextTargeted ? 2 : 1)
                         )
-                    
+
                     if plainTextContent.isEmpty {
                         Text(lang.text("在此处粘贴课文、歌词或演讲稿，或者拖入 .txt 文件…", "Paste text, lyrics, or transcripts here, or drop a .txt file…"))
                             .font(.body)
@@ -316,7 +316,7 @@ public struct SubtitleImportSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            
+
             if !splitSentencesPreview.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
@@ -335,13 +335,13 @@ public struct SubtitleImportSheet: View {
             }
         }
     }
-    
+
     // MARK: - 动作逻辑
 
     private var previewSubtitleItems: [ParsedSubtitleItem] {
         subtitleImportTarget.apply(to: importedItems)
     }
-    
+
     private func selectPlainTextFile() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -350,12 +350,12 @@ public struct SubtitleImportSheet: View {
             UTType.plainText,
             UTType.text
         ]
-        
+
         if panel.runModal() == .OK, let url = panel.url {
             loadPlainText(from: url)
         }
     }
-    
+
     private func loadPlainText(from url: URL) {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -367,7 +367,7 @@ public struct SubtitleImportSheet: View {
             splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(content)
         }
     }
-    
+
     private func selectSubtitleFile() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -381,12 +381,12 @@ public struct SubtitleImportSheet: View {
             UTType(filenameExtension: "txt") ?? .text,
             .text
         ]
-        
+
         if panel.runModal() == .OK, let url = panel.url {
             parseSubtitleFile(at: url)
         }
     }
-    
+
     private func parseSubtitleFile(at url: URL) {
         parsingTask?.cancel()
         isParsing = true
@@ -417,7 +417,7 @@ public struct SubtitleImportSheet: View {
             }
         }
     }
-    
+
     private func requestApply(kind: Int) {
         guard targetMediaID == engine.currentMedia?.id else {
             importErrorMessage = lang.currentLanguage == .zh

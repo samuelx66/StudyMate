@@ -620,6 +620,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 arguments += [
                     "-/filter_complex", filterURL.path,
                     "-map", "[out]",
+                    "-t", preciseTime(totalDuration),
                     "-vn",
                     "-codec:a", "aac",
                     "-b:a", "192k",
@@ -740,6 +741,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         artist: String = "",
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
+        let totalDuration = max(0.05, segments.reduce(0) { $0 + $1.duration })
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         let filterURL = temporaryDirectory.appendingPathComponent("concat.filter")
@@ -756,6 +758,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             "-i", mediaURL.path,
             "-/filter_complex", filterURL.path,
             "-map", "[out]",
+            "-t", preciseTime(totalDuration),
             "-vn",
             "-codec:a", "aac",
             "-b:a", "192k"
@@ -766,7 +769,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
 
         try runFFmpeg(
             arguments: arguments,
-            duration: max(0.05, segments.reduce(0) { $0 + $1.duration }),
+            duration: totalDuration,
             progress: progress
         )
     }
