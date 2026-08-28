@@ -1,8 +1,10 @@
 import Foundation
 import CryptoKit
 
-/// 单个媒体的当前工程元数据。工程文件只接受当前 schema，
-/// 不读取或迁移旧版本工程。
+/// 单个媒体的当前工程元数据。
+///
+/// 当前写入格式固定为 schema 4。读取旧工程时由 `ProjectFileManager`
+/// 使用迁移解码器转换为这个结构，避免升级软件后丢失用户编辑过的字幕。
 public struct MediaProjectFile: Codable, Sendable {
     public static let currentSchemaVersion = 4
 
@@ -140,9 +142,38 @@ public struct MediaProjectFile: Codable, Sendable {
     }
 }
 
+/// 工程读取的结果必须区分“从未保存过”和“已有工程但需要人工处理”。
+/// 只有 `.missing` 才允许上层自动生成新的断句。
+public enum ProjectLoadResult: Sendable {
+    case missing
+    case loaded(MediaProjectFile, needsMigration: Bool)
+    case unavailable(String)
+}
+
+/// 旧版本工程的宽松读取模型。所有新增字段都提供安全默认值，
+/// 读取后立即由 `MediaProjectFile` 重新编码为当前 schema。
+private struct LegacyMediaProjectFile: Decodable {
+    let schemaVersion: Int?
+    let mediaPath: String
+    let mediaTitle: String?
+    let duration: Double?
+    let lastPosition: Double?
+    let segments: [SentenceSegment]?
+    let waveformData: WaveformData?
+    let waveformCacheFile: String?
+    let mediaFileSize: Int64?
+    let mediaModificationDate: Date?
+    let hasCompletedSegmentation: Bool?
+    let acousticBoundaryTimes: [Double]?
+    let updatedAt: Date?
+}
+
 /// 工程元数据与波形缓存采用独立文件存储，避免每次改一行字幕都重写整份波形。
 public final class ProjectFileManager: @unchecked Sendable {
     public static let shared = ProjectFileManager()
+
+    /// 每个媒体保留少量最近快照，避免一次异常保存覆盖全部字幕编辑。
+    private static let backupRetentionCount = 5
 
     private let projectsDirectory: URL
     private let fileQueue = DispatchQueue(label: "com.macaboboo.project.filemanager", qos: .utility)
@@ -154,6 +185,11 @@ public final class ProjectFileManager: @unchecked Sendable {
     /// 由串行文件队列访问。避免每次字幕失焦保存都重新读取、解码同一份 JSON；
     /// 应用自身是工程文件的唯一写入者，首次读取仍以磁盘为准。
     private var persistedMetadataCache: [String: MediaProjectFile] = [:]
+
+    private struct DecodedProject {
+        let project: MediaProjectFile
+        let needsMigration: Bool
+    }
 
     private struct SaveRequest: Sendable {
         let mediaURL: URL
@@ -241,6 +277,46 @@ public final class ProjectFileManager: @unchecked Sendable {
             .joined(separator: "_")
             .prefix(32)
         return "\(safeName)_\(hashString)"
+    }
+
+    private func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    /// 先尝试当前格式；只有当前格式无法读取时才走旧格式迁移。
+    /// 这样未来新增 schema 时不会被错误地当成旧格式而静默丢字段。
+    private func decodeStoredProject(_ data: Data) throws -> DecodedProject {
+        if let current = try? makeDecoder().decode(MediaProjectFile.self, from: data) {
+            return DecodedProject(project: current, needsMigration: false)
+        }
+
+        let legacy = try makeDecoder().decode(LegacyMediaProjectFile.self, from: data)
+        let version = legacy.schemaVersion ?? 1
+        guard (1...MediaProjectFile.currentSchemaVersion).contains(version) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: [], debugDescription: "不支持的工程文件版本：\(version)")
+            )
+        }
+
+        let segments = legacy.segments ?? []
+        let project = MediaProjectFile(
+            mediaPath: legacy.mediaPath,
+            mediaTitle: legacy.mediaTitle
+                ?? URL(fileURLWithPath: legacy.mediaPath).deletingPathExtension().lastPathComponent,
+            duration: legacy.duration ?? 0,
+            lastPosition: legacy.lastPosition ?? 0,
+            segments: segments,
+            waveformData: legacy.waveformData,
+            waveformCacheFile: legacy.waveformCacheFile,
+            mediaFileSize: legacy.mediaFileSize,
+            mediaModificationDate: legacy.mediaModificationDate,
+            hasCompletedSegmentation: legacy.hasCompletedSegmentation ?? !segments.isEmpty,
+            acousticBoundaryTimes: legacy.acousticBoundaryTimes ?? [],
+            updatedAt: legacy.updatedAt ?? .distantPast
+        )
+        return DecodedProject(project: project, needsMigration: true)
     }
 
     /// `persistWaveform` 仅应在波形首次生成或改变时使用；常规字幕编辑只写轻量 JSON。
@@ -333,15 +409,137 @@ public final class ProjectFileManager: @unchecked Sendable {
         }
     }
 
+    /// 在覆盖工程或波形之前保留一个可恢复快照。备份目录名称以当前工程
+    /// 前缀开头，因此删除播放列表条目时会和工程、波形一起被清理。
+    private func createBackupIfNeeded(
+        metadataURL: URL,
+        waveformURL: URL,
+        existingProject: MediaProjectFile?
+    ) throws {
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else { return }
+
+        let baseName = metadataURL.deletingPathExtension().lastPathComponent
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let backupName = "\(baseName).backup-\(stamp)-\(UUID().uuidString.prefix(8))"
+        let backupDirectory = projectsDirectory.appendingPathComponent(backupName, isDirectory: true)
+        try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+
+        let backupMetadataURL = backupDirectory.appendingPathComponent("project.json")
+        let hasWaveformCache = FileManager.default.fileExists(atPath: waveformURL.path)
+        if let existingProject {
+            // 让备份在脱离当前工程文件后仍然可以独立恢复。
+            let backupProject = MediaProjectFile(
+                mediaPath: existingProject.mediaPath,
+                mediaTitle: existingProject.mediaTitle,
+                duration: existingProject.duration,
+                lastPosition: existingProject.lastPosition,
+                segments: existingProject.segments,
+                waveformData: hasWaveformCache ? nil : existingProject.waveformData,
+                waveformCacheFile: hasWaveformCache ? "waveform" : nil,
+                mediaFileSize: existingProject.mediaFileSize,
+                mediaModificationDate: existingProject.mediaModificationDate,
+                hasCompletedSegmentation: existingProject.hasCompletedSegmentation,
+                acousticBoundaryTimes: existingProject.acousticBoundaryTimes,
+                updatedAt: existingProject.updatedAt
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(backupProject).write(to: backupMetadataURL, options: .atomic)
+        } else {
+            // 即使旧文件已经损坏，也先保留原始字节，避免后续人工恢复无据可查。
+            try FileManager.default.copyItem(at: metadataURL, to: backupMetadataURL)
+        }
+
+        if hasWaveformCache {
+            try FileManager.default.copyItem(
+                at: waveformURL,
+                to: backupDirectory.appendingPathComponent("waveform")
+            )
+        }
+
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: projectsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            guard url.lastPathComponent.hasPrefix(baseName + ".backup-") else { return false }
+            return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+
+        if backups.count > Self.backupRetentionCount {
+            for staleBackup in backups.dropFirst(Self.backupRetentionCount) {
+                try FileManager.default.removeItem(at: staleBackup)
+            }
+        }
+    }
+
+    private func projectByHydratingWaveform(
+        _ project: MediaProjectFile,
+        cacheDirectory: URL
+    ) -> MediaProjectFile {
+        var waveform = project.waveformData
+        if waveform == nil, let cacheName = project.waveformCacheFile {
+            let safeName = URL(fileURLWithPath: cacheName).lastPathComponent
+            if safeName == cacheName {
+                let cacheURL = cacheDirectory.appendingPathComponent(safeName)
+                if let cacheData = try? Data(contentsOf: cacheURL) {
+                    waveform = decodeWaveformCache(cacheData)
+                        ?? (try? PropertyListDecoder().decode(WaveformData.self, from: cacheData))
+                }
+            }
+        }
+        guard waveform != project.waveformData else { return project }
+        return MediaProjectFile(
+            mediaPath: project.mediaPath,
+            mediaTitle: project.mediaTitle,
+            duration: project.duration,
+            lastPosition: project.lastPosition,
+            segments: project.segments,
+            waveformData: waveform,
+            waveformCacheFile: project.waveformCacheFile,
+            mediaFileSize: project.mediaFileSize,
+            mediaModificationDate: project.mediaModificationDate,
+            hasCompletedSegmentation: project.hasCompletedSegmentation,
+            acousticBoundaryTimes: project.acousticBoundaryTimes,
+            updatedAt: project.updatedAt
+        )
+    }
+
+    /// 当前工程文件损坏或被意外删除时，按时间倒序尝试最近的快照。
+    /// 只有能完整解码的快照才会被返回，损坏的快照会继续向更早版本回退。
+    private func loadLatestBackupProject(for mediaURL: URL) -> MediaProjectFile? {
+        let baseName = projectBaseName(for: mediaURL)
+        guard let backupDirectories = try? FileManager.default.contentsOfDirectory(
+            at: projectsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        let candidates = backupDirectories
+            .filter { url in
+                guard url.lastPathComponent.hasPrefix(baseName + ".backup-") else { return false }
+                return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+
+        for directory in candidates {
+            let metadataURL = directory.appendingPathComponent("project.json")
+            guard let data = try? Data(contentsOf: metadataURL),
+                  let decoded = try? decodeStoredProject(data) else { continue }
+            let project = projectByHydratingWaveform(decoded.project, cacheDirectory: directory)
+            guard project.isCompatible(with: mediaURL) else { continue }
+            return project
+        }
+        return nil
+    }
+
     private func writeProject(_ request: SaveRequest) {
         let metadataURL = projectFileURL(for: request.mediaURL)
         let waveformURL = waveformFileURL(for: request.mediaURL)
         do {
             var existingMetadata = persistedMetadataCache[request.mediaURL.path]
             if existingMetadata == nil, let existingData = try? Data(contentsOf: metadataURL) {
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                existingMetadata = try? decoder.decode(MediaProjectFile.self, from: existingData)
+                existingMetadata = try? decodeStoredProject(existingData).project
                 if let existingMetadata {
                     persistedMetadataCache[request.mediaURL.path] = existingMetadata
                 }
@@ -350,13 +548,14 @@ public final class ProjectFileManager: @unchecked Sendable {
             var hasWaveformCache = existingMetadataIsCompatible
                 && FileManager.default.fileExists(atPath: waveformURL.path)
             var waveformCacheChanged = false
+            var pendingWaveformData: Data?
             if request.persistWaveform,
                let waveformData = request.waveformData,
                !waveformData.isEmpty {
                 let cacheData = encodeWaveformCache(waveformData)
                 let existingCacheData = try? Data(contentsOf: waveformURL)
                 if existingCacheData != cacheData {
-                    try cacheData.write(to: waveformURL, options: .atomic)
+                    pendingWaveformData = cacheData
                     waveformCacheChanged = true
                 }
                 hasWaveformCache = true
@@ -389,6 +588,17 @@ public final class ProjectFileManager: @unchecked Sendable {
                 return
             }
 
+            // 所有实际覆盖都必须先完成备份；备份失败时宁可放弃本次保存，
+            // 也不能留下“新文件已写入、旧字幕已丢失”的半完成状态。
+            try createBackupIfNeeded(
+                metadataURL: metadataURL,
+                waveformURL: waveformURL,
+                existingProject: existingMetadata
+            )
+            if let pendingWaveformData {
+                try pendingWaveformData.write(to: waveformURL, options: .atomic)
+            }
+
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(project)
@@ -419,17 +629,32 @@ public final class ProjectFileManager: @unchecked Sendable {
             && existing.acousticBoundaryTimes == desired.acousticBoundaryTimes
     }
 
-    public func loadProjectAsync(for mediaURL: URL) async -> MediaProjectFile? {
+    public func loadProjectResultAsync(for mediaURL: URL) async -> ProjectLoadResult {
         await withCheckedContinuation { continuation in
             fileQueue.async {
-                continuation.resume(returning: self.loadProjectDirect(for: mediaURL))
+                continuation.resume(returning: self.loadProjectResultDirect(for: mediaURL))
             }
         }
     }
 
-    public func loadProject(for mediaURL: URL) -> MediaProjectFile? {
+    public func loadProjectResult(for mediaURL: URL) -> ProjectLoadResult {
         fileQueue.sync {
-            loadProjectDirect(for: mediaURL)
+            loadProjectResultDirect(for: mediaURL)
+        }
+    }
+
+    /// 保留旧的可选返回接口，供不需要区分恢复状态的调用方使用。
+    public func loadProjectAsync(for mediaURL: URL) async -> MediaProjectFile? {
+        switch await loadProjectResultAsync(for: mediaURL) {
+        case .loaded(let project, _): return project
+        case .missing, .unavailable: return nil
+        }
+    }
+
+    public func loadProject(for mediaURL: URL) -> MediaProjectFile? {
+        switch loadProjectResult(for: mediaURL) {
+        case .loaded(let project, _): return project
+        case .missing, .unavailable: return nil
         }
     }
 
@@ -505,48 +730,31 @@ public final class ProjectFileManager: @unchecked Sendable {
         persistedMetadataCache.removeValue(forKey: standardizedURL.path)
     }
 
-    private func loadProjectDirect(for mediaURL: URL) -> MediaProjectFile? {
+    private func loadProjectResultDirect(for mediaURL: URL) -> ProjectLoadResult {
         let metadataURL = projectFileURL(for: mediaURL)
-        guard FileManager.default.fileExists(atPath: metadataURL.path) else { return nil }
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+            if let recovered = loadLatestBackupProject(for: mediaURL) {
+                persistedMetadataCache[mediaURL.standardizedFileURL.path] = recovered
+                reportError("工程主文件不存在，已从最近备份恢复。")
+                return .loaded(recovered, needsMigration: true)
+            }
+            return .missing
+        }
 
         do {
             let data = try Data(contentsOf: metadataURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let metadata = try decoder.decode(MediaProjectFile.self, from: data)
-
-            var waveform = metadata.waveformData
-            if waveform == nil, let cacheName = metadata.waveformCacheFile {
-                // 只接受纯文件名，避免损坏或篡改的工程文件越出 Projects 目录。
-                let safeName = URL(fileURLWithPath: cacheName).lastPathComponent
-                if safeName == cacheName {
-                    let cacheURL = projectsDirectory.appendingPathComponent(safeName)
-                    if let cacheData = try? Data(contentsOf: cacheURL) {
-                        waveform = decodeWaveformCache(cacheData)
-                            ?? (try? PropertyListDecoder().decode(WaveformData.self, from: cacheData))
-                    }
-                }
-            }
-
-            let project = MediaProjectFile(
-                mediaPath: metadata.mediaPath,
-                mediaTitle: metadata.mediaTitle,
-                duration: metadata.duration,
-                lastPosition: metadata.lastPosition,
-                segments: metadata.segments,
-                waveformData: waveform,
-                waveformCacheFile: metadata.waveformCacheFile,
-                mediaFileSize: metadata.mediaFileSize,
-                mediaModificationDate: metadata.mediaModificationDate,
-                hasCompletedSegmentation: metadata.hasCompletedSegmentation,
-                acousticBoundaryTimes: metadata.acousticBoundaryTimes,
-                updatedAt: metadata.updatedAt
-            )
+            let decoded = try decodeStoredProject(data)
+            let project = projectByHydratingWaveform(decoded.project, cacheDirectory: projectsDirectory)
             persistedMetadataCache[mediaURL.standardizedFileURL.path] = project
-            return project
+            return .loaded(project, needsMigration: decoded.needsMigration)
         } catch {
+            if let recovered = loadLatestBackupProject(for: mediaURL) {
+                persistedMetadataCache[mediaURL.standardizedFileURL.path] = recovered
+                reportError("工程主文件无法读取，已从最近备份恢复。")
+                return .loaded(recovered, needsMigration: true)
+            }
             reportError("读取工程文件失败：\(error.localizedDescription)")
-            return nil
+            return .unavailable(error.localizedDescription)
         }
     }
 

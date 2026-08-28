@@ -262,6 +262,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var didAttemptAutomaticStartupRestore = false
     private var suppressCurrentProjectPersistence = false
     private var hasCompletedSegmentation = false
+    /// 工程文件存在但无法安全恢复时置为 true。此状态只允许用户明确
+    /// 发起新的断句，禁止波形解析完成后静默覆盖原工程。
+    private var projectRecoveryRequired = false
 
     private enum SegmentOrigin {
         case none
@@ -992,6 +995,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         aiTranscriptionStatusText = ""
         hasCompletedSegmentation = false
         segmentOrigin = .none
+        projectRecoveryRequired = false
         lastErrorMessage = nil
         segmentationWarningMessage = nil
         translationErrorMessage = nil
@@ -1067,6 +1071,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         currentRepeatCount = 1
         segmentOrigin = .none
         hasCompletedSegmentation = false
+        projectRecoveryRequired = false
         acousticBoundaryTimes = []
         boundaryDragSession = nil
         segments = []
@@ -1106,22 +1111,54 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         sidecarTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            async let savedProjectResult = self.projectFileManager.loadProjectAsync(for: mediaURL)
             async let sidecarItemsResult = self.loadSidecarItems(for: mediaURL)
-            let (savedProject, sidecarItems) = await (savedProjectResult, sidecarItemsResult)
+            async let projectLoadResult = self.projectFileManager.loadProjectResultAsync(for: mediaURL)
+            let (sidecarItems, projectResult) = await (sidecarItemsResult, projectLoadResult)
             guard !Task.isCancelled,
                   sessionID == self.mediaSessionID,
                   self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
 
-            let compatibleProject = savedProject.flatMap { project in
-                project.isCompatible(with: mediaURL) ? project : nil
-            }
-            if let compatibleProject {
-                self.restoreProject(compatibleProject, for: mediaURL)
+            var compatibleProject: MediaProjectFile?
+            switch projectResult {
+            case .missing:
+                // 没有任何工程记录，波形完成后才允许首次自动断句。
+                self.projectRecoveryRequired = false
+            case .loaded(let project, let needsMigration):
+                if project.isCompatible(with: mediaURL) {
+                    compatibleProject = project
+                    self.projectRecoveryRequired = false
+                    self.restoreProject(project, for: mediaURL)
+                    if needsMigration {
+                        // 迁移只在工程已经成功恢复且媒体匹配时执行，
+                        // 旧文件会先由 ProjectFileManager 自动备份。
+                        self.projectFileManager.saveProject(
+                            for: mediaURL,
+                            title: project.mediaTitle,
+                            duration: project.duration,
+                            lastPosition: project.lastPosition,
+                            segments: project.segments,
+                            waveformData: project.waveformData,
+                            persistWaveform: project.waveformData?.isEmpty == false,
+                            hasCompletedSegmentation: project.hasCompletedSegmentation,
+                            acousticBoundaryTimes: project.acousticBoundaryTimes
+                        )
+                    }
+                } else {
+                    self.projectRecoveryRequired = true
+                    self.lastErrorMessage = self.projectRecoveryMessage(
+                        "工程对应的媒体文件信息已变化，已停止自动断句。"
+                    )
+                }
+            case .unavailable(let reason):
+                self.projectRecoveryRequired = true
+                self.lastErrorMessage = self.projectRecoveryMessage(
+                    "工程文件无法安全读取，已停止自动断句。\n\(reason)"
+                )
             }
 
             // 同名字幕始终接管断句时间轴，但仍复用工程中的播放位置和波形。
             if let sidecarItems, !sidecarItems.isEmpty {
+                self.projectRecoveryRequired = false
                 self.applySubtitleItems(sidecarItems, origin: .sidecar, persist: true)
                 if let compatibleProject,
                    let savedWaveform = compatibleProject.waveformData,
@@ -1237,7 +1274,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             self.updateMediaDurationIfNeeded(data.duration)
                         }
 
-                        if self.segments.isEmpty && self.segmentOrigin == .none {
+                        if self.segments.isEmpty,
+                           self.segmentOrigin == .none,
+                           !self.projectRecoveryRequired {
                             self.performSegmentation(
                                 mode: .fast,
                                 showProgress: true,
@@ -1285,6 +1324,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentationTask?.cancel()
         cancelAutomaticTranslation()
         modelIdleUnloadTask?.cancel()
+        projectRecoveryRequired = false
         acousticBoundaryTimes = []
 
         let modelManager = WhisperModelManager.shared
@@ -1780,6 +1820,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    private func projectRecoveryMessage(_ detail: String) -> String {
+        if LanguageManager.shared.currentLanguage == .zh {
+            return "为保护已编辑的原文和译文，\(detail)请手动确认后再重新断句。"
+        }
+        return "To protect edited subtitles, \(detail) Automatic segmentation was stopped. Start a new segmentation manually if needed."
+    }
+
     // MARK: - 字幕导入与应用
 
     public func importSubtitleItems(
@@ -1796,6 +1843,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         activeSegmentIndex = nil
         segmentOrigin = .none
         hasCompletedSegmentation = false
+        projectRecoveryRequired = false
         applySubtitleItems(mappedItems, origin: .imported, persist: true)
     }
 
@@ -1922,7 +1970,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     // MARK: - 独立项目工程文件持久化存储
 
     public func persistCurrentProject(includeWaveform: Bool = false) {
-        guard let media = currentMedia, !suppressCurrentProjectPersistence else { return }
+        guard let media = currentMedia,
+              !suppressCurrentProjectPersistence,
+              !projectRecoveryRequired else { return }
 
         projectFileManager.saveProject(
             for: media.url,

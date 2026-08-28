@@ -105,21 +105,129 @@ final class ProjectFileManagerTests: XCTestCase {
         XCTAssertFalse(loaded?.isCompatible(with: dummyMediaURL) ?? true)
     }
 
-    func testUnsupportedProjectSchemaIsIgnored() throws {
+    func testLegacyProjectSchemaIsMigratedAndPreservesEditedSubtitles() throws {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacAboboo-UnsupportedProjectTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("MacAboboo-LegacyProjectTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let mediaURL = directory.appendingPathComponent("unsupported.mp3")
+        let mediaURL = directory.appendingPathComponent("legacy.mp3")
         try Data("media".utf8).write(to: mediaURL)
         let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
         let metadataURL = manager.projectFileURL(for: mediaURL)
-        let unsupportedJSON = """
-        {"schemaVersion":3,"mediaPath":"\(mediaURL.path)","mediaTitle":"unsupported","duration":5,"lastPosition":0,"segments":[],"hasCompletedSegmentation":true,"updatedAt":"1970-01-01T00:00:00Z"}
+        let legacyJSON = """
+        {"schemaVersion":3,"mediaPath":"\(mediaURL.path)","mediaTitle":"legacy","duration":5,"lastPosition":0,"segments":[{"index":1,"startTime":0.25,"endTime":2.5,"text":"Edited original","translation":"编辑后的译文"}],"hasCompletedSegmentation":true,"updatedAt":"1970-01-01T00:00:00Z"}
         """
-        try Data(unsupportedJSON.utf8).write(to: metadataURL)
+        try Data(legacyJSON.utf8).write(to: metadataURL)
 
-        XCTAssertNil(manager.loadProject(for: mediaURL))
+        let result = manager.loadProjectResult(for: mediaURL)
+        guard case .loaded(let project, let needsMigration) = result else {
+            return XCTFail("Expected a migrated legacy project")
+        }
+        XCTAssertTrue(needsMigration)
+        XCTAssertEqual(project.schemaVersion, MediaProjectFile.currentSchemaVersion)
+        XCTAssertEqual(project.segments.first?.text, "Edited original")
+        XCTAssertEqual(project.segments.first?.translation, "编辑后的译文")
+    }
+
+    func testFutureProjectSchemaIsUnavailableAndNotTreatedAsMissing() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-FutureProjectTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let mediaURL = directory.appendingPathComponent("future.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let metadataURL = manager.projectFileURL(for: mediaURL)
+        let futureJSON = """
+        {"schemaVersion":99,"mediaPath":"\(mediaURL.path)","segments":[]}
+        """
+        try Data(futureJSON.utf8).write(to: metadataURL)
+
+        guard case .unavailable = manager.loadProjectResult(for: mediaURL) else {
+            return XCTFail("A future schema must require recovery instead of automatic segmentation")
+        }
+    }
+
+    func testSaveCreatesRecoverableBackupAndDeleteRemovesIt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-ProjectBackupTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let mediaURL = directory.appendingPathComponent("backup.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Backup",
+            duration: 3,
+            lastPosition: 0,
+            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "first", translation: "一")],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+        manager.saveProject(
+            for: mediaURL,
+            title: "Backup",
+            duration: 3,
+            lastPosition: 1,
+            segments: [SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "second", translation: "二")],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+
+        let backupDirectories = try FileManager.default.contentsOfDirectory(
+            at: directory.appendingPathComponent("projects"),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            url.lastPathComponent.contains(".backup-")
+                && ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
+        }
+        XCTAssertEqual(backupDirectories.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupDirectories[0].appendingPathComponent("project.json").path))
+
+        try manager.deleteProject(for: mediaURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupDirectories[0].path))
+    }
+
+    func testCorruptedCurrentProjectRecoversLatestValidBackup() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-ProjectRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let mediaURL = directory.appendingPathComponent("recovery.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+
+        let first = SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "编辑前", translation: "原译文")
+        manager.saveProject(
+            for: mediaURL,
+            title: "Recovery",
+            duration: 3,
+            lastPosition: 0,
+            segments: [first],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+
+        let second = SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "编辑后", translation: "新译文")
+        manager.saveProject(
+            for: mediaURL,
+            title: "Recovery",
+            duration: 3,
+            lastPosition: 1,
+            segments: [second],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+        try Data("corrupted".utf8).write(to: manager.projectFileURL(for: mediaURL), options: .atomic)
+
+        guard case .loaded(let recovered, _) = manager.loadProjectResult(for: mediaURL) else {
+            return XCTFail("Expected recovery from the latest valid backup")
+        }
+        XCTAssertEqual(recovered.segments.first?.text, "编辑前")
+        XCTAssertEqual(recovered.segments.first?.translation, "原译文")
     }
 
     func testRapidSavesPersistLatestMetadataSnapshot() throws {
