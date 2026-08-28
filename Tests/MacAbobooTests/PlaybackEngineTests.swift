@@ -1630,6 +1630,44 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.waveformData.peaks, waveform.peaks)
     }
 
+    func testMultipleFormatSidecarsPrioritizesSRTOverLRC() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("multi-sidecar.mp3")
+        try Data("media".utf8).write(to: mediaURL)
+        let srtURL = directory.appendingPathComponent("multi-sidecar.srt")
+        let lrcURL = directory.appendingPathComponent("multi-sidecar.lrc")
+        try """
+        1
+        00:00:01,000 --> 00:00:03,000
+        From SRT
+        SRT译文
+        """.write(to: srtURL, atomically: true, encoding: .utf8)
+        try """
+        [00:00.50]From LRC
+        [00:00.50]LRC译文
+        """.write(to: lrcURL, atomically: true, encoding: .utf8)
+
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: manager
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+
+        for _ in 0..<50 where engine.segments.first?.text != "From SRT" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(engine.segments.count, 1)
+        let segment = try XCTUnwrap(engine.segments.first)
+        XCTAssertEqual(segment.startTime, 1, accuracy: 0.001)
+        XCTAssertEqual(segment.endTime, 3, accuracy: 0.001)
+        XCTAssertEqual(segment.text, "From SRT")
+        XCTAssertEqual(segment.translation, "SRT译文")
+    }
+
     func testManualSubtitleImportReplacesEveryExistingSegmentAndTargetsTranslation() {
         let engine = makeTestPlaybackEngine()
         engine.duration = 20

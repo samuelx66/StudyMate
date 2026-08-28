@@ -300,14 +300,14 @@ public struct SegmentListView: View {
                         .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
                         .help(MacAbobooShortcutCatalog.help(
-                            lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
+                            lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
                             shortcut: .importSubtitles
                         ))
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .help(MacAbobooShortcutCatalog.help(
-                    lang.text("导入字幕（SRT / LRC / VTT / TXT）", "Import subtitles (SRT / LRC / VTT / TXT)"),
+                    lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
                     shortcut: .importSubtitles
                 ))
                 .keyboardShortcut("i", modifiers: [.command, .shift])
@@ -789,7 +789,7 @@ public struct SegmentListView: View {
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = lang.text("选择", "Choose")
-        panel.message = lang.text("选择逐句 M4A 和 LRC 的保存位置", "Choose where to save separate M4A and LRC files")
+        panel.message = lang.text("选择逐句 M4A、LRC 和 SRT 的保存位置", "Choose where to save separate M4A, LRC, and SRT files")
         if panel.runModal() == .OK, let directory = panel.url {
             let segments = selectedSegments
             performExport { progress in
@@ -810,7 +810,7 @@ public struct SegmentListView: View {
         panel.canCreateDirectories = true
         panel.allowedContentTypes = [UTType(filenameExtension: "m4a") ?? .audio]
         panel.nameFieldStringValue = media.title + "-已选句子.m4a"
-        panel.message = lang.text("将生成一个 AAC 编码的 M4A 和一个同名 LRC 字幕", "One AAC-encoded M4A and one matching LRC subtitle will be created")
+        panel.message = lang.text("将生成一个 AAC 编码的 M4A 以及同名 LRC 与 SRT 字幕", "One AAC-encoded M4A and matching LRC and SRT subtitles will be created")
         if panel.runModal() == .OK, let audioURL = panel.url {
             let segments = selectedSegments
             performExport { progress in

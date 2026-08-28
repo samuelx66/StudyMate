@@ -9,7 +9,7 @@ public struct SubtitleImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.undoManager) private var undoManager
     
-    @State private var selectedTab: Int = 0 // 0: 文件导入 (SRT/LRC/VTT), 1: 纯文本智能对齐 (TXT / 粘贴)
+    @State private var selectedTab: Int = 0 // 0: 文件导入 (SRT/LRC/VTT/ASS/SSA/TXT), 1: 纯文本智能对齐 (TXT / 粘贴)
     @State private var plainTextMode: Int = 0 // 0: 文本输入, 1: 分句预览
     @State private var importedItems: [ParsedSubtitleItem] = []
     @State private var plainTextContent: String = ""
@@ -39,7 +39,7 @@ public struct SubtitleImportSheet: View {
                 Spacer(minLength: 8)
                 
                 Picker("", selection: $selectedTab) {
-                    Text(lang.text("字幕文件（SRT / LRC / VTT）", "Subtitle File (SRT / LRC / VTT)")).tag(0)
+                    Text(lang.text("字幕文件（SRT / LRC / VTT / ASS / SSA / TXT）", "Subtitle File (SRT / LRC / VTT / ASS / SSA / TXT)")).tag(0)
                     Text(lang.text("纯文本智能对齐（TXT / 粘贴）", "Align Plain Text (TXT / Paste)")).tag(1)
                 }
                 .pickerStyle(.segmented)
@@ -125,7 +125,7 @@ public struct SubtitleImportSheet: View {
                         .font(.system(size: 48))
                         .foregroundColor(.blue)
                     
-                    Text(lang.text("拖拽 SRT、LRC 或 VTT 字幕文件到此处", "Drop an SRT, LRC, or VTT file here"))
+                    Text(lang.text("拖拽 SRT、LRC、VTT、ASS、SSA 或 TXT 字幕文件到此处", "Drop an SRT, LRC, VTT, ASS, SSA, or TXT file here"))
                         .font(.headline)
                     
                     Button(lang.text("选择字幕文件…", "Choose Subtitle File…")) {
@@ -376,6 +376,9 @@ public struct SubtitleImportSheet: View {
             UTType(filenameExtension: "srt") ?? .text,
             UTType(filenameExtension: "lrc") ?? .text,
             UTType(filenameExtension: "vtt") ?? .text,
+            UTType(filenameExtension: "ass") ?? .text,
+            UTType(filenameExtension: "ssa") ?? .text,
+            UTType(filenameExtension: "txt") ?? .text,
             .text
         ]
         

@@ -88,6 +88,74 @@ public final class SubtitleExporter: Sendable {
         
         return String(format: "%02d:%02d.%02d", mins, secs, totalCentiSecs)
     }
+
+    /// 导出为标准双语 SRT 字幕格式字符串。
+    public func exportToSRT(
+        segments: [SentenceSegment],
+        includeTranslation: Bool = true
+    ) -> String {
+        exportToSRT(
+            segments: segments,
+            startTimes: segments.map(\.startTime),
+            endTimes: segments.map(\.endTime),
+            includeTranslation: includeTranslation
+        )
+    }
+
+    /// 将不连续的断句按合并后 M4A 的连续时间轴生成 SRT。
+    public func exportToConcatenatedSRT(
+        segments: [SentenceSegment],
+        includeTranslation: Bool = true
+    ) -> String {
+        var cursor = 0.0
+        var startTimes: [Double] = []
+        var endTimes: [Double] = []
+        for segment in segments {
+            startTimes.append(cursor)
+            cursor += max(0.05, segment.duration)
+            endTimes.append(cursor)
+        }
+        return exportToSRT(
+            segments: segments,
+            startTimes: startTimes,
+            endTimes: endTimes,
+            includeTranslation: includeTranslation
+        )
+    }
+
+    private func exportToSRT(
+        segments: [SentenceSegment],
+        startTimes: [Double],
+        endTimes: [Double],
+        includeTranslation: Bool
+    ) -> String {
+        var blocks: [String] = []
+        for (index, (segment, (startTime, endTime))) in zip(segments, zip(startTimes, endTimes)).enumerated() {
+            let safeStart = max(0, startTime.isFinite ? startTime : 0)
+            let safeEnd = max(safeStart + 0.05, endTime.isFinite ? endTime : safeStart + 0.05)
+            let timeCode = "\(formatSRTTimestamp(safeStart)) --> \(formatSRTTimestamp(safeEnd))"
+            var lines: [String] = []
+            let original = normalizedLRCLines(segment.text).joined(separator: "\n")
+            let translation = includeTranslation ? normalizedLRCLines(segment.translation).joined(separator: "\n") : ""
+            if !original.isEmpty { lines.append(original) }
+            if !translation.isEmpty { lines.append(translation) }
+            if lines.isEmpty { lines.append("(music)") }
+
+            blocks.append("\(index + 1)\n\(timeCode)\n\(lines.joined(separator: "\n"))")
+        }
+        return blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
+    }
+
+    private func formatSRTTimestamp(_ seconds: Double) -> String {
+        let safeSecs = seconds.isFinite ? max(0, seconds) : 0
+        let totalMillis = Int((safeSecs * 1000).rounded())
+        let millis = totalMillis % 1000
+        let totalSeconds = totalMillis / 1000
+        let secs = totalSeconds % 60
+        let mins = (totalSeconds / 60) % 60
+        let hours = totalSeconds / 3600
+        return String(format: "%02d:%02d:%02d,%03d", hours, mins, secs, millis)
+    }
 }
 
 public struct SegmentMediaExportResult: Sendable {
@@ -175,7 +243,8 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 let suffix = String(format: "%04d", max(1, segment.index))
                 let fileBase = "\(sanitizedFileName(baseName))-\(suffix)"
                 let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("m4a")
-                let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
+                let lrcURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
+                let srtURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("srt")
                 let itemProgress: @Sendable (Double) -> Void = { fraction in
                     progress(SegmentMediaExportProgress(
                         fraction: (Double(offset) + fraction) / Double(total),
@@ -192,11 +261,15 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                     progress: itemProgress
                 )
                 do {
-                    let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+                    let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
                         segments: [segment],
                         title: fileBase
                     )
-                    try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+                    let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
+                        segments: [segment]
+                    )
+                    try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
+                    try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
                 } catch {
                     try? FileManager.default.removeItem(at: audioURL)
                     throw error
@@ -218,7 +291,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         return SegmentMediaExportResult(
             location: exportDirectory,
             audioFileCount: ordered.count,
-            subtitleFileCount: ordered.count
+            subtitleFileCount: ordered.count * 2
         )
     }
 
@@ -280,15 +353,22 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             )
         }
 
-        let subtitleURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("lrc")
+        let lrcURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("lrc")
+        let srtURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("srt")
         do {
-            let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+            let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
                 segments: ordered,
                 title: normalizedOutputURL.deletingPathExtension().lastPathComponent
             )
-            try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+            let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
+                segments: ordered
+            )
+            try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
+            try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
         } catch {
             try? FileManager.default.removeItem(at: normalizedOutputURL)
+            try? FileManager.default.removeItem(at: lrcURL)
+            try? FileManager.default.removeItem(at: srtURL)
             throw error
         }
 
@@ -303,7 +383,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         return SegmentMediaExportResult(
             location: normalizedOutputURL,
             audioFileCount: 1,
-            subtitleFileCount: 1
+            subtitleFileCount: 2
         )
     }
 
@@ -328,14 +408,14 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         ))
         try runFFmpeg(
             arguments: [
-                "-i", mediaURL.path,
                 "-ss", preciseTime(segment.startTime),
+                "-i", mediaURL.path,
                 "-t", preciseTime(segment.duration),
                 "-map", "0:a:0",
                 "-vn",
                 "-codec:a", "aac",
                 "-b:a", "192k",
-                "-avoid_negative_ts", "make_zero",
+                "-af", "aresample=48000,asetpts=PTS-STARTPTS",
                 "-movflags", "+faststart",
                 outputURL.path
             ],
@@ -360,7 +440,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
     }
 
     /// 导出句库中已经独立保存的 M4A 片段。这里不再读取原始音视频，
-    /// 仅对句库内的 AAC 文件做一次封装并写入来源标签，同时生成对应 LRC。
+    /// 仅对句库内的 AAC 文件做一次封装并写入来源标签，同时生成对应 LRC 与 SRT。
     public func exportLibraryEntriesIndividually(
         entries: [SentenceLibraryEntry],
         mediaURLs: [UUID: URL],
@@ -386,7 +466,8 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 }
                 let fileBase = "\(sanitizedFileName(baseName))-\(String(format: "%04d", offset + 1))"
                 let audioURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("m4a")
-                let subtitleURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
+                let lrcURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("lrc")
+                let srtURL = exportDirectory.appendingPathComponent(fileBase).appendingPathExtension("srt")
                 progress(SegmentMediaExportProgress(
                     fraction: Double(offset) / Double(total),
                     completedItems: offset,
@@ -410,11 +491,16 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                         ))
                     }
                 )
-                let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
-                    segments: [librarySubtitleSegment(entry, index: offset + 1)],
+                let singleSegment = librarySubtitleSegment(entry, index: offset + 1)
+                let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
+                    segments: [singleSegment],
                     title: fileBase
                 )
-                try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+                let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
+                    segments: [singleSegment]
+                )
+                try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
+                try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
                 progress(SegmentMediaExportProgress(
                     fraction: Double(offset + 1) / Double(total),
                     completedItems: offset + 1,
@@ -431,12 +517,12 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         return SegmentMediaExportResult(
             location: exportDirectory,
             audioFileCount: ordered.count,
-            subtitleFileCount: ordered.count
+            subtitleFileCount: ordered.count * 2
         )
     }
 
     /// 将句库中的多个独立片段无间隙合并为一个带 AAC 编码和来源标签的 M4A，
-    /// 再按同一顺序生成连续时间轴 LRC。
+    /// 再按同一顺序生成连续时间轴 LRC 与 SRT。
     public func exportLibraryEntriesMerged(
         entries: [SentenceLibraryEntry],
         mediaURLs: [UUID: URL],
@@ -462,7 +548,41 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         ))
 
         do {
-            if ordered.count == 1, let sourceURL = mediaURLs[ordered[0].id] {
+            let firstSourcePath = ordered.first?.sourceMediaPath ?? ""
+            let allFromSameSource = !firstSourcePath.isEmpty && ordered.allSatisfy { $0.sourceMediaPath == firstSourcePath }
+            let sourceMediaURL = URL(fileURLWithPath: firstSourcePath)
+
+            if allFromSameSource && FileManager.default.fileExists(atPath: firstSourcePath) {
+                // 如果所有句子均来自同一源音视频文件，直接基于源文件在单次滤镜流中以采样级精度切片并拼接，
+                // 杜绝多次有损重编码与 AAC 预卷帧累加（0ms 误差，完美对齐原声）。
+                let sourceSegments = ordered.enumerated().map { (offset, entry) in
+                    SentenceSegment(
+                        id: entry.id,
+                        index: offset + 1,
+                        startTime: entry.startTime,
+                        endTime: entry.endTime,
+                        text: entry.originalText,
+                        translation: entry.translation,
+                        note: entry.note
+                    )
+                }
+                try exportConcatenatedAudio(
+                    mediaURL: sourceMediaURL,
+                    segments: sourceSegments,
+                    outputURL: outputURL,
+                    album: album,
+                    artist: artist,
+                    progress: { fraction in
+                        progress(SegmentMediaExportProgress(
+                            fraction: fraction * 0.9,
+                            completedItems: 0,
+                            totalItems: 1,
+                            currentItem: outputURL.lastPathComponent,
+                            phase: "合并音频"
+                        ))
+                    }
+                )
+            } else if ordered.count == 1, let sourceURL = mediaURLs[ordered[0].id] {
                 try exportTaggedCopy(
                     sourceURL: sourceURL,
                     outputURL: outputURL,
@@ -485,7 +605,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 let filterURL = temporaryDirectory.appendingPathComponent("library-concat.filter")
                 var filter = ""
                 for index in ordered.indices {
-                    filter += "[\(index):a:0]asetpts=PTS-STARTPTS[a\(index)];\n"
+                    filter += "[\(index):a:0]aresample=48000,asetpts=PTS-STARTPTS[a\(index)];\n"
                 }
                 let labels = ordered.indices.map { "[a\($0)]" }.joined()
                 filter += "\(labels)concat=n=\(ordered.count):v=0:a=1[out]\n"
@@ -524,15 +644,21 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             }
 
             let subtitleSegments = ordered.enumerated().map { librarySubtitleSegment($0.element, index: $0.offset + 1) }
-            let subtitle = SubtitleExporter.shared.exportToConcatenatedLRC(
+            let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
                 segments: subtitleSegments,
                 title: outputURL.deletingPathExtension().lastPathComponent
             )
-            let subtitleURL = outputURL.deletingPathExtension().appendingPathExtension("lrc")
-            try subtitle.write(to: subtitleURL, atomically: true, encoding: .utf8)
+            let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
+                segments: subtitleSegments
+            )
+            let lrcURL = outputURL.deletingPathExtension().appendingPathExtension("lrc")
+            let srtURL = outputURL.deletingPathExtension().appendingPathExtension("srt")
+            try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
+            try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
             try? FileManager.default.removeItem(at: outputURL.deletingPathExtension().appendingPathExtension("lrc"))
+            try? FileManager.default.removeItem(at: outputURL.deletingPathExtension().appendingPathExtension("srt"))
             throw error
         }
 
@@ -543,7 +669,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             currentItem: outputURL.lastPathComponent,
             phase: "写入字幕"
         ))
-        return SegmentMediaExportResult(location: outputURL, audioFileCount: 1, subtitleFileCount: 1)
+        return SegmentMediaExportResult(location: outputURL, audioFileCount: 1, subtitleFileCount: 2)
     }
 
     private func exportAudioRange(
@@ -554,13 +680,14 @@ public final class SegmentMediaExporter: @unchecked Sendable {
     ) throws {
         try runFFmpeg(
             arguments: [
-                "-i", mediaURL.path,
                 "-ss", preciseTime(segment.startTime),
+                "-i", mediaURL.path,
                 "-t", preciseTime(segment.duration),
                 "-map", "0:a:0",
                 "-vn",
                 "-codec:a", "aac",
                 "-b:a", "192k",
+                "-af", "aresample=48000,asetpts=PTS-STARTPTS",
                 "-movflags", "+faststart",
                 outputURL.path
             ],
@@ -609,6 +736,8 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         mediaURL: URL,
         segments: [SentenceSegment],
         outputURL: URL,
+        album: String = "",
+        artist: String = "",
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
         let temporaryDirectory = try makeTemporaryDirectory()
@@ -623,17 +752,20 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         filter += "\(audioLabels)concat=n=\(segments.count):v=0:a=1[out]\n"
         try filter.write(to: filterURL, atomically: true, encoding: .utf8)
 
+        var arguments = [
+            "-i", mediaURL.path,
+            "-/filter_complex", filterURL.path,
+            "-map", "[out]",
+            "-vn",
+            "-codec:a", "aac",
+            "-b:a", "192k"
+        ]
+        if !album.isEmpty { arguments += ["-metadata", "album=\(album)"] }
+        if !artist.isEmpty { arguments += ["-metadata", "artist=\(artist)"] }
+        arguments += ["-movflags", "+faststart", outputURL.path]
+
         try runFFmpeg(
-            arguments: [
-                "-i", mediaURL.path,
-                "-/filter_complex", filterURL.path,
-                "-map", "[out]",
-                "-vn",
-                "-codec:a", "aac",
-                "-b:a", "192k",
-                "-movflags", "+faststart",
-                outputURL.path
-            ],
+            arguments: arguments,
             duration: max(0.05, segments.reduce(0) { $0 + $1.duration }),
             progress: progress
         )

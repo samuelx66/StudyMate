@@ -1323,13 +1323,34 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
 
-            // 3. 排序候选字幕：优先精确同名，其次优先中文/双语/英文
+            // 格式优先级：SRT 拥有最明确的标准起止时间戳，最高优先级；其次为 VTT, ASS, SSA, LRC, TXT
+            func formatPriority(_ url: URL) -> Int {
+                switch url.pathExtension.lowercased() {
+                case "srt": return 0
+                case "vtt": return 1
+                case "ass": return 2
+                case "ssa": return 3
+                case "lrc": return 4
+                case "txt": return 5
+                default: return 6
+                }
+            }
+
+            // 3. 排序候选字幕：
+            // ① 优先精确同名（baseName.ext）
+            // ② 优先 SRT 等区间格式（SRT > VTT > ASS > SSA > LRC > TXT）
+            // ③ 优先中文/双语标签（zh, chs, chi, zho）
+            // ④ 字典序兜底
             candidateURLs.sort { lhs, rhs in
                 let lhsName = lhs.lastPathComponent.lowercased()
                 let rhsName = rhs.lastPathComponent.lowercased()
                 let lhsExact = lhs.deletingPathExtension().lastPathComponent == baseName
                 let rhsExact = rhs.deletingPathExtension().lastPathComponent == baseName
                 if lhsExact != rhsExact { return lhsExact }
+
+                let lhsPriority = formatPriority(lhs)
+                let rhsPriority = formatPriority(rhs)
+                if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
 
                 let lhsZh = lhsName.contains("zh") || lhsName.contains("chs") || lhsName.contains("chi") || lhsName.contains("zho")
                 let rhsZh = rhsName.contains("zh") || rhsName.contains("chs") || rhsName.contains("chi") || rhsName.contains("zho")

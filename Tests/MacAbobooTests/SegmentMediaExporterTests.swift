@@ -16,7 +16,19 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertFalse(lrc.contains("[00:08.00]"))
     }
 
-    func testSeparateAndMergedExportCreateMatchingM4AAndBilingualLRC() async throws {
+    func testConcatenatedSRTRebasesTimelineAndIncludesBothLanguages() {
+        let segments = [
+            SentenceSegment(index: 2, startTime: 8.0, endTime: 9.25, text: "Second line", translation: "第二句"),
+            SentenceSegment(index: 5, startTime: 15.0, endTime: 17.0, text: "Fifth line", translation: "第五句")
+        ]
+
+        let srt = SubtitleExporter.shared.exportToConcatenatedSRT(segments: segments)
+
+        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:00:01,250\nSecond line\n第二句"))
+        XCTAssertTrue(srt.contains("00:00:01,250 --> 00:00:03,250\nFifth line\n第五句"))
+    }
+
+    func testSeparateAndMergedExportCreateMatchingM4AAndBilingualLRCAndSRT() async throws {
         guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
             throw XCTSkip("ffmpeg is required for the media export integration test")
         }
@@ -59,12 +71,18 @@ final class SegmentMediaExporterTests: XCTestCase {
         )
         XCTAssertEqual(separateFiles.filter { $0.pathExtension == "m4a" }.count, 2)
         XCTAssertEqual(separateFiles.filter { $0.pathExtension == "lrc" }.count, 2)
-        XCTAssertTrue(separateFiles.allSatisfy { $0.pathExtension != "srt" })
+        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "srt" }.count, 2)
         let firstSubtitleURL = try XCTUnwrap(
             separateFiles.first { $0.lastPathComponent.hasSuffix("-0001.lrc") }
         )
         let firstSubtitle = try String(contentsOf: firstSubtitleURL, encoding: .utf8)
         XCTAssertTrue(firstSubtitle.contains("[00:00.00]Original one\n[00:00.00]译文一"))
+
+        let firstSRTURL = try XCTUnwrap(
+            separateFiles.first { $0.lastPathComponent.hasSuffix("-0001.srt") }
+        )
+        let firstSRT = try String(contentsOf: firstSRTURL, encoding: .utf8)
+        XCTAssertTrue(firstSRT.contains("00:00:00,000 --> 00:00:00,500\nOriginal one\n译文一"))
 
         // 即使调用方误传旧的 MP3 后缀，导出器也必须强制生成 M4A。
         let requestedMergedAudioURL = root.appendingPathComponent("merged.mp3")
@@ -82,9 +100,12 @@ final class SegmentMediaExporterTests: XCTestCase {
         )
         XCTAssertTrue(mergedSubtitle.contains("[00:00.00]Original one\n[00:00.00]译文一"))
         XCTAssertTrue(mergedSubtitle.contains("[00:00.50]Original three\n[00:00.50]译文三"))
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: mergedAudioURL.deletingPathExtension().appendingPathExtension("srt").path
-        ))
+        let mergedSRT = try String(
+            contentsOf: mergedAudioURL.deletingPathExtension().appendingPathExtension("srt"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(mergedSRT.contains("00:00:00,000 --> 00:00:00,500\nOriginal one\n译文一"))
+        XCTAssertTrue(mergedSRT.contains("00:00:00,500 --> 00:00:01,000\nOriginal three\n译文三"))
 
         let duration = try await AVURLAsset(url: mergedAudioURL).load(.duration).seconds
         XCTAssertEqual(duration, 1.0, accuracy: 0.12)
@@ -120,7 +141,7 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertTrue(recorder.values.allSatisfy { $0.fraction >= 0 && $0.fraction <= 1 })
     }
 
-    func testLibraryEntryExportReusesIndependentClipsAndWritesLRC() async throws {
+    func testLibraryEntryExportReusesIndependentClipsAndWritesLRCAndSRT() async throws {
         guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
             throw XCTSkip("ffmpeg is required for the media export integration test")
         }
@@ -173,7 +194,8 @@ final class SegmentMediaExporterTests: XCTestCase {
         )
         let separateFiles = try FileManager.default.contentsOfDirectory(at: separate.location, includingPropertiesForKeys: nil)
         XCTAssertEqual(separateFiles.filter { $0.pathExtension == "m4a" }.count, 2)
-        XCTAssertTrue(separateFiles.contains { $0.pathExtension == "lrc" })
+        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "lrc" }.count, 2)
+        XCTAssertEqual(separateFiles.filter { $0.pathExtension == "srt" }.count, 2)
         let separateLRCs = try separateFiles
             .filter { $0.pathExtension == "lrc" }
             .map { try String(contentsOf: $0, encoding: .utf8) }
@@ -194,6 +216,12 @@ final class SegmentMediaExporterTests: XCTestCase {
         )
         XCTAssertTrue(mergedLRC.contains("[00:00.00]One"))
         XCTAssertTrue(mergedLRC.contains("[00:00.60]Two"))
+        let mergedSRT = try String(
+            contentsOf: merged.location.deletingPathExtension().appendingPathExtension("srt"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(mergedSRT.contains("00:00:00,000 --> 00:00:00,600\nOne\n一"))
+        XCTAssertTrue(mergedSRT.contains("00:00:00,600 --> 00:00:01,400\nTwo\n二"))
         let duration = try await AVURLAsset(url: merged.location).load(.duration).seconds
         XCTAssertEqual(duration, 1.4, accuracy: 0.2)
     }
