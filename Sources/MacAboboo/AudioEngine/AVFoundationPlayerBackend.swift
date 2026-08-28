@@ -401,6 +401,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         seekRecoveryTask = nil
         isSeekingInternal = false
         teardownItemObservations()
+        teardownTimeObserver()
         player.pause()
         player.replaceCurrentItem(with: nil)
         loadedURL = nil

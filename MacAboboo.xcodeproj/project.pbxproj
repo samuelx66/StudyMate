@@ -25,7 +25,6 @@
 		F63EA19F1CFED56DEE8CA5CD /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7977EEAD34EF9593B283E2 /* WaveformData.swift */; };
 		8D26BABD1657CB292B87130C /* PlaybackHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */; };
 		AD3A589B758684AAA13698F0 /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78322D585642383992C4344 /* ProjectFileManager.swift */; };
-		44826EE451689221D2AEDCBE /* SegmentationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4884576F03A06D8EE875482 /* SegmentationStore.swift */; };
 		248B4FED5FDDE5EF6E955CBD /* SentenceLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */; };
 		E7C0FA87F7C5FF5220B106F3 /* SentenceLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */; };
 		205A62B92C9B7BE7D5BB4675 /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */; };
@@ -39,7 +38,6 @@
 		E44033F926C1134636F93F71 /* TranslationProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = E766E6F4510E7051AA0FA0A0 /* TranslationProviders.swift */; };
 		375E00E4CA1A48684B2D0D87 /* TranslationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C687940712383C3C56C5111D /* TranslationService.swift */; };
 		36CDD8C4C8F7E13F51E6FE33 /* TranslationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F742E8E72E0660809B7C3727 /* TranslationSettings.swift */; };
-		472B5564C8A300DFF7BC2351 /* BoundaryMarkerHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */; };
 		708FC04B28824F84FA93C677 /* DraggableWaveformOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */; };
 		9C06C7E4D8F05364FF1F3DEE /* FloatingVideoOSDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */; };
 		28123690625B8092AD1C4AE0 /* IntensiveSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */; };
@@ -64,13 +62,11 @@
 		37925E80F95BB4008CCAD948 /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */; };
 		6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */; };
 		1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */; };
-		B6E8BA4E82BEFF64F32C418B /* SileroVADEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A2F32746F55615591A76A04 /* SileroVADEngine.swift */; };
 		86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */; };
 		8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */; };
 		C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */; };
 		CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */; };
 		2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */; };
-		A342290332D979D80C96ECB2 /* VADSegmenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */; };
 		7CECCD0C25CCF80184A07918 /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */; };
 		C86E50177DDF0C4754E23857 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */; };
 		89F0FD679AEB3A6F1E805429 /* MacAbobooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E903988D1BDA490BFA9AC334 /* MacAbobooApp.swift */; };
@@ -101,7 +97,6 @@
 		DA7977EEAD34EF9593B283E2 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Models/WaveformData.swift"; sourceTree = "<group>"; };
 		DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/PlaybackHistoryStore.swift"; sourceTree = "<group>"; };
 		A78322D585642383992C4344 /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
-		D4884576F03A06D8EE875482 /* SegmentationStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SegmentationStore.swift"; sourceTree = "<group>"; };
 		A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryManager.swift"; sourceTree = "<group>"; };
 		7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Persistence/SentenceLibraryStore.swift"; sourceTree = "<group>"; };
 		8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = archive; path = "Sources/MacAboboo/Resources/Models/ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
@@ -115,7 +110,6 @@
 		E766E6F4510E7051AA0FA0A0 /* TranslationProviders.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/TranslationEngine/TranslationProviders.swift"; sourceTree = "<group>"; };
 		C687940712383C3C56C5111D /* TranslationService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/TranslationEngine/TranslationService.swift"; sourceTree = "<group>"; };
 		F742E8E72E0660809B7C3727 /* TranslationSettings.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/TranslationEngine/TranslationSettings.swift"; sourceTree = "<group>"; };
-		DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/BoundaryMarkerHandle.swift"; sourceTree = "<group>"; };
 		03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/DraggableWaveformOverlay.swift"; sourceTree = "<group>"; };
 		A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/FloatingVideoOSDView.swift"; sourceTree = "<group>"; };
 		B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/Views/IntensiveSettingsPopover.swift"; sourceTree = "<group>"; };
@@ -140,13 +134,11 @@
 		B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
 		4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/MacAbobooResourceBundle.swift"; sourceTree = "<group>"; };
 		583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
-		6A2F32746F55615591A76A04 /* SileroVADEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SileroVADEngine.swift"; sourceTree = "<group>"; };
 		C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
 		3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechAlignmentEngine.swift"; sourceTree = "<group>"; };
 		95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
 		F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
 		3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
-		CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/VADSegmenter.swift"; sourceTree = "<group>"; };
 		38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
 		1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/MacAboboo/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
 		FC4BB19B52B62E7F952377BB /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "Sources/MacAbobooApp/Info.plist"; sourceTree = "<group>"; };
@@ -210,7 +202,6 @@
 				DA7977EEAD34EF9593B283E2 /* WaveformData.swift */,
 				DCDA423118E5A1556971253D /* PlaybackHistoryStore.swift */,
 				A78322D585642383992C4344 /* ProjectFileManager.swift */,
-				D4884576F03A06D8EE875482 /* SegmentationStore.swift */,
 				A3888682C48729BDEE0D0B8C /* SentenceLibraryManager.swift */,
 				7A93F66BFAD3E2E6392FB197 /* SentenceLibraryStore.swift */,
 				8622DE048381FA432D37CC35 /* ggml-silero-v6.2.0.bin */,
@@ -224,7 +215,6 @@
 				E766E6F4510E7051AA0FA0A0 /* TranslationProviders.swift */,
 				C687940712383C3C56C5111D /* TranslationService.swift */,
 				F742E8E72E0660809B7C3727 /* TranslationSettings.swift */,
-				DE3F1F2C1796442281F3B0FA /* BoundaryMarkerHandle.swift */,
 				03C384EB0A903DCA461900D1 /* DraggableWaveformOverlay.swift */,
 				A39B87CD5C126A2BA3B0D269 /* FloatingVideoOSDView.swift */,
 				B62178D6E765CC5CB430598F /* IntensiveSettingsPopover.swift */,
@@ -249,13 +239,11 @@
 				B74604020191E91273FA7A6E /* AudioPCMExtractor.swift */,
 				4F23A6ACA7DA4A2AA3A2D98F /* MacAbobooResourceBundle.swift */,
 				583A618D903CA6B327BD7CAD /* NativeSpeechRuntime.swift */,
-				6A2F32746F55615591A76A04 /* SileroVADEngine.swift */,
 				C73F47B7BC0A679AA75A4D9F /* SpeakerDiarizationEngine.swift */,
 				3889BD892F6E4A03A2203A64 /* SpeechAlignmentEngine.swift */,
 				95E55384400ACAD39FA96295 /* SpeechBoundaryOptimizer.swift */,
 				F53C5C080FD32BF960E3CCF2 /* SpeechSegmentationModels.swift */,
 				3BE8117CA95B208FA8ECF89A /* SpeechSegmentationPipeline.swift */,
-				CCC4D5F9A376E268555A5440 /* VADSegmenter.swift */,
 				38FEFAEF0481F6DE044913FF /* WaveformExtractor.swift */,
 				1665BCA53E8A313DE59F760B /* WhisperModelManager.swift */,
 				FC4BB19B52B62E7F952377BB /* Info.plist */,
@@ -374,7 +362,6 @@
 				F63EA19F1CFED56DEE8CA5CD /* WaveformData.swift in Sources */,
 				8D26BABD1657CB292B87130C /* PlaybackHistoryStore.swift in Sources */,
 				AD3A589B758684AAA13698F0 /* ProjectFileManager.swift in Sources */,
-				44826EE451689221D2AEDCBE /* SegmentationStore.swift in Sources */,
 				248B4FED5FDDE5EF6E955CBD /* SentenceLibraryManager.swift in Sources */,
 				E7C0FA87F7C5FF5220B106F3 /* SentenceLibraryStore.swift in Sources */,
 				BD280A962553F6AB24C55B78 /* SubtitleExporter.swift in Sources */,
@@ -384,7 +371,6 @@
 				E44033F926C1134636F93F71 /* TranslationProviders.swift in Sources */,
 				375E00E4CA1A48684B2D0D87 /* TranslationService.swift in Sources */,
 				36CDD8C4C8F7E13F51E6FE33 /* TranslationSettings.swift in Sources */,
-				472B5564C8A300DFF7BC2351 /* BoundaryMarkerHandle.swift in Sources */,
 				708FC04B28824F84FA93C677 /* DraggableWaveformOverlay.swift in Sources */,
 				9C06C7E4D8F05364FF1F3DEE /* FloatingVideoOSDView.swift in Sources */,
 				28123690625B8092AD1C4AE0 /* IntensiveSettingsPopover.swift in Sources */,
@@ -409,13 +395,11 @@
 				37925E80F95BB4008CCAD948 /* AudioPCMExtractor.swift in Sources */,
 				6BA139EB8FEC6854473A1FDD /* MacAbobooResourceBundle.swift in Sources */,
 				1D6A7A1A4E16019CCB6F993E /* NativeSpeechRuntime.swift in Sources */,
-				B6E8BA4E82BEFF64F32C418B /* SileroVADEngine.swift in Sources */,
 				86CF79A9E9EDAD6B8A9351C2 /* SpeakerDiarizationEngine.swift in Sources */,
 				8024DC0582FDD19EA8B896E7 /* SpeechAlignmentEngine.swift in Sources */,
 				C9F8C778ED6CFA59E25A906C /* SpeechBoundaryOptimizer.swift in Sources */,
 				CE211BDA3D16AD03BAC391A8 /* SpeechSegmentationModels.swift in Sources */,
 				2C3B0BDB582879FE140808C2 /* SpeechSegmentationPipeline.swift in Sources */,
-				A342290332D979D80C96ECB2 /* VADSegmenter.swift in Sources */,
 				7CECCD0C25CCF80184A07918 /* WaveformExtractor.swift in Sources */,
 				C86E50177DDF0C4754E23857 /* WhisperModelManager.swift in Sources */,
 				89F0FD679AEB3A6F1E805429 /* MacAbobooApp.swift in Sources */,
@@ -516,7 +500,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 158;
+				CURRENT_PROJECT_VERSION = 162;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -526,7 +510,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.157;
+				MARKETING_VERSION = 1.0.161;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -541,7 +525,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 158;
+				CURRENT_PROJECT_VERSION = 162;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
@@ -550,7 +534,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.157;
+				MARKETING_VERSION = 1.0.161;
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;

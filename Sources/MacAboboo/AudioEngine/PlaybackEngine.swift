@@ -694,10 +694,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let seg = segments[idx]
         if lastSecondarySegmentId != seg.id || force {
             lastSecondarySegmentId = seg.id
-            let padding = max(0.8, seg.duration * 0.35)
+            let effectiveDuration = max(0.2, seg.duration)
+            let padding = max(0.8, effectiveDuration * 0.35)
             let vStart = max(0, seg.startTime - padding)
             let maxDuration = duration > 0 ? duration : (seg.endTime + padding + 1.0)
-            let vEnd = min(maxDuration, seg.endTime + padding)
+            let vEnd = min(maxDuration, max(vStart + 0.5, seg.endTime + padding))
             secondaryViewport = (vStart, vEnd)
         }
     }
@@ -847,12 +848,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 关闭当前媒体工作区并回到欢迎首屏。播放历史和已保存工程保留，
     /// 因而用户仍可从首屏的“继续播放”或历史条目重新打开媒体。
-    public func closeCurrentMedia() {
+    public func closeCurrentMedia() async {
         guard currentMedia != nil else { return }
 
         debouncedSaveTask?.cancel()
-        persistCurrentProject()
+        modelIdleUnloadTask?.cancel()
+        modelIdleUnloadTask = nil
 
+        // 先让所有旧媒体任务失效并取消，避免它们在保存或窗口销毁之后
+        // 又把旧媒体的异步结果写回当前工程。
         mediaSessionID = UUID()
         segmentationRequestID = UUID()
         seekGeneration &+= 1
@@ -870,8 +874,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentationTask = nil
         cancelAutomaticTranslation()
 
+        // 关闭前强制完成工程与播放历史写入，确保后续资源拆除不会丢失
+        // 当前断句、书签、播放位置或工程状态。
+        persistCurrentProject()
+        projectFileManager.flush()
+        playbackHistoryStore?.flush()
+
         isBackendReady = false
+        isMediaLoading = false
         isSeeking = false
+        isPreviewingAnchor = false
+        isBoundaryDragging = false
+        boundaryDragSource = nil
         pendingPreviewSeekTime = nil
         previewEndTime = nil
         pendingResumePlayback = false
@@ -887,6 +901,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         waveformData = .empty
         acousticBoundaryTimes = []
         activeSegmentIndex = nil
+        explicitSegmentSelection = nil
         lastSecondarySegmentId = nil
         boundaryDragWorkingSegments = nil
         activeBoundarySnapMarker = nil
@@ -911,6 +926,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         lastErrorMessage = nil
         segmentationWarningMessage = nil
         translationErrorMessage = nil
+
+        // 这些推理器与 PCM/波形缓存是进程级共享资源，不会随着 SwiftUI
+        // 窗口场景自动释放；关闭媒体时明确清理，欢迎页阶段不继续占用它们。
+        await SpeechSegmentationPipeline.shared.clearCaches()
+        await AudioPCMExtractor.shared.purgeMemoryCache()
+        WaveformExtractor.shared.purgeMemoryCache()
+        await SpeakerDiarizationEngine.shared.unloadModels()
+        await NativeSpeechRuntime.shared.unloadModels()
     }
 
     /// 加载音视频文件（优先从 ~/Library/Application Support/MacAboboo/Projects/ 独立工程文件瞬间读取）

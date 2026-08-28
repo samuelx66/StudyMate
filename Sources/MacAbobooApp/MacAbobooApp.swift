@@ -72,6 +72,7 @@ struct MacAbobooApp: App {
     @StateObject private var engine = PlaybackEngine.shared
     @StateObject private var sentenceLibraryManager = SentenceLibraryManager.shared
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("MacAboboo.ShowStatusBar") private var showStatusBar = false
     
     init() {
@@ -85,7 +86,7 @@ struct MacAbobooApp: App {
     var body: some Scene {
         // 欢迎页是应用定义的第一个窗口场景，因此 macOS 启动时只创建它；
         // 主媒体窗口作为第二个场景，仅在用户打开文件时按需创建。
-        WindowGroup(id: "welcome") {
+        Window("MacAboboo", id: "welcome") {
             WelcomeScreenView(
                 historyStore: PlaybackHistoryStore.shared,
                 onOpen: openFileAction,
@@ -100,8 +101,8 @@ struct MacAbobooApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
-        WindowGroup(id: "main") {
-            MainContentView()
+        Window("MacAboboo", id: "main") {
+            MainContentView(onWindowDidAppear: dismissWelcomeWindow)
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
                 .onOpenURL { handleIncomingURL($0) }
@@ -342,9 +343,9 @@ struct MacAbobooApp: App {
         }
     }
 
-    /// 从欢迎页或文件关联打开媒体时，先创建独立的主窗口，再把媒体交给主窗口的引擎。
+    /// 从欢迎页或文件关联打开媒体时，先把媒体交给主窗口的引擎，再创建独立的主窗口。
+    /// 欢迎窗口由主窗口首帧出现时通过场景级 dismissWindow 销毁。
     private func openMediaInMain(_ url: URL) {
-        closeWelcomeWindow()
         engine.loadMedia(from: url)
         openWindow(id: "main")
     }
@@ -362,11 +363,8 @@ struct MacAbobooApp: App {
         }
     }
 
-    private func closeWelcomeWindow() {
-        guard let welcomeWindow = NSApp.windows.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
-        }) else { return }
-        welcomeWindow.close()
+    private func dismissWelcomeWindow() {
+        dismissWindow(id: "welcome")
     }
 
     private func closeCurrentMediaAction() {

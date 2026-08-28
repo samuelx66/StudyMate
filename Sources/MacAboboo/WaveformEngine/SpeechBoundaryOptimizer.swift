@@ -14,24 +14,6 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         joinTokenText(tokens)
     }
 
-    /// Attach an already-produced Whisper transcript to existing acoustic
-    /// ranges without changing those ranges. Kept for import/legacy callers;
-    /// the main pipeline now performs local semantic/acoustic fusion directly.
-    public func attachingRecognizedText(
-        to segments: [SentenceSegment],
-        from timeline: SpeechRecognitionTimeline
-    ) -> [SentenceSegment] {
-        segments.map { segment in
-            var copy = segment
-            let matchingTokens = timeline.tokens.filter {
-                $0.endTime > segment.startTime && $0.startTime < segment.endTime
-            }
-            if !matchingTokens.isEmpty {
-                copy.text = joinTokenText(matchingTokens)
-            }
-            return copy
-        }
-    }
 
     public func optimize(
         mode: SpeechSegmentationMode,

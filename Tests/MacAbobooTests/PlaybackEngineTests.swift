@@ -86,7 +86,7 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(history.entries.isEmpty)
     }
 
-    func testClosingCurrentMediaReturnsToEmptyWorkspaceAndPreservesHistory() throws {
+    func testClosingCurrentMediaReturnsToEmptyWorkspaceAndPreservesHistory() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let mediaURL = directory.appendingPathComponent("lesson.mp4")
@@ -103,9 +103,10 @@ final class PlaybackEngineTests: XCTestCase {
         engine.loadMedia(from: mediaURL)
         XCTAssertEqual(engine.currentMedia?.url, mediaURL.standardizedFileURL)
 
-        engine.closeCurrentMedia()
+        await engine.closeCurrentMedia()
 
         XCTAssertNil(engine.currentMedia)
+        XCTAssertFalse(engine.isMediaLoading)
         XCTAssertTrue(engine.segments.isEmpty)
         XCTAssertNil(native.loadedURL)
         XCTAssertEqual(history.lastOpenedMediaURL, mediaURL.standardizedFileURL)

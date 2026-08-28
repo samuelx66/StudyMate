@@ -160,6 +160,26 @@ public struct WaveformCanvas: View {
     }
 }
 
+@MainActor
+private enum WaveformSegmentsPathCache {
+    final class Box: NSObject {
+        let evenPath: Path
+        let oddPath: Path
+        let activePath: Path?
+        init(evenPath: Path, oddPath: Path, activePath: Path?) {
+            self.evenPath = evenPath
+            self.oddPath = oddPath
+            self.activePath = activePath
+        }
+    }
+
+    static let cache: NSCache<NSString, Box> = {
+        let c = NSCache<NSString, Box>()
+        c.countLimit = 64
+        return c
+    }()
+}
+
 /// 断句切片背景覆盖层
 public struct WaveformSentenceSegmentsOverlay: View {
     @ObservedObject var engine: PlaybackEngine
@@ -185,37 +205,53 @@ public struct WaveformSentenceSegmentsOverlay: View {
     public var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
         let segments = Array(visibleSegments)
+        let activeIndex = engine.activeSegmentIndex
 
         Canvas { context, size in
             guard !segments.isEmpty, size.width > 0, size.height > 0 else { return }
 
-            var evenSegmentsPath = Path()
-            var oddSegmentsPath = Path()
-            var activeSegmentPath: Path?
+            let firstId = segments.first?.id.uuidString ?? ""
+            let lastId = segments.last?.id.uuidString ?? ""
+            let cacheKey = "\(segments.count)|\(firstId)|\(lastId)|\(activeIndex ?? -1)|\(Int(viewportStart * 100))|\(Int(viewportEnd * 100))|\(Int(size.width))|\(Int(size.height))" as NSString
 
-            for seg in segments {
-                let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
-                let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
-                let segW = max(2, segX2 - segX1)
-                let rect = CGRect(x: segX1, y: 0, width: segW, height: height)
-                let isActive = engine.activeSegmentIndex == (seg.index - 1)
+            let paths: WaveformSegmentsPathCache.Box
+            if let cached = WaveformSegmentsPathCache.cache.object(forKey: cacheKey) {
+                paths = cached
+            } else {
+                var evenSegmentsPath = Path()
+                var oddSegmentsPath = Path()
+                var activeSegmentPath: Path?
 
-                if isActive {
-                    activeSegmentPath = Path(roundedRect: rect, cornerRadius: 4)
-                } else if seg.index % 2 == 0 {
-                    evenSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
-                } else {
-                    oddSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
+                for seg in segments {
+                    let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
+                    let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
+                    let segW = max(2, segX2 - segX1)
+                    let rect = CGRect(x: segX1, y: 0, width: segW, height: height)
+                    let isActive = activeIndex == (seg.index - 1)
+
+                    if isActive {
+                        activeSegmentPath = Path(roundedRect: rect, cornerRadius: 4)
+                    } else if seg.index % 2 == 0 {
+                        evenSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
+                    } else {
+                        oddSegmentsPath.addPath(Path(roundedRect: rect, cornerRadius: 4))
+                    }
                 }
+                paths = WaveformSegmentsPathCache.Box(
+                    evenPath: evenSegmentsPath,
+                    oddPath: oddSegmentsPath,
+                    activePath: activeSegmentPath
+                )
+                WaveformSegmentsPathCache.cache.setObject(paths, forKey: cacheKey)
             }
 
-            if !evenSegmentsPath.isEmpty {
-                context.fill(evenSegmentsPath, with: .color(Color.primary.opacity(0.025)))
+            if !paths.evenPath.isEmpty {
+                context.fill(paths.evenPath, with: .color(Color.primary.opacity(0.025)))
             }
-            if !oddSegmentsPath.isEmpty {
-                context.fill(oddSegmentsPath, with: .color(Color.primary.opacity(0.05)))
+            if !paths.oddPath.isEmpty {
+                context.fill(paths.oddPath, with: .color(Color.primary.opacity(0.05)))
             }
-            if let activePath = activeSegmentPath {
+            if let activePath = paths.activePath {
                 context.fill(activePath, with: .color(Color.blue.opacity(0.24)))
                 context.stroke(activePath, with: .color(Color.blue.opacity(0.75)), lineWidth: 1.5)
             }

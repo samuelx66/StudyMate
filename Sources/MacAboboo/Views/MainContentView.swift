@@ -46,6 +46,8 @@ public struct MainContentView: View {
     @ObservedObject private var statusCenter = MainStatusCenter.shared
     @ObservedObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var isSidebarVisible: Bool = true
@@ -61,10 +63,14 @@ public struct MainContentView: View {
     @State private var isSubtitleEditVisible: Bool = false
     @State private var isVideoSubtitleFontSettingsPresented: Bool = false
     @State private var isDropTargeted: Bool = false
+    @State private var isClosingCurrentMedia: Bool = false
     @AppStorage("MacAboboo.ShowStatusBar") private var isStatusBarVisible: Bool = false
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "macaboboo_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "macaboboo_playlist_width") : 360
+    private let onWindowDidAppear: () -> Void
     
-    public init() {}
+    public init(onWindowDidAppear: @escaping () -> Void = {}) {
+        self.onWindowDidAppear = onWindowDidAppear
+    }
 
     public var body: some View {
         workspaceContent
@@ -78,6 +84,9 @@ public struct MainContentView: View {
         .overlay(dropTargetOverlay)
         .onAppear {
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
+            // 主窗口内容已经开始渲染后，才销毁欢迎页场景，避免两个窗口同时
+            // 长时间存在，也避免欢迎页提前关闭导致主窗口首帧无宿主窗口。
+            onWindowDidAppear()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .macAbobooCloseCurrentMedia),
@@ -283,24 +292,45 @@ public struct MainContentView: View {
     }
 
     private func handleCloseCurrentMediaRequest(_: Notification) {
+        guard !isClosingCurrentMedia else { return }
+        isClosingCurrentMedia = true
         hidePlaylist()
-        engine.closeCurrentMedia()
-        // 主窗口是独立的媒体工作区；关闭媒体后完全销毁并释放主窗口，再重新载入欢迎首屏。
-        if let mainWindow = NSApp.windows.first(where: {
-            $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-main-window")
-        }) {
-            mainWindow.orderOut(nil)
-            mainWindow.close()
+        Task { @MainActor in
+            // 先完整保存并释放媒体工作区资源，再销毁主窗口场景。
+            await engine.closeCurrentMedia()
+            dismissMainWindowThenShowWelcome()
         }
-        DispatchQueue.main.async {
+    }
+
+    private func dismissMainWindowThenShowWelcome() {
+        let showWelcome = {
             openWindow(id: "welcome")
-            if let welcomeWindow = NSApp.windows.first(where: {
-                $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
-            }) {
-                welcomeWindow.makeKeyAndOrderFront(nil)
+            DispatchQueue.main.async {
+                if let welcomeWindow = NSApp.windows.first(where: {
+                    $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-welcome-window")
+                }) {
+                    welcomeWindow.makeKeyAndOrderFront(nil)
+                }
+                NSApp.activate(ignoringOtherApps: true)
             }
-            NSApp.activate(ignoringOtherApps: true)
         }
+
+        // 1. 显式通知 SwiftUI 注销并关闭主窗口场景
+        dismiss()
+        dismissWindow(id: "main")
+
+        // 2. 找到所有主窗口实例，强制隐藏并关闭
+        let mainWindows = NSApp.windows.filter {
+            $0.identifier == NSUserInterfaceItemIdentifier("macaboboo-main-window")
+        }
+
+        for window in mainWindows {
+            window.orderOut(nil)
+            window.close()
+        }
+
+        // 3. 立即呈现并置顶欢迎首屏
+        showWelcome()
     }
 
     private func togglePlaylist() {
@@ -364,6 +394,7 @@ public struct MainContentView: View {
         }
     }
 }
+
 
 /// 将工具栏从主视图的超长泛型表达式中隔离出来，避免 Release 优化编译器
 /// 因 SwiftUI 类型推断复杂度而失败；所有动作仍回调至主窗口状态。
