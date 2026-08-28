@@ -41,13 +41,7 @@ public struct WelcomeScreenView: View {
     }
 
     private var sortedHistory: [PlaybackHistoryEntry] {
-        historyStore.entries
-            .filter { FileManager.default.fileExists(atPath: $0.mediaURL.path) }
-            .sorted { entry1, entry2 in
-                let date1 = entry1.lastOpenedAt ?? entry1.addedAt
-                let date2 = entry2.lastOpenedAt ?? entry2.addedAt
-                return date1 > date2
-            }
+        historyStore.reachableEntries
     }
 
     private var leftColumnBackground: Color {
@@ -98,8 +92,14 @@ public struct WelcomeScreenView: View {
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleFileDrop)
         .onAppear {
+            historyStore.refreshReachableEntries()
             if let first = sortedHistory.first {
                 selectedURL = first.mediaURL
+            }
+        }
+        .onChange(of: historyStore.reachableEntries) { _, newEntries in
+            if selectedURL == nil || !newEntries.contains(where: { $0.mediaURL == selectedURL }) {
+                selectedURL = newEntries.first?.mediaURL
             }
         }
         .accessibilityIdentifier("macaboboo-welcome-screen")

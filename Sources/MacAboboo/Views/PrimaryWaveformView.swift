@@ -109,6 +109,7 @@ public struct PrimaryWaveformView: View {
                         height: height,
                         isWindowResizing: engine.isWindowResizing
                     )
+                    .equatable()
                     
                     // 3. 60fps 平滑播放游标
                     PrimaryWaveformPlayhead(

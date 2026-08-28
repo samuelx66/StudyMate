@@ -42,21 +42,8 @@ private enum WaveformRenderCache {
             max(quantizedStart, Double(endBucket) * grid)
         )
 
-        // 采样多个固定位置而不是仅首/中/尾三个峰值。缓存仍是 O(1) 建键，
-        // 但不同媒体刚好拥有相同三点时不会复用到错误的重采样波形。
-        let signature: String
-        if waveform.peakCount == 0 {
-            signature = "empty"
-        } else {
-            let lastIndex = waveform.peakCount - 1
-            var samples: [String] = []
-            samples.reserveCapacity(9)
-            for position in 0...8 {
-                samples.append(String(waveform.peak(at: (lastIndex * position) / 8)))
-            }
-            signature = samples.joined(separator: "|")
-        }
-        let key = "\(waveform.peakCount)|\(waveform.sampleRate)|\(waveform.duration)|\(signature)|\(grid.bitPattern)|\(startBucket)|\(endBucket)|\(count)" as NSString
+        // 使用 WaveformData 预计算的指纹特征直接建键，消除每帧 9 次字符串转换与拼接开销
+        let key = "\(waveform.peakCount)|\(waveform.sampleRate)|\(waveform.duration)|\(waveform.signature)|\(grid.bitPattern)|\(startBucket)|\(endBucket)|\(count)" as NSString
         if let cached = cache.object(forKey: key) { return cached.peaks }
         let result = waveform.resample(
             startTime: quantizedStart,
@@ -69,7 +56,7 @@ private enum WaveformRenderCache {
 }
 
 /// 高性能现代圆角胶囊渐变柱波形绘制 Canvas（方案 2）
-public struct WaveformCanvas: View {
+public struct WaveformCanvas: View, Equatable {
     let waveformData: WaveformData
     let startTime: Double
     let endTime: Double
@@ -80,6 +67,15 @@ public struct WaveformCanvas: View {
     /// waveform stretch with the window instead of synchronously resampling
     /// the PCM data for every pixel-sized width change.
     let isWindowResizing: Bool
+
+    public static func == (lhs: WaveformCanvas, rhs: WaveformCanvas) -> Bool {
+        lhs.startTime == rhs.startTime
+            && lhs.endTime == rhs.endTime
+            && lhs.width == rhs.width
+            && lhs.height == rhs.height
+            && lhs.isWindowResizing == rhs.isWindowResizing
+            && lhs.waveformData == rhs.waveformData
+    }
     
     public init(
         waveformData: WaveformData,

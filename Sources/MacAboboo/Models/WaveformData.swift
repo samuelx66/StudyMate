@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Accelerate)
+import Accelerate
+#endif
 
 /// 波形数据结构（支持快速分段插值与多分辨率提取）
 public struct WaveformData: Equatable, Codable, Sendable {
@@ -10,6 +13,8 @@ public struct WaveformData: Equatable, Codable, Sendable {
     public let duration: Double
     /// 每秒采样点数（默认通常提取 100~200 个点/秒）
     public let sampleRate: Double
+    /// 预计算的波形指纹特征，供渲染缓存快速辨识波形身份
+    public let signature: String
     
     public init(
         peaks: [Float] = [],
@@ -21,18 +26,23 @@ public struct WaveformData: Equatable, Codable, Sendable {
         let sanitizedPeaks = peaks.map { value in
             value.isFinite ? min(1, max(0, abs(value))) : 0
         }
+        let resolvedMinPeaks: [Float]
         if minPeaks.count == sanitizedPeaks.count {
-            self.minPeaks = minPeaks.map { $0.isFinite ? min(0, max(-1, $0)) : 0 }
+            resolvedMinPeaks = minPeaks.map { $0.isFinite ? min(0, max(-1, $0)) : 0 }
         } else {
-            self.minPeaks = sanitizedPeaks.map { -$0 }
+            resolvedMinPeaks = sanitizedPeaks.map { -$0 }
         }
+        let resolvedMaxPeaks: [Float]
         if maxPeaks.count == sanitizedPeaks.count {
-            self.maxPeaks = maxPeaks.map { $0.isFinite ? max(0, min(1, $0)) : 0 }
+            resolvedMaxPeaks = maxPeaks.map { $0.isFinite ? max(0, min(1, $0)) : 0 }
         } else {
-            self.maxPeaks = sanitizedPeaks
+            resolvedMaxPeaks = sanitizedPeaks
         }
+        self.minPeaks = resolvedMinPeaks
+        self.maxPeaks = resolvedMaxPeaks
         self.duration = duration.isFinite ? max(0, duration) : 0
         self.sampleRate = sampleRate.isFinite ? max(1, sampleRate) : 100
+        self.signature = Self.computeSignature(minPeaks: resolvedMinPeaks, maxPeaks: resolvedMaxPeaks)
     }
 
     /// Internal fast path for PCM/cache output that has already validated the
@@ -50,6 +60,21 @@ public struct WaveformData: Equatable, Codable, Sendable {
         self.maxPeaks = maxPeaks
         self.duration = duration
         self.sampleRate = sampleRate
+        self.signature = Self.computeSignature(minPeaks: minPeaks, maxPeaks: maxPeaks)
+    }
+
+    private static func computeSignature(minPeaks: [Float], maxPeaks: [Float]) -> String {
+        let count = min(minPeaks.count, maxPeaks.count)
+        guard count > 0 else { return "empty" }
+        let lastIndex = count - 1
+        var samples: [String] = []
+        samples.reserveCapacity(9)
+        for position in 0...8 {
+            let idx = (lastIndex * position) / 8
+            let peak = max(abs(minPeaks[idx]), abs(maxPeaks[idx]))
+            samples.append(String(peak))
+        }
+        return samples.joined(separator: "|")
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -108,51 +133,75 @@ public struct WaveformData: Equatable, Codable, Sendable {
         let clampedStart = max(0, min(startTime, duration))
         let clampedEnd = max(clampedStart, min(endTime, duration))
         let rangeDuration = clampedEnd - clampedStart
-        
+
         guard rangeDuration > 0 else {
             return Array(repeating: (min: 0, max: 0), count: targetCount)
         }
-        
+
         let startIdx = Int(clampedStart * sampleRate)
         let endIdx = min(peakCount, Int(ceil(clampedEnd * sampleRate)))
-        
+
         guard endIdx > startIdx else {
             return Array(repeating: (min: 0, max: 0), count: targetCount)
         }
-        
+
         let totalSrcSamples = endIdx - startIdx
         var result = [(min: Float, max: Float)]()
         result.reserveCapacity(targetCount)
-        
+
         let samplesPerBin = Double(totalSrcSamples) / Double(targetCount)
-        
-        for i in 0..<targetCount {
-            let binStart = startIdx + Int(Double(i) * samplesPerBin)
-            let binEnd = min(endIdx, startIdx + Int(Double(i + 1) * samplesPerBin) + 1)
-            
-            if binStart >= peakCount {
-                result.append((min: 0, max: 0))
-                continue
-            }
-            
-            var binMin: Float = 0
-            var binMax: Float = 0
-            
-            if binStart < binEnd {
-                for s in binStart..<min(binEnd, peakCount) {
-                    let pMax = maxPeaks[s]
-                    let pMin = minPeaks[s]
-                    if pMax > binMax { binMax = pMax }
-                    if pMin < binMin { binMin = pMin }
+
+        minPeaks.withUnsafeBufferPointer { minBuffer in
+            maxPeaks.withUnsafeBufferPointer { maxBuffer in
+                for i in 0..<targetCount {
+                    let binStart = startIdx + Int(Double(i) * samplesPerBin)
+                    let binEnd = min(endIdx, startIdx + Int(Double(i + 1) * samplesPerBin) + 1)
+
+                    if binStart >= peakCount {
+                        result.append((min: 0, max: 0))
+                        continue
+                    }
+
+                    let count = min(binEnd, peakCount) - binStart
+                    if count > 0 {
+                        var binMin: Float = 0
+                        var binMax: Float = 0
+
+                        #if canImport(Accelerate)
+                        if count >= 4,
+                           let minPtr = minBuffer.baseAddress,
+                           let maxPtr = maxBuffer.baseAddress {
+                            vDSP_minv(minPtr.advanced(by: binStart), 1, &binMin, vDSP_Length(count))
+                            vDSP_maxv(maxPtr.advanced(by: binStart), 1, &binMax, vDSP_Length(count))
+                        } else {
+                            binMin = minBuffer[binStart]
+                            binMax = maxBuffer[binStart]
+                            for s in (binStart + 1)..<(binStart + count) {
+                                let pMax = maxBuffer[s]
+                                let pMin = minBuffer[s]
+                                if pMax > binMax { binMax = pMax }
+                                if pMin < binMin { binMin = pMin }
+                            }
+                        }
+                        #else
+                        binMin = minBuffer[binStart]
+                        binMax = maxBuffer[binStart]
+                        for s in (binStart + 1)..<(binStart + count) {
+                            let pMax = maxBuffer[s]
+                            let pMin = minBuffer[s]
+                            if pMax > binMax { binMax = pMax }
+                            if pMin < binMin { binMin = pMin }
+                        }
+                        #endif
+
+                        result.append((min: binMin, max: binMax))
+                    } else {
+                        result.append((min: minBuffer[binStart], max: maxBuffer[binStart]))
+                    }
                 }
-            } else {
-                binMax = maxPeaks[binStart]
-                binMin = minPeaks[binStart]
             }
-            
-            result.append((min: binMin, max: binMax))
         }
-        
+
         return result
     }
 }

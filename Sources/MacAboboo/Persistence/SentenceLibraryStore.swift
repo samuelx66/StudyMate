@@ -29,6 +29,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public let rootURL: URL
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "com.macaboboo.sentence-library.store", qos: .utility)
+    private var openDatabases: [UUID: OpaquePointer] = [:]
+    private var initializedDatabases: Set<UUID> = []
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(rootURL: URL? = nil, fileManager: FileManager = .default) {
@@ -338,6 +340,10 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func deleteLibrary(id: UUID) throws {
         try queue.sync {
             try validateLibrary(id: id)
+            if let db = openDatabases.removeValue(forKey: id) {
+                sqlite3_close_v2(db)
+            }
+            initializedDatabases.remove(id)
             try fileManager.removeItem(at: packageURL(for: id))
         }
     }
@@ -427,17 +433,41 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     }
 
     private func withDatabase<T>(libraryID: UUID, operation: (OpaquePointer) throws -> T) throws -> T {
-        var db: OpaquePointer?
-        let path = databaseURL(for: libraryID).path
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let db else {
-            if let db { sqlite3_close_v2(db) }
-            throw SentenceLibraryError.libraryUnavailable
+        let db: OpaquePointer
+        if let cached = openDatabases[libraryID] {
+            db = cached
+        } else {
+            var newDB: OpaquePointer?
+            let path = databaseURL(for: libraryID).path
+            guard sqlite3_open_v2(path, &newDB, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+                  let validDB = newDB else {
+                if let newDB { sqlite3_close_v2(newDB) }
+                throw SentenceLibraryError.libraryUnavailable
+            }
+            sqlite3_busy_timeout(validDB, 5_000)
+            openDatabases[libraryID] = validDB
+            db = validDB
         }
-        defer { sqlite3_close_v2(db) }
-        sqlite3_busy_timeout(db, 5_000)
-        try createSchema(in: db)
+        if !initializedDatabases.contains(libraryID) {
+            try createSchema(in: db)
+            initializedDatabases.insert(libraryID)
+        }
         return try operation(db)
+    }
+
+    public func checkpointAllDatabases() {
+        queue.async {
+            for (_, db) in self.openDatabases {
+                _ = try? self.execute("PRAGMA wal_checkpoint(TRUNCATE);", in: db)
+            }
+        }
+    }
+
+    deinit {
+        for (_, db) in openDatabases {
+            _ = try? execute("PRAGMA wal_checkpoint(TRUNCATE);", in: db)
+            sqlite3_close_v2(db)
+        }
     }
 
     private func createSchema(in db: OpaquePointer) throws {

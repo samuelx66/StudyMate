@@ -52,7 +52,8 @@ public final class SubtitleExporter: Sendable {
         }
         
         for (segment, startTime) in zip(segments, startTimes) {
-            let timeLRC = formatLRCTimestamp(startTime)
+            let safeStartTime = max(0.0, startTime.isFinite ? startTime : 0.0)
+            let timeLRC = formatLRCTimestamp(safeStartTime)
             let originalLines = normalizedLRCLines(segment.text)
             let translationLines = includeTranslation ? normalizedLRCLines(segment.translation) : []
             if originalLines.isEmpty, translationLines.isEmpty {

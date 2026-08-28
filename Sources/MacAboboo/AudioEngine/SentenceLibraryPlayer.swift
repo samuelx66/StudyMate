@@ -20,6 +20,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
     private var playlist: [PlaylistItem] = []
     private var handledEndGeneration: UUID?
     private var isRestartSeeking = false
+    private var loadTask: Task<Void, Never>?
 
     private struct PlaylistItem {
         let entry: SentenceLibraryEntry
@@ -58,6 +59,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
 
         let generation = UUID()
         playbackGeneration = generation
+        loadTask?.cancel()
         nativeBackend.pause()
         extendedBackend?.pause()
         currentEntry = entry
@@ -105,6 +107,8 @@ public final class SentenceLibraryPlayer: ObservableObject {
 
     public func stop() {
         playbackGeneration = UUID()
+        loadTask?.cancel()
+        loadTask = nil
         nativeBackend.pause()
         extendedBackend?.pause()
         currentEntry = nil

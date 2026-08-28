@@ -23,10 +23,18 @@ public final class VideoSubtitleSettings: ObservableObject {
         didSet { defaults.set(translationFontName, forKey: Keys.translationFontName) }
     }
     @Published public var originalFontSize: Double {
-        didSet { defaults.set(originalFontSize, forKey: Keys.originalFontSize) }
+        didSet {
+            let clamped = min(96.0, max(10.0, originalFontSize))
+            if clamped != originalFontSize { originalFontSize = clamped }
+            defaults.set(clamped, forKey: Keys.originalFontSize)
+        }
     }
     @Published public var translationFontSize: Double {
-        didSet { defaults.set(translationFontSize, forKey: Keys.translationFontSize) }
+        didSet {
+            let clamped = min(96.0, max(10.0, translationFontSize))
+            if clamped != translationFontSize { translationFontSize = clamped }
+            defaults.set(clamped, forKey: Keys.translationFontSize)
+        }
     }
     @Published public var originalBold: Bool {
         didSet { defaults.set(originalBold, forKey: Keys.originalBold) }
@@ -128,11 +136,31 @@ private enum VideoSubtitleTrack {
     case translation
 }
 
-private struct DraggableVideoSubtitle: View {
+private struct DraggableVideoSubtitle: View, Equatable {
     @ObservedObject var settings: VideoSubtitleSettings
     let track: VideoSubtitleTrack
     let text: String
     let containerSize: CGSize
+
+    static func == (lhs: DraggableVideoSubtitle, rhs: DraggableVideoSubtitle) -> Bool {
+        lhs.track == rhs.track
+            && lhs.text == rhs.text
+            && lhs.containerSize == rhs.containerSize
+            && lhs.settings.originalPositionX == rhs.settings.originalPositionX
+            && lhs.settings.originalPositionY == rhs.settings.originalPositionY
+            && lhs.settings.translationPositionX == rhs.settings.translationPositionX
+            && lhs.settings.translationPositionY == rhs.settings.translationPositionY
+            && lhs.settings.originalFontSize == rhs.settings.originalFontSize
+            && lhs.settings.translationFontSize == rhs.settings.translationFontSize
+            && lhs.settings.originalColorHex == rhs.settings.originalColorHex
+            && lhs.settings.translationColorHex == rhs.settings.translationColorHex
+            && lhs.settings.originalBold == rhs.settings.originalBold
+            && lhs.settings.translationBold == rhs.settings.translationBold
+            && lhs.settings.originalItalic == rhs.settings.originalItalic
+            && lhs.settings.translationItalic == rhs.settings.translationItalic
+            && lhs.settings.originalFontName == rhs.settings.originalFontName
+            && lhs.settings.translationFontName == rhs.settings.translationFontName
+    }
 
     @State private var dragStart: CGPoint?
     @State private var isHovering = false
@@ -267,6 +295,7 @@ public struct VideoSubtitleOverlay: View {
                             text: segment.text,
                             containerSize: geometry.size
                         )
+                        .equatable()
                     }
                     if settings.showTranslation, !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         DraggableVideoSubtitle(
@@ -275,6 +304,7 @@ public struct VideoSubtitleOverlay: View {
                             text: segment.translation,
                             containerSize: geometry.size
                         )
+                        .equatable()
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)

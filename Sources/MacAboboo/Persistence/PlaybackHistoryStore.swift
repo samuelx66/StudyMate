@@ -60,10 +60,12 @@ public final class PlaybackHistoryStore: ObservableObject {
     public static let shared = PlaybackHistoryStore()
 
     @Published public private(set) var entries: [PlaybackHistoryEntry] = []
+    @Published public private(set) var reachableEntries: [PlaybackHistoryEntry] = []
 
     private let storageURL: URL
     private let ioQueue = DispatchQueue(label: "com.macaboboo.playback-history", qos: .utility)
     private var persistenceErrorHandler: (@Sendable (String) -> Void)?
+    private var reachabilityTask: Task<Void, Never>?
 
     /// 注入目录仅用于测试；正式数据保存在 Application Support/MacAboboo。
     public init(storageDirectory: URL? = nil) {
@@ -79,6 +81,25 @@ public final class PlaybackHistoryStore: ObservableObject {
         }
         storageURL = directory.appendingPathComponent("PlaybackHistory.json")
         entries = Self.loadEntries(from: storageURL)
+        refreshReachableEntries()
+    }
+
+    public func refreshReachableEntries() {
+        let snapshot = entries
+        reachabilityTask?.cancel()
+        reachabilityTask = Task.detached(priority: .utility) {
+            let valid = snapshot.filter { entry in
+                FileManager.default.fileExists(atPath: entry.mediaPath)
+            }.sorted { entry1, entry2 in
+                let date1 = entry1.lastOpenedAt ?? entry1.addedAt
+                let date2 = entry2.lastOpenedAt ?? entry2.addedAt
+                return date1 > date2
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.reachableEntries = valid
+            }
+        }
     }
 
     public func recordPlayed(_ mediaURL: URL) {
@@ -102,6 +123,7 @@ public final class PlaybackHistoryStore: ObservableObject {
             ))
         }
         persist()
+        refreshReachableEntries()
     }
 
     /// The most recently opened media. Entries without an explicit successful
@@ -126,20 +148,28 @@ public final class PlaybackHistoryStore: ObservableObject {
             entries.append(PlaybackHistoryEntry(mediaPath: standardizedURL.path))
             changed = true
         }
-        if changed { persist() }
+        if changed {
+            persist()
+            refreshReachableEntries()
+        }
     }
 
     public func remove(_ mediaURL: URL) {
         let path = mediaURL.standardizedFileURL.path
         let previousCount = entries.count
         entries.removeAll { $0.mediaPath == path }
-        if entries.count != previousCount { persist() }
+        if entries.count != previousCount {
+            persist()
+            refreshReachableEntries()
+        }
     }
 
     public func removeAll() {
         guard !entries.isEmpty else { return }
         entries.removeAll()
         persist()
+        refreshReachableEntries()
+        ProjectFileManager.shared.cleanupOrphanProjects(activeMediaPaths: [])
     }
 
     /// 历史记录在后台写入；失败时由播放引擎转交状态栏，而不是静默打印。

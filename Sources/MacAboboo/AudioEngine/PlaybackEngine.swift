@@ -1246,6 +1246,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         }
 
                         self.persistCurrentProject(includeWaveform: true)
+                        self.preloadNextPlaylistItemWaveformIfNeeded()
                     case .failure(let error):
                         print("Waveform extraction failed: \(error.localizedDescription)")
                         self.lastErrorMessage = error.localizedDescription
@@ -1254,6 +1255,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
         )
+    }
+
+    private func preloadNextPlaylistItemWaveformIfNeeded() {
+        guard let currentMedia else { return }
+        let entries = PlaybackHistoryStore.shared.entries
+        guard let currentIndex = entries.firstIndex(where: { $0.mediaPath == currentMedia.url.standardizedFileURL.path }),
+              entries.indices.contains(currentIndex + 1) else { return }
+        let nextURL = entries[currentIndex + 1].mediaURL
+        Task.detached(priority: .background) {
+            _ = try? await AudioPCMExtractor.shared.extract(from: nextURL, progress: nil)
+        }
     }
 
     /// 快速与智能两种模式的统一断句入口。媒体切换或再次启动断句时，

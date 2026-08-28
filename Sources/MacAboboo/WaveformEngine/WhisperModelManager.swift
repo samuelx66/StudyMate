@@ -200,6 +200,7 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
             }
             let formatted = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
             modelStatuses[level] = .ready(fileSize: formatted)
+            warmupModelInBackground(at: targetURL)
         } catch {
             modelStatuses[level] = .error(message: "保存失败: \(error.localizedDescription)")
         }
@@ -207,6 +208,19 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
         downloadTasks.removeValue(forKey: level)
         activeDownloads.removeValue(forKey: downloadTask.taskIdentifier)
         isDownloading = !downloadTasks.isEmpty
+    }
+
+    private func warmupModelInBackground(at modelURL: URL) {
+        Task.detached(priority: .background) {
+            let silence = AudioPCMData(samples: [Float](repeating: 0, count: 16000), sampleRate: 16000)
+            _ = try? await NativeSpeechRuntime.shared.transcribe(
+                pcm: silence,
+                modelURL: modelURL,
+                language: "en",
+                configuration: SpeechSegmentationMode.intelligent.profile.vad,
+                progress: { _ in }
+            )
+        }
     }
     
     public func urlSession(

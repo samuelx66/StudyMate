@@ -107,11 +107,24 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
         let mins = (totalSecs / 60) % 60
         let hours = totalSecs / 3600
         let secs = totalSecs % 60
-        
-        if hours > 0 {
-            return String(format: "%02d:%02d:%02d.%03d", hours, mins, secs, totalMs)
+
+        let msStr: String
+        if totalMs < 10 {
+            msStr = "00\(totalMs)"
+        } else if totalMs < 100 {
+            msStr = "0\(totalMs)"
         } else {
-            return String(format: "%02d:%02d.%03d", mins, secs, totalMs)
+            msStr = "\(totalMs)"
+        }
+
+        let secStr = secs < 10 ? "0\(secs)" : "\(secs)"
+        let minStr = mins < 10 ? "0\(mins)" : "\(mins)"
+
+        if hours > 0 {
+            let hourStr = hours < 10 ? "0\(hours)" : "\(hours)"
+            return "\(hourStr):\(minStr):\(secStr).\(msStr)"
+        } else {
+            return "\(minStr):\(secStr).\(msStr)"
         }
     }
 }

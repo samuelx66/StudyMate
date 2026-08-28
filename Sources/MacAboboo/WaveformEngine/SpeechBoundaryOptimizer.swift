@@ -1267,12 +1267,15 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         let upper = max(lower, min(end, waveform.duration))
         let startIndex = max(0, Int(lower * waveform.sampleRate))
         let endIndex = min(waveform.peakCount, max(startIndex + 1, Int(ceil(upper * waveform.sampleRate))))
-        guard endIndex > startIndex else { return false }
-
-        let segmentPeaks = (startIndex..<endIndex).map { waveform.peak(at: $0) }
-        let sum = segmentPeaks.reduce(0, +)
-        let mean = sum / Float(segmentPeaks.count)
-        let peak = segmentPeaks.max() ?? 0
+        var sum: Float = 0
+        var peak: Float = 0
+        let count = endIndex - startIndex
+        for i in startIndex..<endIndex {
+            let val = waveform.peak(at: i)
+            sum += val
+            if val > peak { peak = val }
+        }
+        let mean = sum / Float(count)
         // Keep the threshold deliberately conservative: this is only a gate
         // for SpeakerKit's recovery coverage, not a replacement for Silero.
         if baseline >= 0.05 {

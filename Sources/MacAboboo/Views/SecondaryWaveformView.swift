@@ -152,6 +152,7 @@ public struct SecondaryWaveformView: View {
                             height: height,
                             isWindowResizing: engine.isWindowResizing
                         )
+                        .equatable()
                         
                         // 60fps 平滑游标
                         SecondaryWaveformPlayhead(
