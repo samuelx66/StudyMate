@@ -252,4 +252,48 @@ final class TranslationTests: XCTestCase {
         settings.removeService(id: builtInID)
         XCTAssertTrue(settings.services.contains(where: { $0.id == builtInID }))
     }
+
+    func testStreamingBatchTranslationInvokesCallbackPerBatch() async throws {
+        struct MockProvider: TranslationProvider {
+            let id: TranslationProviderID = .deepSeek
+            func translate(request: TranslationBatchRequest, configuration: TranslationConfiguration) async throws -> [TranslationResult] {
+                request.units.map { TranslationUnit in
+                    TranslationResult(id: TranslationUnit.id, translatedText: "译文_\(TranslationUnit.sourceText)")
+                }
+            }
+            func listModels(configuration: TranslationConfiguration) async throws -> [TranslationModelDescriptor] { [] }
+        }
+
+        let service = TranslationService(
+            providers: [.deepSeek: MockProvider()],
+            batchSize: 2
+        )
+        let config = TranslationConfiguration(
+            provider: .deepSeek,
+            model: "mock-model",
+            apiKey: "mock-key",
+            targetLanguage: .simplifiedChinese
+        )
+        let u1 = TranslationUnit(id: UUID(), sourceText: "One")
+        let u2 = TranslationUnit(id: UUID(), sourceText: "Two")
+        let u3 = TranslationUnit(id: UUID(), sourceText: "Three")
+
+        var batchesReceived: [[TranslationResult]] = []
+        let finalResults = try await service.translate(
+            units: [u1, u2, u3],
+            configuration: config,
+            sourceLanguage: "en",
+            batchSize: 2,
+            onBatchCompleted: { batch in
+                batchesReceived.append(batch)
+            }
+        )
+
+        XCTAssertEqual(finalResults.count, 3)
+        XCTAssertEqual(batchesReceived.count, 2)
+        XCTAssertEqual(batchesReceived[0].count, 2)
+        XCTAssertEqual(batchesReceived[1].count, 1)
+        XCTAssertEqual(batchesReceived[0][0].translatedText, "译文_One")
+        XCTAssertEqual(batchesReceived[1][0].translatedText, "译文_Three")
+    }
 }

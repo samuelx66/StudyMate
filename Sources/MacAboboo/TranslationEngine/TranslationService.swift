@@ -27,7 +27,8 @@ public actor TranslationService {
         configuration: TranslationConfiguration,
         sourceLanguage: String,
         batchSize requestedBatchSize: Int? = nil,
-        progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }
+        progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in },
+        onBatchCompleted: (@Sendable ([TranslationResult]) async -> Void)? = nil
     ) async throws -> [TranslationResult] {
         guard !configuration.apiKey.isEmpty else { throw TranslationProviderError.missingAPIKey }
         guard let provider = providers[configuration.provider] else {
@@ -59,6 +60,9 @@ public actor TranslationService {
                 throw TranslationProviderError.partialResponse
             }
             results.append(contentsOf: batchResults)
+            if let onBatchCompleted {
+                await onBatchCompleted(batchResults)
+            }
             offset = end
             progress(offset, normalized.count)
         }

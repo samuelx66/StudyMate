@@ -1677,7 +1677,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         automaticTranslationTask = Task { @MainActor [weak self] in
             do {
-                let results = try await TranslationService.shared.translate(
+                _ = try await TranslationService.shared.translate(
                     units: units,
                     configuration: configuration,
                     sourceLanguage: sourceLanguage,
@@ -1691,6 +1691,26 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                                 ? min(1, max(0, Double(completed) / Double(total)))
                                 : 1
                         }
+                    },
+                    onBatchCompleted: { [weak self] batchResults in
+                        await MainActor.run { [weak self] in
+                            guard let self,
+                                  self.translationRequestID == requestID,
+                                  self.mediaSessionID == sessionID else { return }
+                            var hasChanges = false
+                            for result in batchResults {
+                                guard let index = self.segments.firstIndex(where: { $0.id == result.id }),
+                                      self.segments[index].text.trimmingCharacters(in: .whitespacesAndNewlines) == sourceByID[result.id],
+                                      (overwriteExistingTranslations
+                                       || self.segments[index].translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                                      !result.translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                                self.segments[index].translation = result.translatedText
+                                hasChanges = true
+                            }
+                            if hasChanges {
+                                self.persistCurrentProject()
+                            }
+                        }
                     }
                 )
                 try Task.checkCancellation()
@@ -1698,15 +1718,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                       self.translationRequestID == requestID,
                       self.mediaSessionID == sessionID else { return }
 
-                for result in results {
-                    guard let index = self.segments.firstIndex(where: { $0.id == result.id }),
-                          self.segments[index].text.trimmingCharacters(in: .whitespacesAndNewlines) == sourceByID[result.id],
-                          (overwriteExistingTranslations
-                           || self.segments[index].translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
-                          !result.translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                    self.segments[index].translation = result.translatedText
-                }
-                self.persistCurrentProject()
                 self.autoTranslationProgress = 1
                 self.isAutoTranslating = false
                 self.autoTranslationStatusText = ""
