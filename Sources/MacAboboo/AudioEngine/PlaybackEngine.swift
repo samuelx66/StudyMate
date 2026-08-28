@@ -172,6 +172,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var isPreviewingAnchor: Bool = false
     @Published public private(set) var isBoundaryDragging: Bool = false
     @Published public private(set) var boundaryDragSource: BoundaryDragSource? = nil
+    /// The video subtitle overlay keeps this lock while its position is being
+    /// dragged. In single-sentence repeat mode the media clock must not be
+    /// allowed to advance the active sentence during that interaction.
+    @Published public private(set) var isVideoSubtitleDragging: Bool = false
+    private var videoSubtitleDragSegmentID: UUID?
     /// During a marker drag keep the working boundaries off the published
     /// `segments` array.  Publishing a new full array for every NSEvent makes
     /// SwiftUI rebuild the waveform tree and is the main source of the
@@ -560,6 +565,29 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 fileSize: media.fileSize
             )
         }
+    }
+
+    /// Pins playback to the sentence whose subtitle is being repositioned.
+    /// This is deliberately separate from boundary-marker editing: moving a
+    /// subtitle is a video-overlay interaction and must not alter its saved
+    /// timestamp or trigger a sentence selection by itself.
+    public func beginVideoSubtitleDrag(segmentID: UUID) {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else { return }
+        isVideoSubtitleDragging = true
+        videoSubtitleDragSegmentID = segmentID
+        isWaveformFrozenAtNaturalEnd = false
+        if activeSegmentIndex != index {
+            activeSegmentIndex = index
+        }
+    }
+
+    /// Releases the subtitle drag lock after the overlay has committed its
+    /// final position.  Playback then resumes normal active-sentence updates.
+    public func endVideoSubtitleDrag(segmentID: UUID) {
+        guard isVideoSubtitleDragging,
+              videoSubtitleDragSegmentID == segmentID else { return }
+        isVideoSubtitleDragging = false
+        videoSubtitleDragSegmentID = nil
     }
 
     public func beginBoundaryDrag(from source: BoundaryDragSource) {
@@ -963,6 +991,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isPreviewingAnchor = false
         isBoundaryDragging = false
         boundaryDragSource = nil
+        isVideoSubtitleDragging = false
+        videoSubtitleDragSegmentID = nil
         pendingPreviewSeekTime = nil
         previewEndTime = nil
         pendingResumePlayback = false
@@ -1082,6 +1112,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         canUseExistingProject = false
         acousticBoundaryTimes = []
         boundaryDragSession = nil
+        isVideoSubtitleDragging = false
+        videoSubtitleDragSegmentID = nil
         segments = []
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
@@ -2371,6 +2403,26 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private func handlePlaybackBoundary(at time: Double) {
         guard !isWaveformFrozenAtNaturalEnd else { return }
 
+        // Repositioning a subtitle must not let the media clock select a
+        // different sentence. In single-sentence mode it also needs to keep
+        // wrapping the clock to the dragged sentence, so holding the subtitle
+        // does not accidentally play through subsequent sentences.
+        if isVideoSubtitleDragging,
+           loopMode == .singleSegment,
+           let dragID = videoSubtitleDragSegmentID,
+           let dragIndex = segments.firstIndex(where: { $0.id == dragID }) {
+            if activeSegmentIndex != dragIndex {
+                activeSegmentIndex = dragIndex
+                updateSecondaryViewportForActiveSegment(force: true)
+            }
+            guard isPlaying, !isShadowingPaused else { return }
+            let draggedSegment = segments[dragIndex]
+            if time >= draggedSegment.endTime - 0.005 {
+                triggerSentenceRepeat(for: draggedSegment)
+            }
+            return
+        }
+
         // Boundary editing must not change the active sentence while the
         // pointer is down.  In single-sentence mode, however, the raw media
         // clock must still be wrapped back to the same sentence; otherwise
@@ -2609,6 +2661,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func updateActiveSegment(for time: Double) {
         guard time.isFinite else { return }
         guard !segments.isEmpty else { return }
+
+        // A subtitle drag is a presentation-only interaction. Pin the active
+        // sentence while it is held so queued decoder timestamps cannot make
+        // the list or either waveform jump to a neighbouring sentence. The
+        // boundary handler above performs the repeat seek when needed.
+        if isVideoSubtitleDragging,
+           loopMode == .singleSegment,
+           let dragID = videoSubtitleDragSegmentID,
+           let targetIndex = segments.firstIndex(where: { $0.id == dragID }) {
+            if activeSegmentIndex != targetIndex {
+                activeSegmentIndex = targetIndex
+            }
+            return
+        }
 
         if let explicitSelection = explicitSegmentSelection {
             if let targetIndex = segments.firstIndex(where: { $0.id == explicitSelection.segmentID }) {

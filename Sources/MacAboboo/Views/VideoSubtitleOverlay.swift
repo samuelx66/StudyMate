@@ -138,12 +138,15 @@ private enum VideoSubtitleTrack {
 
 private struct DraggableVideoSubtitle: View, Equatable {
     @ObservedObject var settings: VideoSubtitleSettings
+    let engine: PlaybackEngine
+    let segmentID: UUID
     let track: VideoSubtitleTrack
     let text: String
     let containerSize: CGSize
 
     static func == (lhs: DraggableVideoSubtitle, rhs: DraggableVideoSubtitle) -> Bool {
         lhs.track == rhs.track
+            && lhs.segmentID == rhs.segmentID
             && lhs.text == rhs.text
             && lhs.containerSize == rhs.containerSize
             && lhs.settings.originalPositionX == rhs.settings.originalPositionX
@@ -163,10 +166,19 @@ private struct DraggableVideoSubtitle: View, Equatable {
     }
 
     @State private var dragStart: CGPoint?
+    /// Keep pointer-driven position changes local to this view.  Persisting
+    /// UserDefaults and publishing two settings properties for every gesture
+    /// event makes the entire video overlay re-layout and causes visible
+    /// lag behind the mouse on long/large videos.
+    @State private var transientPosition: CGPoint?
     @State private var isHovering = false
     @State private var isDragging = false
+    @State private var hasNotifiedEngineOfDrag = false
 
     private var position: CGPoint {
+        if let transientPosition {
+            return transientPosition
+        }
         switch track {
         case .original:
             return CGPoint(x: settings.originalPositionX, y: settings.originalPositionY)
@@ -241,6 +253,10 @@ private struct DraggableVideoSubtitle: View, Equatable {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
+                        if !hasNotifiedEngineOfDrag {
+                            hasNotifiedEngineOfDrag = true
+                            engine.beginVideoSubtitleDrag(segmentID: segmentID)
+                        }
                         isDragging = true
                         if dragStart == nil { dragStart = position }
                         guard let start = dragStart else { return }
@@ -248,14 +264,31 @@ private struct DraggableVideoSubtitle: View, Equatable {
                         let height = max(1, containerSize.height)
                         let nextX = min(0.98, max(0.02, start.x + value.translation.width / width))
                         let nextY = min(0.98, max(0.02, start.y + value.translation.height / height))
-                        setPosition(CGPoint(x: nextX, y: nextY))
+                        transientPosition = CGPoint(x: nextX, y: nextY)
                     }
                     .onEnded { _ in
+                        if let transientPosition {
+                            setPosition(transientPosition)
+                        }
+                        transientPosition = nil
                         dragStart = nil
                         isDragging = false
+                        if hasNotifiedEngineOfDrag {
+                            hasNotifiedEngineOfDrag = false
+                            engine.endVideoSubtitleDrag(segmentID: segmentID)
+                        }
                     }
             )
             .onHover { isHovering = $0 }
+            .onDisappear {
+                // A view can disappear while a pointer is down (for example
+                // when the active sentence changes). Never leave the playback
+                // engine in its drag lock in that case.
+                if hasNotifiedEngineOfDrag {
+                    hasNotifiedEngineOfDrag = false
+                    engine.endVideoSubtitleDrag(segmentID: segmentID)
+                }
+            }
             .help("拖动字幕调整位置")
     }
 
@@ -291,6 +324,8 @@ public struct VideoSubtitleOverlay: View {
                     if settings.showOriginal, !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         DraggableVideoSubtitle(
                             settings: settings,
+                            engine: engine,
+                            segmentID: segment.id,
                             track: .original,
                             text: segment.text,
                             containerSize: geometry.size
@@ -300,6 +335,8 @@ public struct VideoSubtitleOverlay: View {
                     if settings.showTranslation, !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         DraggableVideoSubtitle(
                             settings: settings,
+                            engine: engine,
+                            segmentID: segment.id,
                             track: .translation,
                             text: segment.translation,
                             containerSize: geometry.size
