@@ -7,6 +7,7 @@ public enum SentenceLibraryError: LocalizedError {
     case database(String)
     case invalidName
     case libraryAlreadyExists
+    case defaultLibraryCannotBeDeleted
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +16,7 @@ public enum SentenceLibraryError: LocalizedError {
         case let .database(message): return "句库读写失败：\(message)"
         case .invalidName: return "请输入有效的句库名称。"
         case .libraryAlreadyExists: return "这个句库已经存在。"
+        case .defaultLibraryCannotBeDeleted: return "默认句库不能删除。"
         }
     }
 }
@@ -48,6 +50,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
 
     public func listLibraries() -> [SentenceLibraryDescriptor] {
         queue.sync {
+            // 旧版句库仍保留在原目录中；首次扫描时原地升级，之后只会看到 v3。
+            migrateLegacyLibrariesIfNeededUnlocked()
             guard let urls = try? fileManager.contentsOfDirectory(
                 at: rootURL,
                 includingPropertiesForKeys: nil,
@@ -308,30 +312,17 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         guard !ids.isEmpty else { return }
         try queue.sync {
             try validateLibrary(id: libraryID)
-            let oldEntries = try entriesUnlocked(libraryID: libraryID, ids: ids)
-            try withDatabase(libraryID: libraryID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    var statement: OpaquePointer?
-                    try prepare("DELETE FROM entries WHERE id = ?;", db: db, statement: &statement)
-                    defer { sqlite3_finalize(statement) }
-                    for id in ids {
-                        sqlite3_reset(statement)
-                        sqlite3_clear_bindings(statement)
-                        bind(id.uuidString, at: 1, to: statement)
-                        guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
-                    }
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
+            let oldEntries = try readEntriesUnlocked(libraryID: libraryID, ids: ids)
+            try deleteEntriesUnlocked(ids: ids, from: libraryID)
+            for filename in oldEntries.compactMap(\.previewFilename) {
+                if let safeFilename = safeFilename(filename) {
+                    try? fileManager.removeItem(at: previewsURL(for: libraryID).appendingPathComponent(safeFilename))
                 }
             }
-            for filename in oldEntries.compactMap(\.previewFilename) {
-                try? fileManager.removeItem(at: previewsURL(for: libraryID).appendingPathComponent(filename))
-            }
             for filename in oldEntries.compactMap(\.mediaFilename) {
-                try? fileManager.removeItem(at: mediaURL(for: libraryID).appendingPathComponent(filename))
+                if let safeFilename = safeFilename(filename) {
+                    try? fileManager.removeItem(at: mediaURL(for: libraryID).appendingPathComponent(safeFilename))
+                }
             }
             try touchManifest(libraryID: libraryID)
         }
@@ -340,11 +331,132 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func deleteLibrary(id: UUID) throws {
         try queue.sync {
             try validateLibrary(id: id)
+            if let descriptor = readManifest(at: packageURL(for: id)), descriptor.isDefault {
+                throw SentenceLibraryError.defaultLibraryCannotBeDeleted
+            }
             if let db = openDatabases.removeValue(forKey: id) {
                 sqlite3_close_v2(db)
             }
             initializedDatabases.remove(id)
             try fileManager.removeItem(at: packageURL(for: id))
+        }
+    }
+
+    /// 将源句库中选中的句子移动到目标句库。媒体和缩略图先复制到目标包，
+    /// 目标索引写入成功后才删除源索引，因此任一步失败都不会造成句子内容丢失。
+    public func moveEntries(
+        ids: Set<UUID>,
+        from sourceLibraryID: UUID,
+        to destinationLibraryID: UUID,
+        progress: @escaping @Sendable (Double, String) -> Void = { _, _ in }
+    ) throws {
+        guard !ids.isEmpty else { return }
+        guard sourceLibraryID != destinationLibraryID else {
+            throw SentenceLibraryError.database("源句库与目标句库不能相同。")
+        }
+        try queue.sync {
+            try validateLibrary(id: sourceLibraryID)
+            try validateLibrary(id: destinationLibraryID)
+            let sourceEntries = try readEntriesUnlocked(libraryID: sourceLibraryID, ids: ids).sorted {
+                if $0.createdAt == $1.createdAt {
+                    if $0.startTime == $1.startTime { return $0.id.uuidString < $1.id.uuidString }
+                    return $0.startTime < $1.startTime
+                }
+                return $0.createdAt < $1.createdAt
+            }
+            guard !sourceEntries.isEmpty else { return }
+
+            let destinationMediaDirectory = mediaURL(for: destinationLibraryID)
+            let destinationPreviewDirectory = previewsURL(for: destinationLibraryID)
+            try fileManager.createDirectory(at: destinationMediaDirectory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: destinationPreviewDirectory, withIntermediateDirectories: true)
+
+            let total = max(1, sourceEntries.count)
+            var destinationEntries: [SentenceLibraryEntry] = []
+            var copiedMedia: [String] = []
+            var copiedPreviews: [String] = []
+            var sourceDeleted = false
+            do {
+                for (offset, sourceEntry) in sourceEntries.enumerated() {
+                    guard let sourceMediaFilename = safeFilename(sourceEntry.mediaFilename) else {
+                        throw SentenceLibraryError.database("句子媒体文件名无效。")
+                    }
+                    let sourceMedia = mediaURL(for: sourceLibraryID).appendingPathComponent(sourceMediaFilename)
+                    guard fileManager.fileExists(atPath: sourceMedia.path) else {
+                        throw SentenceLibraryError.database("源句库缺少句子音频：\(sourceEntry.originalText)")
+                    }
+
+                    let destinationID = UUID()
+                    let destinationMediaFilename = "\(destinationID.uuidString).m4a"
+                    let destinationMedia = destinationMediaDirectory.appendingPathComponent(destinationMediaFilename)
+                    try fileManager.copyItem(at: sourceMedia, to: destinationMedia)
+                    copiedMedia.append(destinationMediaFilename)
+
+                    var destinationPreviewFilename: String?
+                    if let sourcePreviewFilename = sourceEntry.previewFilename,
+                       let safePreviewFilename = safeFilename(sourcePreviewFilename) {
+                        let sourcePreview = previewsURL(for: sourceLibraryID).appendingPathComponent(safePreviewFilename)
+                        if fileManager.fileExists(atPath: sourcePreview.path) {
+                            let filename = "\(destinationID.uuidString).jpg"
+                            try fileManager.copyItem(at: sourcePreview, to: destinationPreviewDirectory.appendingPathComponent(filename))
+                            copiedPreviews.append(filename)
+                            destinationPreviewFilename = filename
+                        }
+                    }
+
+                    let destinationEntry = SentenceLibraryEntry(
+                        id: destinationID,
+                        originalText: sourceEntry.originalText,
+                        translation: sourceEntry.translation,
+                        note: sourceEntry.note,
+                        sourceMediaName: sourceEntry.sourceMediaName,
+                        sourceMediaPath: sourceEntry.sourceMediaPath,
+                        startTime: sourceEntry.startTime,
+                        endTime: sourceEntry.endTime,
+                        createdAt: sourceEntry.createdAt,
+                        mediaFilename: destinationMediaFilename,
+                        previewFilename: destinationPreviewFilename
+                    )
+                    destinationEntries.append(destinationEntry)
+                    progress(0.35 * Double(offset + 1) / Double(total), "复制句子媒体")
+                }
+
+                try insertEntriesUnlocked(destinationEntries, into: destinationLibraryID)
+                progress(0.65, "写入目标句库")
+
+                do {
+                    try deleteEntriesUnlocked(ids: Set(sourceEntries.map(\.id)), from: sourceLibraryID)
+                } catch {
+                    // 目标已写入但源删除失败时回滚目标索引与文件，保持“移动”而不是复制。
+                    try? deleteEntriesUnlocked(ids: Set(destinationEntries.map(\.id)), from: destinationLibraryID)
+                    throw error
+                }
+                sourceDeleted = true
+
+                for filename in sourceEntries.compactMap(\.previewFilename) {
+                    if let safeFilename = safeFilename(filename) {
+                        try? fileManager.removeItem(at: previewsURL(for: sourceLibraryID).appendingPathComponent(safeFilename))
+                    }
+                }
+                for filename in sourceEntries.compactMap(\.mediaFilename) {
+                    if let safeFilename = safeFilename(filename) {
+                        try? fileManager.removeItem(at: mediaURL(for: sourceLibraryID).appendingPathComponent(safeFilename))
+                    }
+                }
+                try touchManifest(libraryID: sourceLibraryID)
+                try touchManifest(libraryID: destinationLibraryID)
+                progress(1, "移动完成")
+            } catch {
+                if !sourceDeleted {
+                    for filename in copiedMedia {
+                        try? fileManager.removeItem(at: destinationMediaDirectory.appendingPathComponent(filename))
+                    }
+                    for filename in copiedPreviews {
+                        try? fileManager.removeItem(at: destinationPreviewDirectory.appendingPathComponent(filename))
+                    }
+                }
+                throw error
+            }
         }
     }
 
@@ -380,6 +492,69 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         packageURL(for: id).appendingPathComponent("manifest.json")
     }
 
+    /// 一次性原地迁移 v1/v2 句库。目录、SQLite 文件以及 Media/、Previews/
+    /// 中的原始文件都不搬移、不重编码，只升级数据库索引和 manifest 版本。
+    /// 这样迁移后仍使用原句库 UUID，已保存的当前句库选择也不会失效。
+    private func migrateLegacyLibrariesIfNeededUnlocked() {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for packageURL in urls where packageURL.pathExtension.lowercased() == "mablib" {
+            guard let legacy = readManifest(at: packageURL),
+                  legacy.format == SentenceLibraryDescriptor.formatIdentifier,
+                  legacy.version > 0,
+                  legacy.version < SentenceLibraryDescriptor.currentFormatVersion else {
+                continue
+            }
+            do {
+                try migrateLegacyLibraryUnlocked(legacy, packageURL: packageURL)
+            } catch {
+                // 保留旧 manifest 以便下次启动重试，绝不因迁移失败删除或覆盖旧数据。
+                continue
+            }
+        }
+    }
+
+    private func migrateLegacyLibraryUnlocked(
+        _ legacy: SentenceLibraryDescriptor,
+        packageURL: URL
+    ) throws {
+        let databaseURL = packageURL.appendingPathComponent("Library.sqlite3")
+        var database: OpaquePointer?
+        let result = sqlite3_open_v2(
+            databaseURL.path,
+            &database,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard result == SQLITE_OK, database != nil else {
+            if let database { sqlite3_close_v2(database) }
+            throw SentenceLibraryError.libraryUnavailable
+        }
+        let openedDatabase = database!
+        do {
+            sqlite3_busy_timeout(openedDatabase, 5_000)
+            try createSchema(in: openedDatabase)
+            // 将旧 WAL 中的提交合并回主数据库文件，避免迁移完成后遗漏 WAL 数据。
+            try execute("PRAGMA wal_checkpoint(TRUNCATE);", in: openedDatabase)
+            sqlite3_close_v2(openedDatabase)
+            database = nil
+            let migrated = SentenceLibraryDescriptor(
+                id: legacy.id,
+                name: legacy.name,
+                createdAt: legacy.createdAt,
+                updatedAt: legacy.updatedAt
+            )
+            try writeManifest(migrated, to: packageURL)
+        } catch {
+            if let database { sqlite3_close_v2(database) }
+            throw error
+        }
+    }
+
     private func readManifest(at packageURL: URL) -> SentenceLibraryDescriptor? {
         guard let data = try? Data(contentsOf: packageURL.appendingPathComponent("manifest.json")) else { return nil }
         return try? Self.decoder.decode(SentenceLibraryDescriptor.self, from: data)
@@ -408,28 +583,130 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         try writeManifest(descriptor, to: packageURL(for: libraryID))
     }
 
-    private func entriesUnlocked(libraryID: UUID, ids: Set<UUID>) throws -> [SentenceLibraryEntry] {
+    private func readEntriesUnlocked(libraryID: UUID, ids: Set<UUID>? = nil) throws -> [SentenceLibraryEntry] {
         try withDatabase(libraryID: libraryID) { db in
             var statement: OpaquePointer?
-            try prepare("SELECT id, preview_filename, media_filename FROM entries WHERE id = ?;", db: db, statement: &statement)
+            let sql: String
+            if ids == nil {
+                sql = """
+                SELECT id, original_text, translation, note, source_media_name, source_media_path,
+                       start_time, end_time, created_at, preview_filename, media_filename
+                FROM entries ORDER BY created_at ASC, rowid ASC;
+                """
+            } else {
+                sql = """
+                SELECT id, original_text, translation, note, source_media_name, source_media_path,
+                       start_time, end_time, created_at, preview_filename, media_filename
+                FROM entries WHERE id = ?;
+                """
+            }
+            try prepare(sql, db: db, statement: &statement)
             defer { sqlite3_finalize(statement) }
             var result: [SentenceLibraryEntry] = []
-            for id in ids {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                bind(id.uuidString, at: 1, to: statement)
-                if sqlite3_step(statement) == SQLITE_ROW {
-                    result.append(SentenceLibraryEntry(
-                        id: id,
-                        originalText: "", translation: "", sourceMediaName: "", sourceMediaPath: "",
-                        startTime: 0, endTime: 0.05,
-                        mediaFilename: text(statement, 2),
-                        previewFilename: optionalText(statement, 1)
-                    ))
+            if let ids {
+                for id in ids {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    bind(id.uuidString, at: 1, to: statement)
+                    if sqlite3_step(statement) == SQLITE_ROW, let entry = entry(from: statement) {
+                        result.append(entry)
+                    }
+                }
+            } else {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let entry = entry(from: statement) { result.append(entry) }
                 }
             }
             return result
         }
+    }
+
+    private func entry(from statement: OpaquePointer?) -> SentenceLibraryEntry? {
+        guard let id = UUID(uuidString: text(statement, 0)) else { return nil }
+        return SentenceLibraryEntry(
+            id: id,
+            originalText: text(statement, 1),
+            translation: text(statement, 2),
+            note: text(statement, 3),
+            sourceMediaName: text(statement, 4),
+            sourceMediaPath: text(statement, 5),
+            startTime: sqlite3_column_double(statement, 6),
+            endTime: sqlite3_column_double(statement, 7),
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
+            mediaFilename: text(statement, 10),
+            previewFilename: optionalText(statement, 9)
+        )
+    }
+
+    private func deleteEntriesUnlocked(ids: Set<UUID>, from libraryID: UUID) throws {
+        guard !ids.isEmpty else { return }
+        try withDatabase(libraryID: libraryID) { db in
+            try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+            do {
+                var statement: OpaquePointer?
+                try prepare("DELETE FROM entries WHERE id = ?;", db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                for id in ids {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    bind(id.uuidString, at: 1, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                }
+                try execute("COMMIT;", in: db)
+            } catch {
+                try? execute("ROLLBACK;", in: db)
+                throw error
+            }
+        }
+    }
+
+    private func insertEntriesUnlocked(_ entries: [SentenceLibraryEntry], into libraryID: UUID) throws {
+        guard !entries.isEmpty else { return }
+        try withDatabase(libraryID: libraryID) { db in
+            try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+            do {
+                let sql = """
+                INSERT INTO entries (
+                    id, original_text, translation, note, source_media_name,
+                    source_media_path, start_time, end_time, created_at, preview_filename,
+                    media_filename
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """
+                var statement: OpaquePointer?
+                try prepare(sql, db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                for entry in entries {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    bind(entry.id.uuidString, at: 1, to: statement)
+                    bind(entry.originalText, at: 2, to: statement)
+                    bind(entry.translation, at: 3, to: statement)
+                    bind(entry.note, at: 4, to: statement)
+                    bind(entry.sourceMediaName, at: 5, to: statement)
+                    bind(entry.sourceMediaPath, at: 6, to: statement)
+                    sqlite3_bind_double(statement, 7, entry.startTime)
+                    sqlite3_bind_double(statement, 8, entry.endTime)
+                    sqlite3_bind_double(statement, 9, entry.createdAt.timeIntervalSince1970)
+                    if let previewFilename = entry.previewFilename {
+                        bind(previewFilename, at: 10, to: statement)
+                    } else {
+                        sqlite3_bind_null(statement, 10)
+                    }
+                    bind(entry.mediaFilename, at: 11, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                }
+                try execute("COMMIT;", in: db)
+            } catch {
+                try? execute("ROLLBACK;", in: db)
+                throw error
+            }
+        }
+    }
+
+    private func safeFilename(_ filename: String) -> String? {
+        let candidate = URL(fileURLWithPath: filename).lastPathComponent
+        guard !candidate.isEmpty, candidate == filename else { return nil }
+        return candidate
     }
 
     private func withDatabase<T>(libraryID: UUID, operation: (OpaquePointer) throws -> T) throws -> T {
@@ -503,12 +780,54 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             \(Self.ftsSchemaSQL)
             PRAGMA user_version=4;
             """, in: db)
-        } else if version == 3 {
-            try execute(Self.ftsSchemaSQL, in: db)
-            try execute("PRAGMA user_version=4;", in: db)
+        } else if version >= 1 && version <= 3 {
+            // v1/v2 的 entries 表与当前字段基本兼容；缺少的新字段只补列，
+            // 不改写原有行，也不触碰 Media/ 和 Previews/ 中的文件。
+            let columns = try tableColumns(in: db)
+            if !columns.contains("id") {
+                try execute("""
+                CREATE TABLE IF NOT EXISTS entries (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    original_text TEXT NOT NULL DEFAULT '',
+                    translation TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    source_media_name TEXT NOT NULL DEFAULT '',
+                    source_media_path TEXT NOT NULL DEFAULT '',
+                    start_time REAL NOT NULL,
+                    end_time REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    preview_filename TEXT,
+                    media_filename TEXT
+                );
+                """, in: db)
+            } else {
+                if !columns.contains("preview_filename") {
+                    try execute("ALTER TABLE entries ADD COLUMN preview_filename TEXT;", in: db)
+                }
+                if !columns.contains("media_filename") {
+                    try execute("ALTER TABLE entries ADD COLUMN media_filename TEXT;", in: db)
+                }
+            }
+            try execute("""
+            CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
+            \(Self.ftsSchemaSQL)
+            PRAGMA user_version=4;
+            """, in: db)
         } else if version != 4 {
             throw SentenceLibraryError.invalidLibrary
         }
+    }
+
+    private func tableColumns(in db: OpaquePointer) throws -> Set<String> {
+        var statement: OpaquePointer?
+        try prepare("PRAGMA table_info(entries);", db: db, statement: &statement)
+        defer { sqlite3_finalize(statement) }
+        var columns: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            columns.insert(text(statement, 1))
+        }
+        return columns
     }
 
     private func prepare(_ sql: String, db: OpaquePointer, statement: inout OpaquePointer?) throws {

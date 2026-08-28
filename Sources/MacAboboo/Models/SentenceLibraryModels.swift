@@ -24,6 +24,13 @@ public struct SentenceLibraryDescriptor: Identifiable, Codable, Equatable, Hasha
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+
+    /// 默认句库由应用自动创建并始终保留，不能被用户删除。
+    /// 旧版本可能使用相同的中文名称，英文名称也一并识别以避免迁移后误删。
+    public var isDefault: Bool {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "默认句库" || normalized == "default library"
+    }
 }
 
 public struct SentenceLibraryEntry: Identifiable, Equatable, Hashable, Sendable {

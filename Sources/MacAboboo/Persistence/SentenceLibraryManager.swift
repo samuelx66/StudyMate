@@ -45,6 +45,11 @@ public final class SentenceLibraryManager: ObservableObject {
         libraries.first { $0.id == currentLibraryID }
     }
 
+    public var canDeleteCurrentLibrary: Bool {
+        guard let currentLibrary else { return false }
+        return !currentLibrary.isDefault && !isWorking
+    }
+
     public func createLibrary(name: String) async throws {
         let descriptor = try await Task.detached(priority: .utility) { [store] in
             try store.createLibrary(name: name)
@@ -249,6 +254,44 @@ public final class SentenceLibraryManager: ObservableObject {
         }.value
         currentLibraryID = nil
         await reloadLibraries(createDefaultIfNeeded: true)
+    }
+
+    /// 将勾选的句子移动到另一个句库。目标句库收到独立媒体副本后，
+    /// 源句库中的对应记录和文件才会被删除，播放不依赖原始媒体文件。
+    public func moveEntries(ids: Set<UUID>, to destinationLibraryID: UUID) async throws {
+        guard let sourceLibraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !ids.isEmpty else { return }
+        guard sourceLibraryID != destinationLibraryID else {
+            throw SentenceLibraryError.database("源句库与目标句库不能相同。")
+        }
+
+        isWorking = true
+        let generation = UUID()
+        operationGeneration = generation
+        operationProgress = SentenceLibraryOperationProgress(fraction: 0, phase: "准备移动句子")
+        defer {
+            if operationGeneration == generation {
+                isWorking = false
+                operationProgress = nil
+            }
+        }
+        let report: @Sendable (Double, String) -> Void = { [weak self] fraction, phase in
+            Task { @MainActor [weak self] in
+                guard let self, self.operationGeneration == generation else { return }
+                self.operationProgress = SentenceLibraryOperationProgress(fraction: fraction, phase: phase)
+            }
+        }
+
+        try await Task.detached(priority: .utility) { [store] in
+            try store.moveEntries(
+                ids: ids,
+                from: sourceLibraryID,
+                to: destinationLibraryID,
+                progress: report
+            )
+        }.value
+        await reloadLibraries(createDefaultIfNeeded: false)
+        reloadEntries()
     }
 
     public func previewURL(for entry: SentenceLibraryEntry) -> URL? {

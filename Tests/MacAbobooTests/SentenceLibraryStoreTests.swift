@@ -196,7 +196,7 @@ final class SentenceLibraryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
 
-    func testUnsupportedLibraryVersionsAreIgnored() throws {
+    func testLegacyLibraryVersionsAreMigratedInPlace() throws {
         let libraryID = UUID()
         let packageURL = store.packageURL(for: libraryID)
         try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
@@ -212,11 +212,62 @@ final class SentenceLibraryStoreTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: manifest)
             .write(to: packageURL.appendingPathComponent("manifest.json"))
 
-        XCTAssertTrue(store.listLibraries().isEmpty)
-        XCTAssertThrowsError(try store.entries(libraryID: libraryID)) { error in
-            guard case SentenceLibraryError.invalidLibrary = error else {
-                return XCTFail("Expected invalid library error, got \(error)")
+        XCTAssertEqual(store.listLibraries().map(\.id), [libraryID])
+        XCTAssertEqual(try store.entries(libraryID: libraryID).count, 0)
+        let migratedManifest = try Data(contentsOf: packageURL.appendingPathComponent("manifest.json"))
+        let migratedObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: migratedManifest) as? [String: Any])
+        XCTAssertEqual(migratedObject["version"] as? Int, SentenceLibraryDescriptor.currentFormatVersion)
+    }
+
+    func testDefaultLibraryCannotBeDeleted() throws {
+        let library = try store.createLibrary(name: "默认句库")
+        XCTAssertThrowsError(try store.deleteLibrary(id: library.id)) { error in
+            guard case SentenceLibraryError.defaultLibraryCannotBeDeleted = error else {
+                return XCTFail("Expected default-library protection, got \(error)")
             }
         }
+        XCTAssertEqual(store.listLibraries().map(\.id), [library.id])
+    }
+
+    func testMoveEntriesPreservesTextMediaAndPreview() throws {
+        let source = try store.createLibrary(name: "源句库")
+        let destination = try store.createLibrary(name: "目标句库")
+        let entryID = UUID()
+        let entry = SentenceLibraryEntry(
+            id: entryID,
+            originalText: "Move me",
+            translation: "移动我",
+            note: "note",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: "/lesson.mp4",
+            startTime: 1,
+            endTime: 2,
+            createdAt: Date(timeIntervalSince1970: 1234),
+            mediaFilename: "\(entryID.uuidString).m4a",
+            previewFilename: "\(entryID.uuidString).jpg"
+        )
+        let mediaURL = temporaryDirectory.appendingPathComponent("source.m4a")
+        let mediaData = Data("portable audio".utf8)
+        try mediaData.write(to: mediaURL)
+        let previewData = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        try store.add(
+            entries: [entry],
+            previewData: [entry.id: previewData],
+            to: source.id,
+            mediaURLs: [entry.id: mediaURL]
+        )
+
+        try store.moveEntries(ids: [entry.id], from: source.id, to: destination.id)
+
+        XCTAssertTrue(try store.entries(libraryID: source.id).isEmpty)
+        let moved = try XCTUnwrap(store.entries(libraryID: destination.id).first)
+        XCTAssertEqual(moved.originalText, entry.originalText)
+        XCTAssertEqual(moved.translation, entry.translation)
+        XCTAssertEqual(moved.note, entry.note)
+        XCTAssertEqual(moved.sourceMediaName, entry.sourceMediaName)
+        let movedMediaURL = try XCTUnwrap(store.mediaURL(for: moved, libraryID: destination.id))
+        XCTAssertEqual(try Data(contentsOf: movedMediaURL), mediaData)
+        let movedPreviewURL = try XCTUnwrap(store.previewURL(for: moved, libraryID: destination.id))
+        XCTAssertEqual(try Data(contentsOf: movedPreviewURL), previewData)
     }
 }

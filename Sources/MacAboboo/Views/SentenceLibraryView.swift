@@ -17,6 +17,8 @@ public struct SentenceLibraryView: View {
     @State private var previewRequest: SentencePreviewRequest?
     @State private var showCreateSheet = false
     @State private var confirmLibraryDeletion = false
+    @State private var confirmMove = false
+    @State private var pendingMoveDestinationID: UUID?
     @State private var notice: SentenceLibraryNotice?
 
     public init(manager: SentenceLibraryManager) {
@@ -65,8 +67,12 @@ public struct SentenceLibraryView: View {
                     Button(role: .destructive) { confirmLibraryDeletion = true } label: {
                         Image(systemName: "trash")
                     }
-                    .disabled(manager.currentLibrary == nil || manager.isWorking)
-                    .help(lang.text("删除当前句库", "Delete Current Library"))
+                    .disabled(!manager.canDeleteCurrentLibrary)
+                    .help(
+                        manager.currentLibrary?.isDefault == true
+                            ? lang.text("默认句库不可删除", "The default library cannot be deleted")
+                            : lang.text("删除当前句库", "Delete Current Library")
+                    )
                 }
                 .buttonStyle(.plain)
                 .padding(10)
@@ -144,6 +150,20 @@ public struct SentenceLibraryView: View {
                             Label(lang.text("删除（\(selectedVisibleEntries.count)）", "Delete (\(selectedVisibleEntries.count))"), systemImage: "trash")
                         }
                         .disabled(manager.isWorking)
+
+                        Menu {
+                            ForEach(manager.libraries.filter { $0.id != manager.currentLibraryID }) { library in
+                                Button {
+                                    pendingMoveDestinationID = library.id
+                                    confirmMove = true
+                                } label: {
+                                    Label(library.name, systemImage: "books.vertical")
+                                }
+                            }
+                        } label: {
+                            Label(lang.text("移动（\(selectedVisibleEntries.count)）", "Move (\(selectedVisibleEntries.count))"), systemImage: "arrow.right.doc.on.clipboard")
+                        }
+                        .disabled(manager.isWorking || manager.libraries.count < 2)
                     }
 
                     if let progress = manager.operationProgress {
@@ -324,6 +344,25 @@ public struct SentenceLibraryView: View {
         } message: {
             Text(lang.text("句库中的句子和预览图片都会被删除。", "All sentences and preview images in this library will be deleted."))
         }
+        .confirmationDialog(
+            lang.text("移动选中的句子？", "Move Selected Sentences?"),
+            isPresented: $confirmMove,
+            titleVisibility: .visible
+        ) {
+            if let pendingMoveDestinationID,
+               let destination = manager.libraries.first(where: { $0.id == pendingMoveDestinationID }) {
+                Button(lang.text("移动到 \(destination.name)", "Move to \(destination.name)")) {
+                    moveSelectedEntries(to: destination.id)
+                }
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {
+                pendingMoveDestinationID = nil
+            }
+        } message: {
+            if let destination = pendingMoveDestinationID.flatMap({ id in manager.libraries.first(where: { $0.id == id }) }) {
+                Text(lang.text("句子、原文、译文、音频和缩略图会移动到“\(destination.name)”，并从当前句库移除。", "The sentences, text, audio and previews will move to \(destination.name) and be removed from the current library."))
+            }
+        }
         .alert(item: $notice) { item in
             Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text(lang.text("好", "OK"))))
         }
@@ -356,6 +395,20 @@ public struct SentenceLibraryView: View {
                 }
             } catch {
                 notice = SentenceLibraryNotice(title: lang.text("删除失败", "Delete Failed"), message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func moveSelectedEntries(to destinationID: UUID) {
+        let ids = selectedEntryIDs.intersection(Set(manager.entries.map(\.id)))
+        guard !ids.isEmpty else { return }
+        Task {
+            do {
+                try await manager.moveEntries(ids: ids, to: destinationID)
+                selectedEntryIDs.removeAll()
+                pendingMoveDestinationID = nil
+            } catch {
+                notice = SentenceLibraryNotice(title: lang.text("移动失败", "Move Failed"), message: error.localizedDescription)
             }
         }
     }

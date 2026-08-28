@@ -44,6 +44,7 @@ public struct MainContentView: View {
     @State private var isVideoSubtitleFontSettingsPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var isClosingCurrentMedia: Bool = false
+    @State private var isProjectRecoveryDialogPresented: Bool = false
     @AppStorage("MacAboboo.ShowStatusBar") private var isStatusBarVisible: Bool = false
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "macaboboo_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "macaboboo_playlist_width") : 360
     private let onWindowDidAppear: () -> Void
@@ -85,6 +86,24 @@ public struct MainContentView: View {
         // 顶部工具栏 (首帧静态直出，彻底消除异步挂载滞后与抖动)
         .tint(MacAbobooMediaStyle.accent)
         .toolbar { windowToolbar }
+        .confirmationDialog(
+            lang.text("工程文件处理", "Project Recovery"),
+            isPresented: $isProjectRecoveryDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button(lang.text("继续使用原工程", "Use Existing Project")) {
+                engine.continueUsingExistingProject()
+            }
+            Button(lang.text("重新断句（智能）", "Re-segment (Intelligent)"), role: .destructive) {
+                engine.performSegmentation(mode: .intelligent)
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(lang.text(
+                "工程对应的媒体文件信息已经变化。继续使用原工程会保留现有断句、原文和译文；重新断句会覆盖当前时间轴，请确认你的选择。",
+                "The media information no longer matches the project. Using the existing project keeps its sentences and subtitles; re-segmenting replaces the current timeline. Please confirm your choice."
+            ))
+        }
     }
 
     /// 有后台任务或错误时即使用户关闭了常驻状态栏，也临时显示状态栏，
@@ -168,7 +187,8 @@ public struct MainContentView: View {
                 PlaybackStatusBar(
                     engine: engine,
                     libraryManager: libraryManager,
-                    statusCenter: statusCenter
+                    statusCenter: statusCenter,
+                    onResolveProjectRecovery: { isProjectRecoveryDialogPresented = true }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -504,6 +524,7 @@ private struct PlaybackStatusBar: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var libraryManager: SentenceLibraryManager
     @ObservedObject var statusCenter: MainStatusCenter
+    let onResolveProjectRecovery: () -> Void
     @ObservedObject private var lang = LanguageManager.shared
 
     private var currentSegmentText: String {
@@ -610,7 +631,10 @@ private struct PlaybackStatusBar: View {
                 }
                 StatusBarErrorView(
                     message: currentErrorMessage,
-                    onDismiss: dismissCurrentError
+                    onDismiss: dismissCurrentError,
+                    onResolveProjectRecovery: engine.canUseExistingProject
+                        ? onResolveProjectRecovery
+                        : nil
                 )
             }
         }
@@ -690,6 +714,8 @@ private struct StatusBarProgressView: View {
 private struct StatusBarErrorView: View {
     let message: String
     let onDismiss: () -> Void
+    let onResolveProjectRecovery: (() -> Void)?
+    @ObservedObject private var lang = LanguageManager.shared
 
     @State private var isHovering = false
 
@@ -705,12 +731,19 @@ private struct StatusBarErrorView: View {
                 .frame(maxWidth: 360, alignment: .leading)
                 .layoutPriority(1)
 
+            if let onResolveProjectRecovery {
+                Button(lang.text("处理工程", "Handle Project"), action: onResolveProjectRecovery)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(lang.text("选择继续使用原工程或重新断句", "Choose the existing project or re-segment"))
+            }
+
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .frame(width: 18, height: 18)
             }
             .macabobooChromeButton(shape: .circle)
-            .help("关闭提示")
+            .help(lang.text("关闭提示", "Dismiss message"))
         }
         .padding(.horizontal, 6)
         .padding(.vertical, isHovering ? 4 : 0)

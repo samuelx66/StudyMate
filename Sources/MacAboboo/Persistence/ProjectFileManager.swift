@@ -150,6 +150,13 @@ public enum ProjectLoadResult: Sendable {
     case unavailable(String)
 }
 
+/// 用户明确选择继续使用媒体信息已变化的旧工程时的结果。
+/// 这个操作不会重新生成断句，只会在备份旧工程后更新媒体绑定信息。
+public enum ProjectAdoptionResult: Sendable {
+    case adopted(MediaProjectFile, backupPath: String)
+    case failed(String)
+}
+
 /// 旧版本工程的宽松读取模型。所有新增字段都提供安全默认值，
 /// 读取后立即由 `MediaProjectFile` 重新编码为当前 schema。
 private struct LegacyMediaProjectFile: Decodable {
@@ -415,8 +422,8 @@ public final class ProjectFileManager: @unchecked Sendable {
         metadataURL: URL,
         waveformURL: URL,
         existingProject: MediaProjectFile?
-    ) throws {
-        guard FileManager.default.fileExists(atPath: metadataURL.path) else { return }
+    ) throws -> URL? {
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else { return nil }
 
         let baseName = metadataURL.deletingPathExtension().lastPathComponent
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
@@ -471,6 +478,7 @@ public final class ProjectFileManager: @unchecked Sendable {
                 try FileManager.default.removeItem(at: staleBackup)
             }
         }
+        return backupDirectory
     }
 
     private func projectByHydratingWaveform(
@@ -590,7 +598,7 @@ public final class ProjectFileManager: @unchecked Sendable {
 
             // 所有实际覆盖都必须先完成备份；备份失败时宁可放弃本次保存，
             // 也不能留下“新文件已写入、旧字幕已丢失”的半完成状态。
-            try createBackupIfNeeded(
+            _ = try createBackupIfNeeded(
                 metadataURL: metadataURL,
                 waveformURL: waveformURL,
                 existingProject: existingMetadata
@@ -655,6 +663,80 @@ public final class ProjectFileManager: @unchecked Sendable {
         switch loadProjectResult(for: mediaURL) {
         case .loaded(let project, _): return project
         case .missing, .unavailable: return nil
+        }
+    }
+
+    /// 在用户明确确认后，采用当前媒体文件继续使用原工程。
+    ///
+    /// 该操作与普通保存不同：它始终先生成一份独立备份，然后只更新
+    /// 工程中的媒体大小/修改时间绑定，不重新运行任何断句模型。
+    public func adoptProjectIgnoringMediaMetadataAsync(
+        for mediaURL: URL
+    ) async -> ProjectAdoptionResult {
+        await withCheckedContinuation { continuation in
+            fileQueue.async {
+                continuation.resume(
+                    returning: self.adoptProjectIgnoringMediaMetadataDirect(for: mediaURL)
+                )
+            }
+        }
+    }
+
+    private func adoptProjectIgnoringMediaMetadataDirect(for mediaURL: URL) -> ProjectAdoptionResult {
+        let standardizedURL = mediaURL.standardizedFileURL
+        let metadataURL = projectFileURL(for: standardizedURL)
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+            return .failed("工程文件不存在，无法继续使用原工程。")
+        }
+
+        do {
+            let data = try Data(contentsOf: metadataURL)
+            let decoded = try decodeStoredProject(data)
+            guard decoded.project.mediaPath == standardizedURL.path else {
+                return .failed("工程与当前媒体文件路径不一致。")
+            }
+
+            let existingProject = projectByHydratingWaveform(
+                decoded.project,
+                cacheDirectory: projectsDirectory
+            )
+            let attributes = try FileManager.default.attributesOfItem(atPath: standardizedURL.path)
+            let currentSize = (attributes[.size] as? NSNumber)?.int64Value
+            let currentDate = attributes[.modificationDate] as? Date
+            let reboundProject = MediaProjectFile(
+                mediaPath: existingProject.mediaPath,
+                mediaTitle: existingProject.mediaTitle,
+                duration: existingProject.duration,
+                lastPosition: existingProject.lastPosition,
+                segments: existingProject.segments,
+                waveformData: existingProject.waveformData,
+                waveformCacheFile: existingProject.waveformCacheFile,
+                mediaFileSize: currentSize,
+                mediaModificationDate: currentDate,
+                hasCompletedSegmentation: existingProject.hasCompletedSegmentation,
+                acousticBoundaryTimes: existingProject.acousticBoundaryTimes,
+                updatedAt: Date()
+            )
+
+            let backupURL = try createBackupIfNeeded(
+                metadataURL: metadataURL,
+                waveformURL: waveformFileURL(for: standardizedURL),
+                existingProject: existingProject
+            )
+
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let reboundData = try encoder.encode(reboundProject)
+            try reboundData.write(to: metadataURL, options: .atomic)
+            persistedMetadataCache[standardizedURL.path] = reboundProject
+
+            return .adopted(
+                reboundProject,
+                backupPath: backupURL?.path ?? ""
+            )
+        } catch {
+            reportError("继续使用原工程失败：\(error.localizedDescription)")
+            return .failed(error.localizedDescription)
         }
     }
 

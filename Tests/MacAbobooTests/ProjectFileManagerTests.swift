@@ -191,6 +191,52 @@ final class ProjectFileManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: backupDirectories[0].path))
     }
 
+    func testExplicitlyAdoptingChangedMediaPreservesProjectAndCreatesBackup() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-ProjectAdoptionTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let mediaURL = directory.appendingPathComponent("changed.mp4")
+        try Data("original media".utf8).write(to: mediaURL)
+        let manager = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let segment = SentenceSegment(
+            index: 1,
+            startTime: 0.25,
+            endTime: 2.5,
+            text: "Edited original",
+            translation: "编辑后的译文",
+            isBookmarked: true
+        )
+
+        manager.saveProject(
+            for: mediaURL,
+            title: "Changed media",
+            duration: 3,
+            lastPosition: 1,
+            segments: [segment],
+            hasCompletedSegmentation: true
+        )
+        manager.flush()
+        try Data("replacement media with a different size".utf8).write(to: mediaURL, options: .atomic)
+
+        guard case .loaded(let project, _) = manager.loadProjectResult(for: mediaURL) else {
+            return XCTFail("The changed media should still expose the stored project for explicit adoption")
+        }
+        XCTAssertFalse(project.isCompatible(with: mediaURL))
+
+        let result = await manager.adoptProjectIgnoringMediaMetadataAsync(for: mediaURL)
+        guard case .adopted(let adopted, let backupPath) = result else {
+            return XCTFail("Expected explicit adoption to succeed")
+        }
+        XCTAssertTrue(adopted.isCompatible(with: mediaURL))
+        XCTAssertEqual(adopted.segments.first?.text, "Edited original")
+        XCTAssertEqual(adopted.segments.first?.translation, "编辑后的译文")
+        XCTAssertTrue(adopted.segments.first?.isBookmarked == true)
+        XCTAssertFalse(backupPath.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: URL(fileURLWithPath: backupPath).appendingPathComponent("project.json").path))
+    }
+
     func testCorruptedCurrentProjectRecoversLatestValidBackup() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacAboboo-ProjectRecoveryTests-\(UUID().uuidString)", isDirectory: true)

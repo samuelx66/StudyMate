@@ -265,6 +265,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 工程文件存在但无法安全恢复时置为 true。此状态只允许用户明确
     /// 发起新的断句，禁止波形解析完成后静默覆盖原工程。
     private var projectRecoveryRequired = false
+    /// 媒体信息变化时暂存的旧工程。只有用户在提示中明确选择“继续使用
+    /// 原工程”后才会应用，避免任何自动绕过兼容性保护。
+    private var pendingProjectForExplicitRecovery: MediaProjectFile?
+    @Published public private(set) var canUseExistingProject = false
 
     private enum SegmentOrigin {
         case none
@@ -996,6 +1000,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         hasCompletedSegmentation = false
         segmentOrigin = .none
         projectRecoveryRequired = false
+        pendingProjectForExplicitRecovery = nil
+        canUseExistingProject = false
         lastErrorMessage = nil
         segmentationWarningMessage = nil
         translationErrorMessage = nil
@@ -1072,6 +1078,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentOrigin = .none
         hasCompletedSegmentation = false
         projectRecoveryRequired = false
+        pendingProjectForExplicitRecovery = nil
+        canUseExistingProject = false
         acousticBoundaryTimes = []
         boundaryDragSession = nil
         segments = []
@@ -1123,10 +1131,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             case .missing:
                 // 没有任何工程记录，波形完成后才允许首次自动断句。
                 self.projectRecoveryRequired = false
+                self.pendingProjectForExplicitRecovery = nil
+                self.canUseExistingProject = false
             case .loaded(let project, let needsMigration):
                 if project.isCompatible(with: mediaURL) {
                     compatibleProject = project
                     self.projectRecoveryRequired = false
+                    self.pendingProjectForExplicitRecovery = nil
+                    self.canUseExistingProject = false
                     self.restoreProject(project, for: mediaURL)
                     if needsMigration {
                         // 迁移只在工程已经成功恢复且媒体匹配时执行，
@@ -1145,12 +1157,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     }
                 } else {
                     self.projectRecoveryRequired = true
-                    self.lastErrorMessage = self.projectRecoveryMessage(
-                        "工程对应的媒体文件信息已变化，已停止自动断句。"
-                    )
+                    self.pendingProjectForExplicitRecovery = project
+                    self.canUseExistingProject = true
+                    self.lastErrorMessage = self.projectChangedRecoveryMessage()
                 }
             case .unavailable(let reason):
                 self.projectRecoveryRequired = true
+                self.pendingProjectForExplicitRecovery = nil
+                self.canUseExistingProject = false
                 self.lastErrorMessage = self.projectRecoveryMessage(
                     "工程文件无法安全读取，已停止自动断句。\n\(reason)"
                 )
@@ -1159,6 +1173,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             // 同名字幕始终接管断句时间轴，但仍复用工程中的播放位置和波形。
             if let sidecarItems, !sidecarItems.isEmpty {
                 self.projectRecoveryRequired = false
+                self.pendingProjectForExplicitRecovery = nil
+                self.canUseExistingProject = false
                 self.applySubtitleItems(sidecarItems, origin: .sidecar, persist: true)
                 if let compatibleProject,
                    let savedWaveform = compatibleProject.waveformData,
@@ -1325,6 +1341,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         cancelAutomaticTranslation()
         modelIdleUnloadTask?.cancel()
         projectRecoveryRequired = false
+        pendingProjectForExplicitRecovery = nil
+        canUseExistingProject = false
         acousticBoundaryTimes = []
 
         let modelManager = WhisperModelManager.shared
@@ -1666,6 +1684,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         lastErrorMessage = nil
         translationErrorMessage = nil
         segmentationWarningMessage = nil
+        // 关闭“处理工程”提示视为放弃本次恢复选择，但不会解除保护状态；
+        // 后续只能由用户明确发起重新断句或重新导入字幕。
+        pendingProjectForExplicitRecovery = nil
+        canUseExistingProject = false
     }
 
     /// 按用户确认过的服务配置，翻译当前工程中符合范围的句子。
@@ -1827,6 +1849,59 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         return "To protect edited subtitles, \(detail) Automatic segmentation was stopped. Start a new segmentation manually if needed."
     }
 
+    private func projectChangedRecoveryMessage() -> String {
+        if LanguageManager.shared.currentLanguage == .zh {
+            return "为保护已编辑的原文和译文，工程对应的媒体文件信息已变化。请点击“处理工程”，选择“继续使用原工程”或“重新断句”。"
+        }
+        return "To protect edited subtitles, the media file information no longer matches the project. Click “Handle Project” and choose “Use Existing Project” or “Re-segment”."
+    }
+
+    /// 打开工程时检测到媒体大小或修改时间变化后，等待用户明确选择。
+    /// 选择继续使用时只重新绑定媒体信息，不运行 Silero、SpeakerKit 或 Whisper。
+    public func continueUsingExistingProject() {
+        guard let media = currentMedia,
+              let pendingProject = pendingProjectForExplicitRecovery,
+              projectRecoveryRequired else { return }
+
+        let mediaURL = media.url.standardizedFileURL
+        let sessionID = mediaSessionID
+        // 先禁用按钮，避免用户在后台备份期间重复提交相同操作。
+        canUseExistingProject = false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.projectFileManager.adoptProjectIgnoringMediaMetadataAsync(
+                for: mediaURL
+            )
+            guard sessionID == self.mediaSessionID,
+                  self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+
+            switch result {
+            case .adopted(let adoptedProject, let backupPath):
+                self.projectRecoveryRequired = false
+                self.pendingProjectForExplicitRecovery = nil
+                self.canUseExistingProject = false
+                self.restoreProject(adoptedProject, for: mediaURL)
+                if let savedWaveform = adoptedProject.waveformData, !savedWaveform.isEmpty {
+                    self.waveformData = savedWaveform
+                    self.waveformExtractionProgress = 1
+                }
+                let pathText = backupPath.isEmpty
+                    ? "Projects 目录"
+                    : backupPath
+                self.lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+                    ? "已继续使用原工程。原工程文件已备份到：\(pathText)"
+                    : "The existing project is now in use. A backup was saved at: \(pathText)"
+            case .failed(let reason):
+                self.projectRecoveryRequired = true
+                self.pendingProjectForExplicitRecovery = pendingProject
+                self.canUseExistingProject = true
+                self.lastErrorMessage = self.projectRecoveryMessage(
+                    "继续使用原工程失败：\(reason)"
+                )
+            }
+        }
+    }
+
     // MARK: - 字幕导入与应用
 
     public func importSubtitleItems(
@@ -1844,6 +1919,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         segmentOrigin = .none
         hasCompletedSegmentation = false
         projectRecoveryRequired = false
+        pendingProjectForExplicitRecovery = nil
+        canUseExistingProject = false
         applySubtitleItems(mappedItems, origin: .imported, persist: true)
     }
 
