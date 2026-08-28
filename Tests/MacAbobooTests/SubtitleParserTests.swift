@@ -146,4 +146,39 @@ final class SubtitleParserTests: XCTestCase {
         let items = try SubtitleParser.shared.parse(from: url)
         XCTAssertEqual(items.first?.text, "你好")
     }
+
+    func testASSParsing() {
+        let assContent = """
+        [Script Info]
+        Title: Sample ASS
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:00:01.25,0:00:04.80,Default,,0,0,0,,{\\pos(192,200)}Hello World!\\N你好世界！
+        Dialogue: 0,0:00:05.10,0:00:07.50,Default,,0,0,0,,Second line
+        """
+        let items = SubtitleParser.shared.parseASS(content: assContent)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].startTime, 1.25, accuracy: 0.001)
+        XCTAssertEqual(items[0].endTime, 4.80, accuracy: 0.001)
+        XCTAssertEqual(items[0].text, "Hello World!")
+        XCTAssertEqual(items[0].translation, "你好世界！")
+        XCTAssertEqual(items[1].text, "Second line")
+    }
+
+    func testArbitraryPrecisionTimestamp() {
+        XCTAssertEqual(SubtitleParser.shared.parseTimestamp("00:01:23.456789") ?? 0, 83.456789, accuracy: 0.000001)
+        XCTAssertEqual(SubtitleParser.shared.parseTimestamp("01:23.4") ?? 0, 83.4, accuracy: 0.001)
+    }
+
+    func testBilingualChineseTopEnglishBottomProperlyMapped() {
+        let content = """
+        1
+        00:00:01,000 --> 00:00:04,000
+        你好世界
+        Hello world
+        """
+        let items = SubtitleParser.shared.parseSRT(content: content)
+        XCTAssertEqual(items.first?.text, "Hello world")
+        XCTAssertEqual(items.first?.translation, "你好世界")
+    }
 }

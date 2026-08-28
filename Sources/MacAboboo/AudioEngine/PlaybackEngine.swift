@@ -1272,13 +1272,75 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func loadSidecarItems(for mediaURL: URL) async -> [ParsedSubtitleItem]? {
-        let base = mediaURL.deletingPathExtension()
+        let standardizedURL = mediaURL.standardizedFileURL
         return await Task.detached(priority: .utility) {
-            for ext in ["srt", "lrc", "vtt"] {
+            let didAccess = standardizedURL.startAccessingSecurityScopedResource()
+            defer {
+                if didAccess {
+                    standardizedURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let validExtensions = Set(["srt", "vtt", "lrc", "txt", "ass", "ssa"])
+            let baseName = standardizedURL.deletingPathExtension().lastPathComponent
+            let parentDir = standardizedURL.deletingLastPathComponent()
+
+            var candidateURLs: [URL] = []
+
+            // 1. 精确同名匹配（如 video.srt, video.vtt, video.lrc, video.txt, video.ass, video.ssa）
+            for ext in ["srt", "vtt", "lrc", "txt", "ass", "ssa"] {
+                let directURL = parentDir.appendingPathComponent("\(baseName).\(ext)")
+                if FileManager.default.fileExists(atPath: directURL.path) {
+                    candidateURLs.append(directURL)
+                }
+            }
+
+            // 2. 扫描同目录及 Subs/Subtitles 子目录下的多语言同名文件（如 video.zh.srt, video.en.vtt, video_chs.srt 等）
+            let searchDirs = [
+                parentDir,
+                parentDir.appendingPathComponent("Subtitles", isDirectory: true),
+                parentDir.appendingPathComponent("subs", isDirectory: true),
+                parentDir.appendingPathComponent("sub", isDirectory: true)
+            ]
+
+            for dir in searchDirs {
+                guard let contents = try? FileManager.default.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+
+                for fileURL in contents {
+                    let ext = fileURL.pathExtension.lowercased()
+                    guard validExtensions.contains(ext) else { continue }
+                    let fileName = fileURL.deletingPathExtension().lastPathComponent
+                    // 必须以媒体文件名开头（例如 video.zh, video.chs, video.en, video_1）
+                    if fileName == baseName || fileName.hasPrefix(baseName + ".") || fileName.hasPrefix(baseName + "_") || fileName.hasPrefix(baseName + "-") {
+                        if !candidateURLs.contains(fileURL) {
+                            candidateURLs.append(fileURL)
+                        }
+                    }
+                }
+            }
+
+            // 3. 排序候选字幕：优先精确同名，其次优先中文/双语/英文
+            candidateURLs.sort { lhs, rhs in
+                let lhsName = lhs.lastPathComponent.lowercased()
+                let rhsName = rhs.lastPathComponent.lowercased()
+                let lhsExact = lhs.deletingPathExtension().lastPathComponent == baseName
+                let rhsExact = rhs.deletingPathExtension().lastPathComponent == baseName
+                if lhsExact != rhsExact { return lhsExact }
+
+                let lhsZh = lhsName.contains("zh") || lhsName.contains("chs") || lhsName.contains("chi") || lhsName.contains("zho")
+                let rhsZh = rhsName.contains("zh") || rhsName.contains("chs") || rhsName.contains("chi") || rhsName.contains("zho")
+                if lhsZh != rhsZh { return lhsZh }
+
+                return lhsName < rhsName
+            }
+
+            for candidate in candidateURLs {
                 guard !Task.isCancelled else { return nil }
-                let subtitleURL = base.appendingPathExtension(ext)
-                guard FileManager.default.fileExists(atPath: subtitleURL.path) else { continue }
-                if let items = try? SubtitleParser.shared.parse(from: subtitleURL), !items.isEmpty {
+                if let items = try? SubtitleParser.shared.parse(from: candidate), !items.isEmpty {
                     return items
                 }
             }
@@ -1978,6 +2040,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 translation: item.translation
             )
         }
+        if duration <= 0, let maxTime = newSegments.last?.endTime, maxTime > 0 {
+            updateMediaDurationIfNeeded(maxTime)
+        }
         self.segments = normalizedSegments(newSegments, duration: duration)
         self.segmentOrigin = origin
         self.hasCompletedSegmentation = true
@@ -2041,7 +2106,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         shiftAllSegments(by: offsetSeconds)
     }
 
-    /// 对来自旧工程或外部字幕的时间轴做一次原子清洗，避免 NaN、越界、倒序和重叠导致播放状态失控。
+    /// 对来自旧工程或外部字幕的时间轴做一次原子清洗，保证时间戳合法、有序且不越界，同时保留字幕原生起止范围。
     private func normalizedSegments(_ input: [SentenceSegment], duration: Double) -> [SentenceSegment] {
         let upperBound = duration.isFinite && duration > 0 ? duration : Double.greatestFiniteMagnitude
         let sorted = input.sorted {
@@ -2050,14 +2115,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         var result: [SentenceSegment] = []
         result.reserveCapacity(sorted.count)
-        var previousEnd = 0.0
 
         for source in sorted {
-            let start = min(upperBound, max(previousEnd, source.startTime.isFinite ? max(0, source.startTime) : previousEnd))
+            let rawStart = source.startTime.isFinite ? max(0, source.startTime) : 0
+            guard rawStart < upperBound else { continue }
+            let start = min(upperBound, rawStart)
             let proposedEnd = source.endTime.isFinite ? source.endTime : start + 0.05
-            guard proposedEnd > start, start + 0.05 <= upperBound else { continue }
             let end = min(upperBound, max(start + 0.05, proposedEnd))
-            guard end > start, start < upperBound else { continue }
+            guard end > start else { continue }
             result.append(SentenceSegment(
                 id: source.id,
                 index: result.count + 1,
@@ -2072,7 +2137,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 speakerIDs: source.speakerIDs,
                 isSpeakerOverlap: source.isSpeakerOverlap
             ))
-            previousEnd = end
         }
         return result
     }

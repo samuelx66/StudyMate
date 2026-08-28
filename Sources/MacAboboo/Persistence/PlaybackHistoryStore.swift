@@ -169,7 +169,6 @@ public final class PlaybackHistoryStore: ObservableObject {
         entries.removeAll()
         persist()
         refreshReachableEntries()
-        ProjectFileManager.shared.cleanupOrphanProjects(activeMediaPaths: [])
     }
 
     /// 历史记录在后台写入；失败时由播放引擎转交状态栏，而不是静默打印。

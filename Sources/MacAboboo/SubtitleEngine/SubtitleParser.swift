@@ -2,7 +2,7 @@ import Foundation
 import CoreFoundation
 
 public enum SubtitleFormat: String, CaseIterable, Sendable {
-    case srt, lrc, vtt, txt
+    case srt, lrc, vtt, ass, ssa, txt
 }
 
 public struct ParsedSubtitleItem: Equatable, Sendable {
@@ -74,7 +74,7 @@ public enum SubtitleParserError: LocalizedError {
     }
 }
 
-/// SRT / LRC / WebVTT 容错解析器。严格校验时间码，同时保留真正的多行字幕。
+/// SRT / LRC / WebVTT / ASS / SSA 容错解析器。严格校验时间码，同时保留真正的多行字幕。
 public final class SubtitleParser: @unchecked Sendable {
     public static let shared = SubtitleParser()
     private static let maximumFileSize = 20 * 1024 * 1024
@@ -90,9 +90,13 @@ public final class SubtitleParser: @unchecked Sendable {
         case "srt": return parseSRT(content: content)
         case "lrc": return parseLRC(content: content)
         case "vtt": return parseVTT(content: content)
+        case "ass", "ssa": return parseASS(content: content)
         default:
             if content.range(of: #"(?m)^\s*WEBVTT"#, options: .regularExpression) != nil {
                 return parseVTT(content: content)
+            }
+            if content.range(of: #"(?m)^\s*\[Events\]"#, options: .regularExpression) != nil || content.contains("Dialogue:") {
+                return parseASS(content: content)
             }
             if content.range(of: #"(?m)^\s*\[\d{1,3}:\d{1,2}"#, options: .regularExpression) != nil {
                 return parseLRC(content: content)
@@ -111,25 +115,30 @@ public final class SubtitleParser: @unchecked Sendable {
         if data.starts(with: [0xFE, 0xFF]) {
             return String(data: data, encoding: .utf16BigEndian)
         }
-        // CoreFoundation 扩展编码表中的稳定常量：GB 18030 = 0x0632，Big-5 = 0x0A03。
-        let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632)))
-        let big5 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A03)))
-        for encoding in [
-            String.Encoding.utf8,
+
+        let encodingsToTry: [String.Encoding] = [
+            .utf8,
             .utf16,
             .utf16LittleEndian,
             .utf16BigEndian,
-            gb18030,
-            big5,
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632))), // GB18030
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0631))), // GBK
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0630))), // GB2312
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0930))), // EUC_CN
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A03))), // Big5
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A06))), // Big5_HKSCS
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A01))), // ShiftJIS
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0920))), // EUC_JP
             .windowsCP1252,
             .isoLatin1
-        ] {
-            if let value = String(data: data, encoding: encoding) { return value }
+        ]
+        for encoding in encodingsToTry {
+            if let value = String(data: data, encoding: encoding), !value.isEmpty { return value }
         }
         return nil
     }
 
-    // MARK: - SRT / WebVTT
+    // MARK: - SRT / WebVTT / ASS
 
     public func parseSRT(content: String) -> [ParsedSubtitleItem] {
         parseCueBlocks(content: content, isWebVTT: false)
@@ -137,6 +146,47 @@ public final class SubtitleParser: @unchecked Sendable {
 
     public func parseVTT(content: String) -> [ParsedSubtitleItem] {
         parseCueBlocks(content: content, isWebVTT: true)
+    }
+
+    public func parseASS(content: String) -> [ParsedSubtitleItem] {
+        let normalized = normalizeNewlines(content)
+        let lines = normalized.components(separatedBy: "\n")
+        var result: [ParsedSubtitleItem] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("Dialogue:") else { continue }
+            let payload = String(trimmed.dropFirst("Dialogue:".count)).trimmingCharacters(in: .whitespaces)
+            let parts = payload.components(separatedBy: ",")
+            guard parts.count >= 10 else { continue }
+            guard let start = parseTimestamp(parts[1].trimmingCharacters(in: .whitespaces)),
+                  let end = parseTimestamp(parts[2].trimmingCharacters(in: .whitespaces)),
+                  end > start else { continue }
+            let textParts = parts[9...]
+            let rawText = textParts.joined(separator: ",")
+                .replacingOccurrences(of: #"\{[^}]+\}"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\\[Nn]"#, with: "\n", options: .regularExpression)
+                .replacingOccurrences(of: #"\\[hH]"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawText.isEmpty else { continue }
+            let textLines = rawText.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let (text, translation) = splitTextAndTranslation(textLines)
+            result.append(ParsedSubtitleItem(
+                index: result.count + 1,
+                startTime: start,
+                endTime: end,
+                text: text,
+                translation: translation
+            ))
+        }
+        return result.sorted(by: cueOrdering).enumerated().map { offset, item in
+            ParsedSubtitleItem(
+                index: offset + 1,
+                startTime: item.startTime,
+                endTime: item.endTime,
+                text: item.text,
+                translation: item.translation
+            )
+        }
     }
 
     private func parseCueBlocks(content: String, isWebVTT: Bool) -> [ParsedSubtitleItem] {
@@ -190,10 +240,17 @@ public final class SubtitleParser: @unchecked Sendable {
         guard lines.count > 1 else { return (lines.first ?? "", "") }
         let firstHasCJK = containsCJK(lines[0])
         if let boundary = lines.dropFirst().firstIndex(where: { containsCJK($0) != firstHasCJK }) {
-            let original = lines[..<boundary].joined(separator: "\n")
-            let translation = lines[boundary...].joined(separator: "\n")
-            if !original.isEmpty, !translation.isEmpty {
-                return (original, translation)
+            let part1 = lines[..<boundary].joined(separator: "\n")
+            let part2 = lines[boundary...].joined(separator: "\n")
+            if !part1.isEmpty, !part2.isEmpty {
+                // 如果一段是外语（非 CJK），另一段是中文（CJK），
+                // 统一将外语作为原文 text，中文作为译文 translation，
+                // 保证无论双语字幕谁在上谁在下，听写和字幕显示均完全正确。
+                if firstHasCJK {
+                    return (part2, part1)
+                } else {
+                    return (part1, part2)
+                }
             }
         }
         // 无法可靠判断双语时保留所有行，避免把同语种的第二行误当成译文。
@@ -232,8 +289,8 @@ public final class SubtitleParser: @unchecked Sendable {
         let offsetPattern = try? NSRegularExpression(pattern: #"(?i)\[offset:\s*([+-]?\d+)\]"#)
         var offsetSeconds = 0.0
         if let match = offsetPattern?.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
-           let range = Range(match.range(at: 1), in: normalized),
-           let milliseconds = Double(normalized[range]) {
+            let range = Range(match.range(at: 1), in: normalized),
+            let milliseconds = Double(normalized[range]) {
             offsetSeconds = milliseconds / 1000
         }
 
@@ -301,11 +358,15 @@ public final class SubtitleParser: @unchecked Sendable {
     private func parseTimeRange(_ line: String) -> (start: Double, end: Double)? {
         let parts = line.components(separatedBy: "-->")
         guard parts.count == 2 else { return nil }
+        let startToken = parts[0].trimmingCharacters(in: .whitespaces)
+            .split(whereSeparator: { $0.isWhitespace })
+            .last
+            .map(String.init) ?? ""
         let endToken = parts[1].trimmingCharacters(in: .whitespaces)
             .split(whereSeparator: { $0.isWhitespace })
             .first
             .map(String.init) ?? ""
-        guard let start = parseTimestamp(parts[0]), let end = parseTimestamp(endToken), end > start else {
+        guard let start = parseTimestamp(startToken), let end = parseTimestamp(endToken), end > start else {
             return nil
         }
         return (start, end)
@@ -320,7 +381,7 @@ public final class SubtitleParser: @unchecked Sendable {
         guard (1...3).contains(parts.count) else { return nil }
 
         func strictNumber(_ component: String) -> Double? {
-            guard component.range(of: #"^\d+(?:\.\d{1,3})?$"#, options: .regularExpression) != nil else { return nil }
+            guard component.range(of: #"^\d+(?:\.\d+)?$"#, options: .regularExpression) != nil else { return nil }
             return Double(component)
         }
 

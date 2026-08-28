@@ -838,28 +838,6 @@ public final class ProjectFileManager: @unchecked Sendable {
         pendingLock.unlock()
     }
 
-    public func cleanupOrphanProjects(activeMediaPaths: Set<String>) {
-        fileQueue.async {
-            guard let files = try? FileManager.default.contentsOfDirectory(
-                at: self.projectsDirectory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) else { return }
-            let activeBaseNames = Set(activeMediaPaths.map { path in
-                self.projectBaseName(for: URL(fileURLWithPath: path).standardizedFileURL)
-            })
-            for file in files {
-                let name = file.lastPathComponent
-                let isReferenced = activeBaseNames.contains { baseName in
-                    name == baseName || name.hasPrefix(baseName + ".")
-                }
-                if !isReferenced {
-                    try? FileManager.default.removeItem(at: file)
-                }
-            }
-        }
-    }
-
     private func deleteProjectFilesDirect(for standardizedURL: URL) throws {
         let baseName = projectBaseName(for: standardizedURL)
         let relatedFiles = try FileManager.default.contentsOfDirectory(
