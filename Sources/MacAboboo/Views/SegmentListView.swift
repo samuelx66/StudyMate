@@ -525,7 +525,8 @@ public struct SegmentListView: View {
                                     isUserScrolling = scrolling
                                 }
                             },
-                            editRequest: $shortcutEditRequest
+                            editRequest: $shortcutEditRequest,
+                            lang: lang
                         )
                         .equatable()
                     }
@@ -1325,6 +1326,7 @@ private struct SegmentListRowsView: View, Equatable {
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
     @Binding var editRequest: UUID?
+    let lang: LanguageManager
 
     var body: some View {
         LazyVStack(spacing: 2) {
@@ -1361,7 +1363,8 @@ private struct SegmentListRowsView: View, Equatable {
                     onSaveText: { originalText, translationText in
                         onSaveText(seg.id, originalText, translationText)
                     },
-                    editRequest: $editRequest
+                    editRequest: $editRequest,
+                    lang: lang
                 )
                 .equatable()
                 .id(seg.id)
@@ -1389,7 +1392,6 @@ extension SegmentListRowsView {
             && lhs.activeSegmentID == rhs.activeSegmentID
             && lhs.engineIdentity == rhs.engineIdentity
             && lhs.language.rawValue == rhs.language.rawValue
-            && lhs.isScrolling == rhs.isScrolling
             && lhs.editRequest == rhs.editRequest
     }
 }
@@ -1410,29 +1412,29 @@ struct SegmentRowView: View, Equatable {
     let onDelete: () -> Void
     let onSaveText: (String, String) -> Void
     @Binding var editRequest: UUID?
+    let lang: LanguageManager
 
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
     @State private var editSessionID = UUID()
-    @ObservedObject private var lang = LanguageManager.shared
 
     static func == (lhs: SegmentRowView, rhs: SegmentRowView) -> Bool {
         lhs.seg == rhs.seg
             && lhs.isActive == rhs.isActive
             && lhs.isSelectedForExport == rhs.isSelectedForExport
-            && lhs.isScrolling == rhs.isScrolling
             && lhs.editRequest == rhs.editRequest
             && lhs.lang.currentLanguage.rawValue == rhs.lang.currentLanguage.rawValue
     }
 
     var body: some View {
         HStack(spacing: 0) {
-                Toggle("", isOn: Binding(
-                    get: { isSelectedForExport },
-                    set: { _ in onToggleExportSelection() }
-                ))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
+                Button(action: onToggleExportSelection) {
+                    Image(systemName: isSelectedForExport ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 12))
+                        .foregroundColor(isSelectedForExport ? MacAbobooMediaStyle.accent : .secondary.opacity(0.45))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
                 .help(MacAbobooShortcutCatalog.help(
                     lang.text("选择此句用于导出或加入句库", "Select this sentence for export or sentence library"),
                     shortcut: .toggleSentenceSelection

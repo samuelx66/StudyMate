@@ -174,7 +174,6 @@ struct MacAbobooSelectableRowButtonStyle: ButtonStyle {
 private struct MacAbobooSelectableRowSurface: ViewModifier {
     let isActive: Bool
     let isHovered: Bool
-    @GestureState private var isPressed = false
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
@@ -187,15 +186,8 @@ private struct MacAbobooSelectableRowSurface: ViewModifier {
                     .fill(
                         isActive
                             ? activeBackground
-                            : (isPressed
-                                ? MacAbobooMediaStyle.selectedBackground.opacity(0.18)
-                                : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
+                            : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
                     )
-            )
-            .scaleEffect(isPressed ? 0.992 : 1)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($isPressed) { _, state, _ in state = true }
             )
     }
 }

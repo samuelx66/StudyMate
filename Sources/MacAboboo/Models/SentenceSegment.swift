@@ -61,19 +61,28 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let resolvedID: UUID
+        if let directUUID = try? container.decodeIfPresent(UUID.self, forKey: .id) {
+            resolvedID = directUUID
+        } else if let stringID = try? container.decodeIfPresent(String.self, forKey: .id),
+                  let parsed = UUID(uuidString: stringID) {
+            resolvedID = parsed
+        } else {
+            resolvedID = UUID()
+        }
         self.init(
-            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
-            index: try container.decodeIfPresent(Int.self, forKey: .index) ?? 0,
-            startTime: try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0,
-            endTime: try container.decodeIfPresent(Double.self, forKey: .endTime) ?? 0.05,
-            text: try container.decodeIfPresent(String.self, forKey: .text) ?? "",
-            translation: try container.decodeIfPresent(String.self, forKey: .translation) ?? "",
-            note: try container.decodeIfPresent(String.self, forKey: .note) ?? "",
-            isNavigationBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isNavigationBookmarked) ?? false,
-            isBookmarked: try container.decodeIfPresent(Bool.self, forKey: .isBookmarked) ?? false,
-            speakerID: try container.decodeIfPresent(Int.self, forKey: .speakerID),
-            speakerIDs: try container.decodeIfPresent([Int].self, forKey: .speakerIDs) ?? [],
-            isSpeakerOverlap: try container.decodeIfPresent(Bool.self, forKey: .isSpeakerOverlap) ?? false
+            id: resolvedID,
+            index: (try? container.decodeIfPresent(Int.self, forKey: .index)) ?? 0,
+            startTime: (try? container.decodeIfPresent(Double.self, forKey: .startTime)) ?? 0,
+            endTime: (try? container.decodeIfPresent(Double.self, forKey: .endTime)) ?? 0.05,
+            text: (try? container.decodeIfPresent(String.self, forKey: .text)) ?? "",
+            translation: (try? container.decodeIfPresent(String.self, forKey: .translation)) ?? "",
+            note: (try? container.decodeIfPresent(String.self, forKey: .note)) ?? "",
+            isNavigationBookmarked: (try? container.decodeIfPresent(Bool.self, forKey: .isNavigationBookmarked)) ?? false,
+            isBookmarked: (try? container.decodeIfPresent(Bool.self, forKey: .isBookmarked)) ?? false,
+            speakerID: try? container.decodeIfPresent(Int.self, forKey: .speakerID),
+            speakerIDs: (try? container.decodeIfPresent([Int].self, forKey: .speakerIDs)) ?? [],
+            isSpeakerOverlap: (try? container.decodeIfPresent(Bool.self, forKey: .isSpeakerOverlap)) ?? false
         )
     }
     

@@ -1324,6 +1324,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
                         if self.segments.isEmpty,
                            self.segmentOrigin == .none,
+                           !self.hasCompletedSegmentation,
                            !self.projectRecoveryRequired {
                             self.performSegmentation(
                                 mode: .fast,

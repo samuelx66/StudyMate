@@ -278,22 +278,25 @@ final class TranslationTests: XCTestCase {
         let u2 = TranslationUnit(id: UUID(), sourceText: "Two")
         let u3 = TranslationUnit(id: UUID(), sourceText: "Three")
 
-        var batchesReceived: [[TranslationResult]] = []
+        final class BatchBox: @unchecked Sendable {
+            var items: [[TranslationResult]] = []
+        }
+        let box = BatchBox()
         let finalResults = try await service.translate(
             units: [u1, u2, u3],
             configuration: config,
             sourceLanguage: "en",
             batchSize: 2,
             onBatchCompleted: { batch in
-                batchesReceived.append(batch)
+                box.items.append(batch)
             }
         )
 
         XCTAssertEqual(finalResults.count, 3)
-        XCTAssertEqual(batchesReceived.count, 2)
-        XCTAssertEqual(batchesReceived[0].count, 2)
-        XCTAssertEqual(batchesReceived[1].count, 1)
-        XCTAssertEqual(batchesReceived[0][0].translatedText, "译文_One")
-        XCTAssertEqual(batchesReceived[1][0].translatedText, "译文_Three")
+        XCTAssertEqual(box.items.count, 2)
+        XCTAssertEqual(box.items[0].count, 2)
+        XCTAssertEqual(box.items[1].count, 1)
+        XCTAssertEqual(box.items[0][0].translatedText, "译文_One")
+        XCTAssertEqual(box.items[1][0].translatedText, "译文_Three")
     }
 }

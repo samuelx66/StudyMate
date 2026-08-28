@@ -243,8 +243,9 @@ private struct DraggableVideoSubtitle: View, Equatable {
                         lineWidth: isDragging ? 1.4 : 1
                     )
             )
-            .scaleEffect(isDragging ? 1.01 : 1)
-            .shadow(color: .black.opacity(0.75), radius: 3, x: 0, y: 1)
+            .scaleEffect(isDragging ? 1.02 : 1.0)
+            .shadow(color: .black.opacity(isDragging ? 0.9 : 0.75), radius: isDragging ? 5 : 3, x: 0, y: 1)
+            .compositingGroup()
             .frame(maxWidth: max(180, containerSize.width * 0.88))
             .position(
                 x: position.x * containerSize.width,
@@ -289,7 +290,7 @@ private struct DraggableVideoSubtitle: View, Equatable {
                     engine.endVideoSubtitleDrag(segmentID: segmentID)
                 }
             }
-            .help("拖动字幕调整位置")
+            .help(isDragging ? "" : "拖动字幕调整位置")
     }
 
     private func setPosition(_ point: CGPoint) {
