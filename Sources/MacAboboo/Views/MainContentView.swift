@@ -464,17 +464,17 @@ private struct MainWindowToolbar: ToolbarContent {
             Button { videoSubtitleSettings.showOriginal.toggle() } label: {
                 Image(systemName: videoSubtitleSettings.showOriginal ? "captions.bubble.fill" : "captions.bubble")
             }
-            .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showOriginal ? lang.text("隐藏视频原文字幕", "Hide video original subtitles") : lang.text("显示视频原文字幕", "Show video original subtitles"), shortcut: .toggleVideoOriginalSubtitle))
+            .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showOriginal ? lang.text("隐藏画面原文字幕", "Hide original subtitles") : lang.text("显示画面原文字幕", "Show original subtitles"), shortcut: .toggleVideoOriginalSubtitle))
             .keyboardShortcut("o", modifiers: [.command, .option])
 
             Button { videoSubtitleSettings.showTranslation.toggle() } label: {
                 Image(systemName: videoSubtitleSettings.showTranslation ? "character.bubble.fill" : "character.bubble")
             }
-            .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showTranslation ? lang.text("隐藏视频译文字幕", "Hide video translated subtitles") : lang.text("显示视频译文字幕", "Show video translated subtitles"), shortcut: .toggleVideoTranslationSubtitle))
+            .help(MacAbobooShortcutCatalog.help(videoSubtitleSettings.showTranslation ? lang.text("隐藏画面译文字幕", "Hide translated subtitles") : lang.text("显示画面译文字幕", "Show translated subtitles"), shortcut: .toggleVideoTranslationSubtitle))
             .keyboardShortcut("t", modifiers: [.command, .option])
 
             Button { isVideoSubtitleFontSettingsPresented.toggle() } label: { Image(systemName: "textformat.size") }
-                .help(MacAbobooShortcutCatalog.help(lang.text("设置视频字幕字体", "Set video subtitle fonts"), shortcut: .videoSubtitleFontSettings))
+                .help(MacAbobooShortcutCatalog.help(lang.text("设置字幕字体", "Set subtitle fonts"), shortcut: .videoSubtitleFontSettings))
                 .keyboardShortcut("f", modifiers: [.command, .option])
                 .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) { VideoSubtitleFontSettingsPopover() }
         }

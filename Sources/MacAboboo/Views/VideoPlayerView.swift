@@ -58,6 +58,11 @@ public struct VideoPlayerView: View {
                             isPlaying: engine.isPlaying,
                             duration: media.formattedDuration
                         )
+                        .onHover { hovering in
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isHovering = hovering
+                            }
+                        }
                         .onTapGesture {
                             engine.togglePlayPause()
                         }

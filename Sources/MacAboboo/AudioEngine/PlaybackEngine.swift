@@ -88,6 +88,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var shadowingCountdownRemaining: Double = 0.0
     /// 仅复读收藏难句模式
     @Published public var onlyPlayBookmarked: Bool = false
+    /// 当前主窗口是否处于全屏播放状态
+    @Published public var isFullScreen: Bool = false
 
     // MARK: - AI 语音识词与双引擎断句状态
     @Published public var isAITranscribing: Bool = false
@@ -588,6 +590,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
               videoSubtitleDragSegmentID == segmentID else { return }
         isVideoSubtitleDragging = false
         videoSubtitleDragSegmentID = nil
+    }
+
+    /// 切换主窗口全屏幕播放状态
+    @MainActor
+    public func toggleFullScreen() {
+        let targetWindow = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "macaboboo-main-window" })
+        if let targetWindow {
+            targetWindow.toggleFullScreen(nil)
+        }
     }
 
     public func beginBoundaryDrag(from source: BoundaryDragSource) {

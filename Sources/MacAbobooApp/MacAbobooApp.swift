@@ -9,6 +9,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var keyMonitor: Any?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        // 禁止应用启动时自动打开 WindowGroup 主视窗，保证启动只展示欢迎页
+        return false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -63,6 +68,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.post(name: .macAbobooCloseCurrentMedia, object: nil)
         return false
     }
+
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
+        // Let AppKit own the full-screen chrome transition. The system hides
+        // the menu bar and unified toolbar together, then reveals them when
+        // the pointer reaches the top edge without introducing a competing
+        // SwiftUI overlay or an extra event-monitor loop.
+        guard window.identifier?.rawValue == "macaboboo-main-window" else {
+            return proposedOptions
+        }
+        return proposedOptions.union([.autoHideMenuBar, .autoHideToolbar])
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        PlaybackEngine.shared.isFullScreen = true
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        PlaybackEngine.shared.isFullScreen = false
+    }
 }
 
 @main
@@ -105,11 +129,12 @@ struct MacAbobooApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
-        Window("MacAboboo", id: "main") {
+        WindowGroup("MacAboboo", id: "main") {
             MainContentView(onWindowDidAppear: dismissWelcomeWindow)
                 .environmentObject(languageManager)
                 .background(WindowAccessor())
                 .onOpenURL { handleIncomingURL($0) }
+                .modifier(MainWindowToolbarFullScreenVisibilityModifier())
         }
         .defaultSize(width: 1050, height: 720)
         .windowStyle(.titleBar)
@@ -147,7 +172,7 @@ struct MacAbobooApp: App {
                 .disabled(engine.currentMedia == nil)
             }
 
-            // 显示菜单：控制主窗口底部的紧凑状态栏。
+            // 显示菜单：控制主窗口底部的紧凑状态栏、书签与全屏。
             CommandGroup(after: .toolbar) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.22)) {
@@ -179,11 +204,6 @@ struct MacAbobooApp: App {
                 } label: {
                     Label(languageManager.text("书签", "Bookmarks"), systemImage: "bookmark")
                 }
-            }
-
-            // 移除系统默认的“进入全屏幕”命令，保留最小化和缩放命令。
-            CommandGroup(replacing: .sidebar) {
-                EmptyView()
             }
             
             // 播放与复读控制菜单
@@ -381,6 +401,19 @@ struct MacAbobooApp: App {
     }
 }
 
+/// SwiftUI 的工具栏在全屏时需要显式声明“悬停显示”策略。
+/// macOS 14 没有该 API，保留 AppKit 的 autoHideToolbar 作为原生回退。
+private struct MainWindowToolbarFullScreenVisibilityModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            content
+        }
+    }
+}
+
 /// 主媒体窗口的原生配置。主窗口只在用户打开媒体后创建。
 struct WindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> MainWindowAccessorView {
@@ -408,6 +441,15 @@ struct WindowAccessor: NSViewRepresentable {
             where !window.styleMask.contains(style) {
             window.styleMask.insert(style)
         }
+        if window.collectionBehavior.contains(.fullScreenNone)
+            || window.collectionBehavior.contains(.fullScreenAuxiliary)
+            || !window.collectionBehavior.contains(.fullScreenPrimary) {
+            window.collectionBehavior.remove([.fullScreenNone, .fullScreenAuxiliary])
+            window.collectionBehavior.insert([.fullScreenPrimary, .managed, .participatesInCycle])
+        }
+        if window.standardWindowButton(.zoomButton)?.isEnabled == false {
+            window.standardWindowButton(.zoomButton)?.isEnabled = true
+        }
         if window.tabbingMode != .disallowed { window.tabbingMode = .disallowed }
         let identifier = NSUserInterfaceItemIdentifier("macaboboo-main-window")
         if window.identifier != identifier { window.identifier = identifier }
@@ -420,10 +462,14 @@ struct WindowAccessor: NSViewRepresentable {
         if !window.showsResizeIndicator { window.showsResizeIndicator = true }
         if window.isMovableByWindowBackground { window.isMovableByWindowBackground = false }
         if window.toolbarStyle != .unifiedCompact { window.toolbarStyle = .unifiedCompact }
-        if let toolbar = window.toolbar, !toolbar.isVisible { toolbar.isVisible = true }
+        // 全屏时由 AppKit/SwiftUI 的悬停策略接管工具栏可见性；如果这里
+        // 强制设回 true，会抵消系统的隐藏动画。非全屏时保持工具栏可见。
+        if !window.styleMask.contains(.fullScreen),
+           let toolbar = window.toolbar,
+           !toolbar.isVisible {
+            toolbar.isVisible = true
+        }
 
-        // SwiftUI 可能在首帧后重新安装窗口代理，因此每次更新都重新绑定，
-        // 保证“文件 > 关闭”和红色关闭按钮都能回到欢迎窗口。
         if let appDelegate = NSApp.delegate as? AppDelegate,
            window.delegate !== appDelegate {
             window.delegate = appDelegate
@@ -445,6 +491,10 @@ final class MainWindowAccessorView: NSView {
         if let window {
             attach(to: window)
             WindowAccessor.configureWindow(window)
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let window, self?.observedWindow === window else { return }
+                WindowAccessor.configureWindow(window)
+            }
         } else {
             removeObservers()
         }
@@ -454,9 +504,24 @@ final class MainWindowAccessorView: NSView {
         guard observedWindow !== window else { return }
         removeObservers()
         observedWindow = window
+        PlaybackEngine.shared.isFullScreen = window.styleMask.contains(.fullScreen)
 
         let center = NotificationCenter.default
         notificationTokens = [
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak window] _ in
+                WindowAccessor.configureWindow(window)
+            },
+            center.addObserver(
+                forName: NSWindow.didBecomeMainNotification,
+                object: window,
+                queue: .main
+            ) { [weak window] _ in
+                WindowAccessor.configureWindow(window)
+            },
             center.addObserver(
                 forName: NSWindow.willStartLiveResizeNotification,
                 object: window,
@@ -480,6 +545,20 @@ final class MainWindowAccessorView: NSView {
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleResizeEnd(after: 0.06)
+            },
+            center.addObserver(
+                forName: NSWindow.didEnterFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { _ in
+                PlaybackEngine.shared.isFullScreen = true
+            },
+            center.addObserver(
+                forName: NSWindow.didExitFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { _ in
+                PlaybackEngine.shared.isFullScreen = false
             }
         ]
     }

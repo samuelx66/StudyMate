@@ -317,7 +317,7 @@ public struct VideoSubtitleOverlay: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            if let media = engine.currentMedia, media.isVideo,
+            if engine.currentMedia != nil,
                let index = engine.activeSegmentIndex,
                engine.segments.indices.contains(index) {
                 let segment = engine.segments[index]
@@ -361,7 +361,7 @@ public struct VideoSubtitleFontSettingsPopover: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(lang.text("视频字幕字体设置", "Video Subtitle Font Settings"))
+            Text(lang.text("播放区字幕字体设置", "Subtitle Font Settings"))
                 .font(.headline)
 
             subtitleGroup(

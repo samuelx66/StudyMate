@@ -51,6 +51,7 @@ public enum MacAbobooShortcutID: String, CaseIterable, Identifiable, Sendable {
     case deleteSentence
     case selectAllVisibleSentences
     case invertVisibleSentenceSelection
+    case toggleFullScreen
 
     public var id: String { rawValue }
 }
@@ -92,13 +93,14 @@ public enum MacAbobooShortcutCatalog {
         .init(id: .playbackRateReset, chineseName: "恢复原速", englishName: "Reset Playback Rate", keyDisplay: "⌘0"),
         .init(id: .repeatCountMenu, chineseName: "设置单句复读次数", englishName: "Set Sentence Repeat Count", keyDisplay: "⌘⇧C"),
         .init(id: .shadowingPauseMenu, chineseName: "设置句末跟读停顿", englishName: "Set Shadowing Pause", keyDisplay: "⌘⇧P"),
-        .init(id: .toggleVideoOriginalSubtitle, chineseName: "显示或隐藏视频原文字幕", englishName: "Show or Hide Video Original Subtitles", keyDisplay: "⌘⌥O"),
-        .init(id: .toggleVideoTranslationSubtitle, chineseName: "显示或隐藏视频译文字幕", englishName: "Show or Hide Video Translation Subtitles", keyDisplay: "⌘⌥T"),
-        .init(id: .videoSubtitleFontSettings, chineseName: "设置视频字幕字体", englishName: "Set Video Subtitle Fonts", keyDisplay: "⌘⌥F"),
+        .init(id: .toggleVideoOriginalSubtitle, chineseName: "显示或隐藏画面原文字幕", englishName: "Show or Hide Original Subtitles", keyDisplay: "⌘⌥O"),
+        .init(id: .toggleVideoTranslationSubtitle, chineseName: "显示或隐藏画面译文字幕", englishName: "Show or Hide Translation Subtitles", keyDisplay: "⌘⌥T"),
+        .init(id: .videoSubtitleFontSettings, chineseName: "设置画面字幕字体", englishName: "Set Subtitle Fonts", keyDisplay: "⌘⌥F"),
         .init(id: .togglePlaylist, chineseName: "显示或隐藏播放列表", englishName: "Show or Hide Playlist", keyDisplay: "⌥P"),
         .init(id: .toggleWaveforms, chineseName: "显示或隐藏波形图", englishName: "Show or Hide Waveforms", keyDisplay: "⌥W"),
         .init(id: .toggleSubtitleEditor, chineseName: "显示或隐藏字幕编辑区", englishName: "Show or Hide Subtitle Editor", keyDisplay: "⌥S"),
         .init(id: .toggleSegmentList, chineseName: "显示或隐藏断句列表", englishName: "Show or Hide Sentence List", keyDisplay: "⌥L"),
+        .init(id: .toggleFullScreen, chineseName: "进入或退出全屏幕", englishName: "Enter or Exit Full Screen", keyDisplay: "⌃⌘F"),
         .init(id: .playPause, chineseName: "播放 / 暂停", englishName: "Play / Pause", keyDisplay: "空格"),
         .init(id: .repeatCurrentSegment, chineseName: "重播当前句", englishName: "Repeat Current Sentence", keyDisplay: "⌘R"),
         .init(id: .previousSegment, chineseName: "上一句", englishName: "Previous Sentence", keyDisplay: "⌘←"),
