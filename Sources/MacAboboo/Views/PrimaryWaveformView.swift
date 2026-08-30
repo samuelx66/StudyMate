@@ -18,18 +18,9 @@ public struct PrimaryWaveformView: View {
         VStack(alignment: .leading, spacing: 4) {
             // 头部标题与控制按钮
             HStack {
-                HStack(spacing: 6) {
-                    Label(lang.localized(.primaryWaveform), systemImage: "waveform.path.ecg")
-                        .font(.subheadline.bold())
-                        .foregroundColor(.primary)
-                    
-                    Text(lang.text(
-                        "按住拖动平移波形 • 点击选句 • 拖动绿[S]/橙[E]标线 • ⌃+单击设起止点",
-                        "Drag to pan • Click a sentence • Drag green [S]/orange [E] • Control-click to set boundaries"
-                    ))
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
+                Label(lang.localized(.primaryWaveform), systemImage: "waveform.path.ecg")
+                    .font(.subheadline.bold())
+                    .foregroundColor(.primary)
                 
                 Spacer()
                 

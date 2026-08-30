@@ -60,9 +60,11 @@ public struct MainContentView: View {
         .background(WindowTextInputFocusDismissalBridge())
         .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
-        .overlay(alignment: .topTrailing) { playlistOverlay }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleMediaDrop)
         .overlay(dropTargetOverlay)
+        // 必须在其它覆盖层之后挂载，保证播放列表及其原生控件始终位于
+        // 断句列表等工作区控件的命中层之上。
+        .overlay(alignment: .topTrailing) { playlistOverlay }
         .onAppear {
             // SwiftUI may reuse the scene's view storage when the main window
             // is reopened.  Reset the one-shot close guard here; otherwise a
@@ -176,8 +178,13 @@ public struct MainContentView: View {
                 .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
 
                 if isSidebarVisible {
-                    SegmentListView(engine: engine)
+                    SegmentListView(
+                        engine: engine,
+                        suppressToolTips: isPlaylistMounted
+                    )
                         .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                        // 抽屉在屏幕上时不允许下层列表继续响应；关闭抽屉后立即恢复。
+                        .allowsHitTesting(!isPlaylistMounted)
                         .transition(Self.slideAndFadeTransition(from: .trailing))
                 }
             }
@@ -231,6 +238,7 @@ public struct MainContentView: View {
                     .zIndex(1)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .zIndex(100)
             .clipped()
         }
     }
@@ -242,13 +250,12 @@ public struct MainContentView: View {
             playlistWidth: $playlistWidth,
             onResizeEnded: {
                 UserDefaults.standard.set(playlistWidth, forKey: "macaboboo_playlist_width")
-            },
-            onClose: {
-                hidePlaylist()
             }
         )
         .frame(width: CGFloat(playlistWidth))
         .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .allowsHitTesting(true)
     }
 
     private func hidePlaylist() {

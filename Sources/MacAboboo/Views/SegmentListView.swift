@@ -131,8 +131,26 @@ struct SegmentListFilterCriteria: Equatable {
 }
 
 /// 断句列表区视图（支持字幕导入、选句媒体导出、多条件筛选、文本编辑与快捷切分）
+/// 只有存在实际文本时才注册 AppKit tooltip tracking area；不能用空字符串占位，
+/// 否则该空 tracking area 仍可能抢占顶层播放列表按钮的提示。
+private struct OptionalSegmentListToolTip: ViewModifier {
+    let text: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let text {
+            content.help(text)
+        } else {
+            content
+        }
+    }
+}
+
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
+    /// 播放列表等顶层抽屉展示期间，底层控件不能继续注册说明提示。
+    /// AppKit 的 tooltip tracking area 不会自动遵循 SwiftUI 的视觉遮挡层级。
+    private let suppressToolTips: Bool
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject private var libraryManager = SentenceLibraryManager.shared
     @ObservedObject private var translationSettings = TranslationSettings.shared
@@ -168,8 +186,9 @@ public struct SegmentListView: View {
     @State private var scrollSuppressionToken = UUID()
     @State private var shortcutEditRequest: UUID?
 
-    public init(engine: PlaybackEngine) {
+    public init(engine: PlaybackEngine, suppressToolTips: Bool = false) {
         self.engine = engine
+        self.suppressToolTips = suppressToolTips
     }
 
     private var displayedSegments: [SentenceSegment] {
@@ -393,10 +412,10 @@ public struct SegmentListView: View {
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
-                .help(MacAbobooShortcutCatalog.help(
+                .modifier(OptionalSegmentListToolTip(text: suppressToolTips ? nil : MacAbobooShortcutCatalog.help(
                     lang.text("选择断句模式", "Choose segmentation mode"),
                     shortcut: .segmentationMenu
-                ))
+                )))
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .popover(isPresented: $showSegmentationPopover, arrowEdge: .top) {
                     SegmentSegmentationPopoverView(

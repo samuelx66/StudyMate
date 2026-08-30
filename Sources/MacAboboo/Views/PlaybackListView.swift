@@ -8,7 +8,6 @@ public struct PlaybackListView: View {
     @ObservedObject var historyStore: PlaybackHistoryStore
     @Binding var playlistWidth: Double
     var onResizeEnded: () -> Void
-    var onClose: () -> Void
     @ObservedObject private var lang = LanguageManager.shared
     
     @State private var selectedMediaURL: URL? = nil
@@ -19,14 +18,12 @@ public struct PlaybackListView: View {
         engine: PlaybackEngine,
         historyStore: PlaybackHistoryStore,
         playlistWidth: Binding<Double> = .constant(360),
-        onResizeEnded: @escaping () -> Void = {},
-        onClose: @escaping () -> Void = {}
+        onResizeEnded: @escaping () -> Void = {}
     ) {
         self.engine = engine
         self.historyStore = historyStore
         self._playlistWidth = playlistWidth
         self.onResizeEnded = onResizeEnded
-        self.onClose = onClose
     }
 
     public var body: some View {
@@ -47,33 +44,44 @@ public struct PlaybackListView: View {
 
                     Spacer()
 
-                    // 添加文件按钮
-                    Button(action: addFiles) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .macabobooChromeButton(shape: .circle)
+                    // 使用独立的 AppKit 命中视图。播放列表作为浮层时，不能让工具栏
+                    // 的鼠标追踪区域落到底下的断句列表按钮上。
+                    PlaybackListToolbarIconButton(
+                        symbolName: "plus",
+                        toolTip: lang.text("添加音视频文件", "Add audio or video files"),
+                        isEnabled: true,
+                        action: addFiles
+                    )
+                    .frame(width: 26, height: 26)
+                    .fixedSize()
                     .help(lang.text("添加音视频文件", "Add audio or video files"))
 
-                    // 清空列表按钮
-                    if !historyStore.entries.isEmpty {
-                        Button {
-                            Task { await engine.clearPlaybackHistory() }
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 11, weight: .regular))
-                        }
-                        .macabobooChromeButton(shape: .circle)
-                        .help(lang.text("清空播放列表", "Clear playlist"))
+                    // 移除当前选中条目（只从播放列表移除，不删除源媒体文件）。
+                    PlaybackListToolbarIconButton(
+                        symbolName: "minus",
+                        toolTip: lang.text("从播放列表移除选中的媒体文件", "Remove selected media from playlist"),
+                        isEnabled: selectedEntryURL != nil
+                    ) {
+                        guard let mediaURL = selectedEntryURL else { return }
+                        selectedMediaURL = nil
+                        Task { await engine.removeFromPlaybackHistory(mediaURL) }
                     }
+                    .frame(width: 26, height: 26)
+                    .fixedSize()
+                    .help(lang.text("从播放列表移除选中的媒体文件", "Remove selected media from playlist"))
 
-                    // 关闭侧拉抽屉按钮
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
+                    // 清空列表按钮
+                    PlaybackListToolbarIconButton(
+                        symbolName: "trash",
+                        toolTip: lang.text("清空播放列表", "Clear playlist"),
+                        isEnabled: !historyStore.entries.isEmpty
+                    ) {
+                        selectedMediaURL = nil
+                        Task { await engine.clearPlaybackHistory() }
                     }
-                    .macabobooChromeButton(shape: .circle)
-                    .help(lang.text("收起播放列表", "Close playlist"))
+                    .frame(width: 26, height: 26)
+                    .fixedSize()
+                    .help(lang.text("清空播放列表", "Clear playlist"))
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -86,12 +94,9 @@ public struct PlaybackListView: View {
                         Label(lang.text("播放列表为空", "Playlist Is Empty"), systemImage: "music.note.list")
                     } description: {
                         Text(lang.text(
-                            "打开过的音视频会自动出现在这里，也可以手动添加文件。",
-                            "Opened media appears here automatically, or you can add files manually."
+                            "打开过的音视频会自动出现在这里。",
+                            "Opened media appears here automatically."
                         ))
-                    } actions: {
-                        Button(lang.text("添加文件…", "Add Files…"), action: addFiles)
-                            .macabobooChromeButton(prominent: true)
                     }
                     .frame(maxHeight: .infinity)
                 } else {
@@ -125,6 +130,7 @@ public struct PlaybackListView: View {
                 .frame(width: 1)
         }
         .shadow(color: Color.black.opacity(0.24), radius: 22, x: -7, y: 0)
+        .contentShape(Rectangle())
         .task(id: historyStore.entries.map(\.mediaPath)) {
             let paths = historyStore.entries.map(\.mediaPath)
             let result = await Task.detached(priority: .utility) {
@@ -265,6 +271,14 @@ public struct PlaybackListView: View {
         .help(entry.mediaPath)
     }
 
+    private var selectedEntryURL: URL? {
+        guard let selectedMediaURL,
+              historyStore.entries.contains(where: { $0.mediaURL == selectedMediaURL }) else {
+            return nil
+        }
+        return selectedMediaURL
+    }
+
     private func revealInFinder(_ mediaURL: URL) {
         if FileManager.default.fileExists(atPath: mediaURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([mediaURL])
@@ -315,6 +329,96 @@ public struct PlaybackListView: View {
         UTType(filenameExtension: "opus") ?? .audio,
         UTType(filenameExtension: "ape") ?? .audio
     ]
+}
+
+/// 播放列表工具条的原生图标按钮。
+///
+/// 使用独立 `NSButton`，而非只依赖 SwiftUI 的 `.help` 追踪区域，确保浮层里的
+/// tooltip 与鼠标事件均由最上层播放列表消费，不会命中下层断句列表的控件。
+private struct PlaybackListToolbarIconButton: NSViewRepresentable {
+    let symbolName: String
+    let toolTip: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    init(
+        symbolName: String,
+        toolTip: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) {
+        self.symbolName = symbolName
+        self.toolTip = toolTip
+        self.isEnabled = isEnabled
+        self.action = action
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> PlaylistToolbarIconNSButton {
+        let button = PlaylistToolbarIconNSButton()
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.performAction)
+        return button
+    }
+
+    func updateNSView(_ nsView: PlaylistToolbarIconNSButton, context: Context) {
+        context.coordinator.action = action
+        nsView.toolTip = toolTip
+        nsView.setAccessibilityLabel(toolTip)
+        nsView.isEnabled = isEnabled
+        nsView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: toolTip
+        )?.withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: PlaylistToolbarIconNSButton,
+        context: Context
+    ) -> CGSize? {
+        CGSize(width: 26, height: 26)
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func performAction() {
+            action()
+        }
+    }
+}
+
+private final class PlaylistToolbarIconNSButton: NSButton {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 26, height: 26)
+    }
+
+    init() {
+        super.init(frame: .init(x: 0, y: 0, width: 26, height: 26))
+        isBordered = false
+        imagePosition = .imageOnly
+        focusRingType = .none
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        alphaValue = 0.58
+        super.mouseDown(with: event)
+        alphaValue = 1
+    }
 }
 
 /// 原生 AppKit 极致丝滑边框拉伸组件（采用 Finder / NSSplitView 同款 modal event tracking loop）

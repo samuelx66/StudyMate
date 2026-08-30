@@ -42,13 +42,6 @@ public struct SecondaryWaveformView: View {
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundColor(.secondary)
                     }
-                    
-                    Text(lang.text(
-                        "当前句放大：拖动绿标[S]/橙标[E] • ⌃+左键设起点 • ⌃+右键设终点",
-                        "Current sentence: drag green [S]/orange [E] • Control-left/right click to set boundaries"
-                    ))
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary.opacity(0.8))
                 }
                 
                 Spacer()
