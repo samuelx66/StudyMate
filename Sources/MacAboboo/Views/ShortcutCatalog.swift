@@ -51,6 +51,11 @@ public enum MacAbobooShortcutID: String, CaseIterable, Identifiable, Sendable {
     case deleteSentence
     case selectAllVisibleSentences
     case invertVisibleSentenceSelection
+    case previewCurrentSegment
+    case nudgeSentenceStartBackward
+    case nudgeSentenceStartForward
+    case nudgeSentenceEndBackward
+    case nudgeSentenceEndForward
     case toggleFullScreen
 
     public var id: String { rawValue }
@@ -129,7 +134,12 @@ public enum MacAbobooShortcutCatalog {
         .init(id: .toggleNavigationBookmark, chineseName: "加入 / 移出当前句书签", englishName: "Toggle Current Sentence Bookmark", keyDisplay: "⌘B"),
         .init(id: .deleteSentence, chineseName: "删除当前句", englishName: "Delete Current Sentence", keyDisplay: "⌘⌫"),
         .init(id: .selectAllVisibleSentences, chineseName: "全选当前显示句子", englishName: "Select All Visible Sentences", keyDisplay: "⌘A"),
-        .init(id: .invertVisibleSentenceSelection, chineseName: "反选当前显示句子", englishName: "Invert Visible Sentence Selection", keyDisplay: "⌘⌥I")
+        .init(id: .invertVisibleSentenceSelection, chineseName: "反选当前显示句子", englishName: "Invert Visible Sentence Selection", keyDisplay: "⌘⌥I"),
+        .init(id: .previewCurrentSegment, chineseName: "试听当前句", englishName: "Preview Current Sentence", keyDisplay: "⌘⌥V"),
+        .init(id: .nudgeSentenceStartBackward, chineseName: "句首提前 50 毫秒", englishName: "Move Sentence Start Earlier by 50 ms", keyDisplay: "⌃⌥←"),
+        .init(id: .nudgeSentenceStartForward, chineseName: "句首延后 50 毫秒", englishName: "Move Sentence Start Later by 50 ms", keyDisplay: "⌃⌥→"),
+        .init(id: .nudgeSentenceEndBackward, chineseName: "句尾提前 50 毫秒", englishName: "Move Sentence End Earlier by 50 ms", keyDisplay: "⌃⌥↓"),
+        .init(id: .nudgeSentenceEndForward, chineseName: "句尾延后 50 毫秒", englishName: "Move Sentence End Later by 50 ms", keyDisplay: "⌃⌥↑")
     ]
 
     private static let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })

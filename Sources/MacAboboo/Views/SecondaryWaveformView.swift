@@ -60,6 +60,11 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
+                            .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("句首提前 50 毫秒", "Move sentence start earlier by 50 ms"),
+                                shortcut: .nudgeSentenceStartBackward
+                            ))
                             
                             Text(seg.formattedStartTime)
                                 .font(.system(size: 10, weight: .bold).monospacedDigit())
@@ -70,6 +75,11 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
+                            .keyboardShortcut(.rightArrow, modifiers: [.control, .option])
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("句首延后 50 毫秒", "Move sentence start later by 50 ms"),
+                                shortcut: .nudgeSentenceStartForward
+                            ))
                         }
                         
                         Divider().frame(height: 10)
@@ -85,6 +95,11 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
+                            .keyboardShortcut(.downArrow, modifiers: [.control, .option])
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("句尾提前 50 毫秒", "Move sentence end earlier by 50 ms"),
+                                shortcut: .nudgeSentenceEndBackward
+                            ))
                             
                             Text(seg.formattedEndTime)
                                 .font(.system(size: 10, weight: .bold).monospacedDigit())
@@ -95,6 +110,11 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
+                            .keyboardShortcut(.upArrow, modifiers: [.control, .option])
+                            .help(MacAbobooShortcutCatalog.help(
+                                lang.text("句尾延后 50 毫秒", "Move sentence end later by 50 ms"),
+                                shortcut: .nudgeSentenceEndForward
+                            ))
                         }
                         
                         // 试听微调区间按钮
@@ -106,6 +126,11 @@ public struct SecondaryWaveformView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
+                        .keyboardShortcut("v", modifiers: [.command, .option])
+                        .help(MacAbobooShortcutCatalog.help(
+                            lang.text("试听当前句", "Preview current sentence"),
+                            shortcut: .previewCurrentSegment
+                        ))
                     }
                 }
             }

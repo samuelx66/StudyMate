@@ -260,6 +260,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var pendingResumeTime: Double = 0
     private var pendingResumePlayback = false
     private var previewEndTime: Double?
+    /// 试听期间及结束后的当前句锁，避免尾部时间回调选中下一句。
+    private var previewSegmentID: UUID?
+    private var completedPreviewSegmentID: UUID?
     private var securityScopedMediaURL: URL?
     private let projectFileManager: ProjectFileManager
     private let playbackHistoryStore: PlaybackHistoryStore?
@@ -625,6 +628,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// using `jumpToSegment(id:)` and retain their playback behavior.
     public func selectSegmentForBoundaryEditing(id: UUID) {
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
         activeSegmentIndex = index
         markExplicitSegmentSelection()
@@ -642,6 +647,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // exact boundaries under the pointer.
         commitBoundaryDragIfNeeded()
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
         canResumePlaybackFromSegmentSelection = false
         activeSegmentIndex = index
@@ -1006,6 +1013,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         videoSubtitleDragSegmentID = nil
         pendingPreviewSeekTime = nil
         previewEndTime = nil
+        previewSegmentID = nil
+        completedPreviewSegmentID = nil
         pendingResumePlayback = false
         pendingResumeTime = 0
         activeBackend.pause()
@@ -2126,12 +2135,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func previewInterval(start: Double, end: Double) {
         guard start.isFinite, end.isFinite, end > start else { return }
-        previewEndTime = min(end, duration > 0 ? duration : end)
+        let previewID = segments.first(where: {
+            abs($0.startTime - start) < 0.02 && abs($0.endTime - end) < 0.02
+        })?.id
         seek(to: start) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.beginPlayback()
             }
         }
+        completedPreviewSegmentID = nil
+        previewSegmentID = previewID
+        previewEndTime = min(end, duration > 0 ? duration : end)
     }
 
     public func shiftAllTimeline(by offsetSeconds: Double) {
@@ -2274,6 +2288,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func play() {
         guard currentMedia != nil else { return }
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
         shadowingTask?.cancel()
         isShadowingPaused = false
@@ -2309,6 +2325,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isShadowingPaused = false
         pendingResumePlayback = false
         wantsPlayback = false
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         canResumePlaybackFromSegmentSelection = false
         activeBackend.pause()
         isPlaying = false
@@ -2325,6 +2343,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
         isWaveformFrozenAtNaturalEnd = false
         explicitSegmentSelection = nil
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         // A user/timeline seek starts a new repeat cycle. Internal repeat
         // seeks deliberately bypass this public entry so decoder callbacks
         // cannot reset the in-progress 2/3 or 3/3 count merely by making the
@@ -2500,6 +2520,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private func handlePlaybackBoundary(at time: Double) {
         guard !isWaveformFrozenAtNaturalEnd else { return }
 
+        if !isPlaying,
+           let completedPreviewSegmentID,
+           let previewIndex = segments.firstIndex(where: { $0.id == completedPreviewSegmentID }) {
+            if activeSegmentIndex != previewIndex {
+                activeSegmentIndex = previewIndex
+                updateSecondaryViewportForActiveSegment(force: true)
+            }
+            return
+        }
+
         // Repositioning a subtitle must not let the media clock select a
         // different sentence. In single-sentence mode it also needs to keep
         // wrapping the clock to the dragged sentence, so holding the subtitle
@@ -2551,7 +2581,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         if let previewEndTime, time >= previewEndTime {
             self.previewEndTime = nil
+            let finishedPreviewID = self.previewSegmentID
+            self.previewSegmentID = nil
             pause()
+            if let finishedPreviewID,
+               let index = segments.firstIndex(where: { $0.id == finishedPreviewID }) {
+                completedPreviewSegmentID = finishedPreviewID
+                activeSegmentIndex = index
+                updateSecondaryViewportForActiveSegment(force: true)
+            }
             return
         }
 
@@ -2759,6 +2797,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard time.isFinite else { return }
         guard !segments.isEmpty else { return }
 
+        if !isPlaying,
+           let completedPreviewSegmentID,
+           let previewIndex = segments.firstIndex(where: { $0.id == completedPreviewSegmentID }) {
+            if activeSegmentIndex != previewIndex {
+                activeSegmentIndex = previewIndex
+                updateSecondaryViewportForActiveSegment(force: true)
+            }
+            return
+        }
+
+        if let previewSegmentID,
+           let previewIndex = segments.firstIndex(where: { $0.id == previewSegmentID }) {
+            if activeSegmentIndex != previewIndex {
+                activeSegmentIndex = previewIndex
+                updateSecondaryViewportForActiveSegment(force: true)
+            }
+            return
+        }
+
         // A subtitle drag is a presentation-only interaction. Pin the active
         // sentence while it is held so queued decoder timestamps cannot make
         // the list or either waveform jump to a neighbouring sentence. The
@@ -2950,6 +3007,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
+        completedPreviewSegmentID = nil
+        previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
         let seg = segments[index]
         let resumeAfterNaturalEnd = canResumePlaybackFromSegmentSelection
