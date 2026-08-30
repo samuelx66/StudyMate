@@ -45,4 +45,24 @@ final class WaveformDataTests: XCTestCase {
         XCTAssertEqual(waveform.maxPeaks.count, 3)
         XCTAssertEqual(waveform.resample(startTime: 0, endTime: 3, targetCount: 3).count, 3)
     }
+
+    func testMappedPCMWindowAndWaveformMatchOwnedPCM() throws {
+        let source: [Float] = stride(from: 0, to: 32_000, by: 1).map { index in
+            sin(Float(index) * 0.013) * 0.8
+        }
+        var mappedBytes = Data(repeating: 0xA5, count: 20)
+        source.withUnsafeBytes { mappedBytes.append(contentsOf: $0) }
+
+        let mapped = AudioPCMData(
+            mappedCacheData: mappedBytes,
+            sampleByteOffset: 20,
+            sampleCount: source.count
+        )
+        let owned = AudioPCMData(uncheckedSamples: source)
+
+        XCTAssertTrue(mapped.isFileBacked)
+        XCTAssertEqual(mapped.sampleCount, source.count)
+        XCTAssertEqual(mapped.samples(in: 12_345..<12_678), Array(source[12_345..<12_678]))
+        XCTAssertEqual(mapped.waveform(samplesPerSecond: 100), owned.waveform(samplesPerSecond: 100))
+    }
 }

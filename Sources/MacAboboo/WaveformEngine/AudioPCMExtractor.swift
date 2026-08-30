@@ -37,6 +37,99 @@ public actor AudioPCMExtractor {
         let task: Task<Void, Never>
     }
 
+    /// Writes decoder output directly into the cache container. Only the
+    /// current AVFoundation/FFmpeg block is resident; `finish()` patches the
+    /// sample count and atomically publishes the completed cache file.
+    private final class PCMCacheStreamWriter {
+        let destinationURL: URL
+        let temporaryURL: URL
+        private var handle: FileHandle?
+        private(set) var sampleCount = 0
+        private var isCommitted = false
+
+        init(destinationURL: URL) throws {
+            self.destinationURL = destinationURL
+            self.temporaryURL = destinationURL.appendingPathExtension("tmp-\(UUID().uuidString)")
+            do {
+                var header = Data()
+                header.append(AudioPCMExtractor.cacheMagic)
+                header.appendLittleEndian(UInt32(AudioPCMData.requiredSampleRate))
+                header.appendLittleEndian(UInt64(0))
+                try header.write(to: temporaryURL, options: .atomic)
+                handle = try FileHandle(forWritingTo: temporaryURL)
+                try handle?.seekToEnd()
+            } catch {
+                try? handle?.close()
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw PCMExtractionError.cacheWriteFailed
+            }
+        }
+
+        func append(_ samples: UnsafeBufferPointer<Float>) throws {
+            guard !samples.isEmpty, let baseAddress = samples.baseAddress else { return }
+            do {
+                let byteCount = samples.count * MemoryLayout<Float>.size
+                let data = Data(
+                    bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress),
+                    count: byteCount,
+                    deallocator: .none
+                )
+                try handle?.write(contentsOf: data)
+                sampleCount += samples.count
+            } catch {
+                throw PCMExtractionError.cacheWriteFailed
+            }
+        }
+
+        func appendRawBytes(_ data: Data) throws {
+            guard !data.isEmpty, data.count.isMultiple(of: MemoryLayout<Float>.size) else {
+                throw PCMExtractionError.cacheWriteFailed
+            }
+            do {
+                try handle?.write(contentsOf: data)
+                sampleCount += data.count / MemoryLayout<Float>.size
+            } catch {
+                throw PCMExtractionError.cacheWriteFailed
+            }
+        }
+
+        func finish() throws {
+            guard sampleCount > 0, let handle else { throw PCMExtractionError.emptyAudio }
+            do {
+                let sampleCountOffset = UInt64(
+                    AudioPCMExtractor.cacheMagic.count + MemoryLayout<UInt32>.size
+                )
+                try handle.seek(toOffset: sampleCountOffset)
+                var countData = Data()
+                countData.appendLittleEndian(UInt64(sampleCount))
+                try handle.write(contentsOf: countData)
+                try handle.synchronize()
+                try handle.close()
+                self.handle = nil
+
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+                isCommitted = true
+            } catch let error as PCMExtractionError {
+                throw error
+            } catch {
+                throw PCMExtractionError.cacheWriteFailed
+            }
+        }
+
+        func cancel() {
+            try? handle?.close()
+            handle = nil
+            if !isCommitted {
+                try? FileManager.default.removeItem(at: temporaryURL)
+            }
+        }
+
+        deinit { cancel() }
+    }
+
     private static let cacheMagic = Data("MABPCM02".utf8)
     private static let cacheHeaderSize = cacheMagic.count + MemoryLayout<UInt32>.size + MemoryLayout<UInt64>.size
     private static let maxCachedSampleCount: UInt64 = 1_000_000_000
@@ -124,8 +217,23 @@ public actor AudioPCMExtractor {
             flightID = existingFlight.id
             decodeTask = existingFlight.task
         } else {
+            let cacheURL = descriptor.fileURL
             let task = Task.detached(priority: .utility) {
-                try await Self.decodeUncached(from: url, progress: progress)
+                if let cacheURL {
+                    do {
+                        return try await Self.decodeUncachedToCache(
+                            from: url,
+                            cacheURL: cacheURL,
+                            progress: progress
+                        )
+                    } catch PCMExtractionError.cacheWriteFailed {
+                        // A read-only/full Application Support volume must not
+                        // make media unusable. Preserve the old in-memory path
+                        // as a storage failure fallback.
+                        return try await Self.decodeUncached(from: url, progress: progress)
+                    }
+                }
+                return try await Self.decodeUncached(from: url, progress: progress)
             }
             let id = UUID()
             inFlight[descriptor.key] = DecodeFlight(
@@ -155,7 +263,7 @@ public actor AudioPCMExtractor {
 
             cacheInMemoryIfReasonable(pcm, key: memoryKey)
             let shouldFinalize = markFlightCompleted(for: descriptor.key, flightID: flightID)
-            if shouldFinalize, let cacheURL = descriptor.fileURL {
+            if shouldFinalize, let cacheURL = descriptor.fileURL, !pcm.isFileBacked {
                 let writeTask = Self.scheduleDiskWrite(pcm, to: cacheURL)
                 let writeID = registerDiskWrite(writeTask, for: descriptor.key)
                 // Keep the completed result visible while the asynchronous
@@ -206,8 +314,7 @@ public actor AudioPCMExtractor {
     }
 
     private static func cacheCost(for pcm: AudioPCMData) -> Int {
-        guard pcm.samples.count <= Int.max / MemoryLayout<Float>.size else { return Int.max }
-        return pcm.samples.count * MemoryLayout<Float>.size
+        pcm.residentByteCount
     }
 
     private func cacheInMemoryIfReasonable(_ pcm: AudioPCMData, key: NSString) {
@@ -250,7 +357,7 @@ public actor AudioPCMExtractor {
     }
 
     private static func readDiskCache(from url: URL) -> AudioPCMData? {
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+        guard let data = try? Data(contentsOf: url, options: [.alwaysMapped]),
               data.count >= cacheHeaderSize,
               data.prefix(cacheMagic.count) == cacheMagic else {
             return nil
@@ -271,21 +378,14 @@ public actor AudioPCMExtractor {
         let byteCount = sampleCount * MemoryLayout<Float>.size
         guard data.count == cacheHeaderSize + byteCount else { return nil }
 
-        let samples = [Float](unsafeUninitializedCapacity: sampleCount) { buffer, initializedCount in
-            data.withUnsafeBytes { source in
-                guard let sourceBase = source.baseAddress,
-                      let destinationBase = buffer.baseAddress else { return }
-                UnsafeMutableRawPointer(destinationBase).copyMemory(
-                    from: sourceBase.advanced(by: cacheHeaderSize),
-                    byteCount: byteCount
-                )
-            }
-            initializedCount = sampleCount
-        }
-
-        // v2 缓存只由本应用的 Float32 解码器原子写入；头部和长度已经完整校验，
-        // 不再在每次冷启动时逐样本扫描整份长录音。
-        return AudioPCMData(uncheckedSamples: samples)
+        // Retain the mapped Data as the immutable PCM backing. Consumers can
+        // now address individual windows without allocating another full
+        // `[Float]` for a long recording.
+        return AudioPCMData(
+            mappedCacheData: data,
+            sampleByteOffset: cacheHeaderSize,
+            sampleCount: sampleCount
+        )
     }
 
     private static func scheduleDiskWrite(_ pcm: AudioPCMData, to url: URL) -> Task<Void, Never> {
@@ -296,14 +396,15 @@ public actor AudioPCMExtractor {
                 var header = Data()
                 header.append(cacheMagic)
                 header.appendLittleEndian(UInt32(AudioPCMData.requiredSampleRate))
-                header.appendLittleEndian(UInt64(pcm.samples.count))
+                header.appendLittleEndian(UInt64(pcm.sampleCount))
                 try header.write(to: temporaryURL, options: .atomic)
 
                 let handle = try FileHandle(forWritingTo: temporaryURL)
                 fileHandle = handle
                 let chunkSize = 4 * 1024 * 1024
-                try pcm.samples.withUnsafeBytes { rawBuffer in
-                    guard let baseAddress = rawBuffer.baseAddress else { return }
+                try pcm.withUnsafeSamples(in: 0..<pcm.sampleCount) { samples in
+                    guard let baseAddress = samples.baseAddress else { return }
+                    let rawBuffer = UnsafeRawBufferPointer(start: baseAddress, count: samples.count * MemoryLayout<Float>.size)
                     var offset = 0
                     while offset < rawBuffer.count {
                         let count = min(chunkSize, rawBuffer.count - offset)
@@ -451,6 +552,202 @@ public actor AudioPCMExtractor {
     }
 
     // MARK: - Decoding
+
+    private static func decodeUncachedToCache(
+        from url: URL,
+        cacheURL: URL,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws -> AudioPCMData {
+        do {
+            try await extractWithAVFoundation(
+                from: url,
+                writingTo: cacheURL,
+                progress: progress
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch PCMExtractionError.cacheWriteFailed {
+            throw PCMExtractionError.cacheWriteFailed
+        } catch {
+            try await extractWithFFmpeg(
+                from: url,
+                writingTo: cacheURL,
+                progress: progress
+            )
+        }
+        guard let mapped = readDiskCache(from: cacheURL) else {
+            throw PCMExtractionError.cacheWriteFailed
+        }
+        return mapped
+    }
+
+    private static func extractWithAVFoundation(
+        from url: URL,
+        writingTo cacheURL: URL,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        let durationTime = try? await asset.load(.duration)
+        let duration = durationTime.map(CMTimeGetSeconds) ?? 0
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard let track = tracks.first else { throw PCMExtractionError.noAudioTrack }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: Double(AudioPCMData.requiredSampleRate)
+        ]
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else { throw PCMExtractionError.decoderUnavailable }
+        reader.add(output)
+        guard reader.startReading() else {
+            throw reader.error ?? PCMExtractionError.decoderUnavailable
+        }
+
+        let writer = try PCMCacheStreamWriter(destinationURL: cacheURL)
+        defer { writer.cancel() }
+        var decodeScratch: [Float] = []
+        var lastProgress = 0.0
+        while reader.status == .reading {
+            if Task.isCancelled {
+                reader.cancelReading()
+                throw CancellationError()
+            }
+            guard let sampleBuffer = output.copyNextSampleBuffer() else { break }
+            try writeSamples(from: sampleBuffer, to: writer, scratch: &decodeScratch)
+            if duration.isFinite, duration > 0 {
+                let decodedDuration = Double(writer.sampleCount) / Double(AudioPCMData.requiredSampleRate)
+                let value = min(0.99, decodedDuration / duration)
+                if value - lastProgress >= 0.01 {
+                    lastProgress = value
+                    progress?(value)
+                }
+            }
+        }
+        if reader.status == .failed {
+            throw reader.error ?? PCMExtractionError.decoderFailed
+        }
+        try Task.checkCancellation()
+        guard writer.sampleCount > 0 else { throw PCMExtractionError.emptyAudio }
+        try writer.finish()
+        progress?(1)
+    }
+
+    private static func writeSamples(
+        from sampleBuffer: CMSampleBuffer,
+        to writer: PCMCacheStreamWriter,
+        scratch: inout [Float]
+    ) throws {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            throw PCMExtractionError.decoderFailed
+        }
+        let byteCount = CMBlockBufferGetDataLength(blockBuffer)
+        let floatCount = byteCount / MemoryLayout<Float>.size
+        guard floatCount > 0 else { return }
+
+        var lengthAtOffset = 0
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        let pointerStatus = CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: &lengthAtOffset,
+            totalLengthOut: &totalLength,
+            dataPointerOut: &dataPointer
+        )
+        if pointerStatus == kCMBlockBufferNoErr,
+           lengthAtOffset >= floatCount * MemoryLayout<Float>.size,
+           let dataPointer {
+            let floats = UnsafeRawPointer(dataPointer).assumingMemoryBound(to: Float.self)
+            try writer.append(UnsafeBufferPointer(start: floats, count: floatCount))
+            return
+        }
+
+        if scratch.capacity < floatCount { scratch.reserveCapacity(floatCount) }
+        scratch.removeAll(keepingCapacity: true)
+        scratch.append(contentsOf: repeatElement(0, count: floatCount))
+        let status = scratch.withUnsafeMutableBytes { bytes -> OSStatus in
+            guard let baseAddress = bytes.baseAddress else { return kCMBlockBufferBadPointerParameterErr }
+            return CMBlockBufferCopyDataBytes(
+                blockBuffer,
+                atOffset: 0,
+                dataLength: floatCount * MemoryLayout<Float>.size,
+                destination: baseAddress
+            )
+        }
+        guard status == kCMBlockBufferNoErr else { throw PCMExtractionError.decoderFailed }
+        try scratch.withUnsafeBufferPointer { try writer.append($0) }
+    }
+
+    private static func extractWithFFmpeg(
+        from url: URL,
+        writingTo cacheURL: URL,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        guard let executable = Self.ffmpegExecutableURL() else {
+            throw PCMExtractionError.ffmpegUnavailable
+        }
+        let asset = AVURLAsset(url: url)
+        let durationTime = try? await asset.load(.duration)
+        let duration = durationTime.map(CMTimeGetSeconds) ?? 0
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = executable
+        process.arguments = [
+            "-nostdin", "-v", "error", "-i", url.path,
+            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+            "-f", "f32le", "pipe:1"
+        ]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer {
+            try? pipe.fileHandleForReading.close()
+            if process.isRunning { process.terminate() }
+        }
+
+        let writer = try PCMCacheStreamWriter(destinationURL: cacheURL)
+        defer { writer.cancel() }
+        var pending = Data()
+        var lastProgress = 0.0
+        while true {
+            if Task.isCancelled {
+                process.terminate()
+                throw CancellationError()
+            }
+            guard let data = try pipe.fileHandleForReading.read(upToCount: 512 * 1024), !data.isEmpty else {
+                break
+            }
+            var combined = pending
+            combined.append(data)
+            let alignedByteCount = combined.count - combined.count % MemoryLayout<Float>.size
+            if alignedByteCount > 0 {
+                try writer.appendRawBytes(combined.prefix(alignedByteCount))
+            }
+            pending = Data(combined.suffix(combined.count - alignedByteCount))
+
+            if duration.isFinite, duration > 0 {
+                let value = min(0.99, Double(writer.sampleCount) / Double(AudioPCMData.requiredSampleRate) / duration)
+                if value - lastProgress >= 0.01 {
+                    lastProgress = value
+                    progress?(value)
+                }
+            }
+        }
+        process.waitUntilExit()
+        try Task.checkCancellation()
+        guard process.terminationStatus == 0, writer.sampleCount > 0, pending.isEmpty else {
+            throw PCMExtractionError.decoderFailed
+        }
+        try writer.finish()
+        progress?(1)
+    }
 
     private static func decodeUncached(
         from url: URL,
@@ -687,6 +984,7 @@ public enum PCMExtractionError: LocalizedError {
     case decoderFailed
     case emptyAudio
     case ffmpegUnavailable
+    case cacheWriteFailed
 
     public var errorDescription: String? {
         switch self {
@@ -695,6 +993,7 @@ public enum PCMExtractionError: LocalizedError {
         case .decoderFailed: return "音频解码失败。"
         case .emptyAudio: return "音轨中没有可供断句的音频。"
         case .ffmpegUnavailable: return "该媒体格式需要应用内置的 ffmpeg 解码器。"
+        case .cacheWriteFailed: return "无法写入 PCM 缓存，已改用内存解码。"
         }
     }
 }

@@ -93,14 +93,50 @@ public struct SpeechSegmentationProfile: Equatable, Sendable {
     public var splitPenalty: Double
 }
 
+/// Immutable PCM backing that can either own decoded samples or retain a
+/// read-only, memory-mapped cache file. Mapping keeps long recordings out of
+/// a second heap allocation; the kernel pages in only the ranges consumers
+/// actually touch.
+final class MappedPCMStorage: @unchecked Sendable {
+    let data: Data
+    let sampleByteOffset: Int
+    let sampleCount: Int
+
+    init(data: Data, sampleByteOffset: Int, sampleCount: Int) {
+        self.data = data
+        self.sampleByteOffset = sampleByteOffset
+        self.sampleCount = sampleCount
+    }
+
+    func withUnsafeSamples<Result>(
+        in range: Range<Int>,
+        _ body: (UnsafeBufferPointer<Float>) throws -> Result
+    ) rethrows -> Result {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return try body(UnsafeBufferPointer(start: nil, count: 0))
+            }
+            let start = baseAddress
+                .advanced(by: sampleByteOffset + range.lowerBound * MemoryLayout<Float>.size)
+                .assumingMemoryBound(to: Float.self)
+            return try body(UnsafeBufferPointer(start: start, count: range.count))
+        }
+    }
+}
+
 public struct AudioPCMData: Sendable {
     public static let requiredSampleRate = 16_000
 
-    public var samples: [Float]
+    private enum Storage: Sendable {
+        case memory([Float])
+        case mapped(MappedPCMStorage)
+    }
+
+    private let storage: Storage
     public var sampleRate: Int
 
     public init(samples: [Float], sampleRate: Int = requiredSampleRate) {
-        self.samples = samples.map { $0.isFinite ? min(1, max(-1, $0)) : 0 }
+        self.storage = .memory(samples.map { $0.isFinite ? min(1, max(-1, $0)) : 0 })
         self.sampleRate = sampleRate
     }
 
@@ -108,28 +144,90 @@ public struct AudioPCMData: Sendable {
     /// validated. The public initializer keeps its defensive sanitization for
     /// callers that construct PCM manually.
     init(uncheckedSamples: [Float], sampleRate: Int = requiredSampleRate) {
-        self.samples = uncheckedSamples
+        self.storage = .memory(uncheckedSamples)
         self.sampleRate = sampleRate
+    }
+
+    init(mappedCacheData: Data, sampleByteOffset: Int, sampleCount: Int, sampleRate: Int = requiredSampleRate) {
+        self.storage = .mapped(MappedPCMStorage(
+            data: mappedCacheData,
+            sampleByteOffset: sampleByteOffset,
+            sampleCount: sampleCount
+        ))
+        self.sampleRate = sampleRate
+    }
+
+    public var sampleCount: Int {
+        switch storage {
+        case .memory(let samples): return samples.count
+        case .mapped(let mapped): return mapped.sampleCount
+        }
+    }
+
+    public var isFileBacked: Bool {
+        if case .mapped = storage { return true }
+        return false
+    }
+
+    /// Approximate heap cost used by NSCache. File-backed bytes are virtual
+    /// memory managed by the kernel and must not be counted as a duplicated
+    /// resident Float array.
+    var residentByteCount: Int {
+        switch storage {
+        case .memory(let samples):
+            guard samples.count <= Int.max / MemoryLayout<Float>.size else { return Int.max }
+            return samples.count * MemoryLayout<Float>.size
+        case .mapped:
+            return 0
+        }
+    }
+
+    public func samples(in requestedRange: Range<Int>) -> [Float] {
+        let range = clampedRange(requestedRange)
+        guard !range.isEmpty else { return [] }
+        return withUnsafeSamples(in: range) { Array($0) }
+    }
+
+    @discardableResult
+    public func withUnsafeSamples<Result>(
+        in requestedRange: Range<Int>,
+        _ body: (UnsafeBufferPointer<Float>) throws -> Result
+    ) rethrows -> Result {
+        let range = clampedRange(requestedRange)
+        switch storage {
+        case .memory(let samples):
+            return try samples.withUnsafeBufferPointer { buffer in
+                try body(UnsafeBufferPointer(rebasing: buffer[range]))
+            }
+        case .mapped(let mapped):
+            return try mapped.withUnsafeSamples(in: range, body)
+        }
+    }
+
+    private func clampedRange(_ range: Range<Int>) -> Range<Int> {
+        let lower = min(sampleCount, max(0, range.lowerBound))
+        let upper = min(sampleCount, max(lower, range.upperBound))
+        return lower..<upper
     }
 
     public var duration: Double {
         guard sampleRate > 0 else { return 0 }
-        return Double(samples.count) / Double(sampleRate)
+        return Double(sampleCount) / Double(sampleRate)
     }
 
-    public var isEmpty: Bool { samples.isEmpty || sampleRate <= 0 }
+    public var isEmpty: Bool { sampleCount == 0 || sampleRate <= 0 }
 
     public func waveform(samplesPerSecond: Double = 100) -> WaveformData {
         guard !isEmpty else { return .empty }
         let targetRate = max(10, min(1_000, samplesPerSecond))
         let samplesPerBin = max(1, Int(Double(sampleRate) / targetRate))
-        let estimatedBins = samples.count / samplesPerBin + 1
+        let estimatedBins = sampleCount / samplesPerBin + 1
         var minima: [Float] = []
         var maxima: [Float] = []
         minima.reserveCapacity(estimatedBins)
         maxima.reserveCapacity(estimatedBins)
 
-        samples.withUnsafeBufferPointer { buffer in
+        withUnsafeSamples(in: 0..<sampleCount) { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
             var index = 0
             while index < buffer.count {

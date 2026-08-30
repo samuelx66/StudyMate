@@ -642,4 +642,58 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         ))
     }
 
+    func testSpeakerChunkIdentityUsesOverlapBeforeCentroid() {
+        let accepted = [
+            SpeakerDiarizationSegment(startTime: 296, endTime: 300, speakerIDs: [4])
+        ]
+        let local = SpeakerDiarizationTimeline(segments: [
+            SpeakerDiarizationSegment(startTime: 296.2, endTime: 302, speakerIDs: [0])
+        ])
+        var nextID = 5
+        let mapping = SpeakerDiarizationEngine.reconcileSpeakerIDs(
+            localTimeline: local,
+            localCentroids: [0: [0, 1]],
+            accepted: accepted,
+            overlapStart: 296,
+            overlapEnd: 300,
+            globalCentroids: [4: ([1, 0], 1)],
+            nextSpeakerID: &nextID,
+            maximumSpeakerCount: nil
+        )
+
+        XCTAssertEqual(mapping[0], 4)
+        XCTAssertEqual(nextID, 5)
+    }
+
+    func testSpeakerChunkIdentityUsesCentroidWithoutOverlap() {
+        let local = SpeakerDiarizationTimeline(segments: [
+            SpeakerDiarizationSegment(startTime: 300, endTime: 304, speakerIDs: [2])
+        ])
+        var nextID = 8
+        let mapping = SpeakerDiarizationEngine.reconcileSpeakerIDs(
+            localTimeline: local,
+            localCentroids: [2: [0.99, 0.01]],
+            accepted: [],
+            overlapStart: 296,
+            overlapEnd: 300,
+            globalCentroids: [7: ([1, 0], 2)],
+            nextSpeakerID: &nextID,
+            maximumSpeakerCount: nil
+        )
+
+        XCTAssertEqual(mapping[2], 7)
+        XCTAssertEqual(nextID, 8)
+    }
+
+    func testSpeakerChunkSeamMergesSameIdentity() {
+        let merged = SpeakerDiarizationEngine.mergeChunkSeams([
+            SpeakerDiarizationSegment(startTime: 298, endTime: 300, speakerIDs: [1]),
+            SpeakerDiarizationSegment(startTime: 300, endTime: 303, speakerIDs: [1])
+        ])
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].startTime, 298, accuracy: 0.0001)
+        XCTAssertEqual(merged[0].endTime, 303, accuracy: 0.0001)
+    }
+
 }

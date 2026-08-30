@@ -2,6 +2,37 @@ import XCTest
 @testable import MacAbobooKit
 
 final class SpeechRuntimeIntegrationTests: XCTestCase {
+    func testLongSpeakerChunkingWhenFixtureIsProvided() async throws {
+        guard let mediaPath = ProcessInfo.processInfo.environment["MACABOBOO_LONG_SPEAKER_TEST_MEDIA"] else {
+            throw XCTSkip("Set MACABOBOO_LONG_SPEAKER_TEST_MEDIA to run the long-media SpeakerKit seam validation.")
+        }
+        let pcm = try await AudioPCMExtractor.shared.extract(
+            from: URL(fileURLWithPath: mediaPath)
+        )
+        guard pcm.duration > 304 else {
+            XCTFail("The long SpeakerKit fixture must exceed 304 seconds.")
+            return
+        }
+        XCTAssertTrue(pcm.isFileBacked)
+        let timeline = try await SpeakerDiarizationEngine.shared.diarize(pcm: pcm)
+        XCTAssertFalse(timeline.segments.isEmpty)
+        XCTAssertTrue(timeline.segments.allSatisfy {
+            $0.startTime >= 0 && $0.endTime > $0.startTime && $0.endTime <= pcm.duration + 0.001
+        })
+        XCTAssertTrue(zip(timeline.segments, timeline.segments.dropFirst()).allSatisfy {
+            $0.startTime <= $1.startTime
+        })
+        let seams = stride(from: 300.0, to: pcm.duration, by: 300.0)
+        for seam in seams {
+            let duplicate = zip(timeline.segments, timeline.segments.dropFirst()).contains { left, right in
+                left.speakerIDs == right.speakerIDs
+                    && abs(left.endTime - seam) < 0.001
+                    && abs(right.startTime - seam) < 0.001
+            }
+            XCTAssertFalse(duplicate, "Same-speaker segments were not merged at the \(seam)s chunk seam.")
+        }
+    }
+
     func testRealWhisperInferenceWhenFixturesAreProvided() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let modelPath = environment["MACABOBOO_WHISPER_TEST_MODEL"],
@@ -11,7 +42,7 @@ final class SpeechRuntimeIntegrationTests: XCTestCase {
 
         let pcm = try await AudioPCMExtractor.shared.extract(from: URL(fileURLWithPath: audioPath))
         XCTAssertFalse(pcm.isEmpty)
-        print("[SpeechRuntimeIntegrationTests] decoded \(pcm.samples.count) samples")
+        print("[SpeechRuntimeIntegrationTests] decoded \(pcm.sampleCount) samples")
         let analysis = try await NativeSpeechRuntime.shared.detectVoiceActivityAnalysis(
             pcm: pcm,
             configuration: SpeechSegmentationMode.intelligent.profile.vad

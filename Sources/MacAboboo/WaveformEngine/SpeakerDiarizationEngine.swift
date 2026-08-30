@@ -173,17 +173,9 @@ public actor SpeakerDiarizationEngine {
             clipTimestamps: []
         )
 
-        let result: DiarizationResult
+        let timeline: SpeakerDiarizationTimeline
         do {
-            result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
-                try await kit.diarize(
-                    audioArray: pcm.samples,
-                    options: options,
-                    progressCallback: { callbackProgress in
-                        progress(min(1, max(0, callbackProgress.fractionCompleted)))
-                    }
-                )
-            }
+            timeline = try await diarizePCM(pcm, with: kit, options: options, progress: progress)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -198,19 +190,107 @@ public actor SpeakerDiarizationEngine {
             loadedModelFolder = nil
             speakerAccelerationUnavailable = true
             let cpuKit = try await loadSpeakerKit(forceCPU: true)
-            result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
-                try await cpuKit.diarize(
-                    audioArray: pcm.samples,
+            timeline = try await diarizePCM(pcm, with: cpuKit, options: options, progress: progress)
+        }
+        try Task.checkCancellation()
+        progress(1)
+        return timeline
+    }
+
+    /// SpeakerKit currently accepts an owned `[Float]`. Short media retains
+    /// the original single-call path. Long media is supplied in bounded
+    /// five-minute windows, with context overlap and centroid reconciliation
+    /// preserving speaker identity across window seams.
+    private func diarizePCM(
+        _ pcm: AudioPCMData,
+        with kit: SpeakerKit,
+        options: PyannoteDiarizationOptions,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> SpeakerDiarizationTimeline {
+        let chunkDuration = 5.0 * 60.0
+        let contextOverlap = 4.0
+        guard pcm.duration > chunkDuration + contextOverlap else {
+            let audio = pcm.samples(in: 0..<pcm.sampleCount)
+            let result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+                try await kit.diarize(
+                    audioArray: audio,
                     options: options,
                     progressCallback: { callbackProgress in
                         progress(min(1, max(0, callbackProgress.fractionCompleted)))
                     }
                 )
             }
+            return Self.makeTimeline(from: result, duration: pcm.duration)
         }
-        try Task.checkCancellation()
-        progress(1)
-        return Self.makeTimeline(from: result, duration: pcm.duration)
+
+        let chunkCount = max(1, Int(ceil(pcm.duration / chunkDuration)))
+        var accepted: [SpeakerDiarizationSegment] = []
+        var globalCentroids: [Int: ([Float], Double)] = [:]
+        var nextSpeakerID = 0
+
+        for chunkIndex in 0..<chunkCount {
+            try Task.checkCancellation()
+            let coreStart = Double(chunkIndex) * chunkDuration
+            let coreEnd = min(pcm.duration, coreStart + chunkDuration)
+            let readStart = max(0, coreStart - contextOverlap)
+            let readEnd = min(pcm.duration, coreEnd + contextOverlap)
+            let sampleStart = max(0, Int(floor(readStart * Double(pcm.sampleRate))))
+            let sampleEnd = min(pcm.sampleCount, Int(ceil(readEnd * Double(pcm.sampleRate))))
+            let audio = pcm.samples(in: sampleStart..<sampleEnd)
+            let baseProgress = Double(chunkIndex) / Double(chunkCount)
+            let result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
+                try await kit.diarize(
+                    audioArray: audio,
+                    options: options,
+                    progressCallback: { callbackProgress in
+                        let local = min(1, max(0, callbackProgress.fractionCompleted))
+                        progress(baseProgress + local / Double(chunkCount))
+                    }
+                )
+            }
+
+            let localTimeline = Self.makeTimeline(
+                from: result,
+                duration: readEnd - readStart,
+                timeOffset: readStart
+            )
+            let mapping = Self.reconcileSpeakerIDs(
+                localTimeline: localTimeline,
+                localCentroids: result.speakerCentroidEmbeddings,
+                accepted: accepted,
+                overlapStart: readStart,
+                overlapEnd: coreStart,
+                globalCentroids: globalCentroids,
+                nextSpeakerID: &nextSpeakerID,
+                maximumSpeakerCount: options.numberOfSpeakers
+            )
+
+            for segment in localTimeline.segments {
+                let clippedStart = max(coreStart, segment.startTime)
+                let clippedEnd = min(coreEnd, segment.endTime)
+                guard clippedEnd - clippedStart >= 0.02 else { continue }
+                let mappedIDs = Array(Set(segment.speakerIDs.compactMap { mapping[$0] })).sorted()
+                guard !mappedIDs.isEmpty else { continue }
+                accepted.append(SpeakerDiarizationSegment(
+                    startTime: clippedStart,
+                    endTime: clippedEnd,
+                    speakerIDs: mappedIDs,
+                    confidence: segment.confidence,
+                    hasCalibratedConfidence: segment.hasCalibratedConfidence,
+                    isOverlap: segment.isOverlap
+                ))
+            }
+            Self.mergeCentroids(
+                result.speakerCentroidEmbeddings,
+                mapping: mapping,
+                into: &globalCentroids
+            )
+        }
+
+        return SpeakerDiarizationTimeline(
+            segments: Self.mergeChunkSeams(accepted),
+            speakerCount: nextSpeakerID
+        )
     }
 
     public func unloadModels() async {
@@ -273,16 +353,17 @@ public actor SpeakerDiarizationEngine {
 
     private static func makeTimeline(
         from result: DiarizationResult,
-        duration: Double
+        duration: Double,
+        timeOffset: Double = 0
     ) -> SpeakerDiarizationTimeline {
         let rawSegments = result.segments.compactMap { segment -> SpeakerDiarizationSegment? in
-            let start = min(duration, max(0, Double(segment.startTime)))
-            let end = min(duration, max(start, Double(segment.endTime)))
+            let localStart = min(duration, max(0, Double(segment.startTime)))
+            let localEnd = min(duration, max(localStart, Double(segment.endTime)))
             let ids = segment.speaker.speakerIds
-            guard end - start >= 0.02, !ids.isEmpty else { return nil }
+            guard localEnd - localStart >= 0.02, !ids.isEmpty else { return nil }
             return SpeakerDiarizationSegment(
-                startTime: start,
-                endTime: end,
+                startTime: localStart + timeOffset,
+                endTime: localEnd + timeOffset,
                 speakerIDs: ids,
                 // SpeakerKit's public diarization result exposes labels and
                 // timestamps, but not a calibrated per-segment posterior.
@@ -327,6 +408,127 @@ public actor SpeakerDiarizationEngine {
             segments[index].isOverlap = true
         }
         return SpeakerDiarizationTimeline(segments: segments, speakerCount: result.speakerCount)
+    }
+
+    static func reconcileSpeakerIDs(
+        localTimeline: SpeakerDiarizationTimeline,
+        localCentroids: [Int: [Float]],
+        accepted: [SpeakerDiarizationSegment],
+        overlapStart: Double,
+        overlapEnd: Double,
+        globalCentroids: [Int: ([Float], Double)],
+        nextSpeakerID: inout Int,
+        maximumSpeakerCount: Int?
+    ) -> [Int: Int] {
+        let localIDs = Set(localTimeline.segments.flatMap(\.speakerIDs)).sorted()
+        var mapping: [Int: Int] = [:]
+        var usedGlobalIDs = Set<Int>()
+
+        for localID in localIDs {
+            var overlapByGlobal: [Int: Double] = [:]
+            for local in localTimeline.segments where local.speakerIDs.contains(localID) {
+                let localStart = max(overlapStart, local.startTime)
+                let localEnd = min(overlapEnd, local.endTime)
+                guard localEnd > localStart else { continue }
+                for global in accepted {
+                    let amount = min(localEnd, global.endTime) - max(localStart, global.startTime)
+                    guard amount > 0 else { continue }
+                    for globalID in global.speakerIDs where !usedGlobalIDs.contains(globalID) {
+                        overlapByGlobal[globalID, default: 0] += amount
+                    }
+                }
+            }
+            if let temporal = overlapByGlobal.max(by: { $0.value < $1.value }), temporal.value >= 0.18 {
+                mapping[localID] = temporal.key
+                usedGlobalIDs.insert(temporal.key)
+                continue
+            }
+
+            if let centroid = localCentroids[localID],
+               let nearest = globalCentroids.compactMap({ globalID, stored -> (Int, Float)? in
+                   guard !usedGlobalIDs.contains(globalID),
+                         let distance = cosineDistance(centroid, stored.0) else { return nil }
+                   return (globalID, distance)
+               }).min(by: { $0.1 < $1.1 }), nearest.1 <= 0.38 {
+                mapping[localID] = nearest.0
+                usedGlobalIDs.insert(nearest.0)
+                continue
+            }
+
+            if let maximumSpeakerCount,
+               globalCentroids.count >= maximumSpeakerCount,
+               let centroid = localCentroids[localID],
+               let nearest = globalCentroids.compactMap({ globalID, stored -> (Int, Float)? in
+                   guard !usedGlobalIDs.contains(globalID),
+                         let distance = cosineDistance(centroid, stored.0) else { return nil }
+                   return (globalID, distance)
+               }).min(by: { $0.1 < $1.1 }) {
+                mapping[localID] = nearest.0
+                usedGlobalIDs.insert(nearest.0)
+            } else {
+                mapping[localID] = nextSpeakerID
+                usedGlobalIDs.insert(nextSpeakerID)
+                nextSpeakerID += 1
+            }
+        }
+        return mapping
+    }
+
+    private static func mergeCentroids(
+        _ localCentroids: [Int: [Float]],
+        mapping: [Int: Int],
+        into globalCentroids: inout [Int: ([Float], Double)]
+    ) {
+        for (localID, centroid) in localCentroids {
+            guard let globalID = mapping[localID], !centroid.isEmpty else { continue }
+            guard let existing = globalCentroids[globalID], existing.0.count == centroid.count else {
+                globalCentroids[globalID] = (centroid, 1)
+                continue
+            }
+            let newWeight = existing.1 + 1
+            let merged = zip(existing.0, centroid).map {
+                Float((Double($0.0) * existing.1 + Double($0.1)) / newWeight)
+            }
+            globalCentroids[globalID] = (merged, newWeight)
+        }
+    }
+
+    private static func cosineDistance(_ lhs: [Float], _ rhs: [Float]) -> Float? {
+        guard !lhs.isEmpty, lhs.count == rhs.count else { return nil }
+        var dot: Double = 0
+        var lhsNorm: Double = 0
+        var rhsNorm: Double = 0
+        for index in lhs.indices {
+            let left = Double(lhs[index])
+            let right = Double(rhs[index])
+            dot += left * right
+            lhsNorm += left * left
+            rhsNorm += right * right
+        }
+        guard lhsNorm > 0, rhsNorm > 0 else { return nil }
+        return Float(max(0, min(2, 1 - dot / sqrt(lhsNorm * rhsNorm))))
+    }
+
+    static func mergeChunkSeams(
+        _ input: [SpeakerDiarizationSegment]
+    ) -> [SpeakerDiarizationSegment] {
+        let sorted = input.sorted {
+            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+            return $0.startTime < $1.startTime
+        }
+        var output: [SpeakerDiarizationSegment] = []
+        output.reserveCapacity(sorted.count)
+        for segment in sorted {
+            if let last = output.last,
+               last.speakerIDs == segment.speakerIDs,
+               last.isOverlap == segment.isOverlap,
+               segment.startTime - last.endTime <= 0.08 {
+                output[output.count - 1].endTime = max(last.endTime, segment.endTime)
+            } else {
+                output.append(segment)
+            }
+        }
+        return output
     }
 
     private static func bundledModelFolder() throws -> URL {

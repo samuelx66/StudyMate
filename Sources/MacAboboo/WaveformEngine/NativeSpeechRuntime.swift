@@ -122,7 +122,11 @@ public actor NativeSpeechRuntime {
         var probabilityCount: Int32 = 0
         var probabilityFrameDuration: Double = 0
         var errorBuffer = [CChar](repeating: 0, count: 512)
-        let status = pcm.samples.withUnsafeBufferPointer { samples in
+        // whisper.cpp's Silero runtime divides this contiguous view into its
+        // native 512-sample frames while retaining the LSTM state between
+        // frames. A mapped PCM therefore stays zero-copy: we expose one stable
+        // virtual range and let the native frame loop page it in sequentially.
+        let status = pcm.withUnsafeSamples(in: 0..<pcm.sampleCount) { samples in
             mab_vad_detect(
                 contextHandle.pointer,
                 samples.baseAddress,
@@ -258,7 +262,7 @@ public actor NativeSpeechRuntime {
                 : Self.transcriptionRanges(
                     speechWindows,
                     duration: pcm.duration,
-                    sampleCount: pcm.samples.count,
+                    sampleCount: pcm.sampleCount,
                     hardBoundaries: hardWindowBoundaries,
                     contextPadding: isolatedSpeechWindows ? 0 : 0.35
                 )
@@ -289,24 +293,22 @@ public actor NativeSpeechRuntime {
                 let progressOpaque = Unmanaged.passUnretained(progressBox).toOpaque()
                 var result = MABTranscriptionResult()
                 var errorBuffer = [CChar](repeating: 0, count: 512)
-                // `pcm.samples` is one contiguous, validated Float32 buffer.
-                // Pass a pointer into the requested window instead of copying
-                // up to 24 seconds of audio for every Whisper call. The
-                // pointer remains valid for the complete synchronous C call.
-                let status = pcm.samples.withUnsafeBufferPointer { sampleBuffer in
+                // Address only this Whisper window. For a disk-backed PCM the
+                // pointer refers directly into the memory mapping; for a
+                // freshly decoded recording it refers into the owned array.
+                // In both cases it stays valid for the synchronous C call and
+                // no per-window audio copy is required.
+                let status = pcm.withUnsafeSamples(in: range.start..<range.end) { sampleBuffer in
                     guard let baseAddress = sampleBuffer.baseAddress,
-                          range.start >= 0,
-                          range.end <= sampleBuffer.count,
-                          range.end > range.start else {
+                          !sampleBuffer.isEmpty else {
                         return Int32(-1)
                     }
-                    let windowPointer = baseAddress.advanced(by: range.start)
-                    let windowCount = Int32(clamping: range.end - range.start)
+                    let windowCount = Int32(clamping: sampleBuffer.count)
                     return effectiveLanguage.withCString { languageCode in
                         mab_whisper_transcribe(
                                 contextHandle.pointer,
                                 nil,
-                                windowPointer,
+                                baseAddress,
                                 windowCount,
                                 languageCode,
                                 whisperConfiguration,
