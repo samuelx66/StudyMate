@@ -98,6 +98,67 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         XCTAssertEqual(player.currentTime, 0, accuracy: 0.001)
     }
 
+    func testSingleLoopContinuesAcrossRepeatedEndCallbacks() async throws {
+        let mediaURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryRepeatedLoop-\(UUID().uuidString).m4a")
+        try Data("loop-media".utf8).write(to: mediaURL)
+        defer { try? FileManager.default.removeItem(at: mediaURL) }
+
+        let backend = TestMediaPlayerBackend(duration: 1)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entry = SentenceLibraryEntry(
+            originalText: "loop",
+            translation: "循环",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: mediaURL.path,
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "loop.m4a"
+        )
+        player.setPlaybackMode(.singleLoop)
+        player.setPlaylist(entries: [entry], mediaURLs: [entry.id: mediaURL])
+        player.play(entry, mediaURL: mediaURL)
+        await Task.yield()
+
+        for _ in 0..<8 {
+            backend.emitTime(1)
+            await Task.yield()
+            XCTAssertTrue(player.isPlaying)
+            XCTAssertEqual(backend.currentTime, 0, accuracy: 0.001)
+        }
+    }
+
+    func testLoopUsesDecoderEndWhenAACDurationIsShorterThanProjectTimestamp() async throws {
+        let mediaURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryShortClip-\(UUID().uuidString).m4a")
+        try Data("short-loop-media".utf8).write(to: mediaURL)
+        defer { try? FileManager.default.removeItem(at: mediaURL) }
+
+        // The independent AAC clip is shorter than the original project
+        // timestamp by encoder-delay/container rounding.
+        let backend = TestMediaPlayerBackend(duration: 0.72)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entry = SentenceLibraryEntry(
+            originalText: "short loop",
+            translation: "短循环",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: mediaURL.path,
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "short-loop.m4a"
+        )
+        player.setPlaybackMode(.singleLoop)
+        player.setPlaylist(entries: [entry], mediaURLs: [entry.id: mediaURL])
+        player.play(entry, mediaURL: mediaURL)
+        await Task.yield()
+
+        backend.emitFinished(at: 0.72)
+        await Task.yield()
+
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertEqual(backend.currentTime, 0, accuracy: 0.001)
+    }
+
     func testAllLoopAdvancesThroughVisibleLibraryPlaylist() async throws {
         let firstURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacAboboo-LibraryFirst-\(UUID().uuidString).m4a")
@@ -141,6 +202,44 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         XCTAssertEqual(player.currentEntry?.id, second.id)
         XCTAssertEqual(backend.loadedURL, secondURL)
         XCTAssertTrue(player.isPlaying)
+    }
+
+    func testAllLoopWrapsAndDoesNotStopAfterSeveralItems() async throws {
+        let urls = try (1...3).map { index -> URL in
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MacAboboo-LibraryAllLoop-\(index)-\(UUID().uuidString).m4a")
+            try Data("item-\(index)".utf8).write(to: url)
+            return url
+        }
+        defer { urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        let backend = TestMediaPlayerBackend(duration: 1)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entries = urls.enumerated().map { offset, url in
+            SentenceLibraryEntry(
+                originalText: "item \(offset + 1)",
+                translation: "第\(offset + 1)句",
+                sourceMediaName: "lesson.mp4",
+                sourceMediaPath: url.path,
+                startTime: 0,
+                endTime: 1,
+                mediaFilename: "item-\(offset + 1).m4a"
+            )
+        }
+        player.setPlaybackMode(.allLoop)
+        player.setPlaylist(
+            entries: entries,
+            mediaURLs: Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($1.id, urls[$0]) })
+        )
+        player.play(entries[0], mediaURL: urls[0])
+        await Task.yield()
+
+        for expectedIndex in [1, 2, 0, 1, 2, 0, 1] {
+            backend.emitTime(1)
+            await Task.yield()
+            XCTAssertEqual(player.currentEntry?.id, entries[expectedIndex].id)
+            XCTAssertTrue(player.isPlaying)
+        }
     }
 
     private func makeEntry(path: String, start: Double, end: Double) -> SentenceLibraryEntry {

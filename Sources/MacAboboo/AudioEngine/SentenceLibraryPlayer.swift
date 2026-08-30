@@ -154,6 +154,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
             }
 
             self.activeBackend = backend
+            self.synchronizePlaybackEnd(with: backend)
             backend.seek(to: self.playbackStartTime) { [weak self, weak backend] in
                 Task { @MainActor [weak self, weak backend] in
                     guard let self,
@@ -192,7 +193,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
             let relativeTime = max(0, absoluteTime - self.playbackStartTime)
             self.currentTime = min(self.duration, relativeTime)
             if backend.supportsIndependentBoundaryTimeUpdates == false,
-               absoluteTime >= self.playbackEndTime - 0.005 {
+               self.hasReachedPlaybackEnd(backend: backend, absoluteTime: absoluteTime) {
                 backend.pause()
                 self.currentTime = self.duration
                 self.handleCurrentEntryFinished()
@@ -205,7 +206,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                   self.currentEntry != nil,
                   !self.isRestartSeeking,
                   absoluteTime.isFinite else { return }
-            if absoluteTime >= self.playbackEndTime - 0.005 {
+            if self.hasReachedPlaybackEnd(backend: backend, absoluteTime: absoluteTime) {
                 backend.pause()
                 self.currentTime = self.duration
                 self.handleCurrentEntryFinished()
@@ -217,7 +218,17 @@ public final class SentenceLibraryPlayer: ObservableObject {
         }
         backend.onFinished = { [weak self, weak backend] in
             guard let self, let backend, self.activeBackend === backend else { return }
-            guard !self.isRestartSeeking, self.currentTime >= self.duration - 0.05 else { return }
+            // AVPlayer/MPV's end notification is authoritative for the
+            // currently loaded item.  Do not use the published SwiftUI
+            // progress (`currentTime`) as a gate here: it is intentionally
+            // throttled for the library playback bar and can lag behind the
+            // decoder by a few frames.  Independent M4A clips can also have
+            // a small AAC encoder-delay difference from the source timestamp.
+            // Use the backend's real position/duration instead, which keeps
+            // looping reliable without allowing a stale callback received
+            // after a restart to trigger a second loop.
+            guard !self.isRestartSeeking,
+                  self.hasReachedPlaybackEnd(backend: backend) else { return }
             self.currentTime = self.duration
             self.handleCurrentEntryFinished()
         }
@@ -267,6 +278,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         activeBackend.pause()
         playbackStartTime = 0
         playbackEndTime = playbackStartTime + duration
+        synchronizePlaybackEnd(with: activeBackend)
         currentTime = 0
         activeBackend.seek(to: playbackStartTime) { [weak self] in
             Task { @MainActor [weak self] in
@@ -278,5 +290,45 @@ public final class SentenceLibraryPlayer: ObservableObject {
                 self.isPlaying = true
             }
         }
+    }
+
+    /// The sentence duration comes from the original project timestamp, while
+    /// a self-contained AAC clip may expose a slightly different duration
+    /// after decoding (encoder delay/padding and container rounding).  Keep
+    /// the public sentence duration stable, but use the shorter real media
+    /// duration as the playback boundary when it is available.
+    private func synchronizePlaybackEnd(with backend: MediaPlayerBackend) {
+        let backendDuration = backend.duration
+        guard backendDuration.isFinite, backendDuration > 0 else { return }
+        let requestedEnd = playbackStartTime + duration
+        playbackEndTime = min(requestedEnd, playbackStartTime + backendDuration)
+    }
+
+    private func effectivePlaybackEnd(for backend: MediaPlayerBackend) -> Double {
+        let backendDuration = backend.duration
+        guard backendDuration.isFinite, backendDuration > 0 else {
+            return playbackEndTime
+        }
+        return min(playbackEndTime, playbackStartTime + backendDuration)
+    }
+
+    private func hasReachedPlaybackEnd(
+        backend: MediaPlayerBackend,
+        absoluteTime: Double? = nil
+    ) -> Bool {
+        let end = effectivePlaybackEnd(for: backend)
+        guard end.isFinite else { return false }
+
+        // A small, duration-aware tolerance absorbs frame quantisation and AAC
+        // priming without making a normal pause near the sentence end look
+        // like an end event.  The backend's current position is preferred for
+        // end notifications because the published UI position is throttled.
+        let observedTime = max(
+            absoluteTime ?? -.infinity,
+            backend.currentTime
+        )
+        guard observedTime.isFinite else { return false }
+        let tolerance = min(0.15, max(0.04, duration * 0.1))
+        return observedTime >= end - tolerance
     }
 }

@@ -1,5 +1,6 @@
 import Combine
 import CryptoKit
+import AVFoundation
 import XCTest
 @testable import MacAbobooKit
 
@@ -1666,6 +1667,127 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(segment.endTime, 3, accuracy: 0.001)
         XCTAssertEqual(segment.text, "From SRT")
         XCTAssertEqual(segment.translation, "SRT译文")
+    }
+
+    func testMergedLibraryM4AReopensWithMatchingSubtitleTimelineAndWaveform() async throws {
+        guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
+            throw XCTSkip("ffmpeg is required for the media export integration test")
+        }
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        try makeTestAudio(at: sourceURL, duration: 3.0)
+        let exporter = SegmentMediaExporter(
+            temporaryRootURL: directory.appendingPathComponent("export-temp")
+        )
+        let firstClipURL = directory.appendingPathComponent("first.m4a")
+        let secondClipURL = directory.appendingPathComponent("second.m4a")
+        try exporter.exportAudioClip(
+            mediaURL: sourceURL,
+            segment: SentenceSegment(index: 1, startTime: 0, endTime: 0.6),
+            outputURL: firstClipURL
+        )
+        try exporter.exportAudioClip(
+            mediaURL: sourceURL,
+            segment: SentenceSegment(index: 2, startTime: 1, endTime: 1.8),
+            outputURL: secondClipURL
+        )
+
+        let first = SentenceLibraryEntry(
+            originalText: "First",
+            translation: "第一句",
+            sourceMediaName: "source.mp4",
+            sourceMediaPath: sourceURL.path,
+            startTime: 0,
+            endTime: 0.6,
+            mediaFilename: firstClipURL.lastPathComponent
+        )
+        let second = SentenceLibraryEntry(
+            originalText: "Second",
+            translation: "第二句",
+            sourceMediaName: "source.mp4",
+            sourceMediaPath: sourceURL.path,
+            startTime: 1,
+            endTime: 1.8,
+            mediaFilename: secondClipURL.lastPathComponent
+        )
+        let result = try exporter.exportLibraryEntriesMerged(
+            entries: [first, second],
+            mediaURLs: [first.id: firstClipURL, second.id: secondClipURL],
+            outputAudioURL: directory.appendingPathComponent("merged.m4a"),
+            album: "source.mp4",
+            artist: "source.mp4"
+        )
+
+        // 以实际解码采样读到 EOF，确认合并文件不是只有容器头或被提前截断。
+        let mergedDuration = try fullyDecodeAudio(at: result.location)
+        XCTAssertEqual(mergedDuration, 1.4, accuracy: 0.12)
+        let subtitleURL = result.location.deletingPathExtension().appendingPathExtension("srt")
+        let parsedItems = try SubtitleParser.shared.parse(from: subtitleURL)
+        XCTAssertEqual(parsedItems.count, 2)
+        XCTAssertEqual(parsedItems[0].startTime, 0, accuracy: 0.001)
+        XCTAssertEqual(parsedItems[0].endTime, 0.6, accuracy: 0.05)
+        XCTAssertEqual(parsedItems[1].startTime, parsedItems[0].endTime, accuracy: 0.05)
+        XCTAssertEqual(parsedItems[1].endTime, 1.4, accuracy: 0.08)
+
+        // 通过正式 PlaybackEngine 路径重新打开同名字幕，验证字幕时间轴接管
+        // 断句且波形提取使用同一个 M4A 的时间基准。
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 1.4),
+            mpvBackend: TestMediaPlayerBackend(duration: 1.4),
+            projectFileManager: ProjectFileManager(
+                baseDirectory: directory.appendingPathComponent("projects")
+            )
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: result.location)
+        for _ in 0..<200 {
+            if engine.segments.count == 2, !engine.waveformData.isEmpty { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(engine.segments.count, 2)
+        XCTAssertEqual(engine.segments[0].startTime, 0, accuracy: 0.001)
+        XCTAssertEqual(engine.segments[0].endTime, 0.6, accuracy: 0.08)
+        XCTAssertEqual(engine.segments[1].startTime, engine.segments[0].endTime, accuracy: 0.08)
+        XCTAssertEqual(engine.segments[1].endTime, 1.4, accuracy: 0.12)
+        XCTAssertEqual(engine.waveformData.duration, mergedDuration, accuracy: 0.12)
+        await engine.closeCurrentMedia()
+    }
+
+    private func makeTestAudio(at url: URL, duration: Double) throws {
+        let sampleRate = 16_000.0
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let format = try XCTUnwrap(
+            AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
+        )
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+        )
+        buffer.frameLength = frameCount
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        let angularStep = 2.0 * Double.pi * 440.0 / sampleRate
+        for frame in 0..<Int(frameCount) {
+            samples[frame] = Float(0.2 * sin(angularStep * Double(frame)))
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+    }
+
+    private func fullyDecodeAudio(at url: URL) throws -> Double {
+        let file = try AVAudioFile(forReading: url)
+        let totalFrames = file.length
+        let sampleRate = file.processingFormat.sampleRate
+        let capacity = AVAudioFrameCount(min(Int64(65_536), totalFrames))
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: capacity)
+        )
+        while file.framePosition < totalFrames {
+            let remaining = totalFrames - file.framePosition
+            try file.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(capacity), remaining)))
+            XCTAssertGreaterThan(buffer.frameLength, 0)
+        }
+        return Double(totalFrames) / sampleRate
     }
 
     func testManualSubtitleImportReplacesEveryExistingSegmentAndTargetsTranslation() {
