@@ -7,11 +7,19 @@ public struct VideoPlayerView: View {
     @ObservedObject private var lang = LanguageManager.shared
     
     @State private var isHovering: Bool = false
+    /// 播放时由指针活动维持控制面板可见；超过延迟后仅隐藏面板，鼠标再次
+    /// 移动时立即恢复。暂停状态仍保持面板可见，方便用户继续操作。
+    @State private var isPointerActive: Bool = false
+    @State private var overlayHideTask: Task<Void, Never>?
     @State private var isScrubbing: Bool = false
     
     // 自由拖拽定位坐标
     @State private var positionOffset: CGSize = .zero
     @State private var dragTranslation: CGSize = .zero
+    @State private var controlPanelSize: CGSize = CGSize(width: 572, height: 74)
+
+    private static let controlPanelAutoHideDelay: UInt64 = 10_000_000_000
+    private static let controlPanelAnimation = Animation.easeInOut(duration: 0.2)
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -24,11 +32,66 @@ public struct VideoPlayerView: View {
         if engine.isShadowingPaused {
             return false
         }
-        // 只要鼠标在画面内、或者未在播放、或者正在拖拽进度条，就一直显示
-        if isHovering || !engine.isPlaying || isScrubbing || dragTranslation != .zero {
+        // 普通暂停时保留控制面板；播放时只由指针活动、时间轴操作或面板拖动
+        // 维持可见，避免面板长期遮挡视频内容。
+        if !engine.isPlaying || isScrubbing || dragTranslation != .zero {
             return true
         }
-        return false
+        return isHovering && isPointerActive
+    }
+
+    /// 当前指针进入/移动到视频区域时显示面板，并重新开始 10 秒无活动计时。
+    private func handlePointerActivity() {
+        guard engine.currentMedia != nil else { return }
+        if !isHovering {
+            withAnimation(Self.controlPanelAnimation) {
+                isHovering = true
+            }
+        }
+        withAnimation(Self.controlPanelAnimation) {
+            isPointerActive = true
+        }
+        scheduleOverlayAutoHide()
+    }
+
+    private func handlePointerExit() {
+        overlayHideTask?.cancel()
+        overlayHideTask = nil
+        withAnimation(Self.controlPanelAnimation) {
+            isHovering = false
+            isPointerActive = false
+        }
+    }
+
+    private func scheduleOverlayAutoHide() {
+        overlayHideTask?.cancel()
+        guard engine.isPlaying else { return }
+
+        overlayHideTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: Self.controlPanelAutoHideDelay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, isHovering, engine.isPlaying else { return }
+            withAnimation(Self.controlPanelAnimation) {
+                isPointerActive = false
+            }
+        }
+    }
+
+    /// 将面板的相对偏移限制在视频区域内。面板的默认位置是底部居中，
+    /// 因而其垂直偏移范围为“刚好贴顶”到 0（贴住底部）。
+    private func boundedPanelOffset(_ offset: CGSize, in containerSize: CGSize) -> CGSize {
+        let panelWidth = max(1, controlPanelSize.width)
+        let panelHeight = max(1, controlPanelSize.height)
+        let horizontalLimit = max(0, (containerSize.width - panelWidth) / 2)
+        let topLimit = min(0, -(containerSize.height - panelHeight))
+
+        return CGSize(
+            width: min(horizontalLimit, max(-horizontalLimit, offset.width)),
+            height: min(0, max(topLimit, offset.height))
+        )
     }
     
     public var body: some View {
@@ -42,10 +105,13 @@ public struct VideoPlayerView: View {
                         NativeVideoPlayerRepresentable(
                             playerView: engine.activeBackend.playerView,
                             onHoverChanged: { hovering in
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isHovering = hovering
+                                if hovering {
+                                    handlePointerActivity()
+                                } else {
+                                    handlePointerExit()
                                 }
-                            }
+                            },
+                            onPointerActivity: handlePointerActivity
                         )
                         .id("\(ObjectIdentifier(engine.activeBackend))_\(media.id)")
                         .onTapGesture {
@@ -108,22 +174,42 @@ public struct VideoPlayerView: View {
                             .gesture(
                                 DragGesture(minimumDistance: 4)
                                     .onChanged { value in
-                                        dragTranslation = value.translation
+                                        handlePointerActivity()
+                                        let candidate = CGSize(
+                                            width: positionOffset.width + value.translation.width,
+                                            height: positionOffset.height + value.translation.height
+                                        )
+                                        let bounded = boundedPanelOffset(candidate, in: geometry.size)
+                                        dragTranslation = CGSize(
+                                            width: bounded.width - positionOffset.width,
+                                            height: bounded.height - positionOffset.height
+                                        )
                                     }
                                     .onEnded { value in
-                                        let maxOffsetX = max(0, (geometry.size.width - 240) / 2)
-                                        let maxOffsetY = max(0, geometry.size.height - 60)
-                                        
-                                        var newWidth = positionOffset.width + value.translation.width
-                                        var newHeight = positionOffset.height + value.translation.height
-                                        
-                                        newWidth = max(-maxOffsetX, min(maxOffsetX, newWidth))
-                                        newHeight = max(-maxOffsetY, min(0, newHeight))
-                                        
-                                        positionOffset = CGSize(width: newWidth, height: newHeight)
+                                        let candidate = CGSize(
+                                            width: positionOffset.width + value.translation.width,
+                                            height: positionOffset.height + value.translation.height
+                                        )
+                                        positionOffset = boundedPanelOffset(candidate, in: geometry.size)
                                         dragTranslation = .zero
+                                        scheduleOverlayAutoHide()
                                     }
                             )
+                            .background(
+                                GeometryReader { panelGeometry in
+                                    Color.clear
+                                        .preference(
+                                            key: FloatingOSDSizePreferenceKey.self,
+                                            value: panelGeometry.size
+                                        )
+                                }
+                            )
+                            .onHover { hovering in
+                                // 视频渲染层与控制面板是两个兄弟视图。指针从
+                                // 视频移到面板时底层 tracking area 会收到
+                                // mouseExited，这里重新确认指针仍在播放区域。
+                                if hovering { handlePointerActivity() }
+                            }
                             .opacity(shouldShowOverlay ? 1.0 : 0.0)
                             .animation(.easeInOut(duration: 0.2), value: shouldShowOverlay)
                             .allowsHitTesting(shouldShowOverlay)
@@ -139,19 +225,46 @@ public struct VideoPlayerView: View {
             .onContinuousHover { phase in
                 switch phase {
                 case .active:
-                    if !isHovering {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isHovering = true
-                        }
-                    }
+                    handlePointerActivity()
                 case .ended:
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        isHovering = false
-                    }
+                    handlePointerExit()
                 }
+            }
+            .onPreferenceChange(FloatingOSDSizePreferenceKey.self) { size in
+                guard size.width > 0, size.height > 0 else { return }
+                controlPanelSize = size
+                // 窗口缩放后立即重新约束已保存的位置，避免面板留在新的
+                // 视频边界之外。
+                positionOffset = boundedPanelOffset(positionOffset, in: geometry.size)
             }
         }
         .frame(minHeight: 200)
+        .onChange(of: engine.isPlaying) { _, isPlaying in
+            if isPlaying {
+                if isHovering { scheduleOverlayAutoHide() }
+            } else {
+                overlayHideTask?.cancel()
+                overlayHideTask = nil
+                withAnimation(Self.controlPanelAnimation) {
+                    isPointerActive = false
+                }
+            }
+        }
+        .onChange(of: isScrubbing) { _, scrubbing in
+            if !scrubbing, isHovering { scheduleOverlayAutoHide() }
+        }
+        .onDisappear {
+            overlayHideTask?.cancel()
+            overlayHideTask = nil
+        }
+    }
+}
+
+private struct FloatingOSDSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 
@@ -159,6 +272,7 @@ public struct VideoPlayerView: View {
 public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
     let playerView: NSView
     var onHoverChanged: ((Bool) -> Void)? = nil
+    var onPointerActivity: (() -> Void)? = nil
     
     public func makeNSView(context: Context) -> TrackingVideoContainerView {
         let container = TrackingVideoContainerView()
@@ -167,12 +281,14 @@ public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
         container.layer?.needsDisplayOnBoundsChange = false
         container.layerContentsRedrawPolicy = .onSetNeedsDisplay
         container.onHoverChanged = onHoverChanged
+        container.onPointerActivity = onPointerActivity
         embed(playerView, in: container)
         return container
     }
     
     public func updateNSView(_ nsView: TrackingVideoContainerView, context: Context) {
         nsView.onHoverChanged = onHoverChanged
+        nsView.onPointerActivity = onPointerActivity
         embed(playerView, in: nsView)
     }
     
@@ -194,6 +310,7 @@ public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
 /// 带有完整鼠标悬停与移动追踪的容器视图
 public final class TrackingVideoContainerView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
+    var onPointerActivity: (() -> Void)?
     
     private var trackingArea: NSTrackingArea?
     
@@ -215,6 +332,11 @@ public final class TrackingVideoContainerView: NSView {
     
     public override func mouseEntered(with event: NSEvent) {
         onHoverChanged?(true)
+        onPointerActivity?()
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        onPointerActivity?()
     }
     
     public override func mouseExited(with event: NSEvent) {

@@ -139,6 +139,13 @@ public struct SubtitleEditView: View {
                 saveCurrentSegment()
             }
         }
+        .onKeyPress(.escape) {
+            // 字幕编辑区按 Esc 只释放输入焦点；现有失焦回调负责保存内容，
+            // 不取消编辑、不切换断句。断句列表行内编辑器仍保留其独立的 Esc 取消行为。
+            guard focusedField != nil else { return .ignored }
+            focusedField = nil
+            return .handled
+        }
     }
     
     private func loadActiveSegment() {

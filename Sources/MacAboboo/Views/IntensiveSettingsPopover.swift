@@ -235,8 +235,8 @@ public struct IntensiveSettingsPopover: View {
                     Text(lang.text("保存 AI 识别原文字幕", "Save AI transcript as subtitles"))
                         .font(.body.weight(.medium))
                     Text(lang.text(
-                        "关闭后不保存识别文字，但智能断句仍会使用 Whisper 优化边界；快速断句不运行 Whisper。",
-                        "When disabled, recognized text is not saved, but intelligent segmentation still uses Whisper to optimize boundaries; fast segmentation skips Whisper."
+                        "关闭后不会自动生成原文。快速断句也不会生成原文，智能断句则会生成原文并保存。",
+                        "When disabled, original text is not generated automatically. Fast segmentation also does not generate original text; intelligent segmentation generates and saves it."
                     ))
                     .font(.caption)
                     .foregroundColor(.secondary)

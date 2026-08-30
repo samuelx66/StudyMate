@@ -1197,6 +1197,9 @@ private struct SegmentAddToLibraryPopoverView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Popover 打开时不把第一个操作项设为默认键盘焦点；用户
+            // 仍可用鼠标点击任意操作项。
+            .focusable(false)
             .disabled(!hasSelectedSegments || isAdding)
             .padding(.vertical, 4)
 
@@ -1220,6 +1223,7 @@ private struct SegmentAddToLibraryPopoverView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .focusable(false)
                     .padding(.vertical, 2)
                 }
             }
@@ -1236,10 +1240,12 @@ private struct SegmentAddToLibraryPopoverView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focusable(false)
             .padding(.vertical, 4)
         }
         .padding(12)
         .frame(minWidth: 220)
+        .focusable(false)
     }
 }
 
@@ -1258,28 +1264,31 @@ private struct SegmentSegmentationPopoverView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "bolt.fill")
                         .frame(width: 16)
-                    Text(lang.text("快速断句（不识别文字）", "Fast segmentation (no transcription)"))
+                    Text(lang.text("快速断句（默认）", "Fast segmentation (Default)"))
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focusable(false)
             .padding(.vertical, 4)
 
             Button(action: onIntelligentSegmentation) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
                         .frame(width: 16)
-                    Text(lang.text("智能断句（推荐）", "Intelligent segmentation (Recommended)"))
+                    Text(lang.text("智能断句", "Intelligent segmentation"))
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focusable(false)
             .padding(.vertical, 4)
         }
         .padding(12)
         .frame(minWidth: 220)
+        .focusable(false)
     }
 }
 
