@@ -352,8 +352,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard !self.isWaveformFrozenAtNaturalEnd else { return }
             self.updateMediaDurationIfNeeded(total)
             self.currentTime = current
-            self.handlePlaybackBoundary(at: current)
+            if backend?.supportsIndependentBoundaryTimeUpdates != true {
+                self.handlePlaybackBoundary(at: current)
+            }
             self.followPlaybackIfNeeded(at: current)
+        }
+
+        backend.onBoundaryTimeUpdate = { [weak self, weak backend] current, total in
+            guard let self,
+                  self.activeBackend === backend,
+                  self.isBackendReady,
+                  !self.isSeeking,
+                  !self.isWaveformFrozenAtNaturalEnd else { return }
+            self.updateMediaDurationIfNeeded(total)
+            self.handlePlaybackBoundary(at: current)
         }
 
         backend.onStateChanged = { [weak self, weak backend] playing in
@@ -1437,7 +1449,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         }
 
                         self.persistCurrentProject(includeWaveform: true)
-                        self.preloadNextPlaylistItemWaveformIfNeeded()
                     case .failure(let error):
                         print("Waveform extraction failed: \(error.localizedDescription)")
                         self.lastErrorMessage = error.localizedDescription
@@ -1446,17 +1457,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
         )
-    }
-
-    private func preloadNextPlaylistItemWaveformIfNeeded() {
-        guard let currentMedia else { return }
-        let entries = PlaybackHistoryStore.shared.entries
-        guard let currentIndex = entries.firstIndex(where: { $0.mediaPath == currentMedia.url.standardizedFileURL.path }),
-              entries.indices.contains(currentIndex + 1) else { return }
-        let nextURL = entries[currentIndex + 1].mediaURL
-        Task.detached(priority: .background) {
-            _ = try? await AudioPCMExtractor.shared.extract(from: nextURL, progress: nil)
-        }
     }
 
     /// 快速与智能两种模式的统一断句入口。媒体切换或再次启动断句时，
@@ -1820,10 +1820,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         lastErrorMessage = nil
         translationErrorMessage = nil
         segmentationWarningMessage = nil
-        // 关闭“处理工程”提示视为放弃本次恢复选择，但不会解除保护状态；
-        // 后续只能由用户明确发起重新断句或重新导入字幕。
-        pendingProjectForExplicitRecovery = nil
-        canUseExistingProject = false
+        // 关闭状态文字只隐藏提示。工程恢复候选继续保留，直到用户明确
+        // 选择继续使用、重新断句、导入字幕或关闭当前媒体。
     }
 
     /// 按用户确认过的服务配置，翻译当前工程中符合范围的句子。
@@ -1895,17 +1893,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             guard let self,
                                   self.translationRequestID == requestID,
                                   self.mediaSessionID == sessionID else { return }
+                            var updatedSegments = self.segments
+                            let indexByID = Dictionary(
+                                uniqueKeysWithValues: updatedSegments.indices.map { (updatedSegments[$0].id, $0) }
+                            )
                             var hasChanges = false
                             for result in batchResults {
-                                guard let index = self.segments.firstIndex(where: { $0.id == result.id }),
-                                      self.segments[index].text.trimmingCharacters(in: .whitespacesAndNewlines) == sourceByID[result.id],
+                                guard let index = indexByID[result.id],
+                                      updatedSegments[index].text.trimmingCharacters(in: .whitespacesAndNewlines) == sourceByID[result.id],
                                       (overwriteExistingTranslations
-                                       || self.segments[index].translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                                       || updatedSegments[index].translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
                                       !result.translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                                self.segments[index].translation = result.translatedText
+                                updatedSegments[index].translation = result.translatedText
                                 hasChanges = true
                             }
                             if hasChanges {
+                                // Publish one coherent batch instead of sending an
+                                // entire segment-array update for every sentence.
+                                self.segments = updatedSegments
                                 self.persistCurrentProject()
                             }
                         }

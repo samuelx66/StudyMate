@@ -54,7 +54,6 @@ public struct PlaybackListView: View {
                     )
                     .frame(width: 26, height: 26)
                     .fixedSize()
-                    .help(lang.text("添加音视频文件", "Add audio or video files"))
 
                     // 移除当前选中条目（只从播放列表移除，不删除源媒体文件）。
                     PlaybackListToolbarIconButton(
@@ -68,7 +67,6 @@ public struct PlaybackListView: View {
                     }
                     .frame(width: 26, height: 26)
                     .fixedSize()
-                    .help(lang.text("从播放列表移除选中的媒体文件", "Remove selected media from playlist"))
 
                     // 清空列表按钮
                     PlaybackListToolbarIconButton(
@@ -81,7 +79,6 @@ public struct PlaybackListView: View {
                     }
                     .frame(width: 26, height: 26)
                     .fixedSize()
-                    .help(lang.text("清空播放列表", "Clear playlist"))
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)

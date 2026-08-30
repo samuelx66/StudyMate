@@ -35,9 +35,13 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
     }
 
     public var playerView: NSView { resolveBackend().playerView }
+    public var supportsIndependentBoundaryTimeUpdates: Bool { true }
 
     public var onTimeUpdate: (@MainActor (Double, Double) -> Void)? {
         didSet { backend?.onTimeUpdate = onTimeUpdate }
+    }
+    public var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)? {
+        didSet { backend?.onBoundaryTimeUpdate = onBoundaryTimeUpdate }
     }
     public var onStateChanged: (@MainActor (Bool) -> Void)? {
         didSet { backend?.onStateChanged = onStateChanged }
@@ -83,6 +87,7 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
         created.playbackRate = configuredRate
         created.volume = configuredVolume
         created.onTimeUpdate = onTimeUpdate
+        created.onBoundaryTimeUpdate = onBoundaryTimeUpdate
         created.onStateChanged = onStateChanged
         created.onFinished = onFinished
         created.onError = onError

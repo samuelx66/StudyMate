@@ -31,6 +31,8 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     }
     
     public var onTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public let supportsIndependentBoundaryTimeUpdates = true
     public var onStateChanged: (@MainActor (Bool) -> Void)?
     public var onFinished: (@MainActor () -> Void)?
     public var onError: (@MainActor (Error) -> Void)?
@@ -417,13 +419,15 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self = self, !self.isSeekingInternal else { return }
-                self.presentationTick &+= 1
-                if !self.highFrequencyPresentationEnabled, self.presentationTick % 4 != 0 { return }
                 let current = CMTimeGetSeconds(time)
                 if current >= 0, !current.isNaN {
-                    self.currentTime = current
                     let total = self.duration
-                    self.onTimeUpdate?(current, total)
+                    self.onBoundaryTimeUpdate?(current, total)
+                    self.presentationTick &+= 1
+                    if self.highFrequencyPresentationEnabled || self.presentationTick % 4 == 0 {
+                        self.currentTime = current
+                        self.onTimeUpdate?(current, total)
+                    }
                 }
             }
         }

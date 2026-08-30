@@ -774,26 +774,72 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         }
         
         private func findSegment(near time: Double) -> SentenceSegment? {
-            // 1. 优先精确包含
-            if let direct = segments.first(where: { $0.contains(time: time) }) {
-                return direct
+            guard !segments.isEmpty else { return nil }
+            // The timeline is ordered. Locate the insertion point once instead
+            // of filtering the complete segment array for every mouse event.
+            var low = 0
+            var high = segments.count
+            while low < high {
+                let middle = (low + high) / 2
+                if segments[middle].startTime <= time {
+                    low = middle + 1
+                } else {
+                    high = middle
+                }
             }
-            // 2. 如果在断句边缘或微小缝隙中（0.6秒内），智能匹配最近的一个断句
-            let nearby = segments.filter { abs($0.startTime - time) <= 0.6 || abs($0.endTime - time) <= 0.6 }
-            return nearby.min(by: { segA, segB in
-                let distA = min(abs(segA.startTime - time), abs(segA.endTime - time))
-                let distB = min(abs(segB.startTime - time), abs(segB.endTime - time))
-                return distA < distB
-            })
+
+            let insertion = low
+            if insertion > 0, segments[insertion - 1].contains(time: time) {
+                return segments[insertion - 1]
+            }
+            if insertion < segments.count, segments[insertion].contains(time: time) {
+                return segments[insertion]
+            }
+
+            var nearest: SentenceSegment?
+            var nearestDistance = Double.greatestFiniteMagnitude
+            for index in [insertion - 1, insertion] where segments.indices.contains(index) {
+                let segment = segments[index]
+                let distance = min(abs(segment.startTime - time), abs(segment.endTime - time))
+                if distance <= 0.6, distance < nearestDistance {
+                    nearest = segment
+                    nearestDistance = distance
+                }
+            }
+            return nearest
+        }
+
+        private func visibleSegmentRange() -> Range<Int> {
+            guard !segments.isEmpty else { return 0..<0 }
+            var lower = 0
+            var upper = segments.count
+            while lower < upper {
+                let middle = (lower + upper) / 2
+                if segments[middle].endTime < viewportStart {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            let first = lower
+            lower = first
+            upper = segments.count
+            while lower < upper {
+                let middle = (lower + upper) / 2
+                if segments[middle].startTime <= viewportEnd {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return first..<lower
         }
 
         func handle(at loc: NSPoint) -> ActiveDrag? {
             let span = max(0.001, viewportEnd - viewportStart)
             let width = bounds.width
             let height = bounds.height
-            let candidateSegments = segments.filter { seg in
-                seg.endTime >= viewportStart && seg.startTime <= viewportEnd
-            }
+            let candidateRange = visibleSegmentRange()
 
             // 顶部/底部保留更宽的垂直抓取区，避免触控板在徽章边缘丢失
             // mouseDown；中间区域也放宽，但仍始终选择最近的标线。
@@ -803,43 +849,57 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
 
             // 1. 顶部区域 -> 优先抓取绿色起始标线 (S#)
             if loc.y <= edgeZoneHeight {
-                let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
-                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
+                var nearest: (drag: ActiveDrag, distance: CGFloat)?
+                for index in candidateRange {
+                    let seg = segments[index]
+                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
                     let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
                     let distance = abs(loc.x - startX)
-                    return distance <= edgeHitTolerance ? (.start(id: seg.id), distance) : nil
+                    if distance <= edgeHitTolerance, nearest == nil || distance < nearest!.distance {
+                        nearest = (.start(id: seg.id), distance)
+                    }
                 }
-                if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
+                if let nearest {
                     return nearest.drag
                 }
             }
 
             // 2. 底部区域 -> 优先抓取橙色结束标线 (E#)
             if loc.y >= (height - edgeZoneHeight) {
-                let candidates = candidateSegments.compactMap { seg -> (drag: ActiveDrag, distance: CGFloat)? in
-                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return nil }
+                var nearest: (drag: ActiveDrag, distance: CGFloat)?
+                for index in candidateRange {
+                    let seg = segments[index]
+                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
                     let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
                     let distance = abs(loc.x - endX)
-                    return distance <= edgeHitTolerance ? (.end(id: seg.id), distance) : nil
+                    if distance <= edgeHitTolerance, nearest == nil || distance < nearest!.distance {
+                        nearest = (.end(id: seg.id), distance)
+                    }
                 }
-                if let nearest = candidates.min(by: { $0.distance < $1.distance }) {
+                if let nearest {
                     return nearest.drag
                 }
             }
 
             // 3. 标线垂直中间区域
-            let middleCandidates = candidateSegments.flatMap { seg -> [(drag: ActiveDrag, distance: CGFloat)] in
-                guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { return [] }
+            var nearestMiddle: (drag: ActiveDrag, distance: CGFloat)?
+            for index in candidateRange {
+                let seg = segments[index]
+                guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
                 let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
                 let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
                 let distStart = abs(loc.x - startX)
                 let distEnd = abs(loc.x - endX)
-                var result: [(drag: ActiveDrag, distance: CGFloat)] = []
-                if distStart <= middleHitTolerance { result.append((.start(id: seg.id), distStart)) }
-                if distEnd <= middleHitTolerance { result.append((.end(id: seg.id), distEnd)) }
-                return result
+                if distStart <= middleHitTolerance,
+                   nearestMiddle == nil || distStart < nearestMiddle!.distance {
+                    nearestMiddle = (.start(id: seg.id), distStart)
+                }
+                if distEnd <= middleHitTolerance,
+                   nearestMiddle == nil || distEnd < nearestMiddle!.distance {
+                    nearestMiddle = (.end(id: seg.id), distEnd)
+                }
             }
-            if let nearest = middleCandidates.min(by: { $0.distance < $1.distance }) {
+            if let nearest = nearestMiddle {
                 return nearest.drag
             }
 

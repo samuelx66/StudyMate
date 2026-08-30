@@ -117,7 +117,11 @@ public actor SpeechSegmentationPipeline {
     private var voiceCacheOrder: [String] = []
     private var diarizationCacheOrder: [String] = []
     private var transcriptionCacheOrder: [String] = []
+    private var voiceCacheCosts: [String: Int] = [:]
+    private var diarizationCacheCosts: [String: Int] = [:]
+    private var transcriptionCacheCosts: [String: Int] = [:]
     private let maxCacheEntries = 8
+    private let maxCacheCost = 48 * 1024 * 1024
 
     public init(
         pcmExtractor: AudioPCMExtractor = .shared,
@@ -238,6 +242,8 @@ public actor SpeechSegmentationPipeline {
                 timeline,
                 into: &transcriptionCache,
                 order: &transcriptionCacheOrder,
+                costs: &transcriptionCacheCosts,
+                cost: Self.estimatedCost(of: timeline),
                 key: transcriptionKey
             )
         }
@@ -399,7 +405,14 @@ public actor SpeechSegmentationPipeline {
             do {
                 voiceAnalysis = try await voiceTask?.value
                     ?? VoiceActivityAnalysis(segments: [], probabilities: [], frameDuration: 0)
-                insert(voiceAnalysis, into: &voiceCache, order: &voiceCacheOrder, key: voiceKey)
+                insert(
+                    voiceAnalysis,
+                    into: &voiceCache,
+                    order: &voiceCacheOrder,
+                    costs: &voiceCacheCosts,
+                    cost: Self.estimatedCost(of: voiceAnalysis),
+                    key: voiceKey
+                )
             } catch {
                 diarizationTask?.cancel()
                 throw error
@@ -416,6 +429,8 @@ public actor SpeechSegmentationPipeline {
                     speakerTimeline,
                     into: &diarizationCache,
                     order: &diarizationCacheOrder,
+                    costs: &diarizationCacheCosts,
+                    cost: Self.estimatedCost(of: speakerTimeline),
                     key: diarizationKey
                 )
             } catch is CancellationError {
@@ -437,14 +452,36 @@ public actor SpeechSegmentationPipeline {
         _ value: Value,
         into cache: inout [String: Value],
         order: inout [String],
+        costs: inout [String: Int],
+        cost: Int,
         key: String
     ) {
         cache[key] = value
+        costs[key] = max(0, cost)
         touch(key, in: &order)
-        while cache.count > maxCacheEntries, !order.isEmpty {
+        while (cache.count > maxCacheEntries || costs.values.reduce(0, +) > maxCacheCost), !order.isEmpty {
             let oldestKey = order.removeFirst()
             cache.removeValue(forKey: oldestKey)
+            costs.removeValue(forKey: oldestKey)
         }
+    }
+
+    private static func estimatedCost(of analysis: VoiceActivityAnalysis) -> Int {
+        analysis.segments.count * 32 + analysis.probabilities.count * 16
+    }
+
+    private static func estimatedCost(of timeline: SpeakerDiarizationTimeline) -> Int {
+        timeline.segments.reduce(0) { $0 + 48 + $1.speakerIDs.count * MemoryLayout<Int>.stride }
+    }
+
+    private static func estimatedCost(of timeline: SpeechRecognitionTimeline) -> Int {
+        let tokenCost = timeline.tokens.reduce(0) {
+            $0 + 96 + $1.text.utf8.count + $1.speakerIDs.count * MemoryLayout<Int>.stride
+        }
+        return tokenCost
+            + timeline.voiceSegments.count * 32
+            + timeline.speakerSegments.count * 48
+            + timeline.detectedLanguage.utf8.count
     }
 
     private func touch(_ key: String, in order: inout [String]) {
@@ -461,6 +498,9 @@ public actor SpeechSegmentationPipeline {
         voiceCacheOrder.removeAll(keepingCapacity: false)
         diarizationCacheOrder.removeAll(keepingCapacity: false)
         transcriptionCacheOrder.removeAll(keepingCapacity: false)
+        voiceCacheCosts.removeAll(keepingCapacity: false)
+        diarizationCacheCosts.removeAll(keepingCapacity: false)
+        transcriptionCacheCosts.removeAll(keepingCapacity: false)
     }
 
     private static func reusableWaveform(

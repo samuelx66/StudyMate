@@ -548,41 +548,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         ))
 
         do {
-            let firstSourcePath = ordered.first?.sourceMediaPath ?? ""
-            let allFromSameSource = !firstSourcePath.isEmpty && ordered.allSatisfy { $0.sourceMediaPath == firstSourcePath }
-            let sourceMediaURL = URL(fileURLWithPath: firstSourcePath)
-
-            if allFromSameSource && FileManager.default.fileExists(atPath: firstSourcePath) {
-                // 如果所有句子均来自同一源音视频文件，直接基于源文件在单次滤镜流中以采样级精度切片并拼接，
-                // 杜绝多次有损重编码与 AAC 预卷帧累加（0ms 误差，完美对齐原声）。
-                let sourceSegments = ordered.enumerated().map { (offset, entry) in
-                    SentenceSegment(
-                        id: entry.id,
-                        index: offset + 1,
-                        startTime: entry.startTime,
-                        endTime: entry.endTime,
-                        text: entry.originalText,
-                        translation: entry.translation,
-                        note: entry.note
-                    )
-                }
-                try exportConcatenatedAudio(
-                    mediaURL: sourceMediaURL,
-                    segments: sourceSegments,
-                    outputURL: outputURL,
-                    album: album,
-                    artist: artist,
-                    progress: { fraction in
-                        progress(SegmentMediaExportProgress(
-                            fraction: fraction * 0.9,
-                            completedItems: 0,
-                            totalItems: 1,
-                            currentItem: outputURL.lastPathComponent,
-                            phase: "合并音频"
-                        ))
-                    }
-                )
-            } else if ordered.count == 1, let sourceURL = mediaURLs[ordered[0].id] {
+            if ordered.count == 1, let sourceURL = mediaURLs[ordered[0].id] {
                 try exportTaggedCopy(
                     sourceURL: sourceURL,
                     outputURL: outputURL,
@@ -792,10 +758,20 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
         try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
         var pending = ""
         var errorLines: [String] = []
         let safeDuration = max(0.05, duration.isFinite ? duration : 0.05)
         while true {
+            if Task.isCancelled {
+                process.terminate()
+                process.waitUntilExit()
+                throw CancellationError()
+            }
             let data = errorPipe.fileHandleForReading.readData(ofLength: 4096)
             if data.isEmpty { break }
             pending += String(data: data, encoding: .utf8) ?? ""

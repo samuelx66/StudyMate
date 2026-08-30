@@ -35,6 +35,9 @@ public final class SentenceLibraryPlayer: ObservableObject {
         self.nativeBackend = nativeBackend
         self.activeBackend = nativeBackend
         configureCallbacks(for: nativeBackend)
+        // The playback bar does not need 60 published updates per second.
+        // Boundary handling remains on the independent high-frequency clock.
+        nativeBackend.setHighFrequencyPresentationEnabled(false)
     }
 
     public func setPlaylist(entries: [SentenceLibraryEntry], mediaURLs: [UUID: URL]) {
@@ -173,6 +176,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
             return nil
         }
         configureCallbacks(for: backend)
+        backend.setHighFrequencyPresentationEnabled(false)
         extendedBackend = backend
         return backend
     }
@@ -187,6 +191,20 @@ public final class SentenceLibraryPlayer: ObservableObject {
                   absoluteTime.isFinite else { return }
             let relativeTime = max(0, absoluteTime - self.playbackStartTime)
             self.currentTime = min(self.duration, relativeTime)
+            if backend.supportsIndependentBoundaryTimeUpdates == false,
+               absoluteTime >= self.playbackEndTime - 0.005 {
+                backend.pause()
+                self.currentTime = self.duration
+                self.handleCurrentEntryFinished()
+            }
+        }
+        backend.onBoundaryTimeUpdate = { [weak self, weak backend] absoluteTime, _ in
+            guard let self,
+                  let backend,
+                  self.activeBackend === backend,
+                  self.currentEntry != nil,
+                  !self.isRestartSeeking,
+                  absoluteTime.isFinite else { return }
             if absoluteTime >= self.playbackEndTime - 0.005 {
                 backend.pause()
                 self.currentTime = self.duration

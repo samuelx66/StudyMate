@@ -468,8 +468,9 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func mediaURL(for entry: SentenceLibraryEntry, libraryID: UUID) -> URL? {
         let filename = entry.mediaFilename
         guard URL(fileURLWithPath: filename).lastPathComponent == filename, !filename.isEmpty else { return nil }
-        let url = mediaURL(for: libraryID).appendingPathComponent(filename)
-        return fileManager.fileExists(atPath: url.path) ? url : nil
+        // Constructing a package-local URL must not synchronously touch disk.
+        // Playback/export validates it on their existing background or action path.
+        return mediaURL(for: libraryID).appendingPathComponent(filename)
     }
 
     public func packageURL(for id: UUID) -> URL {

@@ -865,10 +865,54 @@ public final class ProjectFileManager: @unchecked Sendable {
                 .appendingPathComponent("Library/Application Support/MacAboboo/Projects", isDirectory: true)
             let candidateURL = globalProjects.appendingPathComponent(projectBaseName(for: mediaURL) + ".json")
             if candidateURL.path != metadataURL.path, let data = try? Data(contentsOf: candidateURL) {
-                // 自动同步/迁移一份到当前 projectsDirectory
+                // 自动同步完整工程族：元数据、波形以及可恢复备份必须一起迁移。
+                // 只复制 JSON 会令下一次启动在新目录找不到 waveform，并让
+                // 删除播放历史时留下旧目录中的备份。
                 try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
-                try? data.write(to: metadataURL, options: .atomic)
-                return (data, globalProjects)
+                let baseName = projectBaseName(for: mediaURL)
+                var didMigrateCompleteFamily = false
+                if let relatedItems = try? FileManager.default.contentsOfDirectory(
+                    at: globalProjects,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ).filter({ item in
+                    item.lastPathComponent == baseName || item.lastPathComponent.hasPrefix(baseName + ".")
+                }) {
+                    var migrationCompleted = true
+                    for sourceURL in relatedItems {
+                        let destinationURL = projectsDirectory.appendingPathComponent(sourceURL.lastPathComponent)
+                        do {
+                            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                                try FileManager.default.removeItem(at: destinationURL)
+                            }
+                            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                        } catch {
+                            migrationCompleted = false
+                            break
+                        }
+                    }
+                    // Only remove the old project family after every item has
+                    // reached the new directory. A failed copy remains fully
+                    // recoverable from its original location.
+                    if migrationCompleted {
+                        for sourceURL in relatedItems {
+                            try? FileManager.default.removeItem(at: sourceURL)
+                        }
+                        didMigrateCompleteFamily = true
+                    } else {
+                        // A partial destination must not mask the intact source
+                        // on the next launch. Remove only the newly copied family.
+                        for sourceURL in relatedItems {
+                            let destinationURL = projectsDirectory.appendingPathComponent(sourceURL.lastPathComponent)
+                            try? FileManager.default.removeItem(at: destinationURL)
+                        }
+                    }
+                }
+                guard didMigrateCompleteFamily else { return (data, globalProjects) }
+                if !FileManager.default.fileExists(atPath: metadataURL.path) {
+                    try? data.write(to: metadataURL, options: .atomic)
+                }
+                return ((try? Data(contentsOf: metadataURL)) ?? data, projectsDirectory)
             }
         }
         return nil
@@ -944,10 +988,8 @@ public final class ProjectFileManager: @unchecked Sendable {
 
         var minimums: [Float] = []
         var maximums: [Float] = []
-        var peaks: [Float] = []
         minimums.reserveCapacity(count)
         maximums.reserveCapacity(count)
-        peaks.reserveCapacity(count)
         for _ in 0..<count {
             guard let minimumBits = read(UInt32.self), let maximumBits = read(UInt32.self) else { return nil }
             let minimum = Float(bitPattern: minimumBits)
@@ -955,14 +997,13 @@ public final class ProjectFileManager: @unchecked Sendable {
             guard minimum.isFinite, maximum.isFinite else { return nil }
             minimums.append(minimum)
             maximums.append(maximum)
-            peaks.append(min(1, max(abs(minimum), abs(maximum))))
         }
 
         let duration = Double(bitPattern: durationBits)
         let sampleRate = Double(bitPattern: sampleRateBits)
         guard duration.isFinite, duration > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
         return WaveformData(
-            uncheckedPeaks: peaks,
+            uncheckedPeaks: [],
             minPeaks: minimums,
             maxPeaks: maximums,
             duration: duration,

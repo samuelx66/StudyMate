@@ -43,6 +43,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     public var playerView: NSView { return hostView }
     
     public var onTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    public let supportsIndependentBoundaryTimeUpdates = true
     public var onStateChanged: (@MainActor (Bool) -> Void)?
     public var onFinished: (@MainActor () -> Void)?
     public var onError: (@MainActor (Error) -> Void)?
@@ -396,8 +398,6 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     }
     
     private func pollPlaybackState() {
-        timerTick &+= 1
-        if !highFrequencyPresentationEnabled, timerTick % 4 != 0 { return }
         guard !isSeekingInternal, !isPollingActive, let handle = mpvHandle else { return }
         isPollingActive = true
         pollTick &+= 1
@@ -424,11 +424,15 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                 self.isPollingActive = false
                 
                 if pos >= 0 {
-                    self.currentTime = pos
                     if dur > 0 && abs(self.duration - dur) > 0.01 {
                         self.duration = dur
                     }
-                    self.onTimeUpdate?(pos, self.duration)
+                    self.onBoundaryTimeUpdate?(pos, self.duration)
+                    self.timerTick &+= 1
+                    if self.highFrequencyPresentationEnabled || self.timerTick % 4 == 0 {
+                        self.currentTime = pos
+                        self.onTimeUpdate?(pos, self.duration)
+                    }
                 }
                 
                 if eof && self.isPlaying {

@@ -42,6 +42,8 @@ public struct SentenceLibraryView: View {
     }
 
     public var body: some View {
+        let visibleIDs = Set(manager.entries.lazy.map(\.id))
+        let selectedVisibleCount = selectedEntryIDs.intersection(visibleIDs).count
         NavigationSplitView {
             VStack(spacing: 0) {
                 List(selection: Binding(
@@ -122,14 +124,14 @@ public struct SentenceLibraryView: View {
                         Button { selectAllVisibleEntries() } label: {
                             Label(lang.text("全选", "Select All"), systemImage: "checkmark.circle")
                         }
-                        .disabled(selectedEntryIDs.intersection(Set(manager.entries.map(\.id))).count == manager.entries.count)
+                        .disabled(selectedVisibleCount == manager.entries.count)
 
                         Button { invertVisibleEntrySelection() } label: {
                             Label(lang.text("反选", "Invert Selection"), systemImage: "arrow.triangle.2.circlepath")
                         }
                     }
 
-                    if !selectedVisibleEntries.isEmpty {
+                    if selectedVisibleCount > 0 {
                         Menu {
                             Button {
                                 chooseIndividualLibraryExportDestination()
@@ -142,12 +144,12 @@ public struct SentenceLibraryView: View {
                                 Label(lang.text("合并导出 M4A＋LRC…", "Export Merged M4A + LRC…"), systemImage: "arrow.triangle.merge")
                             }
                         } label: {
-                            Label(lang.text("导出（\(selectedVisibleEntries.count)）", "Export (\(selectedVisibleEntries.count))"), systemImage: "square.and.arrow.up")
+                            Label(lang.text("导出（\(selectedVisibleCount)）", "Export (\(selectedVisibleCount))"), systemImage: "square.and.arrow.up")
                         }
-                        .disabled(manager.isWorking || selectedVisibleEntries.isEmpty)
+                        .disabled(manager.isWorking || selectedVisibleCount == 0)
 
                         Button(role: .destructive) { deleteSelectedEntries() } label: {
-                            Label(lang.text("删除（\(selectedVisibleEntries.count)）", "Delete (\(selectedVisibleEntries.count))"), systemImage: "trash")
+                            Label(lang.text("删除（\(selectedVisibleCount)）", "Delete (\(selectedVisibleCount))"), systemImage: "trash")
                         }
                         .disabled(manager.isWorking)
 
@@ -161,7 +163,7 @@ public struct SentenceLibraryView: View {
                                 }
                             }
                         } label: {
-                            Label(lang.text("移动（\(selectedVisibleEntries.count)）", "Move (\(selectedVisibleEntries.count))"), systemImage: "arrow.right.doc.on.clipboard")
+                            Label(lang.text("移动（\(selectedVisibleCount)）", "Move (\(selectedVisibleCount))"), systemImage: "arrow.right.doc.on.clipboard")
                         }
                         .disabled(manager.isWorking || manager.libraries.count < 2)
                     }
@@ -202,7 +204,8 @@ public struct SentenceLibraryView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(Array(manager.entries.enumerated()), id: \.element.id) { offset, entry in
+                            ForEach(manager.entries.indices, id: \.self) { offset in
+                                let entry = manager.entries[offset]
                                 SentenceLibraryEntryRow(
                                     entry: entry,
                                     number: offset + 1,
@@ -501,19 +504,7 @@ private struct SentenceLibraryEntryRow: View {
                     .frame(width: 38, alignment: .leading)
 
                 Button(action: onPreview) {
-                    Group {
-                        if let previewURL, let image = NSImage(contentsOf: previewURL) {
-                            Image(nsImage: image)
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            ZStack {
-                                Color.secondary.opacity(0.08)
-                                Image(systemName: "waveform")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
+                    SentenceLibraryThumbnail(previewURL: previewURL)
                     .frame(width: 132, height: 74)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(alignment: .bottomTrailing) {
@@ -564,6 +555,52 @@ private struct SentenceLibraryEntryRow: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isActive ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 1)
+        }
+    }
+}
+
+@MainActor
+private enum SentenceLibraryThumbnailCache {
+    static let images: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
+}
+
+private struct SentenceLibraryThumbnail: View {
+    let previewURL: URL?
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Color.secondary.opacity(0.08)
+                    Image(systemName: "waveform")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .task(id: previewURL) {
+            image = nil
+            guard let previewURL else { return }
+            if let cached = SentenceLibraryThumbnailCache.images.object(forKey: previewURL as NSURL) {
+                image = cached
+                return
+            }
+            let data = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: previewURL, options: [.mappedIfSafe])
+            }.value
+            guard !Task.isCancelled, let data, let loaded = NSImage(data: data) else { return }
+            let pixelCost = max(1, Int(loaded.size.width * loaded.size.height * 4))
+            SentenceLibraryThumbnailCache.images.setObject(loaded, forKey: previewURL as NSURL, cost: pixelCost)
+            image = loaded
         }
     }
 }

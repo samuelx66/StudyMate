@@ -14,6 +14,10 @@ public protocol MediaPlayerBackend: AnyObject {
     var playerView: NSView { get }
     
     var onTimeUpdate: (@MainActor (Double, Double) -> Void)? { get set }
+    /// High-frequency media-clock callback used exclusively by playback
+    /// boundary/repeat state. Presentation throttling must never suppress it.
+    var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)? { get set }
+    var supportsIndependentBoundaryTimeUpdates: Bool { get }
     var onStateChanged: (@MainActor (Bool) -> Void)? { get set }
     var onFinished: (@MainActor () -> Void)? { get set }
     var onError: (@MainActor (Error) -> Void)? { get set }
@@ -31,6 +35,13 @@ public protocol MediaPlayerBackend: AnyObject {
 }
 
 public extension MediaPlayerBackend {
+    var supportsIndependentBoundaryTimeUpdates: Bool { false }
+
+    var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)? {
+        get { nil }
+        set {}
+    }
+
     func previewSeek(to seconds: Double) {
         seek(to: seconds, completion: nil)
     }

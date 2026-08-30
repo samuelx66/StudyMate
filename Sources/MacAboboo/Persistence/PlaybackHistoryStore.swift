@@ -66,6 +66,7 @@ public final class PlaybackHistoryStore: ObservableObject {
     private let ioQueue = DispatchQueue(label: "com.macaboboo.playback-history", qos: .utility)
     private var persistenceErrorHandler: (@Sendable (String) -> Void)?
     private var reachabilityTask: Task<Void, Never>?
+    private var reachabilityRevision: UInt64 = 0
 
     /// 注入目录仅用于测试；正式数据保存在 Application Support/MacAboboo。
     public init(storageDirectory: URL? = nil) {
@@ -86,18 +87,28 @@ public final class PlaybackHistoryStore: ObservableObject {
 
     public func refreshReachableEntries() {
         let snapshot = entries
+        reachabilityRevision &+= 1
+        let revision = reachabilityRevision
         reachabilityTask?.cancel()
         reachabilityTask = Task.detached(priority: .utility) {
-            let valid = snapshot.filter { entry in
-                FileManager.default.fileExists(atPath: entry.mediaPath)
-            }.sorted { entry1, entry2 in
+            var valid: [PlaybackHistoryEntry] = []
+            valid.reserveCapacity(snapshot.count)
+            for entry in snapshot {
+                guard !Task.isCancelled else { return }
+                if FileManager.default.fileExists(atPath: entry.mediaPath) {
+                    valid.append(entry)
+                }
+            }
+            valid.sort { entry1, entry2 in
                 let date1 = entry1.lastOpenedAt ?? entry1.addedAt
                 let date2 = entry2.lastOpenedAt ?? entry2.addedAt
                 return date1 > date2
             }
+            guard !Task.isCancelled else { return }
+            let resolvedEntries = valid
             await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.reachableEntries = valid
+                guard let self, self.reachabilityRevision == revision else { return }
+                self.reachableEntries = resolvedEntries
             }
         }
     }

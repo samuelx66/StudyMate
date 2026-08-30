@@ -146,6 +146,37 @@ private struct OptionalSegmentListToolTip: ViewModifier {
     }
 }
 
+private struct SegmentListToolTipsEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+private extension EnvironmentValues {
+    var segmentListToolTipsEnabled: Bool {
+        get { self[SegmentListToolTipsEnabledKey.self] }
+        set { self[SegmentListToolTipsEnabledKey.self] = newValue }
+    }
+}
+
+private struct SegmentListToolTipModifier: ViewModifier {
+    @Environment(\.segmentListToolTipsEnabled) private var isEnabled
+    let text: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.help(text)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func segmentListHelp(_ text: String) -> some View {
+        modifier(SegmentListToolTipModifier(text: text))
+    }
+}
+
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
     /// 播放列表等顶层抽屉展示期间，底层控件不能继续注册说明提示。
@@ -221,7 +252,7 @@ public struct SegmentListView: View {
                     Image(systemName: "target")
                         .frame(width: 24, height: 24)
                         .foregroundColor(followState.shouldFollow ? .primary : .secondary.opacity(0.45))
-                        .help(MacAbobooShortcutCatalog.help(
+                        .segmentListHelp(MacAbobooShortcutCatalog.help(
                             followState.shouldFollow
                                 ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
                                 : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
@@ -230,7 +261,7 @@ public struct SegmentListView: View {
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     followState.shouldFollow
                         ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
                         : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
@@ -250,7 +281,7 @@ public struct SegmentListView: View {
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     lang.text("筛选句子", "Filter sentences"),
                     shortcut: .filterSentences
                 ))
@@ -283,7 +314,7 @@ public struct SegmentListView: View {
                         || engine.isAITranscribing
                         || engine.isAutoTranslating
                 )
-                .help(regenerateOriginalHelpText)
+                .segmentListHelp(regenerateOriginalHelpText)
                 .keyboardShortcut("t", modifiers: [.command, .shift])
 
                 // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
@@ -297,7 +328,7 @@ public struct SegmentListView: View {
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
                 .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     translationSettings.isAutomaticTranslationEnabled
                         ? lang.text("翻译句子（选择服务和目标语言）", "Translate sentences (choose service and target language)")
                         : lang.text("请先在设置中启用翻译功能", "Enable translation in Settings first"),
@@ -318,14 +349,14 @@ public struct SegmentListView: View {
                     Image(systemName: "arrow.down.doc")
                         .frame(width: 24, height: 24)
                         .foregroundColor(.secondary)
-                        .help(MacAbobooShortcutCatalog.help(
+                        .segmentListHelp(MacAbobooShortcutCatalog.help(
                             lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
                             shortcut: .importSubtitles
                         ))
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
                     shortcut: .importSubtitles
                 ))
@@ -343,7 +374,7 @@ public struct SegmentListView: View {
                     .macabobooChromeButton(shape: .circle)
                     .focusable(false)
                     .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
-                    .help(MacAbobooShortcutCatalog.help(
+                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                         lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
                         shortcut: .exportMenu
                     ))
@@ -373,7 +404,7 @@ public struct SegmentListView: View {
                 }
                 .macabobooChromeButton(shape: .circle)
                 .focusable(false)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     selectedSegmentIDs.isEmpty
                         ? lang.text("请先勾选要加入句库的句子", "Select sentences to add to a library")
                         : lang.text("将已选句子加入当前句库", "Add selected sentences to the current library"),
@@ -450,7 +481,7 @@ public struct SegmentListView: View {
                             .frame(width: 18, height: 18)
                     }
                     .macabobooChromeButton(shape: .circle)
-                    .help(MacAbobooShortcutCatalog.help(
+                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                         lang.text("清除搜索", "Clear search"),
                         shortcut: .clearSearch
                     ))
@@ -616,6 +647,7 @@ public struct SegmentListView: View {
             )
         }
         .background(listKeyboardShortcuts)
+        .environment(\.segmentListToolTipsEnabled, !suppressToolTips)
     }
 
     private var activeSegmentID: UUID? {
@@ -996,7 +1028,7 @@ private struct SegmentFilterPopover: View {
                 )
                 .disabled(displayedCount == 0)
                 .keyboardShortcut("a", modifiers: [.command])
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     isAllSelected
                         ? lang.text("清除选择", "Clear Selection")
                         : lang.text("全选", "Select All"),
@@ -1005,7 +1037,7 @@ private struct SegmentFilterPopover: View {
                 Button(lang.text("反选", "Invert Selection"), action: onInvertSelection)
                     .disabled(displayedCount == 0)
                     .keyboardShortcut("i", modifiers: [.command, .option])
-                    .help(MacAbobooShortcutCatalog.help(
+                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                         lang.text("反选", "Invert Selection"),
                         shortcut: .invertVisibleSentenceSelection
                     ))
@@ -1411,6 +1443,7 @@ extension SegmentListRowsView {
             && lhs.activeSegmentID == rhs.activeSegmentID
             && lhs.engineIdentity == rhs.engineIdentity
             && lhs.language.rawValue == rhs.language.rawValue
+            && lhs.isScrolling == rhs.isScrolling
             && lhs.editRequest == rhs.editRequest
     }
 }
@@ -1454,7 +1487,7 @@ struct SegmentRowView: View, Equatable {
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
-                .help(MacAbobooShortcutCatalog.help(
+                .segmentListHelp(MacAbobooShortcutCatalog.help(
                     lang.text("选择此句用于导出或加入句库", "Select this sentence for export or sentence library"),
                     shortcut: .toggleSentenceSelection
                 ))
@@ -1477,7 +1510,7 @@ struct SegmentRowView: View, Equatable {
                                 .foregroundColor(seg.isBookmarked ? .yellow : .gray.opacity(0.4))
                         }
                         .macabobooChromeButton(shape: .circle)
-                        .help(MacAbobooShortcutCatalog.help(
+                        .segmentListHelp(MacAbobooShortcutCatalog.help(
                             lang.text("切换难句星标", "Toggle difficulty star"),
                             shortcut: .toggleDifficultyBookmark
                         ))
@@ -1515,7 +1548,7 @@ struct SegmentRowView: View, Equatable {
                                 .padding(.vertical, 1)
                                 .background((seg.isSpeakerOverlap ? Color.orange : Color.purple).opacity(0.12))
                                 .cornerRadius(3)
-                                .help(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
+                                .segmentListHelp(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
                         }
 
                         Spacer()
@@ -1538,7 +1571,7 @@ struct SegmentRowView: View, Equatable {
                                             .frame(width: 20, height: 20)
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.text("编辑原文和译文", "Edit original text and translation"),
                                         shortcut: .editSentence
                                     ))
@@ -1549,7 +1582,7 @@ struct SegmentRowView: View, Equatable {
                                             .frame(width: 20, height: 20)
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.text("在中间拆分此句", "Split this sentence at its midpoint"),
                                         shortcut: .splitSentence
                                     ))
@@ -1561,7 +1594,7 @@ struct SegmentRowView: View, Equatable {
                                             .scaleEffect(x: -1, y: 1)
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.text("合并上一句", "Merge with previous sentence"),
                                         shortcut: .mergePreviousSentence
                                     ))
@@ -1574,7 +1607,7 @@ struct SegmentRowView: View, Equatable {
                                             .rotationEffect(.degrees(180))
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.localized(.mergeSegment),
                                         shortcut: .mergeNextSentence
                                     ))
@@ -1586,7 +1619,7 @@ struct SegmentRowView: View, Equatable {
                                             .foregroundColor(seg.isNavigationBookmarked ? MacAbobooMediaStyle.accent : .secondary)
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.text(
                                             seg.isNavigationBookmarked ? "移出书签" : "加入书签",
                                             seg.isNavigationBookmarked ? "Remove bookmark" : "Add bookmark"
@@ -1601,7 +1634,7 @@ struct SegmentRowView: View, Equatable {
                                             .foregroundColor(.red)
                                     }
                                     .macabobooChromeButton(shape: .circle)
-                                    .help(MacAbobooShortcutCatalog.help(
+                                    .segmentListHelp(MacAbobooShortcutCatalog.help(
                                         lang.localized(.deleteSegment),
                                         shortcut: .deleteSentence
                                     ))

@@ -220,7 +220,14 @@ public struct WaveformSentenceSegmentsOverlay: View {
 
             let firstId = segments.first?.id.uuidString ?? ""
             let lastId = segments.last?.id.uuidString ?? ""
-            let cacheKey = "\(segments.count)|\(firstId)|\(lastId)|\(activeIndex ?? -1)|\(Int(viewportStart * 100))|\(Int(viewportEnd * 100))|\(Int(size.width))|\(Int(size.height))" as NSString
+            var boundaryHasher = Hasher()
+            for segment in segments {
+                boundaryHasher.combine(segment.id)
+                boundaryHasher.combine(segment.startTime.bitPattern)
+                boundaryHasher.combine(segment.endTime.bitPattern)
+            }
+            let boundarySignature = boundaryHasher.finalize()
+            let cacheKey = "\(segments.count)|\(firstId)|\(lastId)|\(boundarySignature)|\(activeIndex ?? -1)|\(Int(viewportStart * 100))|\(Int(viewportEnd * 100))|\(Int(size.width))|\(Int(size.height))" as NSString
 
             let paths: WaveformSegmentsPathCache.Box
             if let cached = WaveformSegmentsPathCache.cache.object(forKey: cacheKey) {
