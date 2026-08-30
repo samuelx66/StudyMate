@@ -33,7 +33,7 @@ struct SegmentListFollowState: Equatable {
 
 /// 断句列表筛选条件。每个条件都是独立的“启用/不启用”复选项，
 /// 启用多个条件时取交集；筛选值为空或无效时不额外排除句子，避免用户输入过程中列表突然清空。
-struct SegmentListFilterCriteria: Equatable {
+struct SegmentListFilterCriteria: Equatable, Sendable {
     var requiresOriginal = false
     var requiresTranslation = false
     var requiresMinimumDuration = false
@@ -216,6 +216,11 @@ public struct SegmentListView: View {
     @State private var isUserScrolling = false
     @State private var scrollSuppressionToken = UUID()
     @State private var shortcutEditRequest: UUID?
+    /// Search filtering is debounced and computed from a value snapshot off
+    /// the main actor.  This keeps typing responsive even with thousands of
+    /// transcript rows while the visible list remains deterministic.
+    @State private var displayRefreshTask: Task<Void, Never>?
+    @State private var displayRefreshGeneration = UUID()
 
     public init(engine: PlaybackEngine, suppressToolTips: Bool = false) {
         self.engine = engine
@@ -632,12 +637,15 @@ public struct SegmentListView: View {
         }
         .onAppear { refreshDisplayedSegments() }
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
-        .onChange(of: searchText) { _, _ in refreshDisplayedSegments() }
+        .onChange(of: searchText) { _, _ in scheduleSearchRefresh() }
         .onChange(of: filterCriteria) { _, _ in
             if !filterCriteria.hasActiveFilters {
                 isFilterInverted = false
             }
             refreshDisplayedSegments(selectMatching: filterCriteria.hasActiveFilters)
+        }
+        .onDisappear {
+            invalidateScheduledDisplayRefresh()
         }
         .alert(item: $exportNotice) { notice in
             Alert(
@@ -746,9 +754,31 @@ public struct SegmentListView: View {
     }
 
     private func refreshDisplayedSegments(selectMatching: Bool = false) {
-        let hasActiveFilters = filterCriteria.hasActiveFilters
-        let criteriaResult = engine.segments.filter { segment in
-            let matches = filterCriteria.matches(segment)
+        invalidateScheduledDisplayRefresh()
+        let result = Self.computeDisplayedSegments(
+            from: engine.segments,
+            criteria: filterCriteria,
+            searchText: searchText,
+            isFilterInverted: isFilterInverted
+        )
+        applyDisplayedSegments(result, selectMatching: selectMatching)
+    }
+
+    private struct DisplayRefreshResult: Sendable {
+        let list: [SentenceSegment]
+        let criteriaResultIDs: [UUID]
+        let allIDs: [UUID]
+    }
+
+    nonisolated private static func computeDisplayedSegments(
+        from segments: [SentenceSegment],
+        criteria: SegmentListFilterCriteria,
+        searchText: String,
+        isFilterInverted: Bool
+    ) -> DisplayRefreshResult {
+        let hasActiveFilters = criteria.hasActiveFilters
+        let criteriaResult = segments.filter { segment in
+            let matches = criteria.matches(segment)
             return isFilterInverted && hasActiveFilters ? !matches : matches
         }
         var list = criteriaResult
@@ -759,20 +789,62 @@ public struct SegmentListView: View {
                 $0.translation.localizedCaseInsensitiveContains(query)
             }
         }
-        cachedDisplayedSegments = list
-        cachedSegmentIDs = Set(engine.segments.lazy.map(\.id))
+        return DisplayRefreshResult(
+            list: list,
+            criteriaResultIDs: criteriaResult.map(\.id),
+            allIDs: segments.map(\.id)
+        )
+    }
+
+    private func applyDisplayedSegments(
+        _ result: DisplayRefreshResult,
+        selectMatching: Bool
+    ) {
+        cachedDisplayedSegments = result.list
+        cachedSegmentIDs = Set(result.allIDs)
         displayedSegmentsRevision &+= 1
         if selectMatching && filterCriteria.hasActiveFilters {
-            selectedSegmentIDs = Set(list.map(\.id))
+            selectedSegmentIDs = Set(result.list.map(\.id))
         } else if filterCriteria.hasActiveFilters {
             // 底层句子被编辑、合并或星标状态变化后，移除已不再符合当前结果的隐藏选择；
             // 但保留用户对仍符合条件句子的手动取消勾选。搜索词不参与此集合，避免搜索栏改变导出范围。
-            selectedSegmentIDs.formIntersection(criteriaResult.lazy.map(\.id))
+            selectedSegmentIDs.formIntersection(result.criteriaResultIDs)
         } else {
-            selectedSegmentIDs.formIntersection(engine.segments.lazy.map(\.id))
+            selectedSegmentIDs.formIntersection(result.allIDs)
         }
         updateSelectedDisplayedCount()
         selectionRevision &+= 1
+    }
+
+    private func invalidateScheduledDisplayRefresh() {
+        displayRefreshTask?.cancel()
+        displayRefreshTask = nil
+        displayRefreshGeneration = UUID()
+    }
+
+    private func scheduleSearchRefresh() {
+        displayRefreshTask?.cancel()
+        let generation = UUID()
+        displayRefreshGeneration = generation
+        let snapshot = engine.segments
+        let criteria = filterCriteria
+        let query = searchText
+        let inverted = isFilterInverted
+        displayRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled, generation == displayRefreshGeneration else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.computeDisplayedSegments(
+                    from: snapshot,
+                    criteria: criteria,
+                    searchText: query,
+                    isFilterInverted: inverted
+                )
+            }.value
+            guard !Task.isCancelled, generation == displayRefreshGeneration else { return }
+            applyDisplayedSegments(result, selectMatching: false)
+            displayRefreshTask = nil
+        }
     }
 
     private func markUserScroll() {
@@ -1415,7 +1487,8 @@ private struct SegmentListRowsView: View, Equatable {
                         onSaveText(seg.id, originalText, translationText)
                     },
                     editRequest: $editRequest,
-                    lang: lang
+                    lang: lang,
+                    language: language
                 )
                 .equatable()
                 .id(seg.id)
@@ -1465,6 +1538,7 @@ struct SegmentRowView: View, Equatable {
     let onSaveText: (String, String) -> Void
     @Binding var editRequest: UUID?
     let lang: LanguageManager
+    let language: AppLanguage
 
     @State private var isHovering: Bool = false
     @State private var isEditing: Bool = false
@@ -1474,8 +1548,9 @@ struct SegmentRowView: View, Equatable {
         lhs.seg == rhs.seg
             && lhs.isActive == rhs.isActive
             && lhs.isSelectedForExport == rhs.isSelectedForExport
+            && lhs.isScrolling == rhs.isScrolling
             && lhs.editRequest == rhs.editRequest
-            && lhs.lang.currentLanguage.rawValue == rhs.lang.currentLanguage.rawValue
+            && lhs.language == rhs.language
     }
 
     var body: some View {

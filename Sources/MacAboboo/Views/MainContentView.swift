@@ -20,9 +20,10 @@ public struct MainContentView: View {
     }
 
     @StateObject private var engine = PlaybackEngine.shared
+    @ObservedObject private var waveformState = PlaybackEngine.shared.waveformState
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
-    @ObservedObject private var libraryManager = SentenceLibraryManager.shared
+    @ObservedObject private var libraryStatus = SentenceLibraryStatusCenter.shared
     @ObservedObject private var statusCenter = MainStatusCenter.shared
     @ObservedObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
     @Environment(\.openWindow) private var openWindow
@@ -113,12 +114,12 @@ public struct MainContentView: View {
 
     private var shouldShowStatusBar: Bool {
         isStatusBarVisible
-            || engine.isExtractingWaveform
+            || waveformState.isExtracting
             || engine.isAITranscribing
             || engine.isAutoTranslating
-            || libraryManager.isWorking
+            || libraryStatus.isWorking
             || engine.statusErrorMessage != nil
-            || libraryManager.lastErrorMessage != nil
+            || libraryStatus.errorMessage != nil
             || statusCenter.progress != nil
             || statusCenter.errorMessage != nil
     }
@@ -193,7 +194,8 @@ public struct MainContentView: View {
             if shouldShowStatusBar {
                 PlaybackStatusBar(
                     engine: engine,
-                    libraryManager: libraryManager,
+                    libraryManager: SentenceLibraryManager.shared,
+                    waveformState: waveformState,
                     statusCenter: statusCenter,
                     onResolveProjectRecovery: { isProjectRecoveryDialogPresented = true }
                 )
@@ -282,9 +284,14 @@ public struct MainContentView: View {
         guard !isClosingCurrentMedia else { return }
         isClosingCurrentMedia = true
         hidePlaylist()
+        let closeGeneration = statusCenter.begin(MainStatusProgress(
+            fraction: 0,
+            phase: lang.text("正在关闭媒体…", "Closing media…")
+        ))
         Task { @MainActor in
             // 先完整保存并释放媒体工作区资源，再销毁主窗口场景。
             await engine.closeCurrentMedia()
+            statusCenter.finish(generation: closeGeneration)
             // Allow the same main-window scene to be used for the next media
             // session instead of leaving its local guard permanently locked.
             isClosingCurrentMedia = false
@@ -530,6 +537,7 @@ private struct MainWindowToolbar: ToolbarContent {
 private struct PlaybackStatusBar: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var libraryManager: SentenceLibraryManager
+    @ObservedObject var waveformState: WaveformPresentationState
     @ObservedObject var statusCenter: MainStatusCenter
     let onResolveProjectRecovery: () -> Void
     @ObservedObject private var lang = LanguageManager.shared
@@ -565,9 +573,9 @@ private struct PlaybackStatusBar: View {
                 phase: engine.autoTranslationStatusText
             )
         }
-        if engine.isExtractingWaveform {
+        if waveformState.isExtracting {
             return MainStatusProgress(
-                fraction: engine.waveformExtractionProgress,
+                fraction: waveformState.extractionProgress,
                 phase: lang.localized(.extractingWaveform)
             )
         }

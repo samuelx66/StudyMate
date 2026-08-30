@@ -2,6 +2,31 @@ import Foundation
 import AVFoundation
 import AppKit
 
+/// Lightweight status projection used by the media window.  The main media
+/// view must not observe the entire sentence-library manager (which publishes
+/// every entry/filter change); only this small progress/error surface is needed
+/// to decide whether the status bar should be mounted.
+@MainActor
+public final class SentenceLibraryStatusCenter: ObservableObject {
+    public static let shared = SentenceLibraryStatusCenter()
+
+    @Published public private(set) var isWorking = false
+    @Published public private(set) var operationProgress: SentenceLibraryOperationProgress?
+    @Published public private(set) var errorMessage: String?
+
+    private init() {}
+
+    fileprivate func update(
+        isWorking: Bool,
+        operationProgress: SentenceLibraryOperationProgress?,
+        errorMessage: String?
+    ) {
+        self.isWorking = isWorking
+        self.operationProgress = operationProgress
+        self.errorMessage = errorMessage
+    }
+}
+
 @MainActor
 public final class SentenceLibraryManager: ObservableObject {
     public static let shared = SentenceLibraryManager()
@@ -12,9 +37,15 @@ public final class SentenceLibraryManager: ObservableObject {
     @Published public private(set) var availableSources: [String] = []
     @Published public private(set) var selectedSource = ""
     @Published public private(set) var sortOrder: SentenceLibrarySortOrder = .newestFirst
-    @Published public private(set) var isWorking = false
-    @Published public private(set) var operationProgress: SentenceLibraryOperationProgress?
-    @Published public private(set) var lastErrorMessage: String?
+    @Published public private(set) var isWorking = false {
+        didSet { publishStatusProjection() }
+    }
+    @Published public private(set) var operationProgress: SentenceLibraryOperationProgress? {
+        didSet { publishStatusProjection() }
+    }
+    @Published public private(set) var lastErrorMessage: String? {
+        didSet { publishStatusProjection() }
+    }
 
     /// 由主窗口状态栏的小叉调用；仅关闭提示，不影响句库中的数据或后台任务。
     public func dismissErrorMessage() {
@@ -30,12 +61,21 @@ public final class SentenceLibraryManager: ObservableObject {
     private var queryTask: Task<Void, Never>?
     private var operationGeneration = UUID()
 
+    private func publishStatusProjection() {
+        SentenceLibraryStatusCenter.shared.update(
+            isWorking: isWorking,
+            operationProgress: operationProgress,
+            errorMessage: lastErrorMessage
+        )
+    }
+
     public init(
         store: SentenceLibraryStore = .shared,
         defaults: UserDefaults = .standard
     ) {
         self.store = store
         self.defaults = defaults
+        publishStatusProjection()
         Task { [weak self] in
             await self?.reloadLibraries(createDefaultIfNeeded: true)
         }

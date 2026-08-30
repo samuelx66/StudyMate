@@ -517,7 +517,10 @@ public final class ProjectFileManager: @unchecked Sendable {
 
         if backups.count > Self.backupRetentionCount {
             for staleBackup in backups.dropFirst(Self.backupRetentionCount) {
-                try FileManager.default.removeItem(at: staleBackup)
+                // Retention is housekeeping.  A single locked or temporarily
+                // unavailable snapshot must not make the new project save fail.
+                // It will be considered again on the next save.
+                try? FileManager.default.removeItem(at: staleBackup)
             }
         }
         return backupDirectory
@@ -948,6 +951,18 @@ public final class ProjectFileManager: @unchecked Sendable {
     public func flush() {
         fileQueue.sync {
             drainPendingSaves()
+        }
+    }
+
+    /// Asynchronously waits for all queued project writes to finish.  Closing a
+    /// media window happens on the main actor; using the synchronous variant
+    /// there would block AppKit until every JSON/backup write completed.
+    public func flushAsync() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            fileQueue.async { [weak self] in
+                self?.drainPendingSaves()
+                continuation.resume()
+            }
         }
     }
 

@@ -129,4 +129,31 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertTrue(criteria.matches(SentenceSegment(index: 5, startTime: 0, endTime: 1)))
         XCTAssertFalse(criteria.matches(SentenceSegment(index: 6, startTime: 0, endTime: 1)))
     }
+
+    /// Regression guard for the large-list filtering path.  The view now takes
+    /// a value snapshot and performs this same pure predicate work off the main
+    /// actor; keeping a measured baseline here makes accidental O(N²) changes
+    /// visible during CI performance runs.
+    func testLargeTranscriptFilteringPerformanceBaseline() {
+        let segments = (1...10_000).map { index in
+            SentenceSegment(
+                index: index,
+                startTime: Double(index),
+                endTime: Double(index) + (index.isMultiple(of: 3) ? 6 : 2),
+                text: index.isMultiple(of: 10) ? "Please open the workbook" : "A short practice sentence",
+                translation: index.isMultiple(of: 10) ? "请打开练习册" : "短练习句子",
+                isBookmarked: index.isMultiple(of: 25)
+            )
+        }
+        var criteria = SegmentListFilterCriteria()
+        criteria.requiresMinimumDuration = true
+        criteria.minimumDurationText = "5"
+        criteria.requiresWord = true
+        criteria.wordText = "open"
+        criteria.requiresBookmark = true
+
+        measure {
+            _ = segments.filter { criteria.matches($0) }
+        }
+    }
 }

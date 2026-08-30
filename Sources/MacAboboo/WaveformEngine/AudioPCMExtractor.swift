@@ -107,10 +107,20 @@ public actor AudioPCMExtractor {
                 try handle.close()
                 self.handle = nil
 
+                // Publish the completed cache in one filesystem operation.  Removing
+                // the previous file first leaves a visible gap (and lets a reader
+                // observe a half-written replacement); replaceItemAt keeps either
+                // the old valid cache or the new valid cache available.
                 if FileManager.default.fileExists(atPath: destinationURL.path) {
-                    try FileManager.default.removeItem(at: destinationURL)
+                    _ = try FileManager.default.replaceItemAt(
+                        destinationURL,
+                        withItemAt: temporaryURL,
+                        backupItemName: nil,
+                        options: [.usingNewMetadataOnly]
+                    )
+                } else {
+                    try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
                 }
-                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
                 isCommitted = true
             } catch let error as PCMExtractionError {
                 throw error
@@ -409,7 +419,13 @@ public actor AudioPCMExtractor {
                     while offset < rawBuffer.count {
                         let count = min(chunkSize, rawBuffer.count - offset)
                         let chunk = Data(
-                            bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress.advanced(by: offset)),
+                            // `offset` is measured in bytes, while
+                            // UnsafePointer<Float>.advanced(by:) expects a
+                            // number of Float elements.  Advancing the typed
+                            // pointer by a byte count skipped 4x the intended
+                            // position after the first chunk and could corrupt
+                            // large PCM caches.  Advance the raw byte buffer.
+                            bytesNoCopy: UnsafeMutableRawPointer(mutating: rawBuffer.baseAddress!.advanced(by: offset)),
                             count: count,
                             deallocator: .none
                         )
@@ -422,9 +438,15 @@ public actor AudioPCMExtractor {
                 fileHandle = nil
 
                 if FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
+                    _ = try FileManager.default.replaceItemAt(
+                        url,
+                        withItemAt: temporaryURL,
+                        backupItemName: nil,
+                        options: [.usingNewMetadataOnly]
+                    )
+                } else {
+                    try FileManager.default.moveItem(at: temporaryURL, to: url)
                 }
-                try FileManager.default.moveItem(at: temporaryURL, to: url)
             } catch {
                 try? fileHandle?.close()
                 try? FileManager.default.removeItem(at: temporaryURL)

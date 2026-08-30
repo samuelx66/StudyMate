@@ -1012,8 +1012,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // 关闭前强制完成工程与播放历史写入，确保后续资源拆除不会丢失
         // 当前断句、书签、播放位置或工程状态。
         persistCurrentProject()
-        projectFileManager.flush()
-        playbackHistoryStore?.flush()
+        await projectFileManager.flushAsync()
+        if let playbackHistoryStore {
+            await playbackHistoryStore.flushAsync()
+        }
 
         isBackendReady = false
         isMediaLoading = false

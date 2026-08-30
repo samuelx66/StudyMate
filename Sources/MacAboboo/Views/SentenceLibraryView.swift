@@ -204,8 +204,7 @@ public struct SentenceLibraryView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(manager.entries.indices, id: \.self) { offset in
-                                let entry = manager.entries[offset]
+                            ForEach(Array(manager.entries.enumerated()), id: \.element.id) { offset, entry in
                                 SentenceLibraryEntryRow(
                                     entry: entry,
                                     number: offset + 1,
@@ -546,7 +545,6 @@ private struct SentenceLibraryEntryRow: View {
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
-            .onTapGesture(count: 2, perform: onSelect)
             .onTapGesture(count: 1, perform: onSelect)
         }
         .padding(10)
@@ -700,6 +698,8 @@ private struct SentenceImagePreview: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var lang = LanguageManager.shared
     let request: SentencePreviewRequest
+    @State private var image: NSImage?
+    @State private var isLoading = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -712,13 +712,16 @@ private struct SentenceImagePreview: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            if let image = NSImage(contentsOf: request.url) {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black.opacity(0.92))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else if isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
                     lang.text("无法读取预览图片", "Unable to Read Preview"),
@@ -728,6 +731,30 @@ private struct SentenceImagePreview: View {
         }
         .padding(16)
         .frame(minWidth: 720, minHeight: 500)
+        .task(id: request.url) {
+            image = nil
+            isLoading = false
+            if let cached = SentenceLibraryThumbnailCache.images.object(forKey: request.url as NSURL) {
+                image = cached
+                return
+            }
+
+            isLoading = true
+            let data = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: request.url, options: [.mappedIfSafe])
+            }.value
+            guard !Task.isCancelled else { return }
+            if let data, let loaded = NSImage(data: data) {
+                let pixelCost = max(1, Int(loaded.size.width * loaded.size.height * 4))
+                SentenceLibraryThumbnailCache.images.setObject(
+                    loaded,
+                    forKey: request.url as NSURL,
+                    cost: pixelCost
+                )
+                image = loaded
+            }
+            isLoading = false
+        }
     }
 }
 

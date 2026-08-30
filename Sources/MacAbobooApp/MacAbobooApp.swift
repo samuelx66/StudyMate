@@ -93,10 +93,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 struct MacAbobooApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
-    @StateObject private var engine = PlaybackEngine.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("MacAboboo.ShowStatusBar") private var showStatusBar = false
+
+    /// PlaybackEngine is intentionally resolved only when a media window or a
+    /// playback command is used.  Keeping it out of @StateObject here avoids
+    /// constructing AVFoundation/libmpv, waveform state and model schedulers
+    /// while the welcome window is the only visible scene.
+    private var engine: PlaybackEngine { PlaybackEngine.shared }
     
     init() {
         UserDefaults.standard.register(defaults: [
@@ -551,14 +556,18 @@ final class MainWindowAccessorView: NSView {
                 object: window,
                 queue: .main
             ) { _ in
-                PlaybackEngine.shared.isFullScreen = true
+                Task { @MainActor in
+                    PlaybackEngine.shared.isFullScreen = true
+                }
             },
             center.addObserver(
                 forName: NSWindow.didExitFullScreenNotification,
                 object: window,
                 queue: .main
             ) { _ in
-                PlaybackEngine.shared.isFullScreen = false
+                Task { @MainActor in
+                    PlaybackEngine.shared.isFullScreen = false
+                }
             }
         ]
     }

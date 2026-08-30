@@ -201,6 +201,17 @@ public final class PlaybackHistoryStore: ObservableObject {
         ioQueue.sync {}
     }
 
+    /// Main-actor friendly counterpart to `flush()`.  The synchronous method
+    /// remains for termination/tests, while media-window closing can await the
+    /// utility queue without freezing the UI.
+    public func flushAsync() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            ioQueue.async {
+                continuation.resume()
+            }
+        }
+    }
+
     private nonisolated static func persist(
         _ entries: [PlaybackHistoryEntry],
         to storageURL: URL,
