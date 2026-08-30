@@ -204,6 +204,56 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         XCTAssertTrue(player.isPlaying)
     }
 
+    func testAllLoopAdvancesWhenFinishedCallbackHasNoFinalTimeTick() async throws {
+        let firstURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryFinishedFirst-\(UUID().uuidString).m4a")
+        let secondURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacAboboo-LibraryFinishedSecond-\(UUID().uuidString).m4a")
+        try Data("first".utf8).write(to: firstURL)
+        try Data("second".utf8).write(to: secondURL)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+
+        let backend = TestMediaPlayerBackend(duration: 1)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let first = SentenceLibraryEntry(
+            originalText: "one",
+            translation: "一",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: firstURL.path,
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "finished-one.m4a"
+        )
+        let second = SentenceLibraryEntry(
+            originalText: "two",
+            translation: "二",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: secondURL.path,
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "finished-two.m4a"
+        )
+        player.setPlaybackMode(.allLoop)
+        player.setPlaylist(
+            entries: [first, second],
+            mediaURLs: [first.id: firstURL, second.id: secondURL]
+        )
+        player.play(first, mediaURL: firstURL)
+        await Task.yield()
+
+        // Some backends deliver an authoritative end notification before the
+        // last periodic time update. The next sentence must still be loaded.
+        backend.emitFinished()
+        await Task.yield()
+
+        XCTAssertEqual(player.currentEntry?.id, second.id)
+        XCTAssertEqual(backend.loadedURL, secondURL)
+        XCTAssertTrue(player.isPlaying)
+    }
+
     func testAllLoopWrapsAndDoesNotStopAfterSeveralItems() async throws {
         let urls = try (1...3).map { index -> URL in
             let url = FileManager.default.temporaryDirectory

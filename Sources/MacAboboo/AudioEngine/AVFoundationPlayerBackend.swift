@@ -72,7 +72,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         avPlayerView.player = player
         player.volume = volume
         player.isMuted = false
-        setupTimeObserver()
+        setupTimeObserver(for: loadGeneration)
         setupTimeControlObservation()
     }
     
@@ -85,7 +85,11 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         isSeekingInternal = false
         let generation = loadGeneration
         teardownItemObservations()
-        setupTimeObserver()
+        // Reinstall the observer with the new item generation so a callback
+        // already queued for the previous item cannot become a boundary event
+        // for the next sentence.
+        teardownTimeObserver()
+        setupTimeObserver(for: generation)
         player.pause()
         player.replaceCurrentItem(with: nil)
         loadedURL = nil
@@ -413,12 +417,14 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
         isPlaying = false
     }
     
-    private func setupTimeObserver() {
+    private func setupTimeObserver(for generation: UUID) {
         guard timeObserverToken == nil else { return }
         let interval = CMTime(value: 1, timescale: 60) // 60fps 平滑时间回调
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self = self, !self.isSeekingInternal else { return }
+                guard let self,
+                      generation == self.loadGeneration,
+                      !self.isSeekingInternal else { return }
                 let current = CMTimeGetSeconds(time)
                 if current >= 0, !current.isNaN {
                     let total = self.duration

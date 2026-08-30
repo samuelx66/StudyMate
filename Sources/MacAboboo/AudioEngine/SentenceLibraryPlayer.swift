@@ -20,6 +20,10 @@ public final class SentenceLibraryPlayer: ObservableObject {
     private var playlist: [PlaylistItem] = []
     private var handledEndGeneration: UUID?
     private var isRestartSeeking = false
+    /// Reject late clock/end events while the next independent clip is being
+    /// loaded and seeks to zero. Without this gate a previous clip's final
+    /// event can advance an all-loop playlist twice.
+    private var isLoadingEntry = false
     private var loadTask: Task<Void, Never>?
 
     private struct PlaylistItem {
@@ -71,6 +75,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         playbackEndTime = playbackStartTime + duration
         handledEndGeneration = nil
         isRestartSeeking = false
+        isLoadingEntry = true
         currentTime = 0
         errorMessage = nil
         isPlaying = false
@@ -121,6 +126,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         playbackEndTime = 0
         handledEndGeneration = nil
         isRestartSeeking = false
+        isLoadingEntry = false
         isPlaying = false
         errorMessage = nil
     }
@@ -148,6 +154,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                         mayUseExtendedFallback: false
                     )
                 } else {
+                    self.isLoadingEntry = false
                     self.errorMessage = "无法解码这个句库音频片段。"
                 }
                 return
@@ -162,6 +169,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                           self.playbackGeneration == generation,
                           self.currentEntry?.id == entry.id,
                           self.activeBackend === backend else { return }
+                    self.isLoadingEntry = false
                     backend.play()
                     self.isPlaying = true
                 }
@@ -188,6 +196,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                   let backend,
                   self.activeBackend === backend,
                   self.currentEntry != nil,
+                  !self.isLoadingEntry,
                   !self.isRestartSeeking,
                   absoluteTime.isFinite else { return }
             let relativeTime = max(0, absoluteTime - self.playbackStartTime)
@@ -204,6 +213,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                   let backend,
                   self.activeBackend === backend,
                   self.currentEntry != nil,
+                  !self.isLoadingEntry,
                   !self.isRestartSeeking,
                   absoluteTime.isFinite else { return }
             if self.hasReachedPlaybackEnd(backend: backend, absoluteTime: absoluteTime) {
@@ -219,16 +229,12 @@ public final class SentenceLibraryPlayer: ObservableObject {
         backend.onFinished = { [weak self, weak backend] in
             guard let self, let backend, self.activeBackend === backend else { return }
             // AVPlayer/MPV's end notification is authoritative for the
-            // currently loaded item.  Do not use the published SwiftUI
-            // progress (`currentTime`) as a gate here: it is intentionally
-            // throttled for the library playback bar and can lag behind the
-            // decoder by a few frames.  Independent M4A clips can also have
-            // a small AAC encoder-delay difference from the source timestamp.
-            // Use the backend's real position/duration instead, which keeps
-            // looping reliable without allowing a stale callback received
-            // after a restart to trigger a second loop.
-            guard !self.isRestartSeeking,
-                  self.hasReachedPlaybackEnd(backend: backend) else { return }
+            // currently loaded item. Do not require a final periodic time
+            // tick here: the callback can arrive before the backend's cached
+            // currentTime reaches the duration, especially for short AAC
+            // clips. Backend generations and the loading gate reject stale
+            // callbacks from the previous item.
+            guard !self.isLoadingEntry, !self.isRestartSeeking else { return }
             self.currentTime = self.duration
             self.handleCurrentEntryFinished()
         }
@@ -275,6 +281,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
         playbackGeneration = generation
         handledEndGeneration = nil
         isRestartSeeking = true
+        isLoadingEntry = true
         activeBackend.pause()
         playbackStartTime = 0
         playbackEndTime = playbackStartTime + duration
@@ -285,6 +292,7 @@ public final class SentenceLibraryPlayer: ObservableObject {
                 guard let self,
                       self.playbackGeneration == generation,
                       self.currentEntry?.id == entry.id else { return }
+                self.isLoadingEntry = false
                 self.isRestartSeeking = false
                 self.activeBackend.play()
                 self.isPlaying = true

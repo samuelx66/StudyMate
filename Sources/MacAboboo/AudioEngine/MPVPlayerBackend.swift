@@ -56,6 +56,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private var isPollingActive = false
     private var pollTick: UInt64 = 0
     private var timerTick: UInt64 = 0
+    private var pollGeneration: UInt64 = 0
     private var highFrequencyPresentationEnabled = true
     private var loadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
@@ -393,8 +394,10 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     }
     
     private func stopPolling() {
+        pollGeneration &+= 1
         pollTimer?.invalidate()
         pollTimer = nil
+        isPollingActive = false
     }
     
     private func pollPlaybackState() {
@@ -403,12 +406,15 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         pollTick &+= 1
         let shouldRefreshDuration = duration <= 0 || pollTick % 60 == 0
         let generation = loadGeneration
+        let callbackGeneration = pollGeneration
         
         let handleBits = UInt(bitPattern: handle)
         commandQueue.async { [weak self] in
             guard let h = OpaquePointer(bitPattern: handleBits) else {
                 DispatchQueue.main.async {
-                    guard let self, generation == self.loadGeneration else { return }
+                    guard let self,
+                          generation == self.loadGeneration,
+                          callbackGeneration == self.pollGeneration else { return }
                     self.isPollingActive = false
                 }
                 return
@@ -420,7 +426,9 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
             let eof = MPVClient.shared.getPropertyFlag(h, name: "eof-reached") ?? false
             
             DispatchQueue.main.async {
-                guard let self = self, generation == self.loadGeneration else { return }
+                guard let self,
+                      generation == self.loadGeneration,
+                      callbackGeneration == self.pollGeneration else { return }
                 self.isPollingActive = false
                 
                 if pos >= 0 {
@@ -428,6 +436,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                         self.duration = dur
                     }
                     self.onBoundaryTimeUpdate?(pos, self.duration)
+                    guard generation == self.loadGeneration,
+                          callbackGeneration == self.pollGeneration else { return }
                     self.timerTick &+= 1
                     if self.highFrequencyPresentationEnabled || self.timerTick % 4 == 0 {
                         self.currentTime = pos
