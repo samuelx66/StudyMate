@@ -9,7 +9,7 @@ root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sources_dir = os.path.join(root_dir, 'Sources')
 
 def get_app_version():
-    info_plist_path = os.path.join(sources_dir, 'MacAbobooApp', 'Info.plist')
+    info_plist_path = os.path.join(sources_dir, 'StudyMateApp', 'Info.plist')
     version = '1.0.0'
     build = '1'
     if os.path.exists(info_plist_path):
@@ -51,14 +51,14 @@ for root, dirs, files in os.walk(sources_dir):
             rel_p = os.path.relpath(full_p, root_dir)
             resource_entries.append((d, rel_p, 'folder'))
     for f in sorted(files):
-        if f.endswith(('.swift', '.c', '.h')) or f == 'Info.plist' or f == 'ggml-silero-v6.2.0.bin' or f.endswith('-LICENSE.txt'):
+        if f.endswith(('.swift', '.c', '.h', '.strings')) or f == 'Info.plist' or f == 'ggml-silero-v6.2.0.bin' or f.endswith('-LICENSE.txt'):
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, root_dir)
             if f.endswith(('.swift', '.c')):
                 kind = 'source'
             elif f.endswith('.h'):
                 kind = 'header'
-            elif f.endswith('.bin') or f.endswith('-LICENSE.txt'):
+            elif f.endswith('.bin') or f.endswith('-LICENSE.txt') or f.endswith('.strings'):
                 kind = 'resource'
             else:
                 kind = 'plist'
@@ -69,12 +69,12 @@ file_entries.sort(key=lambda x: x[1])
 resource_entries.sort(key=lambda x: x[1])
 
 # PBX IDs (确定性固定 ID，防止 Xcode 调试目标路径缓存失效)
-proj_id = generate_id("PROJECT_MacAboboo")
+proj_id = generate_id("PROJECT_StudyMate")
 main_group_id = generate_id("GROUP_Main")
 sources_group_id = generate_id("GROUP_Sources")
 products_group_id = generate_id("GROUP_Products")
-target_id = generate_id("TARGET_MacAboboo_App")
-app_product_id = generate_id("PRODUCT_MacAboboo_App")
+target_id = generate_id("TARGET_StudyMate_App")
+app_product_id = generate_id("PRODUCT_StudyMate_App")
 sources_build_phase_id = generate_id("PHASE_Sources")
 frameworks_build_phase_id = generate_id("PHASE_Frameworks")
 resources_build_phase_id = generate_id("PHASE_Resources")
@@ -148,13 +148,13 @@ group_children = []
 for filename, path, _ in file_entries:
     # find file_ref_id
     for line in pbx_file_refs:
-        if f'/* {filename} */' in line:
+        if f'/* {filename} */' in line and f'path = "{path}"' in line:
             fid = line.strip().split()[0]
             group_children.append(f'\t\t\t\t{fid} /* {filename} */,')
             break
 for name, path, _ in resource_entries:
     for line in pbx_file_refs:
-        if f'/* {name} */' in line:
+        if f'/* {name} */' in line and f'path = "{path}"' in line:
             fid = line.strip().split()[0]
             group_children.append(f'\t\t\t\t{fid} /* {name} */,')
             break
@@ -174,7 +174,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-\t\t{app_product_id} /* MacAboboo.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacAboboo.app; sourceTree = BUILT_PRODUCTS_DIR; }};
+\t\t{app_product_id} /* StudyMate.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudyMate.app; sourceTree = BUILT_PRODUCTS_DIR; }};
 {file_refs_str}
 /* End PBXFileReference section */
 
@@ -223,7 +223,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t{products_group_id} /* Products */ = {{
 \t\t\tisa = PBXGroup;
 \t\t\tchildren = (
-\t\t\t\t{app_product_id} /* MacAboboo.app */,
+\t\t\t\t{app_product_id} /* StudyMate.app */,
 \t\t\t);
 \t\t\tname = Products;
 \t\t\tsourceTree = "<group>";
@@ -231,9 +231,9 @@ pbxproj_content = f"""// !$*UTF8*$!
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-\t\t{target_id} /* MacAboboo */ = {{
+\t\t{target_id} /* StudyMate */ = {{
 \t\t\tisa = PBXNativeTarget;
-\t\t\tbuildConfigurationList = {target_config_list_id} /* Build configuration list for PBXNativeTarget "MacAboboo" */;
+\t\t\tbuildConfigurationList = {target_config_list_id} /* Build configuration list for PBXNativeTarget "StudyMate" */;
 \t\t\tbuildPhases = (
 \t\t\t\t{sources_build_phase_id} /* Sources */,
 \t\t\t\t{frameworks_build_phase_id} /* Frameworks */,
@@ -247,9 +247,9 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\tpackageProductDependencies = (
 \t\t\t\t{speakerkit_product_dependency_id} /* SpeakerKit */,
 \t\t\t);
-\t\t\tname = MacAboboo;
-\t\t\tproductName = MacAboboo;
-\t\t\tproductReference = {app_product_id} /* MacAboboo.app */;
+\t\t\tname = StudyMate;
+\t\t\tproductName = StudyMate;
+\t\t\tproductReference = {app_product_id} /* StudyMate.app */;
 \t\t\tproductType = "com.apple.product-type.application";
 \t\t}};
 /* End PBXNativeTarget section */
@@ -268,7 +268,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t}};
 \t\t\t\t}};
 \t\t\t}};
-\t\t\tbuildConfigurationList = {proj_config_list_id} /* Build configuration list for PBXProject "MacAboboo" */;
+\t\t\tbuildConfigurationList = {proj_config_list_id} /* Build configuration list for PBXProject "StudyMate" */;
 \t\t\tcompatibilityVersion = "Xcode 14.0";
 \t\t\tdevelopmentRegion = zh_CN;
 \t\t\thasScannedForEncodings = 0;
@@ -285,7 +285,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\tprojectDirPath = "";
 \t\t\tprojectRoot = "";
 \t\t\ttargets = (
-\t\t\t\t{target_id} /* MacAboboo */,
+\t\t\t\t{target_id} /* StudyMate */,
 \t\t\t);
 \t\t}};
 /* End PBXProject section */
@@ -408,17 +408,17 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tENABLE_DEBUG_DYLIB = YES;
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
-\t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+\t\t\t\tINFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
 \t\t\t\tHEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
 \t\t\t\tMARKETING_VERSION = {marketing_version};
-\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";
-\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
+\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
 \t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t}};
 \t\t\tname = Debug;
@@ -432,16 +432,16 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\tCURRENT_PROJECT_VERSION = {current_project_version};
 \t\t\t\tENABLE_PREVIEWS = YES;
 \t\t\t\tGENERATE_INFOPLIST_FILE = NO;
-\t\t\t\tINFOPLIST_FILE = Sources/MacAbobooApp/Info.plist;
+\t\t\t\tINFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
 \t\t\t\tHEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = (
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
 \t\t\t\tMARKETING_VERSION = {marketing_version};
-\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.MacAboboo;
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
-\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/MacAboboo-Bridging-Header.h;
+\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
 \t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t}};
 \t\t\tname = Release;
@@ -449,7 +449,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-\t\t{proj_config_list_id} /* Build configuration list for PBXProject "MacAboboo" */ = {{
+\t\t{proj_config_list_id} /* Build configuration list for PBXProject "StudyMate" */ = {{
 \t\t\tisa = XCConfigurationList;
 \t\t\tbuildConfigurations = (
 \t\t\t\t{debug_config_id} /* Debug */,
@@ -458,7 +458,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\tdefaultConfigurationIsVisible = 0;
 \t\t\tdefaultConfigurationName = Release;
 \t\t}};
-\t\t{target_config_list_id} /* Build configuration list for PBXNativeTarget "MacAboboo" */ = {{
+\t\t{target_config_list_id} /* Build configuration list for PBXNativeTarget "StudyMate" */ = {{
 \t\t\tisa = XCConfigurationList;
 \t\t\tbuildConfigurations = (
 \t\t\t\t{target_debug_config_id} /* Debug */,
@@ -474,7 +474,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 }}
 """
 
-xcodeproj_path = os.path.join(root_dir, 'MacAboboo.xcodeproj')
+xcodeproj_path = os.path.join(root_dir, 'StudyMate.xcodeproj')
 os.makedirs(xcodeproj_path, exist_ok=True)
 pbxproj_path = os.path.join(xcodeproj_path, 'project.pbxproj')
 
@@ -501,9 +501,9 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "{target_id}"
-               BuildableName = "MacAboboo.app"
-               BlueprintName = "MacAboboo"
-               ReferencedContainer = "container:MacAboboo.xcodeproj">
+               BuildableName = "StudyMate.app"
+               BlueprintName = "StudyMate"
+               ReferencedContainer = "container:StudyMate.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -519,9 +519,9 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "{target_id}"
-            BuildableName = "MacAboboo.app"
-            BlueprintName = "MacAboboo"
-            ReferencedContainer = "container:MacAboboo.xcodeproj">
+            BuildableName = "StudyMate.app"
+            BlueprintName = "StudyMate"
+            ReferencedContainer = "container:StudyMate.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
    </TestAction>
@@ -540,9 +540,9 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "{target_id}"
-            BuildableName = "MacAboboo.app"
-            BlueprintName = "MacAboboo"
-            ReferencedContainer = "container:MacAboboo.xcodeproj">
+            BuildableName = "StudyMate.app"
+            BlueprintName = "StudyMate"
+            ReferencedContainer = "container:StudyMate.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -557,9 +557,9 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "{target_id}"
-            BuildableName = "MacAboboo.app"
-            BlueprintName = "MacAboboo"
-            ReferencedContainer = "container:MacAboboo.xcodeproj">
+            BuildableName = "StudyMate.app"
+            BlueprintName = "StudyMate"
+            ReferencedContainer = "container:StudyMate.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>
@@ -572,10 +572,10 @@ scheme_content = f"""<?xml version="1.0" encoding="UTF-8"?>
    </ArchiveAction>
 </Scheme>
 """
-with open(os.path.join(schemes_dir, 'MacAboboo.xcscheme'), 'w', encoding='utf-8') as f:
+with open(os.path.join(schemes_dir, 'StudyMate.xcscheme'), 'w', encoding='utf-8') as f:
     f.write(scheme_content)
 
-# 生成 Workspace 数据 (必须包含 contents.xcworkspacedata，Xcode 才能正确解析 container:MacAboboo.xcodeproj)
+# 生成 Workspace 数据 (必须包含 contents.xcworkspacedata，Xcode 才能正确解析 container:StudyMate.xcodeproj)
 workspace_dir = os.path.join(xcodeproj_path, 'project.xcworkspace')
 os.makedirs(workspace_dir, exist_ok=True)
 workspace_content = """<?xml version="1.0" encoding="UTF-8"?>

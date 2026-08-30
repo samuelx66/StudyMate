@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_NAME="MacAboboo"
+APP_NAME="StudyMate"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_BUNDLE}/Contents"
@@ -11,7 +11,7 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 HELPERS_DIR="${CONTENTS_DIR}/Helpers"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-MODULE_BUNDLE_NAME="MacAboboo_MacAbobooKit.bundle"
+MODULE_BUNDLE_NAME="StudyMate_StudyMateKit.bundle"
 MODULE_BUNDLE_DEST="${RESOURCES_DIR}/${MODULE_BUNDLE_NAME}"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
@@ -59,9 +59,9 @@ done < <(otool -l "${MACOS_DIR}/${APP_NAME}" | awk '
     reading_rpath && $1 == "path" { print $2; reading_rpath = 0 }
 ')
 
-RESOURCE_BUNDLE="${BUILD_DIR}/MacAboboo_MacAbobooKit.bundle"
+RESOURCE_BUNDLE="${BUILD_DIR}/StudyMate_StudyMateKit.bundle"
 if [[ -d "${RESOURCE_BUNDLE}" ]]; then
-    # 资源包放在标准的 Contents/Resources，由 MacAbobooResourceBundle 显式加载。
+    # 资源包放在标准的 Contents/Resources，由 StudyMateResourceBundle 显式加载。
     # 不要把它放到 .app 根目录，否则 codesign 会将其视为未封装内容。
     cp -R "${RESOURCE_BUNDLE}" "${MODULE_BUNDLE_DEST}"
     # SwiftPM 的增量资源目录可能残留旧版 CLI/Metal 文件；新版仅使用进程内框架。
@@ -226,14 +226,18 @@ actool \
     --output-partial-info-plist "${ICON_TEMP_DIR}/partial-info.plist" \
     --platform macosx \
     --minimum-deployment-target 14.0 \
-    "${ROOT_DIR}/Sources/MacAboboo/Resources/Assets.xcassets" >/dev/null
+    "${ROOT_DIR}/Sources/StudyMate/Resources/Assets.xcassets" >/dev/null
 test -f "${ACTOOL_OUTPUT}/AppIcon.icns" || {
     echo "未生成应用图标：${ACTOOL_OUTPUT}/AppIcon.icns" >&2
     exit 1
 }
 cp "${ACTOOL_OUTPUT}/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 
-cp "${ROOT_DIR}/Sources/MacAbobooApp/Info.plist" "${CONTENTS_DIR}/Info.plist"
+cp "${ROOT_DIR}/Sources/StudyMateApp/Info.plist" "${CONTENTS_DIR}/Info.plist"
+for localization in en.lproj zh-Hans.lproj; do
+    mkdir -p "${RESOURCES_DIR}/${localization}"
+    cp "${ROOT_DIR}/Sources/StudyMateApp/${localization}/InfoPlist.strings" "${RESOURCES_DIR}/${localization}/InfoPlist.strings"
+done
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
 printf 'APPL????' > "${CONTENTS_DIR}/PkgInfo"

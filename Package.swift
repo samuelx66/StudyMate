@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "MacAboboo",
+    name: "StudyMate",
     defaultLocalization: "zh-Hans",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "MacAboboo",
-            targets: ["MacAbobooApp"]
+            name: "StudyMate",
+            targets: ["StudyMateApp"]
         ),
         .library(
-            name: "MacAbobooKit",
-            targets: ["MacAbobooKit"]
+            name: "StudyMateKit",
+            targets: ["StudyMateKit"]
         )
     ],
     dependencies: [
@@ -37,12 +37,12 @@ let package = Package(
             publicHeadersPath: "include"
         ),
         .target(
-            name: "MacAbobooKit",
+            name: "StudyMateKit",
             dependencies: [
                 "CSpeechRuntime",
                 .product(name: "SpeakerKit", package: "argmax-oss-swift")
             ],
-            path: "Sources/MacAboboo",
+            path: "Sources/StudyMate",
             exclude: [
                 "Resources/Helpers"
             ],
@@ -62,11 +62,15 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "MacAbobooApp",
-            dependencies: ["MacAbobooKit"],
-            path: "Sources/MacAbobooApp",
+            name: "StudyMateApp",
+            dependencies: ["StudyMateKit"],
+            path: "Sources/StudyMateApp",
             exclude: [
                 "Info.plist"
+            ],
+            resources: [
+                .process("en.lproj"),
+                .process("zh-Hans.lproj")
             ],
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION")
@@ -76,9 +80,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "MacAbobooTests",
-            dependencies: ["MacAbobooKit"],
-            path: "Tests/MacAbobooTests",
+            name: "StudyMateTests",
+            dependencies: ["StudyMateKit"],
+            path: "Tests/StudyMateTests",
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION")
             ],

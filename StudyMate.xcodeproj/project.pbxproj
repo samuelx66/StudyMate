@@ -1,0 +1,570 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		97DF24709486D257ADAE95B2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DB9F2F2F197A979E95533866 /* Assets.xcassets */; };
+		BC4834C261CEA9E82745C8E5 /* SpeakerKitModels in Resources */ = {isa = PBXBuildFile; fileRef = 365CBFEB4EF016349F6A34C9 /* SpeakerKitModels */; };
+		5AD27D198E8D091967BC127B /* CSpeechRuntime.c in Sources */ = {isa = PBXBuildFile; fileRef = 6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */; };
+		A37E357517FE37A3ED383B67 /* AVFoundationPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B03B433A4D161F6111AF7E9 /* AVFoundationPlayerBackend.swift */; };
+		984D0A7E4533C77B77DD974F /* LazyMPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F1C5F342080915459AE103 /* LazyMPVPlayerBackend.swift */; };
+		7C59F0ACCE13E06ADA39876A /* MPVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED6159E69AA7AAC2C50A8098 /* MPVClient.swift */; };
+		1FA23E3A83E25CF4D307A96B /* MPVPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FE053F29E7766A57407A4E0 /* MPVPlayerBackend.swift */; };
+		A9E8F5F8366D435BEB3E06C8 /* MediaPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */; };
+		74ADA67823175D9813A695B2 /* PlaybackEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */; };
+		B48779FFA10DC800918DFDB1 /* SentenceLibraryPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */; };
+		11E16318C10885A095FDC4EA /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */; };
+		1A110B893946A9BE5D064F81 /* DecoderEngineMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */; };
+		58623CE466DCD1805256CC72 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07DF3BAE585FCA56645E214 /* MediaItem.swift */; };
+		7050CC6B5FB343C5F39CA502 /* SentenceLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */; };
+		2C926741A0D889B2D246C149 /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */; };
+		8F77D91A237D13B9D22D90D1 /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */; };
+		CB59D12B81CC81CC1B5E31E3 /* PlaybackHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 024810F691DC54DA8600FD08 /* PlaybackHistoryStore.swift */; };
+		F39F1EC8AE1674AECAD74887 /* ProjectFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2EA505ADCB32F72B1F684E0 /* ProjectFileManager.swift */; };
+		85451635C530461DA7E872CD /* SentenceLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346F8C1DAF2B369584A27F2C /* SentenceLibraryManager.swift */; };
+		5A08D7D335EA5218F9DAABDB /* SentenceLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF2B9F637C5B494D6DF66CB /* SentenceLibraryStore.swift */; };
+		20FFDF2108EB5197D4CBB58C /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 1CE51FDC64B792CA17D84BB2 /* ggml-silero-v6.2.0.bin */; };
+		B53D133DDEB3C6A706B2C79E /* Silero-VAD-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = AABCE518D17D16F3DA5362CA /* Silero-VAD-LICENSE.txt */; };
+		6B2ADE3DE664BBCDDDC1DFB6 /* SpeakerKit-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 45B91B53FB39A78206BA9F4C /* SpeakerKit-LICENSE.txt */; };
+		DA67F4A44C078F96E26C1CB1 /* whisper.cpp-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = C580B86F4646C4A7A7BA68EB /* whisper.cpp-LICENSE.txt */; };
+		B16FC230BB7759B818D0C1E4 /* SubtitleExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5A2A4394964AE0A405BDF3 /* SubtitleExporter.swift */; };
+		2835BEA65E08FBE028257E0F /* SubtitleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 979EFF006805181442A49616 /* SubtitleParser.swift */; };
+		3DDC7A6F5D174ABD71C9A0A8 /* TextAlignmentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6717B9D4D6EC47D8EE39901D /* TextAlignmentEngine.swift */; };
+		95FAF23F0A65E9D74865122A /* TranslationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C23E5D35CFB17AE24735E37 /* TranslationModels.swift */; };
+		5208B3E5AEF1425B6F6591ED /* TranslationProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4388F40B757D8EA09A31075 /* TranslationProviders.swift */; };
+		C3A748FBCBF0BB903C0EAC60 /* TranslationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D1325AF570D72FB16D3DC2 /* TranslationService.swift */; };
+		94050CFBC82AB859269C8575 /* TranslationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8B348A7A493FB1958C8321 /* TranslationSettings.swift */; };
+		7E52F3F0C04F7C8FD5319ECD /* DraggableWaveformOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07981E51B2D15527C3CF185E /* DraggableWaveformOverlay.swift */; };
+		DF3BDC5A5477B122869B2D78 /* FloatingVideoOSDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B85D4F32F870C599C042160 /* FloatingVideoOSDView.swift */; };
+		F41FDAACCB71B852DD229212 /* IntensiveSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60DFB6DA4C3F6FEAA817F8F3 /* IntensiveSettingsPopover.swift */; };
+		2B22C4EBF339681E95B2AD85 /* MacOS26MediaStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */; };
+		F70C16B44C3A12B9887C69D4 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A045F47F858B0B31230A056A /* MainContentView.swift */; };
+		674745C6E7846A3714C8FF3B /* MainStatusCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */; };
+		9434C394DE07FCBAD2B84BEC /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8986BDC806029931A3751EF5 /* PlaybackListView.swift */; };
+		EB33A27A786B5358F76160B9 /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */; };
+		5F4AF1617BAAA3DB2A5E60FE /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */; };
+		5DD9FC7FC27C70AAEF1C13F9 /* SegmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4233274AA7378C81FD6952BC /* SegmentListView.swift */; };
+		58269748D39A3829B12BC58E /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */; };
+		846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6029D149A5A0818174471465 /* ShortcutCatalog.swift */; };
+		8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */; };
+		9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */; };
+		AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */; };
+		FBF7AC50B5EA6E552620B102 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */; };
+		2A53D1CDB172FE5B185467EE /* VideoSubtitleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8E5CC1D9FCE282A33A22002 /* VideoSubtitleOverlay.swift */; };
+		5AF473CF3B1546BC7582DA07 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */; };
+		152DA9C3FED0B1C9EAEA3320 /* WelcomeScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */; };
+		4B9C4EBCD8A569080E4DA386 /* WindowTextInputFocusDismissalBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */; };
+		2B283B0961F0CF2338CF0CE4 /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */; };
+		BB273B9B23ECB1EBE45E46AC /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */; };
+		09ED8E4C53D2B0B763FD79AE /* SpeakerDiarizationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5E6C6AA039621119B4CEE4 /* SpeakerDiarizationEngine.swift */; };
+		61EE7F199E0CC424BD84FDA6 /* SpeechBoundaryOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5883EFBEE5334C4A618864B /* SpeechBoundaryOptimizer.swift */; };
+		93D893BBE43A7627D85C92C3 /* SpeechSegmentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C169DED2CE43BFC42EC5FB92 /* SpeechSegmentationModels.swift */; };
+		B7F92ADADCBD91B3D876CF44 /* SpeechSegmentationPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F96624BE0DE7312BC7EB0FA /* SpeechSegmentationPipeline.swift */; };
+		082DD62B78A1C78E4EAF86A6 /* StudyMateResourceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F3FAB53A6E2FCB87334E61 /* StudyMateResourceBundle.swift */; };
+		527BFAF5F36C0DF617994C56 /* WaveformExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 616E63877EFC605DA4CB46A7 /* WaveformExtractor.swift */; };
+		9CE3BA51013C67BC21D69362 /* WhisperModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1439B7E44454E113459029 /* WhisperModelManager.swift */; };
+		8000A1DF778CEB331C49E162 /* StudyMateApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */; };
+		D38B7268D011178C2033049E /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = BA53D534888C0193FD2955F1 /* InfoPlist.strings */; };
+		97DD076F0BDA6503115D8B89 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 6C16973D55A261AD81C17CBD /* InfoPlist.strings */; };
+		11CACBE79E9A58BAEE17D343 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; };
+		BA2D27CDC73DCEA706BCE34C /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		56203E2DB48C94B416EE96BF /* SpeakerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6700D30280B43E9A5F9B450D /* SpeakerKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		376984DCFDF6E2949E9F2D52 /* StudyMate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudyMate.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DB9F2F2F197A979E95533866 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Sources/StudyMate/Resources/Assets.xcassets"; sourceTree = "<group>"; };
+		365CBFEB4EF016349F6A34C9 /* SpeakerKitModels */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Sources/StudyMate/Resources/SpeakerKitModels"; sourceTree = "<group>"; };
+		6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = "Sources/CSpeechRuntime/CSpeechRuntime.c"; sourceTree = "<group>"; };
+		2C28DCE7828011B0BDA09509 /* StudyMate-Bridging-Header.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/StudyMate-Bridging-Header.h"; sourceTree = "<group>"; };
+		CF4440375AE3204D9C9D31E7 /* CSpeechRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "Sources/CSpeechRuntime/include/CSpeechRuntime.h"; sourceTree = "<group>"; };
+		1B03B433A4D161F6111AF7E9 /* AVFoundationPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/AVFoundationPlayerBackend.swift"; sourceTree = "<group>"; };
+		79F1C5F342080915459AE103 /* LazyMPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/LazyMPVPlayerBackend.swift"; sourceTree = "<group>"; };
+		ED6159E69AA7AAC2C50A8098 /* MPVClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/MPVClient.swift"; sourceTree = "<group>"; };
+		7FE053F29E7766A57407A4E0 /* MPVPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/MPVPlayerBackend.swift"; sourceTree = "<group>"; };
+		A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/MediaPlayerBackend.swift"; sourceTree = "<group>"; };
+		A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/PlaybackEngine.swift"; sourceTree = "<group>"; };
+		EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/SentenceLibraryPlayer.swift"; sourceTree = "<group>"; };
+		608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Localization/LanguageManager.swift"; sourceTree = "<group>"; };
+		B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/DecoderEngineMode.swift"; sourceTree = "<group>"; };
+		D07DF3BAE585FCA56645E214 /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/MediaItem.swift"; sourceTree = "<group>"; };
+		48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/SentenceLibraryModels.swift"; sourceTree = "<group>"; };
+		245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
+		7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/WaveformData.swift"; sourceTree = "<group>"; };
+		024810F691DC54DA8600FD08 /* PlaybackHistoryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Persistence/PlaybackHistoryStore.swift"; sourceTree = "<group>"; };
+		F2EA505ADCB32F72B1F684E0 /* ProjectFileManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Persistence/ProjectFileManager.swift"; sourceTree = "<group>"; };
+		346F8C1DAF2B369584A27F2C /* SentenceLibraryManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Persistence/SentenceLibraryManager.swift"; sourceTree = "<group>"; };
+		9AF2B9F637C5B494D6DF66CB /* SentenceLibraryStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Persistence/SentenceLibraryStore.swift"; sourceTree = "<group>"; };
+		1CE51FDC64B792CA17D84BB2 /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = archive; path = "Sources/StudyMate/Resources/Models/ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
+		AABCE518D17D16F3DA5362CA /* Silero-VAD-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMate/Resources/ThirdPartyNotices/Silero-VAD-LICENSE.txt"; sourceTree = "<group>"; };
+		45B91B53FB39A78206BA9F4C /* SpeakerKit-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMate/Resources/ThirdPartyNotices/SpeakerKit-LICENSE.txt"; sourceTree = "<group>"; };
+		C580B86F4646C4A7A7BA68EB /* whisper.cpp-LICENSE.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMate/Resources/ThirdPartyNotices/whisper.cpp-LICENSE.txt"; sourceTree = "<group>"; };
+		1B5A2A4394964AE0A405BDF3 /* SubtitleExporter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/SubtitleEngine/SubtitleExporter.swift"; sourceTree = "<group>"; };
+		979EFF006805181442A49616 /* SubtitleParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/SubtitleEngine/SubtitleParser.swift"; sourceTree = "<group>"; };
+		6717B9D4D6EC47D8EE39901D /* TextAlignmentEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/SubtitleEngine/TextAlignmentEngine.swift"; sourceTree = "<group>"; };
+		0C23E5D35CFB17AE24735E37 /* TranslationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/TranslationEngine/TranslationModels.swift"; sourceTree = "<group>"; };
+		B4388F40B757D8EA09A31075 /* TranslationProviders.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/TranslationEngine/TranslationProviders.swift"; sourceTree = "<group>"; };
+		A8D1325AF570D72FB16D3DC2 /* TranslationService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/TranslationEngine/TranslationService.swift"; sourceTree = "<group>"; };
+		6D8B348A7A493FB1958C8321 /* TranslationSettings.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/TranslationEngine/TranslationSettings.swift"; sourceTree = "<group>"; };
+		07981E51B2D15527C3CF185E /* DraggableWaveformOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/DraggableWaveformOverlay.swift"; sourceTree = "<group>"; };
+		5B85D4F32F870C599C042160 /* FloatingVideoOSDView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/FloatingVideoOSDView.swift"; sourceTree = "<group>"; };
+		60DFB6DA4C3F6FEAA817F8F3 /* IntensiveSettingsPopover.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/IntensiveSettingsPopover.swift"; sourceTree = "<group>"; };
+		B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MacOS26MediaStyle.swift"; sourceTree = "<group>"; };
+		A045F47F858B0B31230A056A /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MainContentView.swift"; sourceTree = "<group>"; };
+		0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MainStatusCenter.swift"; sourceTree = "<group>"; };
+		8986BDC806029931A3751EF5 /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
+		D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
+		0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
+		4233274AA7378C81FD6952BC /* SegmentListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SegmentListView.swift"; sourceTree = "<group>"; };
+		B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
+		6029D149A5A0818174471465 /* ShortcutCatalog.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutCatalog.swift"; sourceTree = "<group>"; };
+		FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutHelpView.swift"; sourceTree = "<group>"; };
+		2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
+		F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
+		C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
+		C8E5CC1D9FCE282A33A22002 /* VideoSubtitleOverlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/VideoSubtitleOverlay.swift"; sourceTree = "<group>"; };
+		B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
+		60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WelcomeScreenView.swift"; sourceTree = "<group>"; };
+		6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WindowTextInputFocusDismissalBridge.swift"; sourceTree = "<group>"; };
+		BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
+		56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
+		5A5E6C6AA039621119B4CEE4 /* SpeakerDiarizationEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/SpeakerDiarizationEngine.swift"; sourceTree = "<group>"; };
+		F5883EFBEE5334C4A618864B /* SpeechBoundaryOptimizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/SpeechBoundaryOptimizer.swift"; sourceTree = "<group>"; };
+		C169DED2CE43BFC42EC5FB92 /* SpeechSegmentationModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/SpeechSegmentationModels.swift"; sourceTree = "<group>"; };
+		9F96624BE0DE7312BC7EB0FA /* SpeechSegmentationPipeline.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/SpeechSegmentationPipeline.swift"; sourceTree = "<group>"; };
+		A8F3FAB53A6E2FCB87334E61 /* StudyMateResourceBundle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/StudyMateResourceBundle.swift"; sourceTree = "<group>"; };
+		616E63877EFC605DA4CB46A7 /* WaveformExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/WaveformExtractor.swift"; sourceTree = "<group>"; };
+		CB1439B7E44454E113459029 /* WhisperModelManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/WhisperModelManager.swift"; sourceTree = "<group>"; };
+		CE59BB4B798E5948A600BFB9 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "Sources/StudyMateApp/Info.plist"; sourceTree = "<group>"; };
+		B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMateApp/StudyMateApp.swift"; sourceTree = "<group>"; };
+		BA53D534888C0193FD2955F1 /* InfoPlist.strings */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMateApp/en.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		6C16973D55A261AD81C17CBD /* InfoPlist.strings */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMateApp/zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		158C35FECB86B6A321C2F534 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0102941A3076E2B37D228A94 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				BA2D27CDC73DCEA706BCE34C /* whisper.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C448FB86A22E5B7F468F9341 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				11CACBE79E9A58BAEE17D343 /* whisper.xcframework in Frameworks */,
+				56203E2DB48C94B416EE96BF /* SpeakerKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		396AE4B78ADCA057876B0448 = {
+			isa = PBXGroup;
+			children = (
+				EFD445A8484F53F7F9AE2D79 /* Sources */,
+				B879358E0122ADB25F226773 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		EFD445A8484F53F7F9AE2D79 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				6B3E2B4EFD9DD3C60A84F184 /* CSpeechRuntime.c */,
+				2C28DCE7828011B0BDA09509 /* StudyMate-Bridging-Header.h */,
+				CF4440375AE3204D9C9D31E7 /* CSpeechRuntime.h */,
+				1B03B433A4D161F6111AF7E9 /* AVFoundationPlayerBackend.swift */,
+				79F1C5F342080915459AE103 /* LazyMPVPlayerBackend.swift */,
+				ED6159E69AA7AAC2C50A8098 /* MPVClient.swift */,
+				7FE053F29E7766A57407A4E0 /* MPVPlayerBackend.swift */,
+				A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */,
+				A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */,
+				EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */,
+				608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */,
+				B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */,
+				D07DF3BAE585FCA56645E214 /* MediaItem.swift */,
+				48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */,
+				245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */,
+				7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */,
+				024810F691DC54DA8600FD08 /* PlaybackHistoryStore.swift */,
+				F2EA505ADCB32F72B1F684E0 /* ProjectFileManager.swift */,
+				346F8C1DAF2B369584A27F2C /* SentenceLibraryManager.swift */,
+				9AF2B9F637C5B494D6DF66CB /* SentenceLibraryStore.swift */,
+				1CE51FDC64B792CA17D84BB2 /* ggml-silero-v6.2.0.bin */,
+				AABCE518D17D16F3DA5362CA /* Silero-VAD-LICENSE.txt */,
+				45B91B53FB39A78206BA9F4C /* SpeakerKit-LICENSE.txt */,
+				C580B86F4646C4A7A7BA68EB /* whisper.cpp-LICENSE.txt */,
+				1B5A2A4394964AE0A405BDF3 /* SubtitleExporter.swift */,
+				979EFF006805181442A49616 /* SubtitleParser.swift */,
+				6717B9D4D6EC47D8EE39901D /* TextAlignmentEngine.swift */,
+				0C23E5D35CFB17AE24735E37 /* TranslationModels.swift */,
+				B4388F40B757D8EA09A31075 /* TranslationProviders.swift */,
+				A8D1325AF570D72FB16D3DC2 /* TranslationService.swift */,
+				6D8B348A7A493FB1958C8321 /* TranslationSettings.swift */,
+				07981E51B2D15527C3CF185E /* DraggableWaveformOverlay.swift */,
+				5B85D4F32F870C599C042160 /* FloatingVideoOSDView.swift */,
+				60DFB6DA4C3F6FEAA817F8F3 /* IntensiveSettingsPopover.swift */,
+				B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */,
+				A045F47F858B0B31230A056A /* MainContentView.swift */,
+				0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */,
+				8986BDC806029931A3751EF5 /* PlaybackListView.swift */,
+				D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */,
+				0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */,
+				4233274AA7378C81FD6952BC /* SegmentListView.swift */,
+				B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */,
+				6029D149A5A0818174471465 /* ShortcutCatalog.swift */,
+				FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */,
+				2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */,
+				F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */,
+				C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */,
+				C8E5CC1D9FCE282A33A22002 /* VideoSubtitleOverlay.swift */,
+				B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */,
+				60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */,
+				6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */,
+				BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */,
+				56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */,
+				5A5E6C6AA039621119B4CEE4 /* SpeakerDiarizationEngine.swift */,
+				F5883EFBEE5334C4A618864B /* SpeechBoundaryOptimizer.swift */,
+				C169DED2CE43BFC42EC5FB92 /* SpeechSegmentationModels.swift */,
+				9F96624BE0DE7312BC7EB0FA /* SpeechSegmentationPipeline.swift */,
+				A8F3FAB53A6E2FCB87334E61 /* StudyMateResourceBundle.swift */,
+				616E63877EFC605DA4CB46A7 /* WaveformExtractor.swift */,
+				CB1439B7E44454E113459029 /* WhisperModelManager.swift */,
+				CE59BB4B798E5948A600BFB9 /* Info.plist */,
+				B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */,
+				BA53D534888C0193FD2955F1 /* InfoPlist.strings */,
+				6C16973D55A261AD81C17CBD /* InfoPlist.strings */,
+				DB9F2F2F197A979E95533866 /* Assets.xcassets */,
+				365CBFEB4EF016349F6A34C9 /* SpeakerKitModels */,
+				158C35FECB86B6A321C2F534 /* whisper.xcframework */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		B879358E0122ADB25F226773 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				376984DCFDF6E2949E9F2D52 /* StudyMate.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CB792A452192A4AEFE8325E0 /* StudyMate */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1250C239361C4EF0CC2A0E0A /* Build configuration list for PBXNativeTarget "StudyMate" */;
+			buildPhases = (
+				CD77EE1B024738EBDDD804E8 /* Sources */,
+				C448FB86A22E5B7F468F9341 /* Frameworks */,
+				CEB73B00154D0F57D6819D49 /* Resources */,
+				0102941A3076E2B37D228A94 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			packageProductDependencies = (
+				6700D30280B43E9A5F9B450D /* SpeakerKit */,
+			);
+			name = StudyMate;
+			productName = StudyMate;
+			productReference = 376984DCFDF6E2949E9F2D52 /* StudyMate.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8DB0CE83CB3E383162EEF7D1 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					CB792A452192A4AEFE8325E0 = {
+						CreatedOnToolsVersion = 15.0;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = FEEA668B833B084BC9C1EC1B /* Build configuration list for PBXProject "StudyMate" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = zh_CN;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				zh_CN,
+			);
+			mainGroup = 396AE4B78ADCA057876B0448;
+			packageReferences = (
+				B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+			);
+			productRefGroup = B879358E0122ADB25F226773 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CB792A452192A4AEFE8325E0 /* StudyMate */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CEB73B00154D0F57D6819D49 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				97DF24709486D257ADAE95B2 /* Assets.xcassets in Resources */,
+				BC4834C261CEA9E82745C8E5 /* SpeakerKitModels in Resources */,
+				20FFDF2108EB5197D4CBB58C /* ggml-silero-v6.2.0.bin in Resources */,
+				B53D133DDEB3C6A706B2C79E /* Silero-VAD-LICENSE.txt in Resources */,
+				6B2ADE3DE664BBCDDDC1DFB6 /* SpeakerKit-LICENSE.txt in Resources */,
+				DA67F4A44C078F96E26C1CB1 /* whisper.cpp-LICENSE.txt in Resources */,
+				D38B7268D011178C2033049E /* InfoPlist.strings in Resources */,
+				97DD076F0BDA6503115D8B89 /* InfoPlist.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CD77EE1B024738EBDDD804E8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5AD27D198E8D091967BC127B /* CSpeechRuntime.c in Sources */,
+				A37E357517FE37A3ED383B67 /* AVFoundationPlayerBackend.swift in Sources */,
+				984D0A7E4533C77B77DD974F /* LazyMPVPlayerBackend.swift in Sources */,
+				7C59F0ACCE13E06ADA39876A /* MPVClient.swift in Sources */,
+				1FA23E3A83E25CF4D307A96B /* MPVPlayerBackend.swift in Sources */,
+				A9E8F5F8366D435BEB3E06C8 /* MediaPlayerBackend.swift in Sources */,
+				74ADA67823175D9813A695B2 /* PlaybackEngine.swift in Sources */,
+				B48779FFA10DC800918DFDB1 /* SentenceLibraryPlayer.swift in Sources */,
+				11E16318C10885A095FDC4EA /* LanguageManager.swift in Sources */,
+				1A110B893946A9BE5D064F81 /* DecoderEngineMode.swift in Sources */,
+				58623CE466DCD1805256CC72 /* MediaItem.swift in Sources */,
+				7050CC6B5FB343C5F39CA502 /* SentenceLibraryModels.swift in Sources */,
+				2C926741A0D889B2D246C149 /* SentenceSegment.swift in Sources */,
+				8F77D91A237D13B9D22D90D1 /* WaveformData.swift in Sources */,
+				CB59D12B81CC81CC1B5E31E3 /* PlaybackHistoryStore.swift in Sources */,
+				F39F1EC8AE1674AECAD74887 /* ProjectFileManager.swift in Sources */,
+				85451635C530461DA7E872CD /* SentenceLibraryManager.swift in Sources */,
+				5A08D7D335EA5218F9DAABDB /* SentenceLibraryStore.swift in Sources */,
+				B16FC230BB7759B818D0C1E4 /* SubtitleExporter.swift in Sources */,
+				2835BEA65E08FBE028257E0F /* SubtitleParser.swift in Sources */,
+				3DDC7A6F5D174ABD71C9A0A8 /* TextAlignmentEngine.swift in Sources */,
+				95FAF23F0A65E9D74865122A /* TranslationModels.swift in Sources */,
+				5208B3E5AEF1425B6F6591ED /* TranslationProviders.swift in Sources */,
+				C3A748FBCBF0BB903C0EAC60 /* TranslationService.swift in Sources */,
+				94050CFBC82AB859269C8575 /* TranslationSettings.swift in Sources */,
+				7E52F3F0C04F7C8FD5319ECD /* DraggableWaveformOverlay.swift in Sources */,
+				DF3BDC5A5477B122869B2D78 /* FloatingVideoOSDView.swift in Sources */,
+				F41FDAACCB71B852DD229212 /* IntensiveSettingsPopover.swift in Sources */,
+				2B22C4EBF339681E95B2AD85 /* MacOS26MediaStyle.swift in Sources */,
+				F70C16B44C3A12B9887C69D4 /* MainContentView.swift in Sources */,
+				674745C6E7846A3714C8FF3B /* MainStatusCenter.swift in Sources */,
+				9434C394DE07FCBAD2B84BEC /* PlaybackListView.swift in Sources */,
+				EB33A27A786B5358F76160B9 /* PrimaryWaveformView.swift in Sources */,
+				5F4AF1617BAAA3DB2A5E60FE /* SecondaryWaveformView.swift in Sources */,
+				5DD9FC7FC27C70AAEF1C13F9 /* SegmentListView.swift in Sources */,
+				58269748D39A3829B12BC58E /* SentenceLibraryView.swift in Sources */,
+				846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */,
+				8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */,
+				9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */,
+				AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */,
+				FBF7AC50B5EA6E552620B102 /* VideoPlayerView.swift in Sources */,
+				2A53D1CDB172FE5B185467EE /* VideoSubtitleOverlay.swift in Sources */,
+				5AF473CF3B1546BC7582DA07 /* WaveformComponents.swift in Sources */,
+				152DA9C3FED0B1C9EAEA3320 /* WelcomeScreenView.swift in Sources */,
+				4B9C4EBCD8A569080E4DA386 /* WindowTextInputFocusDismissalBridge.swift in Sources */,
+				2B283B0961F0CF2338CF0CE4 /* AudioPCMExtractor.swift in Sources */,
+				BB273B9B23ECB1EBE45E46AC /* NativeSpeechRuntime.swift in Sources */,
+				09ED8E4C53D2B0B763FD79AE /* SpeakerDiarizationEngine.swift in Sources */,
+				61EE7F199E0CC424BD84FDA6 /* SpeechBoundaryOptimizer.swift in Sources */,
+				93D893BBE43A7627D85C92C3 /* SpeechSegmentationModels.swift in Sources */,
+				B7F92ADADCBD91B3D876CF44 /* SpeechSegmentationPipeline.swift in Sources */,
+				082DD62B78A1C78E4EAF86A6 /* StudyMateResourceBundle.swift in Sources */,
+				527BFAF5F36C0DF617994C56 /* WaveformExtractor.swift in Sources */,
+				9CE3BA51013C67BC21D69362 /* WhisperModelManager.swift in Sources */,
+				8000A1DF778CEB331C49E162 /* StudyMateApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6700D30280B43E9A5F9B450D /* SpeakerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B34214038D4BC6E2E7B09F71 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+			productName = SpeakerKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin XCBuildConfiguration section */
+		DDF18388A5A6BF12606AA040 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+					"GL_SILENCE_DEPRECATION=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				ENABLE_DEBUG_DYLIB = YES;
+				ENABLE_PREVIEWS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG GL_SILENCE_DEPRECATION";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		1818EAFC7212389B4B45BC12 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GL_SILENCE_DEPRECATION=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "GL_SILENCE_DEPRECATION";
+				SWIFT_COMPILATION_MODE = "wholemodule";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		CE912E7CA9712A74B447EE08 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 221;
+				ENABLE_DEBUG_DYLIB = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.220;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9D14E739A5DF7B993D139497 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 221;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/CSpeechRuntime/include";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.220;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FEEA668B833B084BC9C1EC1B /* Build configuration list for PBXProject "StudyMate" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DDF18388A5A6BF12606AA040 /* Debug */,
+				1818EAFC7212389B4B45BC12 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1250C239361C4EF0CC2A0E0A /* Build configuration list for PBXNativeTarget "StudyMate" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CE912E7CA9712A74B447EE08 /* Debug */,
+				9D14E739A5DF7B993D139497 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 8DB0CE83CB3E383162EEF7D1 /* Project object */;
+}

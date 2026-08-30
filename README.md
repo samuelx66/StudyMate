@@ -1,6 +1,6 @@
-# MacAboboo
+# StudyMate（学伴）
 
-MacAboboo 是一款面向 macOS 的原生英语听力学习与音视频复读工具，使用 Swift、SwiftUI、AppKit 和 AVFoundation 构建。
+StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视频复读工具，使用 Swift、SwiftUI、AppKit 和 AVFoundation 构建。
 
 ## 当前功能
 
@@ -29,8 +29,8 @@ MacAboboo 是一款面向 macOS 的原生英语听力学习与音视频复读工
 ## 数据与隐私
 
 - AI 识别、Silero、SpeakerKit 和 Whisper 均在本机运行；SpeakerKit 模型随应用打包，不需要首次联网下载。
-- Whisper 模型按需下载到 `~/Library/Application Support/MacAboboo/Models/`。
-- PCM、工程和句库数据保存在 `~/Library/Application Support/MacAboboo/`。
+- Whisper 模型按需下载到 `~/Library/Application Support/StudyMate/Models/`。
+- PCM、工程和句库数据保存在 `~/Library/Application Support/StudyMate/`。
 - 从播放列表或欢迎页移除媒体、或清空播放列表时，只保留原始音视频文件；对应工程、波形和 PCM 派生缓存会一并清理。
 - 工程和播放历史的后台保存失败会显示在状态栏，不会再被静默忽略。
 - 工程文件当前写入 schema 4，打开时可迁移 schema 1～4 的旧工程；迁移会保留断句、原文、译文、书签和播放位置。工程存在但无法读取或媒体信息不匹配时，程序停止自动断句，不会用新结果覆盖旧工程。媒体信息不匹配时，状态栏的“处理工程”按钮会等待用户选择“继续使用原工程 / 重新断句 / 取消”；继续使用会先备份原工程，再只更新媒体绑定并保留原有字幕，完成后显示实际备份路径。
@@ -53,8 +53,8 @@ MacAboboo 是一款面向 macOS 的原生英语听力学习与音视频复读工
 ```text
 Sources/
   CSpeechRuntime/       whisper.cpp C API 封装
-  MacAboboo/            播放、波形、断句、字幕、翻译和句库模块
-  MacAbobooApp/         macOS 应用入口
+  StudyMate/            播放、波形、断句、字幕、翻译和句库模块
+  StudyMateApp/         macOS 应用入口
 Tests/                  单元测试与集成测试
 Vendor/Whisper/         whisper.cpp macOS XCFramework
 Scripts/                工程生成、图标和应用打包脚本
@@ -68,7 +68,7 @@ Scripts/                工程生成、图标和应用打包脚本
 
 ## 构建与测试
 
-使用 Xcode 打开 `MacAboboo.xcodeproj`，选择 `MacAboboo` scheme 后运行。
+使用 Xcode 打开 `StudyMate.xcodeproj`，选择 `StudyMate` scheme 后运行。
 
 也可以使用 Swift Package Manager：
 
@@ -81,4 +81,4 @@ swift test
 
 ## 许可证
 
-第三方组件的许可证位于 `Sources/MacAboboo/Resources/ThirdPartyNotices/` 和 `Vendor/Whisper/LICENSE`。发布应用时请同时遵守各依赖项目的许可证要求。
+第三方组件的许可证位于 `Sources/StudyMate/Resources/ThirdPartyNotices/` 和 `Vendor/Whisper/LICENSE`。发布应用时请同时遵守各依赖项目的许可证要求。

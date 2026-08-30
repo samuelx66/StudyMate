@@ -1,0 +1,5 @@
+/* Application display name shown by macOS when Chinese is selected. */
+"CFBundleDisplayName" = "学伴";
+"CFBundleName" = "学伴";
+"CFBundleGetInfoString" = "学伴";
+"CFBundleTypeName" = "学伴句库";

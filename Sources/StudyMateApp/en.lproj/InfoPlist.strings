@@ -1,0 +1,5 @@
+/* Application display name shown by macOS when English is selected. */
+"CFBundleDisplayName" = "StudyMate";
+"CFBundleName" = "StudyMate";
+"CFBundleGetInfoString" = "StudyMate";
+"CFBundleTypeName" = "StudyMate Sentence Library";
