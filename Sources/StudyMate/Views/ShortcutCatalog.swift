@@ -4,6 +4,7 @@ import Foundation
 /// 共用同一份数据，避免显示文字与实际绑定逐渐不一致。
 public enum StudyMateShortcutID: String, CaseIterable, Identifiable, Sendable {
     case openSentenceLibrary
+    case openDictionary
     case openMedia
     case playbackModeContinuous
     case playbackModeSingleRepeat
@@ -87,6 +88,7 @@ public struct StudyMateShortcutDescriptor: Identifiable, Equatable, Sendable {
 public enum StudyMateShortcutCatalog {
     public static let all: [StudyMateShortcutDescriptor] = [
         .init(id: .openSentenceLibrary, chineseName: "打开句库", englishName: "Open Sentence Library", keyDisplay: "⌘L"),
+        .init(id: .openDictionary, chineseName: "打开词典", englishName: "Open Dictionary", keyDisplay: "⌃⌘D"),
         .init(id: .openMedia, chineseName: "打开音视频", englishName: "Open Audio or Video", keyDisplay: "⌘O"),
         .init(id: .playbackModeContinuous, chineseName: "播放模式：连续播放", englishName: "Playback Mode: Continuous Play", keyDisplay: "⌘1"),
         .init(id: .playbackModeSingleRepeat, chineseName: "播放模式：单句重复", englishName: "Playback Mode: Repeat Sentence", keyDisplay: "⌘2"),

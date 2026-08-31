@@ -310,6 +310,7 @@ private struct DraggableVideoSubtitle: View, Equatable {
 public struct VideoSubtitleOverlay: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var settings = VideoSubtitleSettings.shared
+    @ObservedObject private var dictionaryCoordinator = DictionaryInteractionCoordinator.shared
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -323,32 +324,93 @@ public struct VideoSubtitleOverlay: View {
                 let segment = engine.segments[index]
                 ZStack {
                     if settings.showOriginal, !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        DraggableVideoSubtitle(
-                            settings: settings,
-                            engine: engine,
-                            segmentID: segment.id,
-                            track: .original,
-                            text: segment.text,
-                            containerSize: geometry.size
-                        )
-                        .equatable()
+                        if dictionaryCoordinator.isVideoSelectionMode {
+                            DictionarySelectableText(
+                                text: segment.text,
+                                font: subtitleFont(for: .original),
+                                color: NSColor(settings.originalColor),
+                                context: segmentContext(segment)
+                            )
+                            .frame(maxWidth: max(180, geometry.size.width * 0.88), minHeight: 28)
+                            .position(
+                                x: settings.originalPositionX * geometry.size.width,
+                                y: settings.originalPositionY * geometry.size.height
+                            )
+                        } else {
+                            DraggableVideoSubtitle(
+                                settings: settings,
+                                engine: engine,
+                                segmentID: segment.id,
+                                track: .original,
+                                text: segment.text,
+                                containerSize: geometry.size
+                            )
+                            .equatable()
+                        }
                     }
                     if settings.showTranslation, !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        DraggableVideoSubtitle(
-                            settings: settings,
-                            engine: engine,
-                            segmentID: segment.id,
-                            track: .translation,
-                            text: segment.translation,
-                            containerSize: geometry.size
-                        )
-                        .equatable()
+                        if dictionaryCoordinator.isVideoSelectionMode {
+                            DictionarySelectableText(
+                                text: segment.translation,
+                                font: subtitleFont(for: .translation),
+                                color: NSColor(settings.translationColor),
+                                context: segmentContext(segment)
+                            )
+                            .frame(maxWidth: max(180, geometry.size.width * 0.88), minHeight: 28)
+                            .position(
+                                x: settings.translationPositionX * geometry.size.width,
+                                y: settings.translationPositionY * geometry.size.height
+                            )
+                        } else {
+                            DraggableVideoSubtitle(
+                                settings: settings,
+                                engine: engine,
+                                segmentID: segment.id,
+                                track: .translation,
+                                text: segment.translation,
+                                containerSize: geometry.size
+                            )
+                            .equatable()
+                        }
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
         .allowsHitTesting(true)
+    }
+
+    private func subtitleFont(for track: VideoSubtitleTrack) -> NSFont {
+        let family: String
+        let size: Double
+        let bold: Bool
+        let italic: Bool
+        switch track {
+        case .original:
+            family = settings.originalFontName
+            size = settings.originalFontSize
+            bold = settings.originalBold
+            italic = settings.originalItalic
+        case .translation:
+            family = settings.translationFontName
+            size = settings.translationFontSize
+            bold = settings.translationBold
+            italic = settings.translationItalic
+        }
+        var descriptor = NSFontDescriptor(name: family, size: max(10, min(96, size)))
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if bold { traits.insert(.bold) }
+        if italic { traits.insert(.italic) }
+        if !traits.isEmpty { descriptor = descriptor.withSymbolicTraits(traits) }
+        return NSFont(descriptor: descriptor, size: max(10, min(96, size)))
+            ?? .systemFont(ofSize: max(10, min(96, size)))
+    }
+
+    private func segmentContext(_ segment: SentenceSegment) -> String {
+        [segment.text, segment.translation]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 }
 

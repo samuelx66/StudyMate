@@ -1751,20 +1751,34 @@ struct SegmentRowView: View, Equatable {
                         HStack(alignment: .top, spacing: 6) {
                             // 左边区域：原文（若无输入则显示默认占位 Sentence #）
                             let orig = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            Text(orig.isEmpty ? lang.localized(.sentenceIndex(seg.index)) : orig)
-                                .font(.caption)
-                                .foregroundColor(orig.isEmpty ? .secondary.opacity(0.6) : (isActive ? .primary : .primary.opacity(0.85)))
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-
-                            // 右边区域：译文
                             let trans = seg.translation.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !trans.isEmpty {
-                                Text(trans)
+                            if orig.isEmpty {
+                                Text(lang.localized(.sentenceIndex(seg.index)))
                                     .font(.caption)
-                                    .foregroundColor(isActive ? .secondary : .secondary.opacity(0.8))
+                                    .foregroundColor(.secondary.opacity(0.6))
                                     .lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                DictionarySelectableText(
+                                    text: orig,
+                                    font: .systemFont(ofSize: 12),
+                                    color: isActive ? .labelColor : .labelColor.withAlphaComponent(0.85),
+                                    context: [orig, trans].filter { !$0.isEmpty }.joined(separator: "\n"),
+                                    onSingleClick: onSelect
+                                )
+                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 42, alignment: .leading)
+                            }
+
+                            // 右边区域：译文
+                            if !trans.isEmpty {
+                                DictionarySelectableText(
+                                    text: trans,
+                                    font: .systemFont(ofSize: 12),
+                                    color: isActive ? .secondaryLabelColor : .secondaryLabelColor.withAlphaComponent(0.8),
+                                    context: [orig, trans].filter { !$0.isEmpty }.joined(separator: "\n"),
+                                    onSingleClick: onSelect
+                                )
+                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 42, alignment: .leading)
                             }
                         }
                     }

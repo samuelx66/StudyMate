@@ -161,6 +161,14 @@ struct StudyMateApp: App {
                 }
             }
 
+            // 独立词典窗口：不让词典初始化拖慢欢迎页或媒体窗口的冷启动。
+            CommandGroup(after: .windowArrangement) {
+                Button(languageManager.text("打开词典…", "Open Dictionary…")) {
+                    openDictionaryAction()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .control])
+            }
+
             // 文件菜单
             CommandGroup(replacing: .newItem) {
                 Button(languageManager.localized(.openFile)) {
@@ -336,6 +344,15 @@ struct StudyMateApp: App {
         .defaultSize(width: 560, height: 600)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
+
+        // 词典是独立窗口，仅在用户打开时启动独立引擎并读取词典索引。
+        Window(languageManager.text("词典", "Dictionary"), id: "dictionary") {
+            DictionaryView()
+                .environmentObject(languageManager)
+        }
+        .defaultSize(width: 900, height: 600)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
     }
 
     private var navigationBookmarks: [SentenceSegment] {
@@ -402,6 +419,14 @@ struct StudyMateApp: App {
             NotificationCenter.default.post(name: .studyMateCloseCurrentMedia, object: nil)
         } else if let keyWindow = NSApp.keyWindow {
             keyWindow.performClose(nil)
+        }
+    }
+
+    private func openDictionaryAction() {
+        let coordinator = DictionaryInteractionCoordinator.shared
+        coordinator.lookupCurrentSelectionOrWord()
+        if coordinator.selectedText == nil {
+            openWindow(id: "dictionary")
         }
     }
 }

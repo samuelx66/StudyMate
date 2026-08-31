@@ -12,6 +12,7 @@ StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视�
 - 句子筛选、批量导出 AAC M4A 与双语 LRC/SRT
 - 多句库管理：独立 M4A 片段、预览图、搜索、日期/来源筛选和试听
 - DeepSeek、Gemini，以及 OpenAI/Anthropic 协议的自定义翻译服务
+- 独立词典引擎（Rust 实现）：导入标准 MDX/MDD v2，支持 UTF-8/UTF-16/GBK/Big5、zlib/LZO、精确和前缀查询，并兼容 `Encrypted=2` 的索引混淆；需要注册码的 `Encrypted=1/3` 文件支持通过 `RegCode/.key` 与用户标识派生解密密钥
 - 独立的 800×520 双栏欢迎首页、播放列表、快捷键和状态栏进度提示
 
 ## 断句流程
@@ -40,6 +41,7 @@ StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视�
 - 默认句库不可删除；勾选的句子可移动到其它句库，移动会保留原文、译文、备注、来源、时间戳、入库日期以及独立音频和缩略图。
 - 句库播放和导出始终使用 `.mablib/Media` 内的独立 M4A，即使原始媒体仍存在也不会重新依赖源文件。
 - 句库、翻译配置和 PCM 缓存继续只使用当前格式；工程文件单独保留向前兼容迁移，避免软件升级造成已编辑字幕丢失。
+- 词典安装到 `~/Library/Application Support/StudyMate/Dictionaries/<dictionary-id>.mabdict/`。每个包包含 `manifest.json`、原始 `source/`、`Library.sqlite3` 索引和 MDD 的 `resources/`；导入过程先写隐藏临时目录，完成后原子发布，查询不依赖原始 MDX/MDD 文件。`Encrypted=2` 可自动导入；`Encrypted=1/3` 如果注册码或用户标识不正确，会明确提示需要授权信息，不会静默生成空词典。
 
 ## 性能策略
 
@@ -54,7 +56,11 @@ StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视�
 Sources/
   CSpeechRuntime/       whisper.cpp C API 封装
   StudyMate/            播放、波形、断句、字幕、翻译和句库模块
+    Dictionary/         macOS 词典窗口与 Rust JSONL 适配层（不包含词典解析逻辑）
   StudyMateApp/         macOS 应用入口
+Dictionary/
+  dict-core/            跨平台 MDX/MDD 解析、SQLite 索引和查询核心
+  dict-cli/             长驻 JSONL 本地桥接进程；发布时放入 Contents/Helpers
 Tests/                  单元测试与集成测试
 Vendor/Whisper/         whisper.cpp macOS XCFramework
 Scripts/                工程生成、图标和应用打包脚本
@@ -75,6 +81,9 @@ Scripts/                工程生成、图标和应用打包脚本
 ```bash
 swift build
 swift test
+
+# 单独检查词典核心
+cargo test --manifest-path Dictionary/Cargo.toml --workspace
 ```
 
 发布包由 `Scripts/` 中的构建脚本生成到 `dist/`，同时包含应用需要的模型、动态库和资源。

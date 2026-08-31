@@ -18,6 +18,9 @@ xcuserdata/
 Packages/
 .swiftpm/
 
+# Dictionary engine build artifacts
+Dictionary/target/
+
 # Distribution & Build Outputs
 dist/
 

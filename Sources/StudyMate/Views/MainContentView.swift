@@ -26,6 +26,7 @@ public struct MainContentView: View {
     @ObservedObject private var libraryStatus = SentenceLibraryStatusCenter.shared
     @ObservedObject private var statusCenter = MainStatusCenter.shared
     @ObservedObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
+    @ObservedObject private var dictionaryCoordinator = DictionaryInteractionCoordinator.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.dismiss) private var dismiss
@@ -63,6 +64,9 @@ public struct MainContentView: View {
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleMediaDrop)
         .overlay(dropTargetOverlay)
+        // 字幕选词操作条与结果面板位于媒体窗口最上层，但不改变句子列表的
+        // 点击播放语义；只有真正存在选区时才接管命中测试。
+        .overlay { DictionaryLookupOverlay(engine: engine) }
         // 必须在其它覆盖层之后挂载，保证播放列表及其原生控件始终位于
         // 断句列表等工作区控件的命中层之上。
         .overlay(alignment: .topTrailing) { playlistOverlay }
@@ -129,11 +133,22 @@ public struct MainContentView: View {
             engine: engine,
             lang: lang,
             videoSubtitleSettings: videoSubtitleSettings,
+            dictionaryCoordinator: dictionaryCoordinator,
             isWaveformsVisible: $isWaveformsVisible,
             isSubtitleEditVisible: $isSubtitleEditVisible,
             isVideoSubtitleFontSettingsPresented: $isVideoSubtitleFontSettingsPresented,
             isSidebarVisible: $isSidebarVisible,
             onOpenLibrary: { openWindow(id: "sentence-library") },
+            onOpenDictionary: {
+                if dictionaryCoordinator.selectedText != nil {
+                    dictionaryCoordinator.lookupSelected()
+                } else {
+                    dictionaryCoordinator.lookupCurrentSelectionOrWord()
+                    if dictionaryCoordinator.selectedText == nil {
+                        openWindow(id: "dictionary")
+                    }
+                }
+            },
             onOpenMedia: openFileDialog,
             onTogglePlaylist: togglePlaylist
         )
@@ -391,11 +406,13 @@ private struct MainWindowToolbar: ToolbarContent {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject var lang: LanguageManager
     @ObservedObject var videoSubtitleSettings: VideoSubtitleSettings
+    @ObservedObject var dictionaryCoordinator: DictionaryInteractionCoordinator
     @Binding var isWaveformsVisible: Bool
     @Binding var isSubtitleEditVisible: Bool
     @Binding var isVideoSubtitleFontSettingsPresented: Bool
     @Binding var isSidebarVisible: Bool
     let onOpenLibrary: () -> Void
+    let onOpenDictionary: () -> Void
     let onOpenMedia: () -> Void
     let onTogglePlaylist: () -> Void
 
@@ -419,6 +436,25 @@ private struct MainWindowToolbar: ToolbarContent {
     }
 
     var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                if engine.currentMedia?.isVideo == true,
+                   dictionaryCoordinator.selectedText == nil {
+                    dictionaryCoordinator.toggleVideoSelectionMode(using: engine)
+                } else {
+                    onOpenDictionary()
+                }
+            } label: {
+                Image(systemName: dictionaryCoordinator.isVideoSelectionMode ? "text.viewfinder" : "character.book.closed")
+            }
+                .help(StudyMateShortcutCatalog.help(
+                    dictionaryCoordinator.isVideoSelectionMode
+                        ? lang.text("关闭视频选词查词模式", "Exit video text lookup mode")
+                        : lang.text("查词（视频中点击后拖动选择文字）", "Look up a word (click, then drag text in video)"),
+                    shortcut: .openDictionary
+                ))
+                .keyboardShortcut("d", modifiers: [.command, .control])
+        }
         ToolbarItem(placement: .navigation) {
             Button(action: onOpenLibrary) { Image(systemName: "books.vertical") }
                 .help(StudyMateShortcutCatalog.help(lang.text("打开句库", "Open sentence library"), shortcut: .openSentenceLibrary))

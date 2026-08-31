@@ -25,7 +25,7 @@ require_tool() {
     }
 }
 
-for tool in swift otool install_name_tool codesign actool ditto lipo; do
+for tool in swift cargo otool install_name_tool codesign actool ditto lipo; do
     require_tool "${tool}"
 done
 
@@ -45,6 +45,16 @@ rm -rf "${APP_BUNDLE}"
 mkdir -p "${MACOS_DIR}" "${FRAMEWORKS_DIR}" "${HELPERS_DIR}" "${RESOURCES_DIR}"
 cp "${EXECUTABLE}" "${MACOS_DIR}/${APP_NAME}"
 chmod 755 "${MACOS_DIR}/${APP_NAME}"
+
+echo "=== 2.1 编译并内置词典桥接程序 ==="
+cargo build --manifest-path "${ROOT_DIR}/Dictionary/Cargo.toml" --release --bin studymate-dict
+DICT_HELPER="${ROOT_DIR}/Dictionary/target/release/studymate-dict"
+test -x "${DICT_HELPER}" || {
+    echo "未找到词典桥接程序：${DICT_HELPER}" >&2
+    exit 1
+}
+cp "${DICT_HELPER}" "${HELPERS_DIR}/studymate-dict"
+chmod 755 "${HELPERS_DIR}/studymate-dict"
 if ! otool -l "${MACOS_DIR}/${APP_NAME}" | grep -Fq '@executable_path/../Frameworks'; then
     install_name_tool -add_rpath '@executable_path/../Frameworks' "${MACOS_DIR}/${APP_NAME}"
 fi
