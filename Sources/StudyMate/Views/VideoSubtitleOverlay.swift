@@ -149,6 +149,10 @@ private struct DraggableVideoSubtitle: View {
     @State private var isHovering = false
     @State private var isDragging = false
     @State private var hasNotifiedEngineOfDrag = false
+    /// AppKit owns modifier-dragging inside the selectable NSTextView.  The
+    /// outer SwiftUI gesture remains as a fallback for the rounded padding,
+    /// but must stand down while AppKit is handling the same gesture.
+    @State private var appKitDragActive = false
 
     private var savedPosition: CGPoint {
         switch track {
@@ -249,6 +253,7 @@ private struct DraggableVideoSubtitle: View {
             onOptionDrag: { phase in
                 switch phase {
                 case .started:
+                    appKitDragActive = true
                     if !hasNotifiedEngineOfDrag {
                         hasNotifiedEngineOfDrag = true
                         engine.beginVideoSubtitleDrag(segmentID: segmentID)
@@ -264,6 +269,7 @@ private struct DraggableVideoSubtitle: View {
                     setPosition(CGPoint(x: finalX, y: finalY))
                     dragOffset = .zero
                     isDragging = false
+                    appKitDragActive = false
                     if hasNotifiedEngineOfDrag {
                         hasNotifiedEngineOfDrag = false
                         engine.endVideoSubtitleDrag(segmentID: segmentID)
@@ -296,7 +302,8 @@ private struct DraggableVideoSubtitle: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    guard NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command) || isDragging else { return }
+                    guard !appKitDragActive,
+                          NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command) || isDragging else { return }
                     if !hasNotifiedEngineOfDrag {
                         hasNotifiedEngineOfDrag = true
                         engine.beginVideoSubtitleDrag(segmentID: segmentID)
@@ -305,7 +312,7 @@ private struct DraggableVideoSubtitle: View {
                     dragOffset = value.translation
                 }
                 .onEnded { value in
-                    guard isDragging else { return }
+                    guard !appKitDragActive, isDragging else { return }
                     let width = max(1, containerSize.width)
                     let height = max(1, containerSize.height)
                     let finalX = min(0.96, max(0.04, savedPosition.x + value.translation.width / width))
@@ -329,6 +336,7 @@ private struct DraggableVideoSubtitle: View {
                 hasNotifiedEngineOfDrag = false
                 engine.endVideoSubtitleDrag(segmentID: segmentID)
             }
+            appKitDragActive = false
         }
     }
 

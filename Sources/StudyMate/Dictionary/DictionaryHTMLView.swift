@@ -163,7 +163,11 @@ public enum DictionaryHTMLFormatter {
             let badgeHTML = entries.count > 1
                 ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
                 : ""
-            let contentHTML = formatEntryContent(entry.text, resourceRoot: entry.resourceRoot)
+            let contentHTML = formatEntryContent(
+                entry.text,
+                resourceRoot: entry.resourceRoot,
+                dictionaryID: entry.dictionaryID
+            )
             return """
             <div class="dict-entry" data-dict-id="\(escapeHTML(entry.dictionaryID))">
                 \(badgeHTML)
@@ -196,10 +200,15 @@ public enum DictionaryHTMLFormatter {
         return String(hasher.finalize())
     }
 
-    private static func formatEntryContent(_ raw: String, resourceRoot: String?) -> String {
+    private static func formatEntryContent(
+        _ raw: String,
+        resourceRoot: String?,
+        dictionaryID: String?
+    ) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.contains("<") && trimmed.contains(">") {
-            return rewriteResourceReferences(trimmed, resourceRoot: resourceRoot)
+            let withAudio = rewriteSoundReferences(trimmed, dictionaryID: dictionaryID)
+            return rewriteResourceReferences(withAudio, resourceRoot: resourceRoot)
         }
         let paragraphs = trimmed.components(separatedBy: "\n\n")
         if paragraphs.count > 1 {
@@ -207,6 +216,34 @@ public enum DictionaryHTMLFormatter {
         } else {
             return "<p>\(escapeHTML(trimmed).replacingOccurrences(of: "\n", with: "<br>"))</p>"
         }
+    }
+
+    /// MDD audio links are kept as a custom URL so WebKit can report both the
+    /// dictionary package and the resource key. The old `sound:` callback only
+    /// exposed the key, which caused the UI to read the filename aloud instead
+    /// of playing the pronunciation stored in the dictionary.
+    private static func rewriteSoundReferences(_ html: String, dictionaryID: String?) -> String {
+        guard let dictionaryID, !dictionaryID.isEmpty else { return html }
+        let encodedDictionaryID = dictionaryID.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? dictionaryID
+        let pattern = #"((?:href|src)\s*=\s*[\"'])(sound:(?://)?)([^\"']+)([\"'])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return html }
+        let nsHTML = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: nsHTML.length))
+        var result = html
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 5 else { continue }
+            let key = nsHTML.substring(with: match.range(at: 3))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !key.isEmpty else { continue }
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+            let replacement = nsHTML.substring(with: match.range(at: 1))
+                + "studymate-sound://\(encodedDictionaryID)/\(encodedKey)"
+                + nsHTML.substring(with: match.range(at: 4))
+            if let swiftRange = Range(match.range, in: result) {
+                result.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+        return result
     }
 
     /// MDD records can come from several packages in one result. Rewriting
@@ -264,6 +301,7 @@ public enum DictionaryHTMLFormatter {
         let lower = value.lowercased()
         return !lower.isEmpty && !lower.hasPrefix(("http://")) && !lower.hasPrefix("https://") &&
             !lower.hasPrefix("data:") && !lower.hasPrefix("file:") && !lower.hasPrefix("sound:") &&
+            !lower.hasPrefix("studymate-sound:") &&
             !lower.hasPrefix("entry:") && !lower.hasPrefix("lookup:") && !lower.hasPrefix("javascript:") &&
             !lower.hasPrefix("#")
     }
@@ -289,6 +327,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     public let textScale: CGFloat
     public var onLookupWord: ((String) -> Void)?
     public var onPlayAudio: ((String) -> Void)?
+    public var onPlayDictionaryAudio: ((String, String) -> Void)?
 
     public init(
         html: String,
@@ -296,7 +335,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
-        onPlayAudio: ((String) -> Void)? = nil
+        onPlayAudio: ((String) -> Void)? = nil,
+        onPlayDictionaryAudio: ((String, String) -> Void)? = nil
     ) {
         self.html = html
         self.bodyHTML = DictionaryHTMLView.extractBodyHTML(from: html)
@@ -307,6 +347,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
+        self.onPlayDictionaryAudio = onPlayDictionaryAudio
     }
 
     public init(
@@ -315,7 +356,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
-        onPlayAudio: ((String) -> Void)? = nil
+        onPlayAudio: ((String) -> Void)? = nil,
+        onPlayDictionaryAudio: ((String, String) -> Void)? = nil
     ) {
         let resolvedBaseURL = baseURL ?? entries.first.flatMap { entry in
             if let root = entry.resourceRoot {
@@ -332,6 +374,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
+        self.onPlayDictionaryAudio = onPlayDictionaryAudio
     }
 
     private static func extractBodyHTML(from html: String) -> String {
@@ -492,6 +535,24 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 let audioResource = url.host ?? url.path
                 let cleanAudio = audioResource.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 parent.onPlayAudio?(cleanAudio)
+                decisionHandler(.cancel)
+                return
+            }
+
+            if scheme == "studymate-sound" {
+                let dictionaryID = url.host ?? ""
+                let cleanAudio = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    .removingPercentEncoding ?? url.path
+                if !dictionaryID.isEmpty, !cleanAudio.isEmpty {
+                    if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
+                        onPlayDictionaryAudio(dictionaryID, cleanAudio)
+                    } else {
+                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                            dictionaryID: dictionaryID,
+                            key: cleanAudio
+                        )
+                    }
+                }
                 decisionHandler(.cancel)
                 return
             }

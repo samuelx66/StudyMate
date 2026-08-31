@@ -5,6 +5,11 @@ import AVFoundation
 /// NSTextView 不会把 SwiftUI representable 的附加上下文带回选择通知。
 /// 将上下文绑定在具体文本视图上，拖动选词时仍能在词典弹窗中显示完整字幕上下文。
 private var dictionaryTextContextAssociationKey: UInt8 = 0
+/// Marks the NSTextView instances created by DictionarySelectableText. The
+/// coordinator observes AppKit's global selection notification, so without a
+/// marker a selection in a settings/search field could incorrectly open the
+/// subtitle lookup HUD.
+private var dictionarySelectableTextMarkerKey: UInt8 = 0
 
 /// 统一管理字幕取词状态。这个对象负责选区、浮动操作条和词典弹窗，
 /// 仅通过播放器的弱引用在取词期间暂时暂停/恢复，不参与句子选中状态，
@@ -27,10 +32,18 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private var shouldResumePlaybackAfterLookup = false
     private let speechSynthesizer = NSSpeechSynthesizer()
     private let avSynthesizer = AVSpeechSynthesizer()
+    private var dictionaryAudioTask: Task<Void, Never>?
+    private var dictionaryAudioPlayer: AVAudioPlayer?
     private var selectionObserver: NSObjectProtocol?
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
     private var keyDownMonitor: Any?
+    /// Selection notifications arrive for every mouse-moved glyph while a
+    /// phrase is being dragged. Coalesce them to one update per run loop so
+    /// the floating action bar and its geometry are not rebuilt dozens of
+    /// times per second.
+    private var selectionUpdateTask: Task<Void, Never>?
+    private weak var pendingSelectionTextView: NSTextView?
 
     private init() {
         selectionObserver = NotificationCenter.default.addObserver(
@@ -38,10 +51,11 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            let textView = notification.object as? NSTextView
+            guard let textView = notification.object as? NSTextView,
+                  Self.isDictionarySelectableTextView(textView) else { return }
             Task { @MainActor [weak self] in
                 guard let self, !self.isLookupPresented else { return }
-                self.selectionChanged(textView)
+                self.scheduleSelectionUpdate(for: textView)
             }
         }
 
@@ -51,8 +65,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             let screenPoint = event.locationInWindow
             Task { @MainActor [weak self] in
                 guard let self, !self.isLookupPresented else { return }
-                if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
-                    self.selectionChanged(textView, screenPoint: screenPoint)
+                if let textView = self.currentSelectionTextView {
+                    self.flushSelectionUpdate(for: textView, screenPoint: screenPoint)
                 }
             }
             return event
@@ -90,6 +104,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         if let mouseUpMonitor { NSEvent.removeMonitor(mouseUpMonitor) }
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
         if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
+        selectionUpdateTask?.cancel()
+        dictionaryAudioTask?.cancel()
+        dictionaryAudioPlayer?.stop()
     }
 
     /// 将媒体播放器绑定到取词协调器。协调器只保存弱引用，避免把播放器
@@ -122,6 +139,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     }
 
     public func clearSelection() {
+        cancelPendingSelectionUpdate()
         if !isLookupPresented {
             dismissPopover()
         }
@@ -133,6 +151,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     }
 
     public func clearSelectionAndDeselect() {
+        cancelPendingSelectionUpdate()
         dismissPopover()
         selectedText = nil
         contextText = nil
@@ -141,7 +160,11 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         isLookupPresented = false
         resumePlaybackIfNeeded()
         if let activeTextView {
-            activeTextView.setSelectedRange(NSRange(location: NSNotFound, length: 0))
+            // NSNotFound is not a valid insertion point for NSTextView and
+            // can make AppKit attempt an invalid layout update on the next
+            // selection event. Collapse to the end of the current string.
+            let end = (activeTextView.string as NSString).length
+            activeTextView.setSelectedRange(NSRange(location: end, length: 0))
             if activeTextView.window?.firstResponder === activeTextView {
                 activeTextView.window?.makeFirstResponder(nil)
             }
@@ -233,6 +256,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
             return
         }
+        guard Self.isDictionarySelectableTextView(textView) else { return }
         let range = textView.selectedRange()
         let value: String?
         if range.length > 0 {
@@ -254,6 +278,60 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             let utterance = AVSpeechUtterance(string: trimmed)
             avSynthesizer.stopSpeaking(at: .immediate)
             avSynthesizer.speak(utterance)
+        }
+    }
+
+    /// Play an audio record stored in the selected dictionary's MDD package.
+    /// Resource lookup and file reading stay off the main actor; only the
+    /// short AVAudioPlayer setup returns to the UI actor. A missing or
+    /// unsupported record falls back to system pronunciation instead of
+    /// leaving the button unresponsive.
+    public func playDictionaryAudio(dictionaryID: String, key: String) {
+        let id = dictionaryID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resourceKey = key.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        guard !id.isEmpty, !resourceKey.isEmpty else {
+            speak(resourceKey)
+            return
+        }
+
+        dictionaryAudioTask?.cancel()
+        dictionaryAudioPlayer?.stop()
+        dictionaryAudioPlayer = nil
+
+        dictionaryAudioTask = Task { [weak self] in
+            do {
+                guard let url = try await DictionaryEngine.shared.resourceURL(
+                    dictionaryID: id,
+                    key: resourceKey
+                ) else {
+                    guard !Task.isCancelled else { return }
+                    self?.speak(resourceKey)
+                    return
+                }
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url, options: [.mappedIfSafe])
+                }.value
+                try Task.checkCancellation()
+                guard !data.isEmpty else {
+                    self?.speak(resourceKey)
+                    return
+                }
+                guard let player = try? AVAudioPlayer(data: data) else {
+                    self?.speak(resourceKey)
+                    return
+                }
+                player.prepareToPlay()
+                guard player.play() else {
+                    self?.speak(resourceKey)
+                    return
+                }
+                self?.dictionaryAudioPlayer = player
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.speak(resourceKey)
+            }
         }
     }
 
@@ -305,7 +383,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     }
 
     private func selectionChanged(_ textView: NSTextView?, screenPoint: NSPoint? = nil) {
-        guard let textView, textView.window?.isKeyWindow == true else { return }
+        guard let textView,
+              textView.window?.isKeyWindow == true,
+              Self.isDictionarySelectableTextView(textView) else { return }
         let range = textView.selectedRange()
         guard range.length > 0, range.location != NSNotFound,
               range.location + range.length <= (textView.string as NSString).length else {
@@ -343,6 +423,56 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             screenPoint: calculatedScreenPoint ?? (screenPoint.flatMap { textView.window?.convertPoint(toScreen: $0) } ?? NSEvent.mouseLocation),
             screenRect: calculatedScreenRect
         )
+    }
+
+    private func scheduleSelectionUpdate(for textView: NSTextView?) {
+        pendingSelectionTextView = textView
+        selectionUpdateTask?.cancel()
+        selectionUpdateTask = Task { @MainActor [weak self] in
+            do {
+                // Keep selection feedback responsive while avoiding layout
+                // work for every intermediate glyph notification.
+                try await Task.sleep(nanoseconds: 16_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, !self.isLookupPresented else { return }
+            let pending = self.pendingSelectionTextView
+            self.pendingSelectionTextView = nil
+            self.selectionUpdateTask = nil
+            self.selectionChanged(pending)
+        }
+    }
+
+    private func flushSelectionUpdate(for textView: NSTextView, screenPoint: NSPoint) {
+        cancelPendingSelectionUpdate()
+        selectionChanged(textView, screenPoint: screenPoint)
+    }
+
+    private func cancelPendingSelectionUpdate() {
+        selectionUpdateTask?.cancel()
+        selectionUpdateTask = nil
+        pendingSelectionTextView = nil
+    }
+
+    private var currentSelectionTextView: NSTextView? {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+           Self.isDictionarySelectableTextView(textView) {
+            return textView
+        }
+        if let pendingSelectionTextView,
+           Self.isDictionarySelectableTextView(pendingSelectionTextView) {
+            return pendingSelectionTextView
+        }
+        if let activeTextView,
+           Self.isDictionarySelectableTextView(activeTextView) {
+            return activeTextView
+        }
+        return nil
+    }
+
+    private nonisolated static func isDictionarySelectableTextView(_ textView: NSTextView) -> Bool {
+        (objc_getAssociatedObject(textView, &dictionarySelectableTextMarkerKey) as? NSNumber)?.boolValue == true
     }
 
     private static func wordAtCaret(in textView: NSTextView) -> String? {
@@ -391,9 +521,9 @@ public enum TextDragPhase {
 
 /// 可选择的字幕文本。
 ///
-/// 这里使用原生 NSTextView，并通过轻量子类补充鼠标进入/离开回调与 Ctrl+拖移支持。
+/// 这里使用原生 NSTextView，并通过轻量子类补充鼠标进入/离开回调与修饰键拖移支持。
 /// 文本容器仍使用 NSTextView(frame:) 创建，保留 AppKit 自带的双击选词、
-/// 拖动选短语和选区通知。按住 Ctrl 拖移时将移动字幕位置，不影响普通文本选区。
+/// 拖动选短语和选区通知。按住 Option/Command 拖移时将移动字幕位置，不影响普通文本选区。
 public struct DictionarySelectableText: NSViewRepresentable {
     public let text: String
     public let font: NSFont
@@ -439,10 +569,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
             self.onOptionDrag = onOptionDrag
         }
 
-        @objc func handleSingleClick(_ recognizer: NSClickGestureRecognizer) {
-            guard recognizer.state == .ended else { return }
-            onSingleClick?()
-        }
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -457,6 +583,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         // Use only NSTextView(frame:), which lets AppKit create its standard
         // text container safely on all supported macOS versions.
         let textView = DictionaryTextView(frame: .zero)
+        textView.onSingleClick = context.coordinator.onSingleClick
         textView.onHoverChanged = context.coordinator.onHoverChanged
         textView.onOptionDrag = context.coordinator.onOptionDrag
         textView.isEditable = false
@@ -476,11 +603,15 @@ public struct DictionarySelectableText: NSViewRepresentable {
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let click = NSClickGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handleSingleClick(_:))
+        // Keep the global selection observer scoped to the two subtitle
+        // surfaces (sentence rows and video subtitles). Other NSTextViews in
+        // the app, such as search fields and editors, must not trigger lookup.
+        objc_setAssociatedObject(
+            textView,
+            &dictionarySelectableTextMarkerKey,
+            NSNumber(value: true),
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
         )
-        textView.addGestureRecognizer(click)
 
         return textView
     }
@@ -490,6 +621,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         context.coordinator.onHoverChanged = onHoverChanged
         context.coordinator.onOptionDrag = onOptionDrag
         if let dictTextView = textView as? DictionaryTextView {
+            dictTextView.onSingleClick = onSingleClick
             dictTextView.onHoverChanged = onHoverChanged
             dictTextView.onOptionDrag = onOptionDrag
         }
@@ -500,6 +632,16 @@ public struct DictionarySelectableText: NSViewRepresentable {
             textView.menu = contextMenu(for: textView)
         } else if textView.menu == nil {
             textView.menu = contextMenu(for: textView)
+        } else if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
+            // SwiftUI can update the subtitle context while reusing the same
+            // NSTextView. Refresh the existing target instead of allocating a
+            // new menu on every list redraw, while keeping right-click lookup
+            // context accurate.
+            target.text = text
+            target.context = self.context
+            if let lookupItem = textView.menu?.items.first {
+                lookupItem.title = LanguageManager.shared.text("查询“\(text)”", "Look up “\(text)”")
+            }
         }
         if textView.font != font {
             textView.font = font
@@ -549,11 +691,14 @@ public struct DictionarySelectableText: NSViewRepresentable {
     /// layer. Tracking hover directly on the text view makes the move prompt
     /// reliable for both original and translation subtitles.
     private final class DictionaryTextView: NSTextView {
+        var onSingleClick: (() -> Void)?
         var onHoverChanged: ((Bool) -> Void)?
         var onOptionDrag: ((TextDragPhase) -> Void)?
         private var trackingArea: NSTrackingArea?
         private var isOptionDragging = false
         private var dragStartWindowPoint: NSPoint?
+        private var plainMouseDownPoint: NSPoint?
+        private var plainMouseDidMove = false
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -605,6 +750,8 @@ public struct DictionarySelectableText: NSViewRepresentable {
                 return
             }
             isOptionDragging = false
+            plainMouseDownPoint = event.locationInWindow
+            plainMouseDidMove = false
             super.mouseDown(with: event)
         }
 
@@ -614,6 +761,11 @@ public struct DictionarySelectableText: NSViewRepresentable {
                 let translation = CGSize(width: current.x - start.x, height: -(current.y - start.y))
                 onOptionDrag?(.changed(translation: translation))
                 return
+            }
+            if let start = plainMouseDownPoint {
+                let current = event.locationInWindow
+                plainMouseDidMove = plainMouseDidMove ||
+                    hypot(current.x - start.x, current.y - start.y) > 2
             }
             super.mouseDragged(with: event)
         }
@@ -629,6 +781,16 @@ public struct DictionarySelectableText: NSViewRepresentable {
                 return
             }
             super.mouseUp(with: event)
+            defer {
+                plainMouseDownPoint = nil
+                plainMouseDidMove = false
+            }
+            // NSTextView's native selection remains in charge. Only a
+            // genuine single click (not a phrase drag or the second click of
+            // a double-click word selection) should activate the sentence.
+            if event.clickCount == 1, !plainMouseDidMove {
+                onSingleClick?()
+            }
         }
 
         override func mouseEntered(with event: NSEvent) {
@@ -643,8 +805,8 @@ public struct DictionarySelectableText: NSViewRepresentable {
     @MainActor
     private final class ContextMenuTarget: NSObject {
         static var associationKey = 0
-        let text: String
-        let context: String?
+        var text: String
+        var context: String?
         weak var textView: NSTextView?
 
         init(text: String, context: String?, textView: NSTextView?) {
