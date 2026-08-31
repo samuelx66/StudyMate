@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use studymate_dict_core::{
-    delete_dictionary, import_dictionary_with_progress, list_dictionaries, lookup, lookup_all,
-    resource, ImportOptions,
+    delete_dictionary, import_dictionary_with_progress, resource, DictionaryQueryCache,
+    ImportOptions,
 };
 
 fn request_id(value: &Value) -> Value {
@@ -23,30 +23,57 @@ fn path_field(value: &Value, name: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(string_field(value, name)?))
 }
 
-fn handle(value: &Value, stdout: &mut impl Write) -> Result<Value> {
+fn handle(
+    value: &Value,
+    stdout: &mut impl Write,
+    query_cache: &mut DictionaryQueryCache,
+) -> Result<Value> {
     let op = string_field(value, "op")?;
     match op.as_str() {
         "list" => {
             let root = path_field(value, "root")?;
-            Ok(serde_json::to_value(list_dictionaries(&root)?)?)
+            Ok(serde_json::to_value(query_cache.list(&root)?)?)
         }
         "delete" => {
             let root = path_field(value, "root")?;
             let id = string_field(value, "dictionaryID")?;
-            Ok(serde_json::to_value(delete_dictionary(&root, &id)?)?)
+            let deleted = delete_dictionary(&root, &id)?;
+            query_cache.invalidate();
+            Ok(serde_json::to_value(deleted)?)
         }
         "lookup" => {
             let root = path_field(value, "root")?;
             let id = string_field(value, "dictionaryID")?;
             let query = string_field(value, "query")?;
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
-            Ok(serde_json::to_value(lookup(&root, &id, &query, limit)?)?)
+            Ok(serde_json::to_value(
+                query_cache.lookup(&root, &id, &query, limit)?,
+            )?)
         }
         "lookupAll" => {
             let root = path_field(value, "root")?;
             let query = string_field(value, "query")?;
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
-            Ok(serde_json::to_value(lookup_all(&root, &query, limit)?)?)
+            Ok(serde_json::to_value(
+                query_cache.lookup_all(&root, &query, limit)?,
+            )?)
+        }
+        "lookupKeys" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            let query = string_field(value, "query")?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            Ok(serde_json::to_value(
+                query_cache.lookup_keys(&root, &id, &query, limit)?,
+            )?)
+        }
+        "lookupAllKeys" => {
+            let root = path_field(value, "root")?;
+            let query = string_field(value, "query")?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            Ok(serde_json::to_value(
+                query_cache.lookup_all_keys(&root, &query, limit)?,
+            )?)
         }
         "resource" => {
             let root = path_field(value, "root")?;
@@ -100,6 +127,7 @@ fn handle(value: &Value, stdout: &mut impl Write) -> Result<Value> {
                 },
                 Some(&mut report_progress),
             )?;
+            query_cache.invalidate();
             Ok(serde_json::to_value(result)?)
         }
         _ => Err(anyhow!("unsupported dictionary operation '{op}'")),
@@ -128,6 +156,7 @@ fn main() -> Result<()> {
     }
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
+    let mut query_cache = DictionaryQueryCache::default();
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -145,7 +174,7 @@ fn main() -> Result<()> {
             }
         };
         let id = request_id(&request);
-        let result = handle(&request, &mut stdout);
+        let result = handle(&request, &mut stdout, &mut query_cache);
         write_response(&mut stdout, id, result)?;
     }
     Ok(())

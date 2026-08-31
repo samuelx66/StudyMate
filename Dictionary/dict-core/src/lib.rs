@@ -12,7 +12,7 @@ use flate2::read::ZlibDecoder;
 use ripemd::{Digest, Ripemd128};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -51,6 +51,24 @@ pub struct LookupEntry {
     pub text: String,
     pub dictionary_id: String,
     pub dictionary_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub css: Option<String>,
+    /// Absolute package resources directory.  Keeping this with the lookup
+    /// result avoids guessing a package path from a sanitized dictionary id
+    /// in the UI (ids may contain punctuation and unicode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_root: Option<String>,
+}
+
+/// Lightweight dictionary row used by live search. Full record HTML is
+/// fetched only after the user selects a key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupKey {
+    pub key: String,
+    pub dictionary_id: String,
+    pub dictionary_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +173,27 @@ fn normalize_key(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn configure_read_connection(connection: &Connection) -> Result<()> {
+    // Prefix lookup is deliberately case-sensitive because `normalized` is
+    // already lower-cased by normalize_key.  With this pragma SQLite can use
+    // idx_entries_normalized for `LIKE 'prefix%'` instead of scanning every
+    // row in large imported dictionaries.
+    connection.execute_batch(
+        "PRAGMA busy_timeout = 5000;
+         PRAGMA case_sensitive_like = ON;
+         PRAGMA query_only = ON;
+         PRAGMA temp_store = MEMORY;",
+    )?;
+    Ok(())
 }
 
 fn sanitize_id(value: &str) -> String {
@@ -350,6 +389,36 @@ fn derive_encryption_key(
 
 fn package_name(id: &str) -> String {
     format!("{}.mabdict", sanitize_id(id))
+}
+
+/// Removes an unpublished import package if any later import step fails.  A
+/// failed/ cancelled import must never leave a large `.import-*` directory in
+/// Application Support that is invisible to the dictionary list but looks
+/// like a failed deletion to the user.
+struct TempPackageGuard {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl TempPackageGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TempPackageGuard {
+    fn drop(&mut self) {
+        if !self.committed && self.path.exists() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 fn parse_attr(header: &str, name: &str) -> Option<String> {
@@ -763,6 +832,28 @@ fn import_file(
                 "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
                 params![raw.key, resource_name, bytes.len() as i64],
             )?;
+
+            let clean_rel = raw.key.trim_start_matches(['\\', '/']).replace('\\', "/");
+            if !clean_rel.is_empty() && !clean_rel.contains("..") {
+                let named_path = resources_dir.join(&clean_rel);
+                if let Some(parent) = named_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&named_path, &bytes);
+            }
+
+            let lower_key = raw.key.to_lowercase();
+            if lower_key.ends_with(".css") {
+                let css_text = decode_text(&bytes, &header.encoding);
+                if let Some(pkg_dir) = resources_dir.parent() {
+                    let style_path = pkg_dir.join("style.css");
+                    let mut existing = fs::read_to_string(&style_path).unwrap_or_default();
+                    existing.push_str(&css_text);
+                    existing.push('\n');
+                    let _ = fs::write(&style_path, existing);
+                }
+            }
+
             resource_count += 1;
         } else {
             let text = decode_text(&bytes, &header.encoding);
@@ -804,6 +895,10 @@ pub fn import_dictionary_with_progress(
         p("正在准备导入目录…", 0.05);
     }
     fs::create_dir_all(&options.root)?;
+    // The JSONL helper processes one request at a time, so no import can be
+    // active while this cleanup runs.  This also recovers temporary packages
+    // left behind when an older app version was force-quit or crashed.
+    cleanup_all_import_packages(&options.root);
     let default_id = stable_id(&options.mdx);
     let id = sanitize_id(options.id.as_deref().unwrap_or(&default_id));
     let package = options.root.join(package_name(&id));
@@ -817,6 +912,7 @@ pub fn import_dictionary_with_progress(
     let temp_package = options
         .root
         .join(format!(".{}.import-{suffix}", package_name(&id)));
+    let mut temp_guard = TempPackageGuard::new(temp_package.clone());
     fs::create_dir_all(temp_package.join("source"))?;
     fs::create_dir_all(temp_package.join("resources"))?;
     let source_mdx = temp_package.join("source").join(
@@ -842,6 +938,12 @@ pub fn import_dictionary_with_progress(
     let index_path = temp_package.join("Library.sqlite3");
     let connection = Connection::open(&index_path)?;
     create_schema(&connection)?;
+    let sibling_resources = copy_sibling_assets(
+        &options.mdx,
+        &temp_package.join("resources"),
+        &temp_package.join("style.css"),
+        &connection,
+    )?;
     if let Some(p) = progress.as_deref_mut() {
         p("正在解析并解压词条…", 0.35);
     }
@@ -851,9 +953,10 @@ pub fn import_dictionary_with_progress(
         &records_path,
         &connection,
         &temp_package.join("resources"),
-        0,
+        sibling_resources,
         options,
     )?;
+    resource_count += sibling_resources;
     if let Some(p) = progress.as_deref_mut() {
         p("正在导入多媒体资源…", 0.70);
     }
@@ -884,6 +987,10 @@ pub fn import_dictionary_with_progress(
     if let Some(p) = progress.as_deref_mut() {
         p("正在整理词典数据库…", 0.90);
     }
+    // Build SQLite statistics once, after the bulk insert.  This lets the
+    // prefix planner choose the normalized index reliably on large packages;
+    // doing it here avoids repeated ANALYZE work on every lookup.
+    connection.execute_batch("ANALYZE entries; ANALYZE resources;")?;
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     drop(connection);
     let manifest = DictionaryManifest {
@@ -915,6 +1022,7 @@ pub fn import_dictionary_with_progress(
             package.display()
         )
     })?;
+    temp_guard.commit();
     if let Some(p) = progress.as_deref_mut() {
         p("导入完成", 1.0);
     }
@@ -928,6 +1036,10 @@ pub fn list_dictionaries(root: &Path) -> Result<Vec<DictionarySummary>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
+    // Only published packages have a manifest and are shown below.  Remove
+    // every hidden import staging directory first so an interrupted import
+    // cannot accumulate indefinitely in Application Support.
+    cleanup_all_import_packages(root);
     let mut result = Vec::new();
     for item in fs::read_dir(root)? {
         let path = item?.path();
@@ -961,6 +1073,7 @@ pub fn delete_dictionary(root: &Path, id: &str) -> Result<bool> {
     let package = root.join(package_name(&safe));
     if package.exists() {
         fs::remove_dir_all(&package)?;
+        cleanup_all_import_packages(root);
         return Ok(true);
     }
     if let Ok(entries) = fs::read_dir(root) {
@@ -975,6 +1088,7 @@ pub fn delete_dictionary(root: &Path, id: &str) -> Result<bool> {
                     if let Ok(manifest) = serde_json::from_slice::<DictionaryManifest>(&data) {
                         if manifest.id == id || manifest.title == id {
                             fs::remove_dir_all(&path)?;
+                            cleanup_all_import_packages(root);
                             return Ok(true);
                         }
                     }
@@ -982,7 +1096,34 @@ pub fn delete_dictionary(root: &Path, id: &str) -> Result<bool> {
             }
         }
     }
+    // A previous interrupted import may have left only hidden temporary
+    // packages behind. They are not returned by `list_dictionaries`, but are
+    // never usable dictionaries and must not survive a delete request.
+    cleanup_all_import_packages(root);
     Ok(false)
+}
+
+/// Remove all unpublished import staging directories.  A package is only
+/// published after its manifest is written and its directory is atomically
+/// renamed to the visible `*.mabdict` name, so a hidden `.mabdict.import-*`
+/// directory can never be a usable dictionary.  The helper's request loop is
+/// serial, which means this is not racing an active import in this app.
+fn cleanup_all_import_packages(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_import_temp = path.is_dir()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with('.') && name.contains(".mabdict.import-"))
+                .unwrap_or(false);
+        if is_import_temp {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 
 fn open_manifest(root: &Path, id: &str) -> Result<(PathBuf, DictionaryManifest)> {
@@ -995,6 +1136,466 @@ fn open_manifest(root: &Path, id: &str) -> Result<(PathBuf, DictionaryManifest)>
     Ok((package, manifest))
 }
 
+fn copy_sibling_assets(
+    mdx_path: &Path,
+    resources_dir: &Path,
+    style_css_path: &Path,
+    connection: &Connection,
+) -> Result<u64> {
+    let mut added = 0u64;
+    let parent = match mdx_path.parent() {
+        Some(p) if p.is_dir() => p,
+        _ => return Ok(0),
+    };
+    let entries = match fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return Ok(0),
+    };
+    let mut combined_css = String::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if file_name.is_empty() || ext == "mdx" || ext == "mdd" || ext == "key" {
+                continue;
+            }
+            if matches!(
+                ext.as_str(),
+                "css"
+                    | "js"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "svg"
+                    | "webp"
+                    | "ttf"
+                    | "otf"
+                    | "woff"
+                    | "woff2"
+            ) {
+                let target_path = resources_dir.join(file_name);
+                let _ = fs::copy(&path, &target_path);
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let _ = connection.execute(
+                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                    params![file_name, file_name, size as i64],
+                );
+                let _ = connection.execute(
+                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                    params![format!("\\{}", file_name), file_name, size as i64],
+                );
+                let _ = connection.execute(
+                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                    params![format!("/{}", file_name), file_name, size as i64],
+                );
+                if ext == "css" {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        combined_css.push_str(&content);
+                        combined_css.push('\n');
+                    } else if let Ok(bytes) = fs::read(&path) {
+                        let decoded = decode_text(&bytes, "utf-8");
+                        combined_css.push_str(&decoded);
+                        combined_css.push('\n');
+                    }
+                }
+                added += 1;
+            }
+        } else if path.is_dir() {
+            let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if matches!(
+                dir_name.to_lowercase().as_str(),
+                "fonts" | "images" | "img" | "css" | "js" | "media"
+            ) {
+                let target_subdir = resources_dir.join(dir_name);
+                let _ = copy_dir_all(&path, &target_subdir);
+            }
+        }
+    }
+    if !combined_css.is_empty() {
+        let mut existing = fs::read_to_string(style_css_path).unwrap_or_default();
+        existing.push_str(&combined_css);
+        let _ = fs::write(style_css_path, existing);
+    }
+    Ok(added)
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn load_package_css(package: &Path) -> Option<String> {
+    let style_path = package.join("style.css");
+    if style_path.is_file() {
+        if let Ok(css) = fs::read_to_string(&style_path) {
+            if !css.trim().is_empty() {
+                return Some(css);
+            }
+        }
+    }
+    let mut combined = String::new();
+    let resources = package.join("resources");
+    if resources.is_dir() {
+        if let Ok(entries) = fs::read_dir(&resources) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file()
+                    && p.extension()
+                        .and_then(|s| s.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("css"))
+                        .unwrap_or(false)
+                {
+                    if let Ok(c) = fs::read_to_string(&p) {
+                        combined.push_str(&c);
+                        combined.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    let source_dir = package.join("source");
+    if source_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&source_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file()
+                    && p.extension()
+                        .and_then(|s| s.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("css"))
+                        .unwrap_or(false)
+                {
+                    if let Ok(c) = fs::read_to_string(&p) {
+                        combined.push_str(&c);
+                        combined.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    if combined.trim().is_empty() {
+        if let Ok(connection) = Connection::open(package.join("Library.sqlite3")) {
+            if let Ok(mut stmt) =
+                connection.prepare("SELECT path FROM resources WHERE lower(key) LIKE '%.css'")
+            {
+                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                    for path in rows.flatten() {
+                        let res_path = package.join("resources").join(path);
+                        if let Ok(bytes) = fs::read(&res_path) {
+                            let text = decode_text(&bytes, "utf-8");
+                            combined.push_str(&text);
+                            combined.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if combined.trim().is_empty() {
+        if let Ok(entries) = fs::read_dir(&source_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if ext.eq_ignore_ascii_case("mdx") {
+                        if let Ok(target) = fs::canonicalize(&p) {
+                            if let Some(parent) = target.parent() {
+                                if let Ok(parent_entries) = fs::read_dir(parent) {
+                                    for pe in parent_entries.flatten() {
+                                        let pep = pe.path();
+                                        if pep.is_file()
+                                            && pep
+                                                .extension()
+                                                .and_then(|s| s.to_str())
+                                                .map(|e| e.eq_ignore_ascii_case("css"))
+                                                .unwrap_or(false)
+                                        {
+                                            if let Ok(c) = fs::read_to_string(&pep) {
+                                                combined.push_str(&c);
+                                                combined.push('\n');
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !combined.trim().is_empty() {
+        return Some(combined);
+    }
+    None
+}
+
+struct CachedDictionary {
+    manifest: DictionaryManifest,
+    css: Option<String>,
+    connection: Connection,
+    last_used: u64,
+}
+
+/// Reusable query state for the long-lived JSONL helper. The process handles
+/// requests serially, so a mutable cache is sufficient and avoids the
+/// overhead of reopening manifests, CSS files and SQLite connections for
+/// every keystroke.
+pub struct DictionaryQueryCache {
+    root: Option<PathBuf>,
+    summaries: Option<Vec<DictionarySummary>>,
+    dictionaries: HashMap<String, CachedDictionary>,
+    access_counter: u64,
+    max_cached_dictionaries: usize,
+}
+
+impl Default for DictionaryQueryCache {
+    fn default() -> Self {
+        Self {
+            root: None,
+            summaries: None,
+            dictionaries: HashMap::new(),
+            access_counter: 0,
+            // Keeping a few hot dictionaries open avoids repeated SQLite
+            // startup while bounding RAM/file-descriptor use for users who
+            // import a large collection.
+            max_cached_dictionaries: 4,
+        }
+    }
+}
+
+impl DictionaryQueryCache {
+    fn ensure_root(&mut self, root: &Path) {
+        if self.root.as_deref() != Some(root) {
+            self.root = Some(root.to_path_buf());
+            self.summaries = None;
+            self.dictionaries.clear();
+            self.access_counter = 0;
+        }
+    }
+
+    /// Invalidate cached package handles after import or deletion.
+    pub fn invalidate(&mut self) {
+        self.summaries = None;
+        self.dictionaries.clear();
+        self.access_counter = 0;
+    }
+
+    pub fn list(&mut self, root: &Path) -> Result<Vec<DictionarySummary>> {
+        self.ensure_root(root);
+        if self.summaries.is_none() {
+            self.summaries = Some(list_dictionaries(root)?);
+        }
+        Ok(self.summaries.clone().unwrap_or_default())
+    }
+
+    fn dictionary_mut(&mut self, root: &Path, id: &str) -> Result<&mut CachedDictionary> {
+        self.ensure_root(root);
+        if !self.dictionaries.contains_key(id) {
+            let (package, manifest) = open_manifest(root, id)?;
+            let css = load_package_css(&package);
+            let connection = Connection::open(package.join("Library.sqlite3"))?;
+            configure_read_connection(&connection)?;
+            self.access_counter = self.access_counter.wrapping_add(1);
+            self.dictionaries.insert(
+                id.to_owned(),
+                CachedDictionary {
+                    manifest,
+                    css,
+                    connection,
+                    last_used: self.access_counter,
+                },
+            );
+            if self.dictionaries.len() > self.max_cached_dictionaries {
+                if let Some(evicted) = self
+                    .dictionaries
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != id)
+                    .min_by_key(|(_, dictionary)| dictionary.last_used)
+                    .map(|(key, _)| key.clone())
+                {
+                    self.dictionaries.remove(&evicted);
+                }
+            }
+        }
+        self.access_counter = self.access_counter.wrapping_add(1);
+        let dictionary = self
+            .dictionaries
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("dictionary cache entry missing for {id}"))?;
+        dictionary.last_used = self.access_counter;
+        Ok(dictionary)
+    }
+
+    pub fn lookup_keys(
+        &mut self,
+        root: &Path,
+        dictionary_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<LookupKey>> {
+        let dictionary = self.dictionary_mut(root, dictionary_id)?;
+        let exact = normalize_key(query);
+        if exact.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 100);
+        let dictionary_id = dictionary.manifest.id.clone();
+        let dictionary_title = dictionary.manifest.title.clone();
+        let resource_root = root
+            .join(package_name(&dictionary_id))
+            .join("resources")
+            .to_string_lossy()
+            .into_owned();
+        let mut result = Vec::with_capacity(limit);
+        {
+            let mut statement = dictionary.connection.prepare_cached(
+                "SELECT key FROM entries WHERE normalized = ?1 ORDER BY key LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![exact, limit as i64], |row| {
+                Ok(LookupKey {
+                    key: row.get(0)?,
+                    dictionary_id: dictionary_id.clone(),
+                    dictionary_title: dictionary_title.clone(),
+                    resource_root: Some(resource_root.clone()),
+                })
+            })?;
+            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        if result.len() < limit {
+            let remaining = limit - result.len();
+            let prefix = format!("{}%", escape_like_pattern(&normalize_key(query)));
+            let mut statement = dictionary.connection.prepare_cached(
+                "SELECT key FROM entries
+                 WHERE normalized LIKE ?1 ESCAPE '\\'
+                   AND normalized != ?2
+                 ORDER BY length(normalized), key LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![prefix, normalize_key(query), remaining as i64],
+                |row| {
+                    Ok(LookupKey {
+                        key: row.get(0)?,
+                        dictionary_id: dictionary_id.clone(),
+                        dictionary_title: dictionary_title.clone(),
+                        resource_root: Some(resource_root.clone()),
+                    })
+                },
+            )?;
+            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(result)
+    }
+
+    pub fn lookup_all_keys(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit_per_dictionary: usize,
+    ) -> Result<Vec<LookupKey>> {
+        let dictionaries = self.list(root)?;
+        let mut result = Vec::new();
+        for dictionary in dictionaries {
+            result.extend(self.lookup_keys(root, &dictionary.id, query, limit_per_dictionary)?);
+        }
+        Ok(result)
+    }
+
+    pub fn lookup(
+        &mut self,
+        root: &Path,
+        dictionary_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<LookupEntry>> {
+        let dictionary = self.dictionary_mut(root, dictionary_id)?;
+        let exact = normalize_key(query);
+        if exact.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 100);
+        let dictionary_id = dictionary.manifest.id.clone();
+        let dictionary_title = dictionary.manifest.title.clone();
+        let css = dictionary.css.clone();
+        let resource_root = root
+            .join(package_name(&dictionary_id))
+            .join("resources")
+            .to_string_lossy()
+            .into_owned();
+        let mut result = Vec::with_capacity(limit);
+        {
+            let mut statement = dictionary.connection.prepare_cached(
+                "SELECT key, record_text FROM entries
+                 WHERE normalized = ?1 ORDER BY key LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![exact, limit as i64], |row| {
+                Ok(LookupEntry {
+                    key: row.get(0)?,
+                    text: row.get(1)?,
+                    dictionary_id: dictionary_id.clone(),
+                    dictionary_title: dictionary_title.clone(),
+                    css: css.clone(),
+                    resource_root: Some(resource_root.clone()),
+                })
+            })?;
+            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        if result.len() < limit {
+            let remaining = limit - result.len();
+            let prefix = format!("{}%", escape_like_pattern(&normalize_key(query)));
+            let mut statement = dictionary.connection.prepare_cached(
+                "SELECT key, record_text FROM entries
+                 WHERE normalized LIKE ?1 ESCAPE '\\'
+                   AND normalized != ?2
+                 ORDER BY length(normalized), key LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![prefix, normalize_key(query), remaining as i64],
+                |row| {
+                    Ok(LookupEntry {
+                        key: row.get(0)?,
+                        text: row.get(1)?,
+                        dictionary_id: dictionary_id.clone(),
+                        dictionary_title: dictionary_title.clone(),
+                        css: css.clone(),
+                        resource_root: Some(resource_root.clone()),
+                    })
+                },
+            )?;
+            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(result)
+    }
+
+    pub fn lookup_all(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit_per_dictionary: usize,
+    ) -> Result<Vec<LookupEntry>> {
+        let dictionaries = self.list(root)?;
+        let mut result = Vec::new();
+        for dictionary in dictionaries {
+            result.extend(self.lookup(root, &dictionary.id, query, limit_per_dictionary)?);
+        }
+        Ok(result)
+    }
+}
+
 pub fn lookup(
     root: &Path,
     dictionary_id: &str,
@@ -1002,28 +1603,55 @@ pub fn lookup(
     limit: usize,
 ) -> Result<Vec<LookupEntry>> {
     let (package, manifest) = open_manifest(root, dictionary_id)?;
+    let css = load_package_css(&package);
     let connection = Connection::open(package.join("Library.sqlite3"))?;
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    configure_read_connection(&connection)?;
     let exact = normalize_key(query);
     if exact.is_empty() {
         return Ok(Vec::new());
     }
     let limit = limit.clamp(1, 100);
-    let mut statement = connection.prepare(
-        "SELECT key, record_text FROM entries
-         WHERE normalized = ?1 OR normalized LIKE ?2
-         ORDER BY CASE WHEN normalized = ?1 THEN 0 ELSE 1 END,
-                  length(normalized), key LIMIT ?3",
-    )?;
-    let rows = statement.query_map(params![exact, format!("{}%", exact), limit as i64], |row| {
-        Ok(LookupEntry {
-            key: row.get(0)?,
-            text: row.get(1)?,
-            dictionary_id: manifest.id.clone(),
-            dictionary_title: manifest.title.clone(),
-        })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let resource_root = package.join("resources").to_string_lossy().into_owned();
+    let mut result = Vec::with_capacity(limit);
+    {
+        let mut statement = connection.prepare(
+            "SELECT key, record_text FROM entries
+             WHERE normalized = ?1 ORDER BY key LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![exact, limit as i64], |row| {
+            Ok(LookupEntry {
+                key: row.get(0)?,
+                text: row.get(1)?,
+                dictionary_id: manifest.id.clone(),
+                dictionary_title: manifest.title.clone(),
+                css: css.clone(),
+                resource_root: Some(resource_root.clone()),
+            })
+        })?;
+        result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    if result.len() < limit {
+        let remaining = limit - result.len();
+        let prefix = format!("{}%", escape_like_pattern(&exact));
+        let mut statement = connection.prepare(
+            "SELECT key, record_text FROM entries
+             WHERE normalized LIKE ?1 ESCAPE '\\'
+               AND normalized != ?2
+             ORDER BY length(normalized), key LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![prefix, exact, remaining as i64], |row| {
+            Ok(LookupEntry {
+                key: row.get(0)?,
+                text: row.get(1)?,
+                dictionary_id: manifest.id.clone(),
+                dictionary_title: manifest.title.clone(),
+                css: css.clone(),
+                resource_root: Some(resource_root.clone()),
+            })
+        })?;
+        result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(result)
 }
 
 pub fn lookup_all(
@@ -1162,6 +1790,52 @@ mod tests {
             lookup(&package_root, "fixture", "do", 20).unwrap()[0].key,
             "dog"
         );
+        let mut cache = DictionaryQueryCache::default();
+        let key_hits = cache
+            .lookup_keys(&package_root, "fixture", "do", 20)
+            .unwrap();
+        assert_eq!(key_hits[0].key, "dog");
+        let cached_entries = cache.lookup(&package_root, "fixture", "cat", 1).unwrap();
+        assert_eq!(cached_entries[0].text, "feline");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deletes_imported_dictionary_and_reports_missing_package() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-delete-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        let source = root.join("fixture.mdx");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, fixture()).unwrap();
+        let package_root = root.join("Dictionaries");
+        import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("fixture".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+
+        let abandoned = package_root.join(".fixture.mabdict.import-abandoned");
+        fs::create_dir_all(&abandoned).unwrap();
+        fs::write(abandoned.join("records.tmp"), b"partial").unwrap();
+        assert_eq!(list_dictionaries(&package_root).unwrap().len(), 1);
+        assert!(!abandoned.exists());
+        fs::create_dir_all(&abandoned).unwrap();
+        fs::write(abandoned.join("records.tmp"), b"partial").unwrap();
+        assert!(delete_dictionary(&package_root, "fixture").unwrap());
+        assert!(list_dictionaries(&package_root).unwrap().is_empty());
+        assert!(!abandoned.exists());
+        assert!(!delete_dictionary(&package_root, "fixture").unwrap());
+        let orphaned_after_delete = package_root.join(".fixture.mabdict.import-orphaned");
+        fs::create_dir_all(&orphaned_after_delete).unwrap();
+        assert!(!delete_dictionary(&package_root, "fixture").unwrap());
+        assert!(!orphaned_after_delete.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,35 +1,47 @@
 import SwiftUI
+import Foundation
 import WebKit
 import AppKit
 
 /// Formats MDX dictionary lookup entries into clean, adaptive HTML documents
 /// tailored for either compact popover presentation or full-window reading.
 public enum DictionaryHTMLFormatter {
+    private static let bodyCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 32
+        return cache
+    }()
+    private static let documentCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 16
+        return cache
+    }()
+
     public static func composeHTML(
         entries: [StudyMateDictionaryLookup],
-        isCompact: Bool
+        isCompact: Bool,
+        textScale: CGFloat = 1.0
     ) -> String {
-        let fontSize = isCompact ? "13px" : "14.5px"
+        let cacheKey = markupCacheKey(entries: entries, isCompact: isCompact, textScale: textScale)
+        if let cached = documentCache.object(forKey: cacheKey as NSString) {
+            return cached as String
+        }
+        let fontSize = scaledFontSize(isCompact: isCompact, textScale: textScale)
         let lineHeight = isCompact ? "1.45" : "1.6"
         let entrySpacing = isCompact ? "14px" : "22px"
         let padding = isCompact ? "4px 8px 12px 8px" : "16px 20px"
 
-        let entriesHTML = entries.map { entry -> String in
-            let badgeHTML = entries.count > 1
-                ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
-                : ""
-            let contentHTML = formatEntryContent(entry.text)
-            return """
-            <div class="dict-entry">
-                \(badgeHTML)
-                <div class="entry-body">
-                    \(contentHTML)
-                </div>
-            </div>
-            """
-        }.joined(separator: "\n<hr class=\"dict-divider\">\n")
+        var customCSSBlocks: [String] = []
+        for entry in entries {
+            if let css = entry.css, !css.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !customCSSBlocks.contains(css) {
+                customCSSBlocks.append(rewriteCSSResourceReferences(css, resourceRoot: entry.resourceRoot))
+            }
+        }
+        let customCSSText = customCSSBlocks.joined(separator: "\n\n")
+        let entriesHTML = composeBodyHTML(entries: entries, isCompact: isCompact)
 
-        return """
+        let document = """
         <!DOCTYPE html>
         <html>
         <head>
@@ -44,8 +56,6 @@ public enum DictionaryHTMLFormatter {
             --badge-bg: rgba(0, 0, 0, 0.06);
             --badge-text: #48484a;
             --divider-color: rgba(0, 0, 0, 0.08);
-            --example-color: #555555;
-            --phonetic-color: #8e8e93;
             --selection-bg: rgba(0, 122, 255, 0.25);
         }
         @media (prefers-color-scheme: dark) {
@@ -56,9 +66,10 @@ public enum DictionaryHTMLFormatter {
                 --badge-bg: rgba(255, 255, 255, 0.1);
                 --badge-text: #d1d1d6;
                 --divider-color: rgba(255, 255, 255, 0.12);
-                --example-color: #b0b0b5;
-                --phonetic-color: #a1a1a6;
                 --selection-bg: rgba(10, 132, 255, 0.35);
+            }
+            body {
+                color: var(--text-color);
             }
         }
         * {
@@ -69,9 +80,8 @@ public enum DictionaryHTMLFormatter {
             padding: 0;
             background-color: transparent !important;
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
-            font-size: \(fontSize);
+            font-size: var(--studymate-font-size, \(fontSize));
             line-height: \(lineHeight);
-            color: var(--text-color);
             word-wrap: break-word;
             overflow-wrap: break-word;
             -webkit-user-select: text;
@@ -100,65 +110,162 @@ public enum DictionaryHTMLFormatter {
             border-top: 1px solid var(--divider-color);
             margin: \(entrySpacing) 0;
         }
-        .entry-body {
-            color: var(--text-color);
-        }
-        a {
-            color: var(--link-color);
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 4px;
-        }
-        table {
-            border-collapse: collapse;
-            max-width: 100%;
-            margin: 6px 0;
-        }
-        th, td {
-            padding: 4px 8px;
-            border: 1px solid var(--divider-color);
-        }
-        p {
-            margin: 0.4em 0;
-        }
-        ul, ol {
-            margin: 0.4em 0;
-            padding-left: 1.4em;
-        }
-        li {
-            margin-bottom: 0.25em;
-        }
         ::selection {
             background: var(--selection-bg);
         }
         </style>
+        \(customCSSText.isEmpty ? "" : "<style type=\"text/css\">\n/* MDX Native CSS */\n\(customCSSText)\n</style>")
         </head>
         <body>
         \(entriesHTML)
         </body>
         </html>
         """
+        documentCache.setObject(document as NSString, forKey: cacheKey as NSString)
+        return document
     }
 
-    private static func formatEntryContent(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // If the entry already contains standard HTML tags, return it directly
-        if trimmed.contains("<") && trimmed.contains(">") {
-            return trimmed
+    public static func scaledFontSize(isCompact: Bool, textScale: CGFloat) -> String {
+        let scale = min(max(textScale, 0.8), 1.4)
+        let baseFontSize = isCompact ? 13.0 : 14.5
+        return "\(baseFontSize * scale)px"
+    }
+
+    /// Stable-in-process signature for the document shell. Body text is not
+    /// included, so selecting another key can update only the body.
+    public static func shellSignature(
+        entries: [StudyMateDictionaryLookup],
+        isCompact: Bool
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(isCompact)
+        hasher.combine(isCompact ? "1.45" : "1.6")
+        hasher.combine(isCompact ? "14px" : "22px")
+        hasher.combine(isCompact ? "4px 8px 12px 8px" : "16px 20px")
+        for css in entries.compactMap(\.css) {
+            hasher.combine(css)
         }
-        // Plain text format: convert double line breaks to paragraphs
+        return hasher.finalize()
+    }
+
+    /// Body-only markup used for fast selection changes. The document shell
+    /// and dictionary CSS can stay loaded in WebKit while only this fragment
+    /// is replaced.
+    public static func composeBodyHTML(
+        entries: [StudyMateDictionaryLookup],
+        isCompact: Bool
+    ) -> String {
+        let cacheKey = markupCacheKey(entries: entries, isCompact: isCompact, textScale: 1.0)
+        if let cached = bodyCache.object(forKey: cacheKey as NSString) {
+            return cached as String
+        }
+        let body = entries.map { entry -> String in
+            let badgeHTML = entries.count > 1
+                ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
+                : ""
+            let contentHTML = formatEntryContent(entry.text, resourceRoot: entry.resourceRoot)
+            return """
+            <div class="dict-entry" data-dict-id="\(escapeHTML(entry.dictionaryID))">
+                \(badgeHTML)
+                <div class="entry-body">
+                    \(contentHTML)
+                </div>
+            </div>
+            """
+        }.joined(separator: "\n<hr class=\"dict-divider\">\n")
+        bodyCache.setObject(body as NSString, forKey: cacheKey as NSString)
+        return body
+    }
+
+    private static func markupCacheKey(
+        entries: [StudyMateDictionaryLookup],
+        isCompact: Bool,
+        textScale: CGFloat
+    ) -> String {
+        var hasher = Hasher()
+        hasher.combine(isCompact)
+        hasher.combine(Double(textScale))
+        for entry in entries {
+            hasher.combine(entry.key)
+            hasher.combine(entry.text)
+            hasher.combine(entry.dictionaryID)
+            hasher.combine(entry.dictionaryTitle)
+            hasher.combine(entry.css)
+            hasher.combine(entry.resourceRoot)
+        }
+        return String(hasher.finalize())
+    }
+
+    private static func formatEntryContent(_ raw: String, resourceRoot: String?) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("<") && trimmed.contains(">") {
+            return rewriteResourceReferences(trimmed, resourceRoot: resourceRoot)
+        }
         let paragraphs = trimmed.components(separatedBy: "\n\n")
         if paragraphs.count > 1 {
             return paragraphs.map { "<p>\(escapeHTML($0).replacingOccurrences(of: "\n", with: "<br>"))</p>" }.joined()
         } else {
             return "<p>\(escapeHTML(trimmed).replacingOccurrences(of: "\n", with: "<br>"))</p>"
         }
+    }
+
+    /// MDD records can come from several packages in one result. Rewriting
+    /// relative resource attributes here gives each record its own resource
+    /// root instead of relying on one global WebKit baseURL.
+    private static func rewriteResourceReferences(_ html: String, resourceRoot: String?) -> String {
+        guard let resourceRoot else { return html }
+        // URL.absoluteString already percent-escapes spaces and unicode path
+        // components. Encoding it a second time would turn `%20` into
+        // `%2520`, breaking resources whose dictionary path contains spaces.
+        let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
+        let prefix = rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+        let pattern = #"((?:src|href)\s*=\s*[\"'])([^\"']+)([\"'])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return html }
+        let nsHTML = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: nsHTML.length))
+        var result = html
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 4 else { continue }
+            let value = nsHTML.substring(with: match.range(at: 2))
+            guard shouldRewriteResource(value) else { continue }
+            let clean = value.hasPrefix("/") ? String(value.dropFirst()) : value
+            let encoded = clean.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? clean
+            let replacement = nsHTML.substring(with: match.range(at: 1)) + prefix + encoded + nsHTML.substring(with: match.range(at: 3))
+            if let swiftRange = Range(match.range, in: result) {
+                result.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+        return result
+    }
+
+    private static func rewriteCSSResourceReferences(_ css: String, resourceRoot: String?) -> String {
+        guard let resourceRoot else { return css }
+        let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
+        let prefix = rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+        let pattern = #"(url\(\s*[\"']?)([^\)\"']+)([\"']?\s*\))"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return css }
+        let nsCSS = css as NSString
+        let matches = regex.matches(in: css, range: NSRange(location: 0, length: nsCSS.length))
+        var result = css
+        for match in matches.reversed() {
+            let value = nsCSS.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard shouldRewriteResource(value) else { continue }
+            let clean = value.hasPrefix("/") ? String(value.dropFirst()) : value
+            let encoded = clean.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? clean
+            let replacement = nsCSS.substring(with: match.range(at: 1)) + prefix + encoded + nsCSS.substring(with: match.range(at: 3))
+            if let swiftRange = Range(match.range, in: result) {
+                result.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+        return result
+    }
+
+    private static func shouldRewriteResource(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return !lower.isEmpty && !lower.hasPrefix(("http://")) && !lower.hasPrefix("https://") &&
+            !lower.hasPrefix("data:") && !lower.hasPrefix("file:") && !lower.hasPrefix("sound:") &&
+            !lower.hasPrefix("entry:") && !lower.hasPrefix("lookup:") && !lower.hasPrefix("javascript:") &&
+            !lower.hasPrefix("#")
     }
 
     private static func escapeHTML(_ string: String) -> String {
@@ -174,32 +281,88 @@ public enum DictionaryHTMLFormatter {
 /// and responsive dictionary entry rendering in both popovers and full windows.
 public struct DictionaryHTMLView: NSViewRepresentable {
     public let html: String
+    public let bodyHTML: String
+    public let bodySignature: Int
+    public let shellSignature: Int
+    public let baseURL: URL?
     public let isCompact: Bool
+    public let textScale: CGFloat
     public var onLookupWord: ((String) -> Void)?
     public var onPlayAudio: ((String) -> Void)?
 
     public init(
         html: String,
+        baseURL: URL? = nil,
         isCompact: Bool = false,
+        textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil
     ) {
         self.html = html
+        self.bodyHTML = DictionaryHTMLView.extractBodyHTML(from: html)
+        self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
+        self.shellSignature = DictionaryHTMLView.signature(DictionaryHTMLView.extractDocumentShell(from: html))
+        self.baseURL = baseURL
         self.isCompact = isCompact
+        self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
     }
 
     public init(
         entries: [StudyMateDictionaryLookup],
+        baseURL: URL? = nil,
         isCompact: Bool = false,
+        textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil
     ) {
-        self.html = DictionaryHTMLFormatter.composeHTML(entries: entries, isCompact: isCompact)
+        let resolvedBaseURL = baseURL ?? entries.first.flatMap { entry in
+            if let root = entry.resourceRoot {
+                return URL(fileURLWithPath: root, isDirectory: true)
+            }
+            return DictionaryEngine.shared.resourcesURL(for: entry.dictionaryID)
+        }
+        self.bodyHTML = DictionaryHTMLFormatter.composeBodyHTML(entries: entries, isCompact: isCompact)
+        self.html = DictionaryHTMLFormatter.composeHTML(entries: entries, isCompact: isCompact, textScale: textScale)
+        self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
+        self.shellSignature = DictionaryHTMLFormatter.shellSignature(entries: entries, isCompact: isCompact)
+        self.baseURL = resolvedBaseURL
         self.isCompact = isCompact
+        self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
+    }
+
+    private static func extractBodyHTML(from html: String) -> String {
+        guard
+            let startRange = html.range(of: "<body", options: .caseInsensitive),
+            let start = html.range(of: ">", range: startRange.upperBound..<html.endIndex),
+            let end = html.range(of: "</body>", options: .caseInsensitive, range: start.upperBound..<html.endIndex)
+        else {
+            return html
+        }
+        return String(html[start.upperBound..<end.lowerBound])
+    }
+
+    private static func signature(_ value: String) -> Int {
+        var hasher = Hasher()
+        hasher.combine(value)
+        return hasher.finalize()
+    }
+
+    /// Returns the document shell with body contents removed. This lets the
+    /// coordinator distinguish a cheap result-row update from a real shell
+    /// change, such as a definition carrying different MDX CSS.
+    private static func extractDocumentShell(from html: String) -> String {
+        guard
+            let startRange = html.range(of: "<body", options: .caseInsensitive),
+            let start = html.range(of: ">", range: startRange.upperBound..<html.endIndex),
+            let end = html.range(of: "</body>", options: .caseInsensitive, range: start.upperBound..<html.endIndex)
+        else {
+            return html
+        }
+        return String(html[..<start.upperBound]) + String(html[end.lowerBound...])
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -216,15 +379,47 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             webView.underPageBackgroundColor = .clear
         }
         context.coordinator.currentHTML = html
-        webView.loadHTMLString(html, baseURL: nil)
+        context.coordinator.currentBodyHTML = bodyHTML
+        context.coordinator.currentShellSignature = shellSignature
+        context.coordinator.currentBodySignature = bodySignature
+        context.coordinator.currentBaseURL = baseURL
+        context.coordinator.currentTextScale = textScale
+        context.coordinator.hasLoadedDocument = false
+        webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     public func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
-        if context.coordinator.currentHTML != html {
+        let baseURLChanged = context.coordinator.currentBaseURL != baseURL
+        let bodyChanged = context.coordinator.currentBodySignature != bodySignature
+        let scaleChanged = context.coordinator.currentTextScale != textScale
+        let shellChanged = context.coordinator.currentShellSignature != shellSignature
+
+        if baseURLChanged || shellChanged || (!context.coordinator.hasLoadedDocument && context.coordinator.currentHTML != html) {
+            context.coordinator.updateRevision &+= 1
             context.coordinator.currentHTML = html
-            webView.loadHTMLString(html, baseURL: nil)
+            context.coordinator.currentBodyHTML = bodyHTML
+            context.coordinator.currentShellSignature = shellSignature
+            context.coordinator.currentBodySignature = bodySignature
+            context.coordinator.currentBaseURL = baseURL
+            context.coordinator.currentTextScale = textScale
+            context.coordinator.hasLoadedDocument = false
+            webView.loadHTMLString(html, baseURL: baseURL)
+        } else if bodyChanged || scaleChanged {
+            context.coordinator.currentHTML = html
+            context.coordinator.currentBodyHTML = bodyHTML
+            context.coordinator.currentShellSignature = shellSignature
+            context.coordinator.currentBodySignature = bodySignature
+            context.coordinator.currentTextScale = textScale
+            context.coordinator.updateRevision &+= 1
+            context.coordinator.updateDocument(
+                in: webView,
+                bodyHTML: bodyHTML,
+                fontSize: DictionaryHTMLFormatter.scaledFontSize(isCompact: isCompact, textScale: textScale),
+                reloadHTML: html,
+                revision: context.coordinator.updateRevision
+            )
         }
     }
 
@@ -236,9 +431,49 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     public final class Coordinator: NSObject, WKNavigationDelegate {
         var parent: DictionaryHTMLView
         var currentHTML: String = ""
+        var currentBodyHTML: String = ""
+        var currentShellSignature: Int = 0
+        var currentBodySignature: Int = 0
+        var currentBaseURL: URL?
+        var currentTextScale: CGFloat = 1.0
+        var hasLoadedDocument = false
+        var updateRevision: UInt64 = 0
 
         init(parent: DictionaryHTMLView) {
             self.parent = parent
+        }
+
+        func updateDocument(
+            in webView: WKWebView,
+            bodyHTML: String,
+            fontSize: String,
+            reloadHTML: String,
+            revision: UInt64
+        ) {
+            let script = """
+            if (document.body) { document.body.innerHTML = bodyHTML; }
+            document.documentElement.style.setProperty('--studymate-font-size', fontSize);
+            true;
+            """
+            // Pass the fragment as a WebKit argument rather than base64
+            // encoding it into a new JavaScript source string. This avoids a
+            // second full-sized copy and keeps the main thread responsive for
+            // large HTML dictionary records.
+            webView.callAsyncJavaScript(
+                script,
+                arguments: ["bodyHTML": bodyHTML, "fontSize": fontSize],
+                in: nil,
+                in: .page
+            ) { [weak self, weak webView] result in
+                guard let self, let webView else { return }
+                if case .failure = result {
+                    DispatchQueue.main.async {
+                        guard self.updateRevision == revision else { return }
+                        self.hasLoadedDocument = false
+                        webView.loadHTMLString(reloadHTML, baseURL: self.currentBaseURL)
+                    }
+                }
+            }
         }
 
         public func webView(
@@ -261,7 +496,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
 
-            if scheme == "entry" {
+            if scheme == "entry" || scheme == "lookup" {
                 let word = url.host ?? url.path
                 let cleanWord = word.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 if let decoded = cleanWord.removingPercentEncoding, !decoded.isEmpty {
@@ -279,7 +514,20 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
 
+            if navigationAction.navigationType == .linkActivated && scheme != "file" && scheme != "about" {
+                let candidate = url.lastPathComponent
+                if !candidate.isEmpty {
+                    parent.onLookupWord?(candidate)
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
+
             decisionHandler(.allow)
+        }
+
+        public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            hasLoadedDocument = true
         }
     }
 }

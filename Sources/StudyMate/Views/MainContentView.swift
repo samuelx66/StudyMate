@@ -467,13 +467,7 @@ private struct MainWindowToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            Picker("", selection: $engine.loopMode) {
-                ForEach(PlaybackLoopMode.allCases) { mode in
-                    Image(systemName: mode.iconName).tag(mode).help(StudyMateShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
-                }
-            }
-            .pickerStyle(.segmented)
-            .help(lang.text("播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）", "Playback mode"))
+            PlaybackLoopModeToolbarPicker(engine: engine, lang: lang)
 
             Menu {
                 ForEach(repeatOptions, id: \.count) { option in
@@ -794,5 +788,41 @@ private struct StatusBarErrorView: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .onHover { isHovering = $0 }
         .help(message)
+    }
+}
+
+private struct PlaybackLoopModeToolbarPicker: View {
+    @ObservedObject var engine: PlaybackEngine
+    @ObservedObject var lang: LanguageManager
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(PlaybackLoopMode.allCases) { mode in
+                Button {
+                    engine.loopMode = mode
+                } label: {
+                    Image(systemName: mode.iconName)
+                        .font(.system(size: 11, weight: engine.loopMode == mode ? .semibold : .regular))
+                        .foregroundStyle(engine.loopMode == mode ? Color.accentColor : Color.secondary)
+                        .frame(width: 24, height: 20)
+                        .background(
+                            engine.loopMode == mode
+                                ? Color(NSColor.selectedControlColor).opacity(0.18)
+                                : Color.clear
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+                .buttonStyle(.plain)
+                .help(StudyMateShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
+            }
+        }
+        .padding(2)
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color(NSColor.separatorColor).opacity(0.35), lineWidth: 0.5)
+        )
+        .help(lang.text("播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）", "Playback mode"))
     }
 }

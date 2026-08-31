@@ -38,30 +38,36 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self, !self.isLookupPresented else { return }
-            self.selectionChanged(notification.object as? NSTextView)
+            let textView = notification.object as? NSTextView
+            Task { @MainActor [weak self] in
+                guard let self, !self.isLookupPresented else { return }
+                self.selectionChanged(textView)
+            }
         }
 
         // SwiftUI 的 Text 选择最终由 NSTextView 承载。鼠标松开时再次读取
         // 选区，可以覆盖跨行拖选及系统菜单弹出时通知顺序不同的情况。
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
-            guard let self, !self.isLookupPresented else { return event }
-            if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
-                self.selectionChanged(textView, screenPoint: event.locationInWindow)
+            let screenPoint = event.locationInWindow
+            Task { @MainActor [weak self] in
+                guard let self, !self.isLookupPresented else { return }
+                if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
+                    self.selectionChanged(textView, screenPoint: screenPoint)
+                }
             }
             return event
         }
 
         // 监控鼠标点击：词典弹窗展示时，点击弹窗外部区域自动关闭弹窗
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self else { return event }
-            if self.isLookupPresented {
+            let eventWindow = event.window
+            Task { @MainActor [weak self] in
+                guard let self, self.isLookupPresented else { return }
                 // 仅当点击发生在词典弹窗窗口外部时关闭弹窗
-                if let popoverWindow = self.activePopover?.contentViewController?.view.window {
-                    if event.window !== popoverWindow {
-                        self.dismissPopover()
-                        self.clearSelectionAndDeselect()
-                    }
+                if let popoverWindow = self.activePopover?.contentViewController?.view.window,
+                   eventWindow !== popoverWindow {
+                    self.dismissPopover()
+                    self.clearSelectionAndDeselect()
                 }
             }
             return event
@@ -70,12 +76,10 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         // 按 ESC 键取消选择或关闭取词弹窗
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            if event.keyCode == 53 { // ESC key
-                if self.isLookupPresented || self.selectedText != nil {
-                    self.dismissPopover()
-                    self.clearSelectionAndDeselect()
-                    return nil
-                }
+            if event.keyCode == 53, self.isLookupPresented || self.selectedText != nil {
+                self.dismissPopover()
+                self.clearSelectionAndDeselect()
+                return nil
             }
             return event
         }
@@ -151,7 +155,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         pausePlaybackIfNeeded()
         isLookupPresented = true
         DictionaryEngine.shared.clearSearch()
-        DictionaryEngine.shared.search(query: selectedText)
+        DictionaryEngine.shared.search(query: selectedText, includeDetails: true, immediate: true)
         showNativePopover()
     }
 
@@ -674,6 +678,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
 }
 
 /// 选中文字后的轻量操作条子按钮。
+@MainActor
 private struct DictionaryActionButton: View {
     let title: String
     let systemImage: String
@@ -706,6 +711,7 @@ private struct DictionaryActionButton: View {
 }
 
 /// 选中文字后的 macOS 原生风格轻量浮动操作条。
+@MainActor
 public struct DictionarySelectionActionBar: View {
     private let playbackEngine: PlaybackEngine
     @ObservedObject private var coordinator = DictionaryInteractionCoordinator.shared
@@ -773,6 +779,7 @@ public struct DictionarySelectionActionBar: View {
 }
 
 /// 主媒体窗口中的选区操作条宿主。
+@MainActor
 public struct DictionaryLookupOverlay: View {
     private let playbackEngine: PlaybackEngine
     @ObservedObject private var coordinator = DictionaryInteractionCoordinator.shared
@@ -825,6 +832,7 @@ public struct DictionaryLookupOverlay: View {
     }
 }
 
+@MainActor
 private struct DictionaryLookupPopoverContent: View {
     let query: String
     let context: String?
@@ -849,13 +857,18 @@ private struct DictionaryLookupPopoverContent: View {
 
             Divider()
 
-            if (engine.isSearching || engine.isBusy) && engine.searchResults.isEmpty {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
+            if (engine.isSearching || engine.isLoadingDefinition || engine.isBusy) && engine.searchResults.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(0..<5, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.primary.opacity(index == 0 ? 0.10 : 0.06))
+                            .frame(maxWidth: index == 2 ? 220 : .infinity, minHeight: 11, maxHeight: 11)
+                    }
                     Text(lang.text("正在查询词典…", "Looking up dictionaries…"))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .redacted(reason: .placeholder)
                 .padding(.vertical, 8)
             } else if engine.searchResults.isEmpty {
                 Text(lang.text("未找到释义", "No definition found"))
@@ -866,7 +879,7 @@ private struct DictionaryLookupPopoverContent: View {
                     entries: engine.searchResults,
                     isCompact: true,
                     onLookupWord: { word in
-                        DictionaryEngine.shared.search(query: word)
+                        DictionaryEngine.shared.search(query: word, includeDetails: true, immediate: true)
                     },
                     onPlayAudio: { audioKey in
                         DictionaryInteractionCoordinator.shared.speak(audioKey)
@@ -911,8 +924,8 @@ private final class DictionaryPopoverDelegate: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        MainActor.assumeIsolated {
-            guard let coordinator else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let coordinator = self.coordinator else { return }
             if coordinator.isLookupPresented {
                 coordinator.clearSelectionAndDeselect()
             }
