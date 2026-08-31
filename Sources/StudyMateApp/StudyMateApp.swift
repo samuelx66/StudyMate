@@ -424,10 +424,10 @@ struct StudyMateApp: App {
 
     private func openDictionaryAction() {
         let coordinator = DictionaryInteractionCoordinator.shared
-        coordinator.lookupCurrentSelectionOrWord()
-        if coordinator.selectedText == nil {
-            openWindow(id: "dictionary")
+        if let query = coordinator.selectedText, !query.isEmpty {
+            DictionaryEngine.shared.requestLookup(query)
         }
+        openWindow(id: "dictionary")
     }
 }
 

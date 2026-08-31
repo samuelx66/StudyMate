@@ -156,4 +156,60 @@ final class SegmentListInteractionTests: XCTestCase {
             _ = segments.filter { criteria.matches($0) }
         }
     }
+
+    func testDictionarySelectableTextCoordinatorUpdatesCallbacksDynamically() {
+        var clickedSegmentIndex: Int?
+        let coordinator = DictionarySelectableText.Coordinator(
+            onSingleClick: { clickedSegmentIndex = 0 },
+            onHoverChanged: nil
+        )
+
+        // Initial callback
+        coordinator.onSingleClick?()
+        XCTAssertEqual(clickedSegmentIndex, 0)
+
+        // Updated callback for subsequent segment
+        coordinator.onSingleClick = { clickedSegmentIndex = 5 }
+        coordinator.onSingleClick?()
+        XCTAssertEqual(clickedSegmentIndex, 5)
+    }
+
+    @MainActor
+    func testVideoSubtitleSettingsPositionResets() {
+        let settings = VideoSubtitleSettings.shared
+        settings.originalPositionX = 0.2
+        settings.originalPositionY = 0.3
+        settings.translationPositionX = 0.8
+        settings.translationPositionY = 0.9
+
+        settings.resetPositions()
+        XCTAssertEqual(settings.originalPositionX, 0.5, accuracy: 0.001)
+        XCTAssertEqual(settings.originalPositionY, 0.76, accuracy: 0.001)
+        XCTAssertEqual(settings.translationPositionX, 0.5, accuracy: 0.001)
+        XCTAssertEqual(settings.translationPositionY, 0.86, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testDictionaryInteractionCoordinatorAnchorRectTrackingAndDeselection() {
+        let coordinator = DictionaryInteractionCoordinator.shared
+        let sampleRect = NSRect(x: 100, y: 200, width: 60, height: 20)
+
+        coordinator.updateSelection(
+            text: "wonderful",
+            context: "A wonderful test sentence",
+            screenRect: sampleRect
+        )
+
+        XCTAssertEqual(coordinator.selectedText, "wonderful")
+        XCTAssertEqual(coordinator.contextText, "A wonderful test sentence")
+        XCTAssertEqual(coordinator.anchorScreenRect, sampleRect)
+        XCTAssertEqual(coordinator.anchorScreenPoint?.x, sampleRect.midX)
+        XCTAssertEqual(coordinator.anchorScreenPoint?.y, sampleRect.midY)
+
+        coordinator.clearSelectionAndDeselect()
+        XCTAssertNil(coordinator.selectedText)
+        XCTAssertNil(coordinator.contextText)
+        XCTAssertNil(coordinator.anchorScreenRect)
+        XCTAssertNil(coordinator.anchorScreenPoint)
+    }
 }

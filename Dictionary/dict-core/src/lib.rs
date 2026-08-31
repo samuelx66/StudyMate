@@ -790,8 +790,18 @@ fn manifest_to_summary(manifest: &DictionaryManifest) -> DictionarySummary {
 }
 
 pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
+    import_dictionary_with_progress(options, None)
+}
+
+pub fn import_dictionary_with_progress(
+    options: &ImportOptions,
+    mut progress: Option<&mut dyn FnMut(&str, f64)>,
+) -> Result<ImportResult> {
     if !options.mdx.is_file() {
         bail!("MDX file does not exist: {}", options.mdx.display())
+    }
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在准备导入目录…", 0.05);
     }
     fs::create_dir_all(&options.root)?;
     let default_id = stable_id(&options.mdx);
@@ -816,6 +826,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
             .and_then(|s| s.to_str())
             .unwrap_or("dictionary.mdx"),
     );
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在复制源文件…", 0.15);
+    }
     fs::copy(&options.mdx, &source_mdx)?;
     // MDict permits a sibling `<dictionary>.key` file containing the
     // registration code.  Keep it inside the package while importing so the
@@ -829,6 +842,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
     let index_path = temp_package.join("Library.sqlite3");
     let connection = Connection::open(&index_path)?;
     create_schema(&connection)?;
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在解析并解压词条…", 0.35);
+    }
     let (header, entry_count, mut resource_count) = import_file(
         &source_mdx,
         false,
@@ -838,6 +854,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
         0,
         options,
     )?;
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在导入多媒体资源…", 0.70);
+    }
     for mdd in &options.mdd {
         if !mdd.is_file() {
             bail!("MDD file does not exist: {}", mdd.display())
@@ -862,6 +881,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
         let _ = fs::remove_file(mdd_records);
     }
     let _ = fs::remove_file(&records_path);
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在整理词典数据库…", 0.90);
+    }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     drop(connection);
     let manifest = DictionaryManifest {
@@ -883,6 +905,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
         temp_package.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
+    if let Some(p) = progress.as_deref_mut() {
+        p("正在完成词典导入…", 0.98);
+    }
     fs::rename(&temp_package, &package).with_context(|| {
         format!(
             "publish dictionary package {} -> {}",
@@ -890,6 +915,9 @@ pub fn import_dictionary(options: &ImportOptions) -> Result<ImportResult> {
             package.display()
         )
     })?;
+    if let Some(p) = progress.as_deref_mut() {
+        p("导入完成", 1.0);
+    }
     Ok(ImportResult {
         dictionary: manifest_to_summary(&manifest),
         package_path: package.to_string_lossy().into_owned(),
@@ -923,6 +951,38 @@ pub fn list_dictionaries(root: &Path) -> Result<Vec<DictionarySummary>> {
     }
     result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     Ok(result)
+}
+
+pub fn delete_dictionary(root: &Path, id: &str) -> Result<bool> {
+    if !root.exists() {
+        return Ok(false);
+    }
+    let safe = sanitize_id(id);
+    let package = root.join(package_name(&safe));
+    if package.exists() {
+        fs::remove_dir_all(&package)?;
+        return Ok(true);
+    }
+    if let Ok(entries) = fs::read_dir(root) {
+        for item in entries.flatten() {
+            let path = item.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let manifest_path = path.join("manifest.json");
+            if manifest_path.is_file() {
+                if let Ok(data) = fs::read(&manifest_path) {
+                    if let Ok(manifest) = serde_json::from_slice::<DictionaryManifest>(&data) {
+                        if manifest.id == id || manifest.title == id {
+                            fs::remove_dir_all(&path)?;
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn open_manifest(root: &Path, id: &str) -> Result<(PathBuf, DictionaryManifest)> {

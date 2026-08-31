@@ -9,6 +9,7 @@ public struct DictionaryView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @State private var query = ""
     @State private var selectedDictionaryID: String?
+    @State private var dictionaryPendingDeletion: StudyMateDictionarySummary?
 
     @MainActor
     public init() {
@@ -32,13 +33,34 @@ public struct DictionaryView: View {
         HSplitView {
             dictionarySidebar
                 .frame(minWidth: 200, idealWidth: 230, maxWidth: 280)
-            VStack(spacing: 0) {
-                searchBar
-                Divider()
-                results
-            }
+            dictionaryContent
         }
         .background(StudyMateMediaStyle.windowBackground)
+        .alert(
+            lang.text("确认删除词典？", "Delete Dictionary?"),
+            isPresented: Binding(
+                get: { dictionaryPendingDeletion != nil },
+                set: { if !$0 { dictionaryPendingDeletion = nil } }
+            ),
+            presenting: dictionaryPendingDeletion
+        ) { dict in
+            Button(lang.text("删除", "Delete"), role: .destructive) {
+                let targetID = dict.id
+                dictionaryPendingDeletion = nil
+                if selectedDictionaryID == targetID {
+                    selectedDictionaryID = nil
+                }
+                engine.deleteDictionary(id: targetID)
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {
+                dictionaryPendingDeletion = nil
+            }
+        } message: { dict in
+            Text(lang.text(
+                "确定要从 StudyMate 中删除词典“\(dict.title)”吗？此操作无法撤销。",
+                "Are you sure you want to delete “\(dict.title)” from StudyMate? This action cannot be undone."
+            ))
+        }
         .task {
             engine.refresh()
             if let pending = engine.consumeRequestedQuery() {
@@ -52,11 +74,61 @@ public struct DictionaryView: View {
             _ = engine.consumeRequestedQuery()
             engine.search(query: pending, dictionaryID: selectedDictionaryID)
         }
+        .onChange(of: engine.dictionaries) { _, newDicts in
+            if let sel = selectedDictionaryID, !newDicts.contains(where: { $0.id == sel }) {
+                selectedDictionaryID = nil
+            }
+        }
         .onChange(of: query) { _, newValue in
             engine.search(query: newValue, dictionaryID: selectedDictionaryID)
         }
         .onChange(of: selectedDictionaryID) { _, _ in
             engine.search(query: query, dictionaryID: selectedDictionaryID)
+        }
+    }
+
+    private var dictionaryContent: some View {
+        VStack(spacing: 0) {
+            searchBar
+            Divider()
+            results
+            dictionaryStatusBar
+        }
+    }
+
+    @ViewBuilder
+    private var dictionaryStatusBar: some View {
+        if let message = engine.statusMessage {
+            Divider()
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(StudyMateMediaStyle.panelBackground)
+        } else if let error = engine.lastError {
+            Divider()
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Button(lang.text("清除", "Dismiss")) {
+                    engine.clearError()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(StudyMateMediaStyle.panelBackground)
         }
     }
 
@@ -87,18 +159,59 @@ public struct DictionaryView: View {
                             .foregroundStyle(.secondary)
                     }
                     .tag(Optional(dictionary.id))
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            dictionaryPendingDeletion = dictionary
+                        } label: {
+                            Label(lang.text("删除词典", "Delete Dictionary"), systemImage: "trash")
+                        }
+                    }
                 }
             }
             .listStyle(.sidebar)
 
-            if engine.isBusy {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(lang.text("正在导入词典…", "Importing dictionary…"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            if let selectedDictionaryID,
+               let selectedDict = engine.dictionaries.first(where: { $0.id == selectedDictionaryID }) {
+                HStack {
+                    Button(role: .destructive) {
+                        dictionaryPendingDeletion = selectedDict
+                    } label: {
+                        Label(lang.text("删除词典", "Delete Dictionary"), systemImage: "trash")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(lang.text("删除当前选中的词典", "Delete selected dictionary"))
+                    Spacer()
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
+            }
+
+            if engine.isBusy {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(engine.progressPhase ?? lang.text("正在处理词典…", "Processing dictionary…"))
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                    if let fraction = engine.progress {
+                        ProgressView(value: fraction, total: 1.0)
+                            .progressViewStyle(.linear)
+                        HStack {
+                            Spacer()
+                            Text("\(Int(fraction * 100))%")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
             }
@@ -164,21 +277,37 @@ public struct DictionaryView: View {
             .padding(20)
             Spacer()
         } else if engine.dictionaries.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "books.vertical")
-                    .font(.system(size: 42))
+            if engine.isBusy {
+                VStack(spacing: 16) {
+                    ProgressView(value: engine.progress ?? 0, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 280)
+                    Text(engine.progressPhase ?? lang.text("正在导入词典…", "Importing dictionary…"))
+                        .font(.headline)
+                    if let progress = engine.progress {
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "books.vertical")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.secondary)
+                    Text(lang.text("还没有词典", "No dictionaries yet"))
+                        .font(.headline)
+                    Text(lang.text(
+                        "点击左侧加号导入 .mdx；同目录的 .mdd 会自动作为资源导入。",
+                        "Use the + button to import an .mdx file. Matching .mdd files can be selected as resources."
+                    ))
+                    .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                Text(lang.text("还没有词典", "No dictionaries yet"))
-                    .font(.headline)
-                Text(lang.text(
-                    "点击左侧加号导入 .mdx；同目录的 .mdd 会自动作为资源导入。",
-                    "Use the + button to import an .mdx file. Matching .mdd files can be selected as resources."
-                ))
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 430)
+                    .frame(maxWidth: 430)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "character.book.closed")
@@ -195,29 +324,18 @@ public struct DictionaryView: View {
                 description: Text(lang.text("尝试更短的关键词或切换词典。", "Try a shorter query or another dictionary."))
             )
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(engine.searchResults) { entry in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(entry.key)
-                                    .font(.system(size: 17, weight: .semibold))
-                                Spacer()
-                                Text(entry.dictionaryTitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(Self.plainText(entry.text))
-                                .font(.system(size: 14))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(14)
-                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
-                    }
+            DictionaryHTMLView(
+                entries: engine.searchResults,
+                isCompact: false,
+                onLookupWord: { word in
+                    query = word
+                    engine.search(query: word, dictionaryID: selectedDictionaryID)
+                },
+                onPlayAudio: { audioKey in
+                    DictionaryInteractionCoordinator.shared.speak(audioKey)
                 }
-                .padding(16)
-            }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -244,17 +362,6 @@ public struct DictionaryView: View {
             }
         }
         engine.importDictionary(mdx: mdx, mdd: mdd)
-    }
-
-    private static func plainText(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
     }
 }
 

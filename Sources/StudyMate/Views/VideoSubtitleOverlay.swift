@@ -136,49 +136,21 @@ private enum VideoSubtitleTrack {
     case translation
 }
 
-private struct DraggableVideoSubtitle: View, Equatable {
+private struct DraggableVideoSubtitle: View {
     @ObservedObject var settings: VideoSubtitleSettings
     let engine: PlaybackEngine
     let segmentID: UUID
     let track: VideoSubtitleTrack
     let text: String
     let containerSize: CGSize
+    let context: String?
 
-    static func == (lhs: DraggableVideoSubtitle, rhs: DraggableVideoSubtitle) -> Bool {
-        lhs.track == rhs.track
-            && lhs.segmentID == rhs.segmentID
-            && lhs.text == rhs.text
-            && lhs.containerSize == rhs.containerSize
-            && lhs.settings.originalPositionX == rhs.settings.originalPositionX
-            && lhs.settings.originalPositionY == rhs.settings.originalPositionY
-            && lhs.settings.translationPositionX == rhs.settings.translationPositionX
-            && lhs.settings.translationPositionY == rhs.settings.translationPositionY
-            && lhs.settings.originalFontSize == rhs.settings.originalFontSize
-            && lhs.settings.translationFontSize == rhs.settings.translationFontSize
-            && lhs.settings.originalColorHex == rhs.settings.originalColorHex
-            && lhs.settings.translationColorHex == rhs.settings.translationColorHex
-            && lhs.settings.originalBold == rhs.settings.originalBold
-            && lhs.settings.translationBold == rhs.settings.translationBold
-            && lhs.settings.originalItalic == rhs.settings.originalItalic
-            && lhs.settings.translationItalic == rhs.settings.translationItalic
-            && lhs.settings.originalFontName == rhs.settings.originalFontName
-            && lhs.settings.translationFontName == rhs.settings.translationFontName
-    }
-
-    @State private var dragStart: CGPoint?
-    /// Keep pointer-driven position changes local to this view.  Persisting
-    /// UserDefaults and publishing two settings properties for every gesture
-    /// event makes the entire video overlay re-layout and causes visible
-    /// lag behind the mouse on long/large videos.
-    @State private var transientPosition: CGPoint?
+    @State private var dragOffset: CGSize = .zero
     @State private var isHovering = false
     @State private var isDragging = false
     @State private var hasNotifiedEngineOfDrag = false
 
-    private var position: CGPoint {
-        if let transientPosition {
-            return transientPosition
-        }
+    private var savedPosition: CGPoint {
         switch track {
         case .original:
             return CGPoint(x: settings.originalPositionX, y: settings.originalPositionY)
@@ -222,75 +194,142 @@ private struct DraggableVideoSubtitle: View, Equatable {
         }
     }
 
+    private var subtitleFont: NSFont {
+        let size = max(10, min(96, fontSize))
+        var descriptor = NSFontDescriptor(name: fontName, size: size)
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if isBold { traits.insert(.bold) }
+        if isItalic { traits.insert(.italic) }
+        if !traits.isEmpty { descriptor = descriptor.withSymbolicTraits(traits) }
+        return NSFont(descriptor: descriptor, size: size)
+            ?? .systemFont(ofSize: size)
+    }
+
+    private var subtitleSize: CGSize {
+        let horizontalPadding: CGFloat = 24
+        let verticalPadding: CGFloat = 10
+        let maxWidth = max(1, min(containerSize.width * 0.88, 900))
+        let maxContentWidth = max(1, maxWidth - horizontalPadding)
+        let attributes: [NSAttributedString.Key: Any] = [.font: subtitleFont]
+        let bounds = (text as NSString).boundingRect(
+            with: CGSize(width: maxContentWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        )
+        let contentWidth = min(maxContentWidth, max(1, ceil(bounds.width)))
+        let lineHeight = max(1, ceil(subtitleFont.ascender - subtitleFont.descender + subtitleFont.leading))
+        let contentHeight = min(lineHeight * 4, max(lineHeight, ceil(bounds.height)))
+        return CGSize(
+            width: min(maxWidth, contentWidth + horizontalPadding),
+            height: max(28, min(140, contentHeight + verticalPadding))
+        )
+    }
+
+    private var textContentSize: CGSize {
+        CGSize(width: max(1, subtitleSize.width - 24), height: max(1, subtitleSize.height - 10))
+    }
+
     var body: some View {
-        Text(text)
-            .font(.custom(fontName, size: max(10, min(96, fontSize))))
-            .fontWeight(isBold ? .bold : .regular)
-            .italic(isItalic)
-            .foregroundStyle(color)
-            .multilineTextAlignment(.center)
-            .lineLimit(4)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(.black.opacity(0.46), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(
-                        isHovering || isDragging
-                            ? Color.accentColor.opacity(isDragging ? 0.9 : 0.7)
-                            : Color.clear,
-                        lineWidth: isDragging ? 1.4 : 1
-                    )
-            )
-            .scaleEffect(isDragging ? 1.02 : 1.0)
-            .shadow(color: .black.opacity(isDragging ? 0.9 : 0.75), radius: isDragging ? 5 : 3, x: 0, y: 1)
-            .compositingGroup()
-            .frame(maxWidth: max(180, containerSize.width * 0.88))
-            .position(
-                x: position.x * containerSize.width,
-                y: position.y * containerSize.height
-            )
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        if !hasNotifiedEngineOfDrag {
-                            hasNotifiedEngineOfDrag = true
-                            engine.beginVideoSubtitleDrag(segmentID: segmentID)
-                        }
-                        isDragging = true
-                        if dragStart == nil { dragStart = position }
-                        guard let start = dragStart else { return }
-                        let width = max(1, containerSize.width)
-                        let height = max(1, containerSize.height)
-                        let nextX = min(0.98, max(0.02, start.x + value.translation.width / width))
-                        let nextY = min(0.98, max(0.02, start.y + value.translation.height / height))
-                        transientPosition = CGPoint(x: nextX, y: nextY)
+        DictionarySelectableText(
+            text: text,
+            font: subtitleFont,
+            color: NSColor(color),
+            context: context,
+            alignment: .center,
+            onHoverChanged: { inside in
+                if isHovering != inside {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        isHovering = inside
                     }
-                    .onEnded { _ in
-                        if let transientPosition {
-                            setPosition(transientPosition)
-                        }
-                        transientPosition = nil
-                        dragStart = nil
-                        isDragging = false
-                        if hasNotifiedEngineOfDrag {
-                            hasNotifiedEngineOfDrag = false
-                            engine.endVideoSubtitleDrag(segmentID: segmentID)
-                        }
+                }
+            },
+            onSingleClick: {
+                engine.jumpToSegment(id: segmentID)
+            },
+            onOptionDrag: { phase in
+                switch phase {
+                case .started:
+                    if !hasNotifiedEngineOfDrag {
+                        hasNotifiedEngineOfDrag = true
+                        engine.beginVideoSubtitleDrag(segmentID: segmentID)
                     }
-            )
-            .onHover { isHovering = $0 }
-            .onDisappear {
-                // A view can disappear while a pointer is down (for example
-                // when the active sentence changes). Never leave the playback
-                // engine in its drag lock in that case.
-                if hasNotifiedEngineOfDrag {
-                    hasNotifiedEngineOfDrag = false
-                    engine.endVideoSubtitleDrag(segmentID: segmentID)
+                    isDragging = true
+                case .changed(let translation):
+                    dragOffset = translation
+                case .ended(let translation):
+                    let width = max(1, containerSize.width)
+                    let height = max(1, containerSize.height)
+                    let finalX = min(0.96, max(0.04, savedPosition.x + translation.width / width))
+                    let finalY = min(0.96, max(0.04, savedPosition.y + translation.height / height))
+                    setPosition(CGPoint(x: finalX, y: finalY))
+                    dragOffset = .zero
+                    isDragging = false
+                    if hasNotifiedEngineOfDrag {
+                        hasNotifiedEngineOfDrag = false
+                        engine.endVideoSubtitleDrag(segmentID: segmentID)
+                    }
                 }
             }
-            .help(isDragging ? "" : "拖动字幕调整位置")
+        )
+        .frame(width: textContentSize.width, height: textContentSize.height)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(
+            Color.black.opacity(isDragging ? 0.65 : 0.45),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    isDragging ? Color.white.opacity(0.35) : Color.white.opacity(0.06),
+                    lineWidth: 1
+                )
+        )
+        .shadow(
+            color: .black.opacity(isDragging ? 0.85 : 0.65),
+            radius: isDragging ? 6 : 3,
+            x: 0,
+            y: isDragging ? 2 : 1
+        )
+        .frame(width: subtitleSize.width, height: subtitleSize.height)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    guard NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command) || isDragging else { return }
+                    if !hasNotifiedEngineOfDrag {
+                        hasNotifiedEngineOfDrag = true
+                        engine.beginVideoSubtitleDrag(segmentID: segmentID)
+                    }
+                    isDragging = true
+                    dragOffset = value.translation
+                }
+                .onEnded { value in
+                    guard isDragging else { return }
+                    let width = max(1, containerSize.width)
+                    let height = max(1, containerSize.height)
+                    let finalX = min(0.96, max(0.04, savedPosition.x + value.translation.width / width))
+                    let finalY = min(0.96, max(0.04, savedPosition.y + value.translation.height / height))
+                    setPosition(CGPoint(x: finalX, y: finalY))
+                    dragOffset = .zero
+                    isDragging = false
+                    if hasNotifiedEngineOfDrag {
+                        hasNotifiedEngineOfDrag = false
+                        engine.endVideoSubtitleDrag(segmentID: segmentID)
+                    }
+                }
+        )
+        .offset(dragOffset)
+        .position(
+            x: savedPosition.x * containerSize.width,
+            y: savedPosition.y * containerSize.height
+        )
+        .onDisappear {
+            if hasNotifiedEngineOfDrag {
+                hasNotifiedEngineOfDrag = false
+                engine.endVideoSubtitleDrag(segmentID: segmentID)
+            }
+        }
     }
 
     private func setPosition(_ point: CGPoint) {
@@ -310,7 +349,6 @@ private struct DraggableVideoSubtitle: View, Equatable {
 public struct VideoSubtitleOverlay: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var settings = VideoSubtitleSettings.shared
-    @ObservedObject private var dictionaryCoordinator = DictionaryInteractionCoordinator.shared
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -324,86 +362,38 @@ public struct VideoSubtitleOverlay: View {
                 let segment = engine.segments[index]
                 ZStack {
                     if settings.showOriginal, !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        if dictionaryCoordinator.isVideoSelectionMode {
-                            DictionarySelectableText(
-                                text: segment.text,
-                                font: subtitleFont(for: .original),
-                                color: NSColor(settings.originalColor),
-                                context: segmentContext(segment)
-                            )
-                            .frame(maxWidth: max(180, geometry.size.width * 0.88), minHeight: 28)
-                            .position(
-                                x: settings.originalPositionX * geometry.size.width,
-                                y: settings.originalPositionY * geometry.size.height
-                            )
-                        } else {
-                            DraggableVideoSubtitle(
-                                settings: settings,
-                                engine: engine,
-                                segmentID: segment.id,
-                                track: .original,
-                                text: segment.text,
-                                containerSize: geometry.size
-                            )
-                            .equatable()
-                        }
+                        DraggableVideoSubtitle(
+                            settings: settings,
+                            engine: engine,
+                            segmentID: segment.id,
+                            track: .original,
+                            text: segment.text,
+                            containerSize: geometry.size,
+                            context: segmentContext(segment)
+                        )
+                        .id("\(segment.id)_original")
+                        // Keep the original subtitle's move affordance above
+                        // the translation layer when the two cards approach.
+                        .zIndex(2)
                     }
                     if settings.showTranslation, !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        if dictionaryCoordinator.isVideoSelectionMode {
-                            DictionarySelectableText(
-                                text: segment.translation,
-                                font: subtitleFont(for: .translation),
-                                color: NSColor(settings.translationColor),
-                                context: segmentContext(segment)
-                            )
-                            .frame(maxWidth: max(180, geometry.size.width * 0.88), minHeight: 28)
-                            .position(
-                                x: settings.translationPositionX * geometry.size.width,
-                                y: settings.translationPositionY * geometry.size.height
-                            )
-                        } else {
-                            DraggableVideoSubtitle(
-                                settings: settings,
-                                engine: engine,
-                                segmentID: segment.id,
-                                track: .translation,
-                                text: segment.translation,
-                                containerSize: geometry.size
-                            )
-                            .equatable()
-                        }
+                        DraggableVideoSubtitle(
+                            settings: settings,
+                            engine: engine,
+                            segmentID: segment.id,
+                            track: .translation,
+                            text: segment.translation,
+                            containerSize: geometry.size,
+                            context: segmentContext(segment)
+                        )
+                        .id("\(segment.id)_translation")
+                        .zIndex(1)
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
         .allowsHitTesting(true)
-    }
-
-    private func subtitleFont(for track: VideoSubtitleTrack) -> NSFont {
-        let family: String
-        let size: Double
-        let bold: Bool
-        let italic: Bool
-        switch track {
-        case .original:
-            family = settings.originalFontName
-            size = settings.originalFontSize
-            bold = settings.originalBold
-            italic = settings.originalItalic
-        case .translation:
-            family = settings.translationFontName
-            size = settings.translationFontSize
-            bold = settings.translationBold
-            italic = settings.translationItalic
-        }
-        var descriptor = NSFontDescriptor(name: family, size: max(10, min(96, size)))
-        var traits: NSFontDescriptor.SymbolicTraits = []
-        if bold { traits.insert(.bold) }
-        if italic { traits.insert(.italic) }
-        if !traits.isEmpty { descriptor = descriptor.withSymbolicTraits(traits) }
-        return NSFont(descriptor: descriptor, size: max(10, min(96, size)))
-            ?? .systemFont(ofSize: max(10, min(96, size)))
     }
 
     private func segmentContext(_ segment: SentenceSegment) -> String {

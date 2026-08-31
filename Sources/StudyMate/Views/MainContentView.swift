@@ -84,6 +84,11 @@ public struct MainContentView: View {
             NotificationCenter.default.publisher(for: .studyMateCloseCurrentMedia),
             perform: handleCloseCurrentMediaRequest
         )
+        .onReceive(
+            NotificationCenter.default.publisher(for: .studyMateOpenDictionaryWindow)
+        ) { _ in
+            openWindow(id: "dictionary")
+        }
         .onChange(of: isWaveformsVisible) { _, visible in
             engine.setHighFrequencyPresentationEnabled(visible && scenePhase == .active)
         }
@@ -140,14 +145,10 @@ public struct MainContentView: View {
             isSidebarVisible: $isSidebarVisible,
             onOpenLibrary: { openWindow(id: "sentence-library") },
             onOpenDictionary: {
-                if dictionaryCoordinator.selectedText != nil {
-                    dictionaryCoordinator.lookupSelected()
-                } else {
-                    dictionaryCoordinator.lookupCurrentSelectionOrWord()
-                    if dictionaryCoordinator.selectedText == nil {
-                        openWindow(id: "dictionary")
-                    }
+                if let query = dictionaryCoordinator.selectedText, !query.isEmpty {
+                    DictionaryEngine.shared.requestLookup(query)
                 }
+                openWindow(id: "dictionary")
             },
             onOpenMedia: openFileDialog,
             onTogglePlaylist: togglePlaylist
@@ -437,23 +438,14 @@ private struct MainWindowToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
-            Button {
-                if engine.currentMedia?.isVideo == true,
-                   dictionaryCoordinator.selectedText == nil {
-                    dictionaryCoordinator.toggleVideoSelectionMode(using: engine)
-                } else {
-                    onOpenDictionary()
-                }
-            } label: {
-                Image(systemName: dictionaryCoordinator.isVideoSelectionMode ? "text.viewfinder" : "character.book.closed")
+            Button(action: onOpenDictionary) {
+                Image(systemName: "character.book.closed")
             }
-                .help(StudyMateShortcutCatalog.help(
-                    dictionaryCoordinator.isVideoSelectionMode
-                        ? lang.text("关闭视频选词查词模式", "Exit video text lookup mode")
-                        : lang.text("查词（视频中点击后拖动选择文字）", "Look up a word (click, then drag text in video)"),
-                    shortcut: .openDictionary
-                ))
-                .keyboardShortcut("d", modifiers: [.command, .control])
+            .help(StudyMateShortcutCatalog.help(
+                lang.text("打开词典", "Open dictionary"),
+                shortcut: .openDictionary
+            ))
+            .keyboardShortcut("d", modifiers: [.command, .control])
         }
         ToolbarItem(placement: .navigation) {
             Button(action: onOpenLibrary) { Image(systemName: "books.vertical") }

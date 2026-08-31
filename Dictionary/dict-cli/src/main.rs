@@ -3,7 +3,8 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use studymate_dict_core::{
-    import_dictionary, list_dictionaries, lookup, lookup_all, resource, ImportOptions,
+    delete_dictionary, import_dictionary_with_progress, list_dictionaries, lookup, lookup_all,
+    resource, ImportOptions,
 };
 
 fn request_id(value: &Value) -> Value {
@@ -28,6 +29,11 @@ fn handle(value: &Value, stdout: &mut impl Write) -> Result<Value> {
         "list" => {
             let root = path_field(value, "root")?;
             Ok(serde_json::to_value(list_dictionaries(&root)?)?)
+        }
+        "delete" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            Ok(serde_json::to_value(delete_dictionary(&root, &id)?)?)
         }
         "lookup" => {
             let root = path_field(value, "root")?;
@@ -74,26 +80,26 @@ fn handle(value: &Value, stdout: &mut impl Write) -> Result<Value> {
                 .get("userID")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
-            writeln!(
-                stdout,
-                "{}",
-                json!({"event":"progress","id":request_id(value),"phase":"prepare","fraction":0.0})
+            let req_id = request_id(value);
+            let mut report_progress = |phase: &str, fraction: f64| {
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    json!({"event":"progress","id":req_id,"phase":phase,"fraction":fraction})
+                );
+                let _ = stdout.flush();
+            };
+            let result = import_dictionary_with_progress(
+                &ImportOptions {
+                    root,
+                    mdx,
+                    mdd,
+                    id,
+                    registration_code,
+                    user_id,
+                },
+                Some(&mut report_progress),
             )?;
-            stdout.flush()?;
-            let result = import_dictionary(&ImportOptions {
-                root,
-                mdx,
-                mdd,
-                id,
-                registration_code,
-                user_id,
-            })?;
-            writeln!(
-                stdout,
-                "{}",
-                json!({"event":"progress","id":request_id(value),"phase":"complete","fraction":1.0})
-            )?;
-            stdout.flush()?;
             Ok(serde_json::to_value(result)?)
         }
         _ => Err(anyhow!("unsupported dictionary operation '{op}'")),

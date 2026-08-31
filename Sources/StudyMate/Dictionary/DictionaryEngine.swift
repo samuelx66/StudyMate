@@ -57,6 +57,18 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
 
     public var id: String { "\(dictionaryID):\(key)" }
 
+    public init(
+        key: String,
+        text: String,
+        dictionaryID: String,
+        dictionaryTitle: String
+    ) {
+        self.key = key
+        self.text = text
+        self.dictionaryID = dictionaryID
+        self.dictionaryTitle = dictionaryTitle
+    }
+
     enum CodingKeys: String, CodingKey {
         case key, text
         case dictionaryID = "dictionary_id"
@@ -97,8 +109,10 @@ public final class DictionaryEngine: ObservableObject {
 
     @Published public private(set) var dictionaries: [StudyMateDictionarySummary] = []
     @Published public private(set) var searchResults: [StudyMateDictionaryLookup] = []
+    @Published public private(set) var isSearching = false
     @Published public private(set) var isBusy = false
     @Published public private(set) var progress: Double?
+    @Published public private(set) var progressPhase: String?
     @Published public private(set) var lastError: String?
     @Published public private(set) var requestedQuery: String?
 
@@ -149,11 +163,12 @@ public final class DictionaryEngine: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             searchResults = []
+            isSearching = false
             return
         }
+        isSearching = true
         searchTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
             do {
                 var fields: [String: Any] = [
                     "query": trimmed,
@@ -164,11 +179,70 @@ public final class DictionaryEngine: ObservableObject {
                 }
                 let operation = dictionaryID == nil ? "lookupAll" : "lookup"
                 let value = try await self.request(operation: operation, fields: fields)
-                self.searchResults = try self.decode([StudyMateDictionaryLookup].self, from: value)
-                self.lastError = nil
+                let mdxResults = try self.decode([StudyMateDictionaryLookup].self, from: value)
+                if !Task.isCancelled {
+                    self.searchResults = mdxResults
+                    self.isSearching = false
+                    self.lastError = nil
+                }
             } catch is CancellationError {
-                // A newer query superseded this one.
+                return
             } catch {
+                if !Task.isCancelled {
+                    self.searchResults = []
+                    self.isSearching = false
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @Published public private(set) var statusMessage: String?
+
+    public func showNotification(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        statusMessage = message
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            if self?.statusMessage == message {
+                self?.statusMessage = nil
+            }
+        }
+    }
+
+    public func deleteDictionary(id: String) {
+        guard !isBusy else { return }
+        isBusy = true
+        progressPhase = LanguageManager.shared.text("正在删除词典…", "Deleting dictionary…")
+        lastError = nil
+
+        let rootURL = dictionaryRoot
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try? await self.request(operation: "delete", fields: ["dictionaryID": id])
+
+                await Task.detached(priority: .utility) {
+                    let safeName = id.replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "_", options: .regularExpression)
+                    let packageURL = rootURL.appendingPathComponent("\(safeName).mabdict")
+                    if FileManager.default.fileExists(atPath: packageURL.path) {
+                        try? FileManager.default.removeItem(at: packageURL)
+                    }
+                }.value
+
+                let value = try await self.request(operation: "list")
+                let updated = try self.decode([StudyMateDictionarySummary].self, from: value)
+
+                self.dictionaries = updated
+                self.searchResults.removeAll { $0.dictionaryID == id }
+                self.isBusy = false
+                self.progressPhase = nil
+                self.lastError = nil
+                self.showNotification(
+                    LanguageManager.shared.text("已删除词典", "Dictionary deleted")
+                )
+            } catch {
+                self.isBusy = false
+                self.progressPhase = nil
                 self.lastError = error.localizedDescription
             }
         }
@@ -182,14 +256,21 @@ public final class DictionaryEngine: ObservableObject {
     ) {
         guard !isBusy else { return }
         isBusy = true
-        progress = 0
+        progress = 0.05
+        progressPhase = LanguageManager.shared.text("正在准备导入词典…", "Preparing to import dictionary…")
         lastError = nil
+
+        let mdxPath = mdx.path
+        let mddPaths = mdd.map(\.path)
+        let stem = mdx.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: " ", with: "-")
+
         Task { [weak self] in
             guard let self else { return }
             do {
                 var fields: [String: Any] = [
-                    "mdxPath": mdx.path,
-                    "mddPaths": mdd.map(\.path)
+                    "mdxPath": mdxPath,
+                    "mddPaths": mddPaths
                 ]
                 if let registrationCode, !registrationCode.isEmpty {
                     fields["registrationCode"] = registrationCode
@@ -197,24 +278,32 @@ public final class DictionaryEngine: ObservableObject {
                 if let userID, !userID.isEmpty {
                     fields["userID"] = userID
                 }
-                let stem = mdx.deletingPathExtension().lastPathComponent
-                    .replacingOccurrences(of: " ", with: "-")
                 if !stem.isEmpty { fields["dictionaryID"] = stem }
+
                 let value = try await self.request(operation: "import", fields: fields)
                 let result = try self.decode(StudyMateDictionaryImportResult.self, from: value)
+
                 self.dictionaries.append(result.dictionary)
                 self.dictionaries.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-                self.progress = 1
+                self.progress = 1.0
+                self.progressPhase = nil
+                self.isBusy = false
+                self.lastError = nil
+                self.showNotification(
+                    LanguageManager.shared.text("已成功导入词典“\(result.dictionary.title)”", "Imported dictionary “\(result.dictionary.title)”")
+                )
             } catch {
+                self.isBusy = false
+                self.progress = nil
+                self.progressPhase = nil
                 self.lastError = error.localizedDescription
             }
-            self.isBusy = false
-            self.progress = nil
         }
     }
 
     public func clearError() {
         lastError = nil
+        statusMessage = nil
     }
 
     public func clearSearch() {
@@ -374,6 +463,9 @@ public final class DictionaryEngine: ObservableObject {
             if let event = dictionary["event"] as? String, event == "progress" {
                 if let fraction = dictionary["fraction"] as? Double {
                     progress = fraction
+                }
+                if let phase = dictionary["phase"] as? String {
+                    progressPhase = phase
                 }
                 continue
             }

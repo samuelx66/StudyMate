@@ -46,6 +46,14 @@ public final class MainStatusCenter: ObservableObject {
         progress = nil
     }
 
+    public func showSuccess(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        let generation = begin(MainStatusProgress(fraction: 1.0, phase: message))
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            self?.finish(generation: generation)
+        }
+    }
+
     public func showError(_ message: String) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         errorMessage = normalized.isEmpty ? nil : normalized
