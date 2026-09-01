@@ -94,6 +94,63 @@ final class VocabularyNotebookStoreTests: XCTestCase {
         XCTAssertEqual(try store.entries(notebookID: destination.id).map(\.word), ["move"])
     }
 
+    func testBatchDeleteReportsTheTotalNumberOfRowsRemoved() throws {
+        let notebook = try store.createNotebook(name: "批量删除")
+        let first = VocabularyWordEntry(word: "first")
+        let second = VocabularyWordEntry(word: "second")
+        try store.add(first, to: notebook.id)
+        try store.add(second, to: notebook.id)
+
+        XCTAssertEqual(
+            try store.deleteEntries(ids: [first.id, second.id, UUID()], from: notebook.id),
+            2
+        )
+        XCTAssertTrue(try store.entries(notebookID: notebook.id).isEmpty)
+    }
+
+    func testMoveKeepsTheExistingDestinationEntryWhenWordsConflict() throws {
+        let source = try store.createNotebook(name: "来源")
+        let destination = try store.createNotebook(name: "目标")
+        let sourceEntry = VocabularyWordEntry(
+            word: "same",
+            addedAt: Date(timeIntervalSince1970: 100),
+            exampleSentence: "source sentence",
+            source: "source"
+        )
+        let destinationEntry = VocabularyWordEntry(
+            word: "SAME",
+            addedAt: Date(timeIntervalSince1970: 200),
+            exampleSentence: "destination sentence",
+            source: "destination"
+        )
+        try store.add(sourceEntry, to: source.id)
+        try store.add(destinationEntry, to: destination.id)
+
+        XCTAssertEqual(try store.moveEntries(ids: [sourceEntry.id], from: source.id, to: destination.id), 1)
+        let saved = try XCTUnwrap(try store.entries(notebookID: destination.id).first)
+        XCTAssertEqual(saved.id, destinationEntry.id)
+        XCTAssertEqual(saved.exampleSentence, "destination sentence")
+        XCTAssertEqual(saved.source, "destination")
+        XCTAssertTrue(try store.entries(notebookID: source.id).isEmpty)
+    }
+
+    func testRelativeDateFiltersUseCalendarDayBoundaries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 1, hour: 15))!
+        let expectedSevenDayStart = calendar.date(from: DateComponents(year: 2026, month: 8, day: 26))!
+        let expectedThirtyDayStart = calendar.date(from: DateComponents(year: 2026, month: 8, day: 3))!
+
+        XCTAssertEqual(
+            SentenceLibraryDateFilter.lastSevenDays.lowerBound(now: now, calendar: calendar),
+            expectedSevenDayStart
+        )
+        XCTAssertEqual(
+            SentenceLibraryDateFilter.lastThirtyDays.lowerBound(now: now, calendar: calendar),
+            expectedThirtyDayStart
+        )
+    }
+
     @MainActor
     func testManagerToggleUsesDefaultNotebookAndPublishesResult() async throws {
         let suiteName = "StudyMate-VocabularyManagerTests-\(UUID().uuidString)"

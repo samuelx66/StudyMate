@@ -239,6 +239,8 @@ pub fn discover_mdd_paths(mdx: &Path, explicit: &[PathBuf]) -> Vec<PathBuf> {
         .unwrap_or("");
     let lower_stem = stem.to_lowercase();
     let mut discovered: Vec<(PathBuf, usize)> = Vec::new();
+    let mut sibling_mdds = Vec::new();
+    let mut found_conventional_volume = false;
 
     if let Ok(entries) = fs::read_dir(directory) {
         for entry in entries.flatten() {
@@ -252,6 +254,7 @@ pub fn discover_mdd_paths(mdx: &Path, explicit: &[PathBuf]) -> Vec<PathBuf> {
             {
                 continue;
             }
+            sibling_mdds.push(path.clone());
             let sibling_stem = path
                 .file_stem()
                 .and_then(|value| value.to_str())
@@ -267,7 +270,20 @@ pub fn discover_mdd_paths(mdx: &Path, explicit: &[PathBuf]) -> Vec<PathBuf> {
                     .map(|value| value.saturating_add(1))
             };
             if let Some(order) = order {
+                found_conventional_volume = true;
                 discovered.push((path, order));
+            }
+        }
+
+        // Some dictionary vendors use a descriptive resource filename (for
+        // example `resources.mdd`) instead of the standard `<stem>.mdd`.
+        // If no conventional volume was found, retain every MDD beside the
+        // selected MDX as a resource candidate. This is deliberately a
+        // fallback: when standard volumes exist we must not import unrelated
+        // MDD files that happen to share the directory.
+        if !found_conventional_volume {
+            for path in sibling_mdds {
+                discovered.push((path, usize::MAX));
             }
         }
     } else {
@@ -816,23 +832,41 @@ fn parse_dictionary_keys(
             let key_bytes = if header.encoding.to_ascii_uppercase().contains("UTF-16") {
                 let start = key_reader.pos;
                 let mut end = start;
-                while end + 1 < decompressed.len()
-                    && !(decompressed[end] == 0 && decompressed[end + 1] == 0)
-                {
+                let mut has_terminator = false;
+                while end + 1 < decompressed.len() {
+                    if decompressed[end] == 0 && decompressed[end + 1] == 0 {
+                        has_terminator = true;
+                        break;
+                    }
                     end += 2;
                 }
-                let bytes = key_reader.take(end.saturating_sub(start))?.to_vec();
-                let _ = key_reader.take(2)?;
+                // Some dictionaries omit the final UTF-16 NUL unit at the
+                // end of a key block. Treat the remaining even bytes as the
+                // final key instead of asking Reader for a terminator that is
+                // not present (the old path reported a misleading truncated
+                // two-byte block).
+                let length = if has_terminator {
+                    end.saturating_sub(start)
+                } else {
+                    key_reader.remaining()
+                };
+                if length % 2 != 0 {
+                    bail!("unterminated UTF-16 MDX keyword has an odd byte length")
+                }
+                let bytes = key_reader.take(length)?.to_vec();
+                if has_terminator {
+                    let _ = key_reader.take(2)?;
+                }
                 bytes
             } else {
                 let start = key_reader.pos;
                 let tail = &decompressed[start..];
-                let length = tail
-                    .iter()
-                    .position(|b| *b == 0)
-                    .ok_or_else(|| anyhow!("unterminated MDX keyword"))?;
+                let terminator = tail.iter().position(|b| *b == 0);
+                let length = terminator.unwrap_or(tail.len());
                 let bytes = key_reader.take(length)?.to_vec();
-                let _ = key_reader.take(1)?;
+                if terminator.is_some() {
+                    let _ = key_reader.take(1)?;
+                }
                 bytes
             };
             let key = decode_text(&key_bytes, &header.encoding);
@@ -979,13 +1013,23 @@ fn import_file(
             let clean_rel = raw.key.trim_start_matches(['\\', '/']).replace('\\', "/");
             if !clean_rel.is_empty() && !clean_rel.contains("..") {
                 let named_path = resources_dir.join(&clean_rel);
-                if let Some(parent) = named_path.parent() {
-                    fs::create_dir_all(parent).with_context(|| {
-                        format!("create resource directory {}", parent.display())
-                    })?;
+                if named_path != resource_path {
+                    if let Some(parent) = named_path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("create resource directory {}", parent.display())
+                        })?;
+                    }
+                    // The SQLite index uses the generated path while HTML
+                    // resources use their original MDD name. Keep both
+                    // lookups without writing the potentially large payload
+                    // twice. Fall back to a copy only on filesystems that do
+                    // not support hard links.
+                    if fs::hard_link(&resource_path, &named_path).is_err() {
+                        fs::copy(&resource_path, &named_path).with_context(|| {
+                            format!("write named resource {}", named_path.display())
+                        })?;
+                    }
                 }
-                fs::write(&named_path, &bytes)
-                    .with_context(|| format!("write named resource {}", named_path.display()))?;
             }
 
             let lower_key = raw.key.to_lowercase();
@@ -1316,8 +1360,10 @@ fn copy_sibling_assets(
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
         // A sandboxed import can have access to the selected file without
-        // access to enumerate its parent. Optional sibling assets are skipped
-        // in that case; the MDX and directly probed MDD volumes still import.
+        // access to enumerate its parent. The Swift adapter keeps the
+        // security scope alive for the helper import; retain this fallback
+        // only for environments where the source has no readable sibling
+        // directory. The MDX itself must still be allowed to import.
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(0),
         Err(error) => {
             return Err(error)
@@ -1346,16 +1392,38 @@ fn copy_sibling_assets(
                 "css"
                     | "js"
                     | "ini"
+                    | "json"
+                    | "xml"
+                    | "html"
+                    | "htm"
+                    | "txt"
+                    | "wasm"
+                    | "webmanifest"
+                    | "map"
                     | "png"
                     | "jpg"
                     | "jpeg"
                     | "gif"
                     | "svg"
                     | "webp"
+                    | "avif"
+                    | "bmp"
+                    | "ico"
                     | "ttf"
                     | "otf"
+                    | "eot"
                     | "woff"
                     | "woff2"
+                    | "mp3"
+                    | "wav"
+                    | "ogg"
+                    | "oga"
+                    | "m4a"
+                    | "aac"
+                    | "flac"
+                    | "mp4"
+                    | "webm"
+                    | "mov"
             ) {
                 let target_path = resources_dir.join(file_name);
                 fs::copy(&path, &target_path).with_context(|| {
@@ -1398,7 +1466,20 @@ fn copy_sibling_assets(
             let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if matches!(
                 dir_name.to_lowercase().as_str(),
-                "fonts" | "images" | "img" | "css" | "js" | "media"
+                "fonts"
+                    | "images"
+                    | "img"
+                    | "css"
+                    | "js"
+                    | "script"
+                    | "scripts"
+                    | "assets"
+                    | "data"
+                    | "audio"
+                    | "sounds"
+                    | "sound"
+                    | "media"
+                    | "resources"
             ) {
                 let target_subdir = resources_dir.join(dir_name);
                 copy_dir_all(&path, &target_subdir)
@@ -1659,7 +1740,7 @@ impl DictionaryQueryCache {
         let mut result = Vec::with_capacity(limit);
         {
             let mut statement = dictionary.connection.prepare_cached(
-                "SELECT key FROM entries WHERE normalized = ?1 ORDER BY key LIMIT ?2",
+                "SELECT DISTINCT key FROM entries WHERE normalized = ?1 ORDER BY key LIMIT ?2",
             )?;
             let rows = statement.query_map(params![exact, limit as i64], |row| {
                 Ok(LookupKey {
@@ -1675,7 +1756,7 @@ impl DictionaryQueryCache {
             let remaining = limit - result.len();
             let prefix = format!("{}%", escape_like_pattern(&normalize_key(query)));
             let mut statement = dictionary.connection.prepare_cached(
-                "SELECT key FROM entries
+                "SELECT DISTINCT key FROM entries
                  WHERE normalized LIKE ?1 ESCAPE '\\'
                    AND normalized != ?2
                  ORDER BY length(normalized), key LIMIT ?3",
@@ -1926,8 +2007,8 @@ fn audio_word_variants(word: &str) -> Vec<String> {
 /// Find an audio resource whose filename corresponds to a word. MDX entries
 /// can still use an explicit `sound:` key, but this fallback is needed for
 /// the standalone pronunciation button before a definition has been loaded.
-/// It intentionally searches only the first dictionary selected by the UI and
-/// returns no result when the package has no matching audio resource.
+/// The Swift adapter searches installed packages in UI priority order and
+/// returns no result when none has a matching audio resource.
 pub fn find_audio_resource(
     root: &Path,
     dictionary_id: &str,
@@ -2012,6 +2093,10 @@ mod tests {
     }
 
     fn fixture() -> Vec<u8> {
+        fixture_with_final_key_terminator(true)
+    }
+
+    fn fixture_with_final_key_terminator(final_key_terminator: bool) -> Vec<u8> {
         let header = "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Encrypted=\"0\" Encoding=\"UTF-8\" Format=\"Text\" Title=\"Fixture\"/>";
         let header_bytes: Vec<u8> = header.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let mut output = Vec::new();
@@ -2024,7 +2109,10 @@ mod tests {
         be_u64(0, &mut keys);
         keys.extend_from_slice(b"cat\0");
         be_u64(7, &mut keys);
-        keys.extend_from_slice(b"dog\0");
+        keys.extend_from_slice(b"dog");
+        if final_key_terminator {
+            keys.push(0);
+        }
         let key_block = block(&keys);
 
         let mut key_index = Vec::new();
@@ -2049,6 +2137,61 @@ mod tests {
         output.extend_from_slice(&key_block);
 
         let record_block = block(records);
+        be_u64(1, &mut output);
+        be_u64(2, &mut output);
+        be_u64(16, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(records.len() as u64, &mut output);
+        output.extend_from_slice(&record_block);
+        output
+    }
+
+    fn utf16_fixture_with_final_key_terminator(final_key_terminator: bool) -> Vec<u8> {
+        let header = "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Encrypted=\"0\" Encoding=\"UTF-16\" Format=\"Text\" Title=\"UTF16 Fixture\"/>";
+        let header_bytes: Vec<u8> = header.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut output = Vec::new();
+        be_u32(header_bytes.len() as u32, &mut output);
+        output.extend_from_slice(&header_bytes);
+        output.extend_from_slice(&[0, 0, 0, 0]);
+
+        let mut records = Vec::new();
+        records.extend("feline".encode_utf16().flat_map(u16::to_le_bytes));
+        records.extend_from_slice(&[0, 0]);
+        records.extend("animal".encode_utf16().flat_map(u16::to_le_bytes));
+        records.extend_from_slice(&[0, 0]);
+
+        let mut keys = Vec::new();
+        be_u64(0, &mut keys);
+        keys.extend("cat".encode_utf16().flat_map(u16::to_le_bytes));
+        keys.extend_from_slice(&[0, 0]);
+        be_u64(14, &mut keys);
+        keys.extend("dog".encode_utf16().flat_map(u16::to_le_bytes));
+        if final_key_terminator {
+            keys.extend_from_slice(&[0, 0]);
+        }
+        let key_block = block(&keys);
+
+        let mut key_index = Vec::new();
+        be_u64(2, &mut key_index);
+        be_u16(6, &mut key_index);
+        key_index.extend("cat".encode_utf16().flat_map(u16::to_le_bytes));
+        be_u16(6, &mut key_index);
+        key_index.extend("dog".encode_utf16().flat_map(u16::to_le_bytes));
+        be_u64(key_block.len() as u64, &mut key_index);
+        be_u64(keys.len() as u64, &mut key_index);
+        let key_index_block = block(&key_index);
+
+        be_u64(1, &mut output);
+        be_u64(2, &mut output);
+        be_u64(key_index.len() as u64, &mut output);
+        be_u64(key_index_block.len() as u64, &mut output);
+        be_u64(key_block.len() as u64, &mut output);
+        be_u32(0, &mut output);
+        output.extend_from_slice(&key_index_block);
+        output.extend_from_slice(&key_block);
+
+        let record_block = block(&records);
         be_u64(1, &mut output);
         be_u64(2, &mut output);
         be_u64(16, &mut output);
@@ -2117,6 +2260,7 @@ mod tests {
         // Several production MDX dictionaries load JavaScript configuration
         // from a sibling `.ini` file via `<script src="...">`.
         fs::write(root.join("config.ini"), b"window.fixtureEnabled = true;").unwrap();
+        fs::write(root.join("dictionary.js"), b"window.fixtureReady = true").unwrap();
         let package_root = root.join("Dictionaries");
         let result = import_dictionary(&ImportOptions {
             root: package_root.clone(),
@@ -2128,13 +2272,20 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result.dictionary.entry_count, 2);
-        assert_eq!(result.dictionary.resource_count, 1);
+        assert_eq!(result.dictionary.resource_count, 2);
         let config = resource(&package_root, "fixture", "config.ini")
             .unwrap()
             .expect("script-style ini sibling should be imported");
         assert_eq!(
             fs::read(config.path).unwrap(),
             b"window.fixtureEnabled = true;"
+        );
+        let script = resource(&package_root, "fixture", "dictionary.js")
+            .unwrap()
+            .expect("sibling JavaScript should be imported");
+        assert_eq!(
+            fs::read(script.path).unwrap(),
+            b"window.fixtureReady = true"
         );
         let matches = lookup(&package_root, "fixture", "cat", 20).unwrap();
         assert_eq!(matches[0].text, "feline");
@@ -2149,6 +2300,60 @@ mod tests {
         assert_eq!(key_hits[0].key, "dog");
         let cached_entries = cache.lookup(&package_root, "fixture", "cat", 1).unwrap();
         assert_eq!(cached_entries[0].text, "feline");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_mdx_when_final_utf8_key_has_no_terminator() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-unterminated-key-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        let source = root.join("fixture.mdx");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, fixture_with_final_key_terminator(false)).unwrap();
+        let package_root = root.join("Dictionaries");
+        import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("fixture".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+        assert_eq!(
+            lookup(&package_root, "fixture", "dog", 20).unwrap()[0].text,
+            "animal"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_mdx_when_final_utf16_key_has_no_terminator() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-unterminated-utf16-key-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        let source = root.join("fixture.mdx");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, utf16_fixture_with_final_key_terminator(false)).unwrap();
+        let package_root = root.join("Dictionaries");
+        import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("fixture".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+        assert_eq!(
+            lookup(&package_root, "fixture", "dog", 20).unwrap()[0].text,
+            "animal"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2264,6 +2469,53 @@ mod tests {
         assert!(find_audio_resource(&package_root, "tld", "missing")
             .unwrap()
             .is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_nonstandard_sibling_mdd_when_no_conventional_volume_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-nonstandard-mdd-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mdx = root.join("LDOCE5++ V 2-15.mdx");
+        let resource_volume = root.join("LDOCE5++ resources.mdd");
+        fs::write(&mdx, fixture()).unwrap();
+        fs::write(
+            &resource_volume,
+            mdd_fixture(&[
+                ("jquery-3.2.1.min.js", b"window.jQuery = {};"),
+                ("LM5style_switch.css", b".foldsign_fold { display: none; }"),
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(discover_mdd_paths(&mdx, &[]), vec![resource_volume.clone()]);
+
+        let package_root = root.join("Dictionaries");
+        let imported = import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx,
+            mdd: Vec::new(),
+            id: Some("ldoce-fixture".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+        assert_eq!(imported.dictionary.resource_count, 2);
+        assert!(
+            resource(&package_root, "ldoce-fixture", "jquery-3.2.1.min.js")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            resource(&package_root, "ldoce-fixture", "LM5style_switch.css")
+                .unwrap()
+                .is_some()
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -207,9 +207,20 @@ public struct DictionaryView: View {
                     selectedDictionaryID: selectedDictionaryID,
                     textScale: $textScale,
                     onLookupWord: { word in
+                        let oldQuery = query
                         query = word
                         recordQuery(word)
-                        engine.search(query: word, dictionaryID: selectedDictionaryID, includeDetails: true, immediate: true)
+                        // The query change handler owns ordinary full-window
+                        // searches. Force a search only when a dictionary
+                        // link resolves to the same visible query; otherwise
+                        // the previous implementation issued a key search,
+                        // an all-details lookup, and then another definition
+                        // lookup for the first selected row.
+                        if oldQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .caseInsensitiveCompare(word.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
+                            selectedResultID = nil
+                            engine.search(query: word, dictionaryID: selectedDictionaryID, immediate: true)
+                        }
                     },
                     onPlayAudio: { audioKey in
                         DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
@@ -345,7 +356,14 @@ public struct DictionaryView: View {
         .onChange(of: selectedResultID) { _, newID in
             guard let newID,
                   let selected = resultItems.first(where: { $0.id == newID }) else { return }
-            engine.loadDefinition(for: selected.key, dictionaryID: selectedDictionaryID)
+            // In “All” mode each candidate belongs to a specific dictionary.
+            // Loading only by the global filter would otherwise return the
+            // first dictionary's definition for a row selected from another
+            // source.
+            engine.loadDefinition(
+                for: selected.key,
+                dictionaryID: selectedDictionaryID ?? selected.dictionaryID
+            )
         }
         .onChange(of: query) { _, newValue in
             if !isApplyingHistory {
@@ -609,7 +627,7 @@ public struct DictionaryView: View {
             }
         }
 
-        return urls
+        let conventionalMatches = urls
             .compactMap { url -> (url: URL, order: Int)? in
                 guard url.pathExtension.lowercased() == "mdd",
                       let isRegularFile = try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile,
@@ -630,6 +648,22 @@ public struct DictionaryView: View {
                 return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
             }
             .map { $0.url }
+
+        if !conventionalMatches.isEmpty {
+            return conventionalMatches
+        }
+
+        // A few MDX packages keep their resources in a descriptive MDD name
+        // such as `resources.mdd` instead of matching the MDX stem. When no
+        // conventional volume exists, include same-directory MDD files so
+        // scripts can resolve dependencies such as jQuery and dictionary
+        // configuration. This fallback is intentionally disabled when normal
+        // volumes were found to avoid importing unrelated dictionaries.
+        return urls
+            .filter { $0.pathExtension.lowercased() == "mdd" }
+            .sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
     }
 
     private func mergeMDDs(_ explicit: [URL], with discovered: [URL], for mdx: URL) -> [URL] {

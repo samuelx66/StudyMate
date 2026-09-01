@@ -26,6 +26,13 @@ public enum VocabularyNotebookError: LocalizedError {
 /// `.mabvocab` 是可携带的生词本包。每个包有独立 SQLite 索引，
 /// 与句库数据完全分离，便于后续增加导入导出而不影响句库格式。
 public final class VocabularyNotebookStore: @unchecked Sendable {
+    private struct PendingMoveJournal: Codable {
+        let id: UUID
+        let sourceNotebookID: UUID
+        let destinationNotebookID: UUID
+        let entryIDs: [UUID]
+    }
+
     public static let shared = VocabularyNotebookStore()
     public static let defaultNotebookName = "默认生词本"
 
@@ -51,6 +58,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
 
     public func listNotebooks() -> [VocabularyNotebookDescriptor] {
         queue.sync {
+            recoverPendingMovesUnlocked()
             guard let urls = try? fileManager.contentsOfDirectory(
                 at: rootURL,
                 includingPropertiesForKeys: nil,
@@ -82,9 +90,15 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
             let descriptor = VocabularyNotebookDescriptor(name: trimmed)
             let package = packageURL(for: descriptor.id)
             try fileManager.createDirectory(at: package, withIntermediateDirectories: true)
-            try writeManifest(descriptor, to: package)
-            try withDatabase(notebookID: descriptor.id) { db in
-                try createSchema(in: db)
+            do {
+                try writeManifest(descriptor, to: package)
+                try withDatabase(notebookID: descriptor.id) { db in
+                    try createSchema(in: db)
+                }
+            } catch {
+                closeDatabaseUnlocked(notebookID: descriptor.id)
+                try? fileManager.removeItem(at: package)
+                throw error
             }
             return descriptor
         }
@@ -169,6 +183,26 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
         }
     }
 
+    /// Return only normalized keys for the bookmark toggle state.  Loading the
+    /// complete entry rows for every popover click is unnecessarily expensive
+    /// for large notebooks.
+    public func wordKeys(notebookID: UUID) throws -> Set<String> {
+        try queue.sync {
+            try validateNotebook(id: notebookID)
+            return try withDatabase(notebookID: notebookID) { db in
+                var statement: OpaquePointer?
+                try prepare("SELECT word_key FROM entries;", db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                var result = Set<String>()
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    let key = text(statement, 0)
+                    if !key.isEmpty { result.insert(key) }
+                }
+                return result
+            }
+        }
+    }
+
     public func contains(word: String, in notebookID: UUID) throws -> Bool {
         let key = Self.normalizedWord(word)
         guard !key.isEmpty else { return false }
@@ -191,7 +225,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
         guard !key.isEmpty else { throw VocabularyNotebookError.emptyWord }
         return try queue.sync {
             try validateNotebook(id: notebookID)
-            return try withDatabase(notebookID: notebookID) { db in
+            let saved = try withDatabase(notebookID: notebookID) { db in
                 let sql = """
                 INSERT INTO entries (id, word, word_key, added_at, example_sentence, source)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -212,6 +246,60 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
                 return try entryForWordUnlocked(key: key, db: db) ?? entry
             }
+            // The entry transaction is already committed. Manifest ordering is
+            // auxiliary metadata, so a write failure here must not report a
+            // failed add or roll back a successfully stored word.
+            try? touchManifestUnlocked(notebookID: notebookID)
+            return saved
+        }
+    }
+
+    /// Toggle one word in a single serialized transaction.  This avoids the
+    /// contains -> add/remove race and saves one full SQLite round trip per
+    /// bookmark click.
+    @discardableResult
+    public func toggle(_ entry: VocabularyWordEntry, in notebookID: UUID) throws -> Bool {
+        let trimmedWord = entry.word.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = Self.normalizedWord(trimmedWord)
+        guard !key.isEmpty else { throw VocabularyNotebookError.emptyWord }
+        return try queue.sync {
+            try validateNotebook(id: notebookID)
+            return try withDatabase(notebookID: notebookID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var deleteStatement: OpaquePointer?
+                    try prepare("DELETE FROM entries WHERE word_key = ?;", db: db, statement: &deleteStatement)
+                    defer { sqlite3_finalize(deleteStatement) }
+                    bind(key, at: 1, to: deleteStatement)
+                    guard sqlite3_step(deleteStatement) == SQLITE_DONE else { throw databaseError(db) }
+                    if sqlite3_changes(db) > 0 {
+                        try execute("COMMIT;", in: db)
+                        try? touchManifestUnlocked(notebookID: notebookID)
+                        return false
+                    }
+
+                    var insertStatement: OpaquePointer?
+                    try prepare(
+                        "INSERT INTO entries (id, word, word_key, added_at, example_sentence, source) VALUES (?, ?, ?, ?, ?, ?);",
+                        db: db,
+                        statement: &insertStatement
+                    )
+                    defer { sqlite3_finalize(insertStatement) }
+                    bind(entry.id.uuidString, at: 1, to: insertStatement)
+                    bind(trimmedWord, at: 2, to: insertStatement)
+                    bind(key, at: 3, to: insertStatement)
+                    sqlite3_bind_double(insertStatement, 4, entry.addedAt.timeIntervalSince1970)
+                    bind(entry.exampleSentence, at: 5, to: insertStatement)
+                    bind(entry.source, at: 6, to: insertStatement)
+                    guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw databaseError(db) }
+                    try execute("COMMIT;", in: db)
+                    try? touchManifestUnlocked(notebookID: notebookID)
+                    return true
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
         }
     }
 
@@ -227,7 +315,9 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 defer { sqlite3_finalize(statement) }
                 bind(key, at: 1, to: statement)
                 guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
-                return sqlite3_changes(db) > 0
+                let changed = sqlite3_changes(db) > 0
+                if changed { try? touchManifestUnlocked(notebookID: notebookID) }
+                return changed
             }
         }
     }
@@ -243,18 +333,21 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                     var statement: OpaquePointer?
                     try prepare("DELETE FROM entries WHERE id = ?;", db: db, statement: &statement)
                     defer { sqlite3_finalize(statement) }
+                    var changed = 0
                     for id in ids {
                         sqlite3_reset(statement)
                         sqlite3_clear_bindings(statement)
                         bind(id.uuidString, at: 1, to: statement)
                         guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                        changed += Int(sqlite3_changes(db))
                     }
                     try execute("COMMIT;", in: db)
+                    if changed > 0 { try? touchManifestUnlocked(notebookID: notebookID) }
+                    return changed
                 } catch {
                     try? execute("ROLLBACK;", in: db)
                     throw error
                 }
-                return Int(sqlite3_changes(db))
             }
         }
     }
@@ -276,38 +369,79 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
             try validateNotebook(id: destinationNotebookID)
             let sourceEntries = try readEntriesUnlocked(ids: ids, notebookID: sourceNotebookID)
             guard !sourceEntries.isEmpty else { return 0 }
-            try withDatabase(notebookID: destinationNotebookID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    let sql = """
-                    INSERT INTO entries (id, word, word_key, added_at, example_sentence, source)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(word_key) DO UPDATE SET
-                        word = excluded.word,
-                        example_sentence = excluded.example_sentence,
-                        source = excluded.source;
-                    """
-                    var statement: OpaquePointer?
-                    try prepare(sql, db: db, statement: &statement)
-                    defer { sqlite3_finalize(statement) }
-                    for sourceEntry in sourceEntries {
-                        sqlite3_reset(statement)
-                        sqlite3_clear_bindings(statement)
-                        bind(sourceEntry.id.uuidString, at: 1, to: statement)
-                        bind(sourceEntry.word, at: 2, to: statement)
-                        bind(Self.normalizedWord(sourceEntry.word), at: 3, to: statement)
-                        sqlite3_bind_double(statement, 4, sourceEntry.addedAt.timeIntervalSince1970)
-                        bind(sourceEntry.exampleSentence, at: 5, to: statement)
-                        bind(sourceEntry.source, at: 6, to: statement)
-                        guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+
+            let journal = PendingMoveJournal(
+                id: UUID(),
+                sourceNotebookID: sourceNotebookID,
+                destinationNotebookID: destinationNotebookID,
+                entryIDs: sourceEntries.map(\.id)
+            )
+            let journalURL = pendingMoveURL(for: journal.id)
+            try writePendingMoveJournal(journal, to: journalURL)
+
+            let insertedIDs: [UUID]
+            do {
+                insertedIDs = try withDatabase(notebookID: destinationNotebookID) { db in
+                    try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                    do {
+                        let sql = """
+                        INSERT INTO entries (id, word, word_key, added_at, example_sentence, source)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(word_key) DO NOTHING;
+                        """
+                        var statement: OpaquePointer?
+                        try prepare(sql, db: db, statement: &statement)
+                        defer { sqlite3_finalize(statement) }
+                        var insertedIDs: [UUID] = []
+                        for sourceEntry in sourceEntries {
+                            sqlite3_reset(statement)
+                            sqlite3_clear_bindings(statement)
+                            bind(sourceEntry.id.uuidString, at: 1, to: statement)
+                            bind(sourceEntry.word, at: 2, to: statement)
+                            bind(Self.normalizedWord(sourceEntry.word), at: 3, to: statement)
+                            sqlite3_bind_double(statement, 4, sourceEntry.addedAt.timeIntervalSince1970)
+                            bind(sourceEntry.exampleSentence, at: 5, to: statement)
+                            bind(sourceEntry.source, at: 6, to: statement)
+                            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                            if sqlite3_changes(db) > 0 { insertedIDs.append(sourceEntry.id) }
+                        }
+                        try execute("COMMIT;", in: db)
+                        return insertedIDs
+                    } catch {
+                        try? execute("ROLLBACK;", in: db)
+                        throw error
                     }
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
                 }
+            } catch {
+                try? fileManager.removeItem(at: journalURL)
+                throw error
             }
-            return try deleteEntriesUnlocked(ids: ids, notebookID: sourceNotebookID)
+
+            do {
+                let deletedCount = try deleteEntriesUnlocked(ids: ids, notebookID: sourceNotebookID)
+                if deletedCount > 0 {
+                    try? touchManifestUnlocked(notebookID: sourceNotebookID)
+                    try? touchManifestUnlocked(notebookID: destinationNotebookID)
+                }
+                try? fileManager.removeItem(at: journalURL)
+                return deletedCount
+            } catch {
+                // The two notebooks are independent SQLite packages.  If the
+                // source deletion fails after the destination commit, remove
+                // only rows inserted by this operation so the source remains
+                // authoritative and a retry cannot silently duplicate data.
+                if !insertedIDs.isEmpty {
+                    do {
+                        _ = try deleteEntriesUnlocked(ids: Set(insertedIDs), notebookID: destinationNotebookID)
+                        try? fileManager.removeItem(at: journalURL)
+                    } catch {
+                        throw VocabularyNotebookError.database(
+                            "移动失败，且无法回滚目标生词本新增记录：\(error.localizedDescription)"
+                        )
+                    }
+                }
+                throw error
+            }
         }
     }
 
@@ -378,13 +512,14 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 var statement: OpaquePointer?
                 try prepare("DELETE FROM entries WHERE id = ?;", db: db, statement: &statement)
                 defer { sqlite3_finalize(statement) }
+                var changed = 0
                 for id in ids {
                     sqlite3_reset(statement)
                     sqlite3_clear_bindings(statement)
                     bind(id.uuidString, at: 1, to: statement)
                     guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    changed += Int(sqlite3_changes(db))
                 }
-                let changed = Int(sqlite3_changes(db))
                 try execute("COMMIT;", in: db)
                 return changed
             } catch {
@@ -435,6 +570,73 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
     private func writeManifest(_ descriptor: VocabularyNotebookDescriptor, to package: URL) throws {
         try fileManager.createDirectory(at: package, withIntermediateDirectories: true)
         try Self.encoder.encode(descriptor).write(to: package.appendingPathComponent("manifest.json"), options: .atomic)
+    }
+
+    private func touchManifestUnlocked(notebookID: UUID) throws {
+        let package = packageURL(for: notebookID)
+        guard var descriptor = readManifest(at: package) else {
+            throw VocabularyNotebookError.invalidNotebook
+        }
+        descriptor.updatedAt = Date()
+        try writeManifest(descriptor, to: package)
+    }
+
+    private func pendingMoveURL(for id: UUID) -> URL {
+        rootURL.appendingPathComponent(".move-(id.uuidString).json")
+    }
+
+    private func writePendingMoveJournal(_ journal: PendingMoveJournal, to url: URL) throws {
+        let data = try Self.encoder.encode(journal)
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Reconcile moves interrupted between the two notebook packages.  A
+    /// journal is intentionally created before the destination commit. For
+    /// each entry, source-present/destination-present means a pending copy
+    /// and is rolled back; source-missing/destination-present means the move
+    /// completed and only the journal needs cleanup.
+    private func recoverPendingMovesUnlocked() {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+        for url in urls where url.lastPathComponent.hasPrefix(".move-") &&
+            url.pathExtension.caseInsensitiveCompare("json") == .orderedSame {
+            guard let data = try? Data(contentsOf: url),
+                  let journal = try? Self.decoder.decode(PendingMoveJournal.self, from: data) else {
+                continue
+            }
+            do {
+                let sourceIDs = Set(try readEntriesUnlocked(ids: Set(journal.entryIDs), notebookID: journal.sourceNotebookID).map(\.id))
+                let destinationIDs = Set(try readEntriesUnlocked(ids: Set(journal.entryIDs), notebookID: journal.destinationNotebookID).map(\.id))
+                var rollbackIDs = Set<UUID>()
+                var hasUnrecoverableEntry = false
+                for id in journal.entryIDs {
+                    if sourceIDs.contains(id), destinationIDs.contains(id) {
+                        rollbackIDs.insert(id)
+                    } else if !sourceIDs.contains(id), !destinationIDs.contains(id) {
+                        hasUnrecoverableEntry = true
+                    }
+                }
+                if !rollbackIDs.isEmpty {
+                    _ = try deleteEntriesUnlocked(ids: rollbackIDs, notebookID: journal.destinationNotebookID)
+                }
+                if !hasUnrecoverableEntry {
+                    try? fileManager.removeItem(at: url)
+                }
+            } catch {
+                // Keep the journal for the next startup if either package is
+                // temporarily unavailable or its database is locked.
+            }
+        }
+    }
+
+    private func closeDatabaseUnlocked(notebookID: UUID) {
+        if let db = openDatabases.removeValue(forKey: notebookID) {
+            sqlite3_close_v2(db)
+        }
+        initializedDatabases.remove(notebookID)
     }
 
     private func databaseURL(for id: UUID) -> URL {

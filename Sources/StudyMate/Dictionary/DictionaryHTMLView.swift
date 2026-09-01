@@ -221,10 +221,12 @@ public enum DictionaryHTMLFormatter {
         }
     }
 
-    /// MDD audio links are kept as a custom URL so WebKit can report both the
-    /// dictionary package and the resource key. The old `sound:` callback only
-    /// exposed the key, which caused the UI to read the filename aloud instead
-    /// of playing the pronunciation stored in the dictionary.
+    /// Keep the standard `sound://` shape because MDX scripts commonly read
+    /// the href, strip that prefix, and call `new Audio(relativePath)`. The
+    /// dictionary ID is carried in a fragment, which is ignored by the audio
+    /// loader but lets the native navigation callback select the right MDD.
+    /// Using a new scheme here would make those scripts turn
+    /// `studymate-sound://...` into an invalid relative path.
     private static func rewriteSoundReferences(_ html: String, dictionaryID: String?) -> String {
         guard let dictionaryID, !dictionaryID.isEmpty else { return html }
         let encodedDictionaryID = dictionaryID.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? dictionaryID
@@ -240,7 +242,7 @@ public enum DictionaryHTMLFormatter {
             guard !key.isEmpty else { continue }
             let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
             let replacement = nsHTML.substring(with: match.range(at: 1))
-                + "studymate-sound://\(encodedDictionaryID)/\(encodedKey)"
+                + "sound://\(encodedKey)#studymate-dictionary=\(encodedDictionaryID)"
                 + nsHTML.substring(with: match.range(at: 4))
             if let swiftRange = Range(match.range, in: result) {
                 result.replaceSubrange(swiftRange, with: replacement)
@@ -259,7 +261,10 @@ public enum DictionaryHTMLFormatter {
         // `%2520`, breaking resources whose dictionary path contains spaces.
         let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
         let prefix = rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
-        let pattern = #"((?:src|href)\s*=\s*[\"'])([^\"']+)([\"'])"#
+        // Only rewrite attributes that point to embedded resources. A normal
+        // `<a href="another-word">` is a dictionary navigation link, not a
+        // file, and must remain available to the WebKit navigation delegate.
+        let pattern = #"(<(?:img|audio|video|source|script|iframe|embed|object|link|track)\b[^>]*?\b(?:src|href)\s*=\s*[\"'])([^\"']+)([\"'])"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return html }
         let nsHTML = html as NSString
         let matches = regex.matches(in: html, range: NSRange(location: 0, length: nsHTML.length))
@@ -275,7 +280,62 @@ public enum DictionaryHTMLFormatter {
                 result.replaceSubrange(swiftRange, with: replacement)
             }
         }
+
+        // A number of MDX entries attach images or backgrounds at runtime via
+        // an inline style attribute. Because the entry is injected as an
+        // inline document, those relative URLs otherwise resolve against the
+        // generated page instead of the dictionary resource directory.
+        let stylePattern = #"(\bstyle\s*=\s*)([\"'])(.*?)(\2)"#
+        if let styleRegex = try? NSRegularExpression(pattern: stylePattern, options: [.caseInsensitive]) {
+            let styledHTML = result as NSString
+            let styleMatches = styleRegex.matches(in: result, range: NSRange(location: 0, length: styledHTML.length))
+            for match in styleMatches.reversed() {
+                guard match.numberOfRanges == 5 else { continue }
+                let value = styledHTML.substring(with: match.range(at: 3))
+                let rewritten = rewriteCSSResourceReferences(value, resourceRoot: resourceRoot)
+                guard rewritten != value, let swiftRange = Range(match.range, in: result) else { continue }
+                let replacement = styledHTML.substring(with: match.range(at: 1))
+                    + styledHTML.substring(with: match.range(at: 2))
+                    + rewritten
+                    + styledHTML.substring(with: match.range(at: 4))
+                result.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+
+        // Responsive dictionary images commonly use srcset instead of src.
+        // Rewrite only the URL token and preserve density/width descriptors.
+        let srcSetPattern = #"(<(?:img|source|video)\b[^>]*?\bsrcset\s*=\s*[\"'])([^\"']+)([\"'])"#
+        if let srcSetRegex = try? NSRegularExpression(pattern: srcSetPattern, options: [.caseInsensitive]) {
+            let srcSetHTML = result as NSString
+            let srcSetMatches = srcSetRegex.matches(in: result, range: NSRange(location: 0, length: srcSetHTML.length))
+            for match in srcSetMatches.reversed() {
+                guard match.numberOfRanges == 4 else { continue }
+                let value = srcSetHTML.substring(with: match.range(at: 2))
+                let rewritten = rewriteSrcSet(value, prefix: prefix)
+                guard rewritten != value, let swiftRange = Range(match.range, in: result) else { continue }
+                let replacement = srcSetHTML.substring(with: match.range(at: 1))
+                    + rewritten
+                    + srcSetHTML.substring(with: match.range(at: 3))
+                result.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
         return result
+    }
+
+    private static func rewriteSrcSet(_ value: String, prefix: String) -> String {
+        value
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { candidate in
+                let parts = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+                guard let first = parts.first else { return String(candidate) }
+                let resource = String(first)
+                guard shouldRewriteResource(resource) else { return String(candidate) }
+                let rewritten = localResourceURL(resource, prefix: prefix)
+                if parts.count == 1 { return rewritten }
+                return rewritten + " " + String(parts[1])
+            }
+            .joined(separator: ", ")
     }
 
     private static func rewriteCSSResourceReferences(_ css: String, resourceRoot: String?) -> String {
@@ -453,6 +513,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         webView.underPageBackgroundColor = .clear
         context.coordinator.currentHTML = html
@@ -521,10 +582,11 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
     public static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
         webView.stopLoading()
     }
 
-    public final class Coordinator: NSObject, WKNavigationDelegate {
+    public final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var parent: DictionaryHTMLView
         var currentHTML: String = ""
         var currentBodyHTML: String = ""
@@ -595,9 +657,28 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             let scheme = url.scheme?.lowercased() ?? ""
 
             if scheme == "sound" {
-                let audioResource = url.host ?? url.path
+                // `sound://audio/cat.mp3` stores `audio` in host and the
+                // remainder in path. Joining both is required for WebKit
+                // navigation and also matches the path used by MDX scripts.
+                let audioResource = (url.host ?? "") + url.path
                 let cleanAudio = audioResource.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                parent.onPlayAudio?(cleanAudio)
+                if let fragment = url.fragment,
+                   fragment.hasPrefix("studymate-dictionary=") {
+                    let dictionaryID = String(fragment.dropFirst("studymate-dictionary=".count))
+                        .removingPercentEncoding ?? String(fragment.dropFirst("studymate-dictionary=".count))
+                    if !dictionaryID.isEmpty, !cleanAudio.isEmpty {
+                        if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
+                            onPlayDictionaryAudio(dictionaryID, cleanAudio)
+                        } else {
+                            DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                                dictionaryID: dictionaryID,
+                                key: cleanAudio
+                            )
+                        }
+                    }
+                } else {
+                    parent.onPlayAudio?(cleanAudio)
+                }
                 decisionHandler(.cancel)
                 return
             }
@@ -638,16 +719,140 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
 
-            if navigationAction.navigationType == .linkActivated && scheme != "file" && scheme != "about" {
+            // MDX controls often use javascript: links for expand/collapse,
+            // pronunciation and view switching. Let WebKit execute these
+            // actions instead of misinterpreting the script text as a lookup
+            // candidate in the generic link branch below.
+            if scheme == "javascript" || scheme == "data" || scheme == "blob" || scheme == "about" {
+                decisionHandler(.allow)
+                return
+            }
+
+            let isLocalDictionaryLink: Bool
+            if scheme == "file", let baseURL = parent.baseURL {
+                let basePath = baseURL.standardizedFileURL.path
+                isLocalDictionaryLink = url.standardizedFileURL.path.hasPrefix(
+                    basePath.hasSuffix("/") ? basePath : basePath + "/"
+                )
+            } else {
+                isLocalDictionaryLink = false
+            }
+
+            if navigationAction.navigationType == .linkActivated,
+               isLocalDictionaryLink {
                 let candidate = url.lastPathComponent
-                if !candidate.isEmpty {
-                    parent.onLookupWord?(candidate)
+                if let decoded = candidate.removingPercentEncoding, !decoded.isEmpty {
+                    parent.onLookupWord?(decoded)
                     decisionHandler(.cancel)
                     return
                 }
             }
 
             decisionHandler(.allow)
+        }
+
+        // Native MDX scripts occasionally call alert/confirm/prompt. Without
+        // a UI delegate WebKit silently drops these dialogs, which can leave
+        // a dictionary control waiting for a result. Bridge them to the
+        // normal macOS alert presentation while keeping the dictionary page
+        // itself in WebKit.
+        public func webView(
+            _ webView: WKWebView,
+            runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping () -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "好")
+            present(alert, in: webView) { _ in completionHandler() }
+        }
+
+        public func webView(
+            _ webView: WKWebView,
+            runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (Bool) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "确定")
+            alert.addButton(withTitle: "取消")
+            present(alert, in: webView) { response in
+                completionHandler(response == .alertFirstButtonReturn)
+            }
+        }
+
+        public func webView(
+            _ webView: WKWebView,
+            runJavaScriptTextInputPanelWithPrompt prompt: String,
+            defaultText: String?,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (String?) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = prompt
+            alert.addButton(withTitle: "确定")
+            alert.addButton(withTitle: "取消")
+            let input = NSTextField(string: defaultText ?? "")
+            input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+            alert.accessoryView = input
+            present(alert, in: webView) { response in
+                completionHandler(response == .alertFirstButtonReturn ? input.stringValue : nil)
+            }
+        }
+
+        public func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // Keep popup windows from escaping the dictionary window. Links
+            // opened by a user gesture still receive the same lookup/audio or
+            // external-link handling as the main WebKit view.
+            guard let url = navigationAction.request.url else { return nil }
+            handleNewWindowURL(url)
+            return nil
+        }
+
+        private func present(
+            _ alert: NSAlert,
+            in webView: WKWebView,
+            completion: @escaping (NSApplication.ModalResponse) -> Void
+        ) {
+            guard let window = webView.window else {
+                completion(alert.runModal())
+                return
+            }
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        }
+
+        private func handleNewWindowURL(_ url: URL) {
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "http" || scheme == "https" {
+                NSWorkspace.shared.open(url)
+                return
+            }
+            if scheme == "entry" || scheme == "lookup" {
+                let word = (url.host ?? url.path).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if let decoded = word.removingPercentEncoding, !decoded.isEmpty {
+                    parent.onLookupWord?(decoded)
+                }
+                return
+            }
+            if scheme == "file", let baseURL = parent.baseURL {
+                let basePath = baseURL.standardizedFileURL.path
+                let isLocal = url.standardizedFileURL.path.hasPrefix(
+                    basePath.hasSuffix("/") ? basePath : basePath + "/"
+                )
+                if isLocal {
+                    let candidate = url.lastPathComponent
+                    if let decoded = candidate.removingPercentEncoding, !decoded.isEmpty {
+                        parent.onLookupWord?(decoded)
+                    }
+                }
+            }
         }
 
         public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

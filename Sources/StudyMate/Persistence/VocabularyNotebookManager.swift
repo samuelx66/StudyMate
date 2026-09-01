@@ -12,6 +12,7 @@ public final class VocabularyNotebookManager: ObservableObject {
     @Published public private(set) var selectedSource = ""
     @Published public private(set) var sortOrder: SentenceLibrarySortOrder = .newestFirst
     @Published public private(set) var isWorking = false
+    @Published public private(set) var isLoadingEntries = false
     @Published public private(set) var statusMessage: String?
     @Published public private(set) var lastErrorMessage: String?
 
@@ -25,6 +26,8 @@ public final class VocabularyNotebookManager: ObservableObject {
     private var savedWordsTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var statusToken = UUID()
+    private var entryQueryGeneration: UInt64 = 0
+    private var notebookSelectionGeneration: UInt64 = 0
     @Published public private(set) var savedWordKeys: Set<String> = []
 
     public init(
@@ -73,11 +76,15 @@ public final class VocabularyNotebookManager: ObservableObject {
 
     public func selectNotebook(_ id: UUID) {
         guard notebooks.contains(where: { $0.id == id }) else { return }
+        notebookSelectionGeneration &+= 1
+        queryTask?.cancel()
+        savedWordsTask?.cancel()
         currentNotebookID = id
         defaults.set(id.uuidString, forKey: currentNotebookKey)
         selectedSource = ""
         availableSources = []
         savedWordKeys = []
+        isLoadingEntries = true
         reloadSources(for: id)
         reloadSavedWords(for: id)
         reloadEntries()
@@ -117,14 +124,19 @@ public final class VocabularyNotebookManager: ObservableObject {
 
     public func reloadEntries(debounceNanoseconds: UInt64 = 0) {
         queryTask?.cancel()
+        entryQueryGeneration &+= 1
+        let generation = entryQueryGeneration
         guard let notebookID = currentNotebookID else {
             entries = []
+            isLoadingEntries = false
             return
         }
+        isLoadingEntries = true
         let query = searchText
+        let filter = dateFilter
         let filterDate = selectedFilterDate
-        let lowerBound = dateFilter.lowerBound(selectedDate: filterDate)
-        let upperBound = dateFilter.upperBound(selectedDate: filterDate)
+        let lowerBound = filter.lowerBound(selectedDate: filterDate)
+        let upperBound = filter.upperBound(selectedDate: filterDate)
         let source = selectedSource
         let order = sortOrder
         queryTask = Task { [weak self, store] in
@@ -145,15 +157,23 @@ public final class VocabularyNotebookManager: ObservableObject {
                 }.value
                 guard !Task.isCancelled,
                       let self,
+                      self.entryQueryGeneration == generation,
                       self.currentNotebookID == notebookID,
                       self.searchText == query,
+                      self.dateFilter.rawValue == filter.rawValue,
+                      self.selectedFilterDate == filterDate,
                       self.selectedSource == source,
                       self.sortOrder == order else { return }
                 self.entries = result
+                self.isLoadingEntries = false
                 self.lastErrorMessage = nil
             } catch {
-                guard !Task.isCancelled, let self, self.currentNotebookID == notebookID else { return }
+                guard !Task.isCancelled,
+                      let self,
+                      self.entryQueryGeneration == generation,
+                      self.currentNotebookID == notebookID else { return }
                 self.entries = []
+                self.isLoadingEntries = false
                 self.publishFailure(error)
             }
         }
@@ -169,33 +189,35 @@ public final class VocabularyNotebookManager: ObservableObject {
             await reloadNotebooks(createDefaultIfNeeded: true)
         }
         guard let notebookID = currentNotebookID else { throw VocabularyNotebookError.notebookUnavailable }
+        let selectionGeneration = notebookSelectionGeneration
         let trimmedWord = word.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedWord.isEmpty else { throw VocabularyNotebookError.emptyWord }
         isWorking = true
         defer { isWorking = false }
         do {
             let added = try await Task.detached(priority: .userInitiated) { [store] in
-                if try store.contains(word: trimmedWord, in: notebookID) {
-                    _ = try store.remove(word: trimmedWord, from: notebookID)
-                    return false
-                }
-                _ = try store.add(
+                try store.toggle(
                     VocabularyWordEntry(
                         word: trimmedWord,
                         exampleSentence: exampleSentence,
                         source: source
                     ),
-                    to: notebookID
+                    in: notebookID
                 )
-                return true
             }.value
+            guard currentNotebookID == notebookID,
+                  notebookSelectionGeneration == selectionGeneration else {
+                publishSuccess(added ? "已加入生词本" : "已从生词本移除")
+                return added
+            }
             let wordKey = VocabularyNotebookStore.normalizedWord(trimmedWord)
             if added {
                 savedWordKeys.insert(wordKey)
             } else {
                 savedWordKeys.remove(wordKey)
             }
-            await refreshAfterWrite(notebookID: notebookID)
+            markNotebooksUpdated([notebookID])
+            refreshAfterWrite(notebookID: notebookID)
             publishSuccess(added ? "已加入生词本" : "已从生词本移除")
             return added
         } catch {
@@ -208,13 +230,25 @@ public final class VocabularyNotebookManager: ObservableObject {
     public func deleteEntries(ids: Set<UUID>) async throws -> Int {
         guard let notebookID = currentNotebookID else { throw VocabularyNotebookError.notebookUnavailable }
         guard !ids.isEmpty else { return 0 }
+        let selectionGeneration = notebookSelectionGeneration
+        let deletedWordKeys = Set(
+            entries.filter { ids.contains($0.id) }
+                .map { VocabularyNotebookStore.normalizedWord($0.word) }
+        )
         isWorking = true
         defer { isWorking = false }
         do {
             let count = try await Task.detached(priority: .userInitiated) { [store] in
                 try store.deleteEntries(ids: ids, from: notebookID)
             }.value
-            await refreshAfterWrite(notebookID: notebookID)
+            guard currentNotebookID == notebookID,
+                  notebookSelectionGeneration == selectionGeneration else {
+                publishSuccess("已删除 " + String(count) + " 个生词")
+                return count
+            }
+            savedWordKeys.subtract(deletedWordKeys)
+            markNotebooksUpdated([notebookID])
+            refreshAfterWrite(notebookID: notebookID)
             publishSuccess("已删除 " + String(count) + " 个生词")
             return count
         } catch {
@@ -227,6 +261,11 @@ public final class VocabularyNotebookManager: ObservableObject {
     public func moveEntries(ids: Set<UUID>, to destinationNotebookID: UUID) async throws -> Int {
         guard let sourceNotebookID = currentNotebookID else { throw VocabularyNotebookError.notebookUnavailable }
         guard !ids.isEmpty else { return 0 }
+        let selectionGeneration = notebookSelectionGeneration
+        let movedWordKeys = Set(
+            entries.filter { ids.contains($0.id) }
+                .map { VocabularyNotebookStore.normalizedWord($0.word) }
+        )
         isWorking = true
         defer { isWorking = false }
         do {
@@ -237,7 +276,14 @@ public final class VocabularyNotebookManager: ObservableObject {
                     to: destinationNotebookID
                 )
             }.value
-            await refreshAfterWrite(notebookID: sourceNotebookID)
+            guard currentNotebookID == sourceNotebookID,
+                  notebookSelectionGeneration == selectionGeneration else {
+                publishSuccess("已移动 " + String(count) + " 个生词")
+                return count
+            }
+            savedWordKeys.subtract(movedWordKeys)
+            markNotebooksUpdated([sourceNotebookID, destinationNotebookID])
+            refreshAfterWrite(notebookID: sourceNotebookID)
             publishSuccess("已移动 " + String(count) + " 个生词")
             return count
         } catch {
@@ -256,6 +302,7 @@ public final class VocabularyNotebookManager: ObservableObject {
                 return result
             }.value
             notebooks = available
+            let previousNotebookID = currentNotebookID
             let savedID = defaults.string(forKey: currentNotebookKey).flatMap(UUID.init(uuidString:))
             if let currentNotebookID, available.contains(where: { $0.id == currentNotebookID }) {
                 // Keep the current selection when a write causes the list to reload.
@@ -263,6 +310,14 @@ public final class VocabularyNotebookManager: ObservableObject {
                 currentNotebookID = savedID
             } else {
                 currentNotebookID = available.first?.id
+            }
+            if previousNotebookID != currentNotebookID {
+                notebookSelectionGeneration &+= 1
+                queryTask?.cancel()
+                savedWordsTask?.cancel()
+                selectedSource = ""
+                availableSources = []
+                savedWordKeys = []
             }
             if let currentNotebookID {
                 defaults.set(currentNotebookID.uuidString, forKey: currentNotebookKey)
@@ -311,12 +366,12 @@ public final class VocabularyNotebookManager: ObservableObject {
     private func makeSavedWordsTask(for notebookID: UUID) -> Task<Void, Never> {
         Task { [weak self, store] in
             do {
-                let allEntries = try await Task.detached(priority: .utility) {
-                    try store.entries(notebookID: notebookID, sortOrder: .newestFirst)
+                let keys = try await Task.detached(priority: .utility) {
+                    try store.wordKeys(notebookID: notebookID)
                 }.value
                 try Task.checkCancellation()
                 guard let self, self.currentNotebookID == notebookID else { return }
-                self.savedWordKeys = Set(allEntries.map { VocabularyNotebookStore.normalizedWord($0.word) })
+                self.savedWordKeys = keys
             } catch is CancellationError {
                 return
             } catch {
@@ -326,11 +381,25 @@ public final class VocabularyNotebookManager: ObservableObject {
         }
     }
 
-    private func refreshAfterWrite(notebookID: UUID) async {
+    private func refreshAfterWrite(notebookID: UUID) {
         guard currentNotebookID == notebookID else { return }
         reloadSources(for: notebookID)
-        await reloadSavedWordsAndWait(for: notebookID)
         reloadEntries()
+    }
+
+    private func markNotebooksUpdated(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let now = Date()
+        notebooks = notebooks
+            .map { notebook in
+                var updated = notebook
+                if ids.contains(notebook.id) { updated.updatedAt = now }
+                return updated
+            }
+            .sorted { lhs, rhs in
+                if lhs.isDefault != rhs.isDefault { return lhs.isDefault }
+                return lhs.updatedAt > rhs.updatedAt
+            }
     }
 
     private func publishSuccess(_ message: String) {

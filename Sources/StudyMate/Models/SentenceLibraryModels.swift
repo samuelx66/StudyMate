@@ -106,9 +106,11 @@ public enum SentenceLibraryDateFilter: String, CaseIterable, Identifiable, Senda
         case .today:
             return calendar.startOfDay(for: now)
         case .lastSevenDays:
-            return calendar.date(byAdding: .day, value: -7, to: now)
+            let today = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: .day, value: -6, to: today)
         case .lastThirtyDays:
-            return calendar.date(byAdding: .day, value: -30, to: now)
+            let today = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: .day, value: -29, to: today)
         case .specificDay:
             return calendar.startOfDay(for: selectedDate ?? now)
         }

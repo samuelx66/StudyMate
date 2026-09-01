@@ -146,10 +146,12 @@ public struct MainContentView: View {
             onOpenLibrary: { openWindow(id: "sentence-library") },
             onOpenVocabulary: { openWindow(id: "vocabulary") },
             onOpenDictionary: {
+                _ = dictionaryCoordinator.captureCurrentSelectionForDictionary()
                 if let query = dictionaryCoordinator.selectedText, !query.isEmpty {
-                    DictionaryEngine.shared.requestLookup(query)
+                    dictionaryCoordinator.bindPlaybackEngine(engine)
+                    dictionaryCoordinator.pausePlaybackForVideoSubtitleSelection()
                 }
-                openWindow(id: "dictionary")
+                dictionaryCoordinator.openDictionaryWindow()
             },
             onOpenMedia: openFileDialog,
             onTogglePlaylist: togglePlaylist

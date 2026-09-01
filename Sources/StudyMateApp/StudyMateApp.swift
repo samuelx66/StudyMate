@@ -432,10 +432,12 @@ struct StudyMateApp: App {
 
     private func openDictionaryAction() {
         let coordinator = DictionaryInteractionCoordinator.shared
+        _ = coordinator.captureCurrentSelectionForDictionary()
         if let query = coordinator.selectedText, !query.isEmpty {
-            DictionaryEngine.shared.requestLookup(query)
+            coordinator.bindPlaybackEngine(engine)
+            coordinator.pausePlaybackForVideoSubtitleSelection()
         }
-        openWindow(id: "dictionary")
+        coordinator.openDictionaryWindow()
     }
 }
 

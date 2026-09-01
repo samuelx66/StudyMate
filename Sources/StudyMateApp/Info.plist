@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.2dev</string>
+	<string>1.1.8dev</string>
 	<key>CFBundleVersion</key>
-	<string>254</string>
+	<string>260</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.education</string>
     <key>LSMinimumSystemVersion</key>

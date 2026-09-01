@@ -33,6 +33,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private let avSynthesizer = AVSpeechSynthesizer()
     private var dictionaryAudioTask: Task<Void, Never>?
     private var dictionaryAudioPlayer: AVAudioPlayer?
+    private var audioGeneration: UInt64 = 0
     private var selectionObserver: NSObjectProtocol?
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
@@ -72,16 +73,20 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         }
 
         // 监控鼠标点击：词典弹窗展示时，点击弹窗外部区域自动关闭弹窗
-        mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { @MainActor [weak self] event in
             let eventWindow = event.window
-            Task { @MainActor [weak self] in
-                guard let self, self.isLookupPresented else { return }
-                // 仅当点击发生在词典弹窗窗口外部时关闭弹窗
-                if let popoverWindow = self.activePopover?.contentViewController?.view.window,
-                   eventWindow !== popoverWindow {
-                    self.dismissPopover()
-                    self.clearSelectionAndDeselect()
-                }
+            // 在事件进入队列时固定当前气泡状态，避免工具条的“查词”点击
+            // 创建新气泡后，被这个延迟执行的监视器误判为气泡外点击。
+            let hadVisiblePopover = self?.isLookupPresented == true
+            let popoverAtEvent = self?.activePopover
+            Task { @MainActor [weak self, eventWindow, hadVisiblePopover, popoverAtEvent] in
+                guard let self, hadVisiblePopover,
+                      let popoverAtEvent,
+                      self.activePopover === popoverAtEvent,
+                      let popoverWindow = popoverAtEvent.contentViewController?.view.window,
+                      eventWindow !== popoverWindow else { return }
+                self.dismissPopover()
+                self.clearSelectionAndDeselect()
             }
             return event
         }
@@ -205,12 +210,19 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         let popoverView = DictionaryLookupPopoverContent(
             query: query,
             context: contextText,
-            onPronounce: { [weak self] in self?.speakPreferred(query) },
-            onToggleVocabulary: { [weak self] in
-                self?.toggleVocabulary(word: query, exampleSentence: self?.contextText ?? "")
+            onLookupWord: { [weak self] word in
+                guard let self else { return }
+                self.updateSelection(text: word, context: self.contextText)
+                DictionaryEngine.shared.search(query: word, includeDetails: true, immediate: true)
             },
-            onOpenDictionary: { [weak self] in
-                self?.openDictionaryWindow(query: query)
+            onPronounce: { [weak self] word in self?.speakPreferred(word) },
+            onToggleVocabulary: { [weak self] word in
+                guard let self else { return }
+                self.updateSelection(text: word, context: self.contextText)
+                self.toggleVocabulary(word: word, exampleSentence: self.contextText ?? "")
+            },
+            onOpenDictionary: { [weak self] word in
+                self?.openDictionaryWindow(query: word)
             },
             onDismiss: { [weak self] in
                 self?.dismissPopover()
@@ -301,6 +313,12 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         }
         guard Self.isDictionarySelectableTextView(textView) else { return }
         let range = textView.selectedRange()
+        let length = (textView.string as NSString).length
+        guard range.location != NSNotFound,
+              range.location >= 0,
+              range.location <= length,
+              range.length >= 0,
+              range.length <= length - range.location else { return }
         let value: String?
         if range.length > 0 {
             value = (textView.string as NSString).substring(with: range)
@@ -315,52 +333,54 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        dictionaryAudioTask?.cancel()
-        dictionaryAudioTask = nil
-        dictionaryAudioPlayer?.stop()
-        dictionaryAudioPlayer = nil
+        _ = beginAudioRequest()
         let utterance = AVSpeechUtterance(string: trimmed)
-        avSynthesizer.stopSpeaking(at: .immediate)
         avSynthesizer.speak(utterance)
     }
 
-    /// Prefer a pronunciation resource from the first installed dictionary;
-    /// use AVSpeechSynthesizer only when no matching MDD audio is available.
+    /// Prefer a pronunciation resource from any installed dictionary; use
+    /// AVSpeechSynthesizer only when no matching MDD audio is available.
     public func speakPreferred(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        dictionaryAudioTask?.cancel()
-        dictionaryAudioPlayer?.stop()
-        dictionaryAudioPlayer = nil
-        avSynthesizer.stopSpeaking(at: .immediate)
+        let generation = beginAudioRequest()
 
         dictionaryAudioTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 guard let url = try await DictionaryEngine.shared.firstDictionaryPronunciationURL(for: trimmed) else {
-                    guard !Task.isCancelled else { return }
-                    self?.speak(trimmed)
+                    guard !Task.isCancelled, self.audioGeneration == generation else { return }
+                    self.speak(trimmed)
                     return
                 }
                 let data = try await Task.detached(priority: .userInitiated) {
                     try Data(contentsOf: url, options: [.mappedIfSafe])
                 }.value
                 try Task.checkCancellation()
+                guard self.audioGeneration == generation else { return }
                 guard !data.isEmpty, let player = try? AVAudioPlayer(data: data) else {
-                    self?.speak(trimmed)
+                    guard self.audioGeneration == generation else { return }
+                    self.speak(trimmed)
                     return
                 }
                 player.prepareToPlay()
+                guard self.audioGeneration == generation else { return }
                 guard player.play() else {
-                    self?.speak(trimmed)
+                    guard self.audioGeneration == generation else { return }
+                    self.speak(trimmed)
                     return
                 }
-                self?.dictionaryAudioPlayer = player
+                guard self.audioGeneration == generation else {
+                    player.stop()
+                    return
+                }
+                self.dictionaryAudioPlayer = player
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
-                self?.speak(trimmed)
+                guard !Task.isCancelled, self.audioGeneration == generation else { return }
+                self.speak(trimmed)
             }
         }
     }
@@ -384,46 +404,63 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return
         }
 
-        dictionaryAudioTask?.cancel()
-        dictionaryAudioPlayer?.stop()
-        dictionaryAudioPlayer = nil
-        avSynthesizer.stopSpeaking(at: .immediate)
+        let generation = beginAudioRequest()
 
         dictionaryAudioTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 guard let url = try await DictionaryEngine.shared.resourceURL(
                     dictionaryID: id,
                     key: resourceKey
                 ) else {
-                    guard !Task.isCancelled else { return }
-                    self?.speakPreferred(fallbackText)
+                    guard !Task.isCancelled, self.audioGeneration == generation else { return }
+                    self.speakPreferred(fallbackText)
                     return
                 }
                 let data = try await Task.detached(priority: .userInitiated) {
                     try Data(contentsOf: url, options: [.mappedIfSafe])
                 }.value
                 try Task.checkCancellation()
+                guard self.audioGeneration == generation else { return }
                 guard !data.isEmpty else {
-                    self?.speakPreferred(fallbackText)
+                    guard self.audioGeneration == generation else { return }
+                    self.speakPreferred(fallbackText)
                     return
                 }
                 guard let player = try? AVAudioPlayer(data: data) else {
-                    self?.speakPreferred(fallbackText)
+                    guard self.audioGeneration == generation else { return }
+                    self.speakPreferred(fallbackText)
                     return
                 }
                 player.prepareToPlay()
+                guard self.audioGeneration == generation else { return }
                 guard player.play() else {
-                    self?.speakPreferred(fallbackText)
+                    guard self.audioGeneration == generation else { return }
+                    self.speakPreferred(fallbackText)
                     return
                 }
-                self?.dictionaryAudioPlayer = player
+                guard self.audioGeneration == generation else {
+                    player.stop()
+                    return
+                }
+                self.dictionaryAudioPlayer = player
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
-                self?.speakPreferred(fallbackText)
+                guard !Task.isCancelled, self.audioGeneration == generation else { return }
+                self.speakPreferred(fallbackText)
             }
         }
+    }
+
+    private func beginAudioRequest() -> UInt64 {
+        audioGeneration &+= 1
+        dictionaryAudioTask?.cancel()
+        dictionaryAudioTask = nil
+        dictionaryAudioPlayer?.stop()
+        dictionaryAudioPlayer = nil
+        avSynthesizer.stopSpeaking(at: .immediate)
+        return audioGeneration
     }
 
     public func speakSelected() {
@@ -462,6 +499,32 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         // The full dictionary window owns the interaction now. Keep playback
         // paused until that window disappears, matching the popover behavior.
         clearSelectionAndDeselect(resumePlayback: false)
+    }
+
+    /// Capture the current subtitle selection for the standalone dictionary
+    /// window. The coordinator owns the marker that distinguishes subtitle
+    /// NSTextViews from search fields and editors; keeping this check here
+    /// prevents a toolbar shortcut from accidentally looking up arbitrary
+    /// selected text elsewhere in the app.
+    @discardableResult
+    public func captureCurrentSelectionForDictionary() -> Bool {
+        guard let textView = currentSelectionTextView else { return false }
+        let range = textView.selectedRange()
+        let length = (textView.string as NSString).length
+        guard range.length > 0,
+              range.location != NSNotFound,
+              range.location >= 0,
+              range.location <= length,
+              range.length <= length - range.location else { return false }
+        let value = (textView.string as NSString).substring(with: range)
+        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        updateSelection(
+            text: value,
+            context: objc_getAssociatedObject(textView, &dictionaryTextContextAssociationKey) as? String,
+            screenPoint: NSEvent.mouseLocation
+        )
+        DictionaryEngine.shared.requestLookup(value)
+        return true
     }
 
     /// Called by the full dictionary window when it is closed.
@@ -584,7 +647,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private static func wordAtCaret(in textView: NSTextView) -> String? {
         let string = textView.string as NSString
         guard string.length > 0 else { return nil }
-        let caret = min(textView.selectedRange().location, string.length)
+        let location = textView.selectedRange().location
+        guard location != NSNotFound, location >= 0 else { return nil }
+        let caret = min(location, string.length)
         let characterSet = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "'_"))
         var start = caret
         var end = caret
@@ -1163,21 +1228,42 @@ public struct DictionaryLookupOverlay: View {
 private struct DictionaryLookupPopoverContent: View {
     let query: String
     let context: String?
-    let onPronounce: () -> Void
-    let onToggleVocabulary: () -> Void
-    let onOpenDictionary: () -> Void
+    let onLookupWord: (String) -> Void
+    let onPronounce: (String) -> Void
+    let onToggleVocabulary: (String) -> Void
+    let onOpenDictionary: (String) -> Void
     let onDismiss: () -> Void
+    @State private var displayedQuery: String
     @ObservedObject private var engine = DictionaryEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
 
+    init(
+        query: String,
+        context: String?,
+        onLookupWord: @escaping (String) -> Void,
+        onPronounce: @escaping (String) -> Void,
+        onToggleVocabulary: @escaping (String) -> Void,
+        onOpenDictionary: @escaping (String) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.query = query
+        self.context = context
+        self.onLookupWord = onLookupWord
+        self.onPronounce = onPronounce
+        self.onToggleVocabulary = onToggleVocabulary
+        self.onOpenDictionary = onOpenDictionary
+        self.onDismiss = onDismiss
+        _displayedQuery = State(initialValue: query)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(query)
+                Text(displayedQuery)
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Button(action: onPronounce) {
+                Button { onPronounce(displayedQuery) } label: {
                     Image(systemName: "speaker.wave.2.fill")
                 }
                 .buttonStyle(.borderless)
@@ -1187,15 +1273,15 @@ private struct DictionaryLookupPopoverContent: View {
 
                 DictionaryVocabularyActionButton(
                     title:
-                    vocabularyManager.isWordSaved(query)
+                    vocabularyManager.isWordSaved(displayedQuery)
                         ? lang.text("从生词本移除", "Remove from Vocabulary")
                         : lang.text("加入生词本", "Add to Vocabulary"),
                     help:
-                    vocabularyManager.isWordSaved(query)
+                    vocabularyManager.isWordSaved(displayedQuery)
                         ? lang.text("从生词本移除", "Remove from Vocabulary")
                         : lang.text("加入生词本", "Add to Vocabulary"),
-                    isSaved: vocabularyManager.isWordSaved(query),
-                    action: onToggleVocabulary
+                    isSaved: vocabularyManager.isWordSaved(displayedQuery),
+                    action: { onToggleVocabulary(displayedQuery) }
                 )
                 .disabled(vocabularyManager.isWorking)
             }
@@ -1227,7 +1313,8 @@ private struct DictionaryLookupPopoverContent: View {
                     // scripts are enabled only in the full detail pane.
                     allowsJavaScript: false,
                     onLookupWord: { word in
-                        DictionaryEngine.shared.search(query: word, includeDetails: true, immediate: true)
+                        displayedQuery = word
+                        onLookupWord(word)
                     },
                     onPlayAudio: { audioKey in
                         DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
@@ -1257,7 +1344,9 @@ private struct DictionaryLookupPopoverContent: View {
 
             Divider()
             HStack {
-                Button(lang.text("在词典中打开", "Open in Dictionary"), action: onOpenDictionary)
+                Button(lang.text("在词典中打开", "Open in Dictionary")) {
+                    onOpenDictionary(displayedQuery)
+                }
                 Spacer()
                 Button(lang.text("关闭", "Close"), action: onDismiss)
                     .keyboardShortcut(.cancelAction)

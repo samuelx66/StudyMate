@@ -14,7 +14,6 @@ public struct VocabularyNotebookView: View {
     @State private var confirmNotebookDeletion = false
     @State private var confirmMove = false
     @State private var pendingMoveDestinationID: UUID?
-    @State private var notice: VocabularyNotebookNotice?
 
     public init(manager: VocabularyNotebookManager) {
         self.manager = manager
@@ -43,14 +42,7 @@ public struct VocabularyNotebookView: View {
         .sheet(isPresented: $showCreateSheet) {
             VocabularyNotebookCreationView { name in
                 Task {
-                    do {
-                        try await manager.createNotebook(name: name)
-                    } catch {
-                        notice = VocabularyNotebookNotice(
-                            title: lang.text("新建失败", "Creation Failed"),
-                            message: error.localizedDescription
-                        )
-                    }
+                    try? await manager.createNotebook(name: name)
                 }
             }
         }
@@ -61,15 +53,8 @@ public struct VocabularyNotebookView: View {
         ) {
             Button(lang.text("删除", "Delete"), role: .destructive) {
                 Task {
-                    do {
-                        try await manager.deleteCurrentNotebook()
-                        selectedEntryIDs.removeAll()
-                    } catch {
-                        notice = VocabularyNotebookNotice(
-                            title: lang.text("删除失败", "Delete Failed"),
-                            message: error.localizedDescription
-                        )
-                    }
+                    try? await manager.deleteCurrentNotebook()
+                    selectedEntryIDs.removeAll()
                 }
             }
             Button(lang.text("取消", "Cancel"), role: .cancel) {}
@@ -101,13 +86,6 @@ public struct VocabularyNotebookView: View {
                 ))
             }
         }
-        .alert(item: $notice) { item in
-            Alert(
-                title: Text(item.title),
-                message: Text(item.message),
-                dismissButton: .default(Text(lang.text("好", "OK")))
-            )
-        }
         .onChange(of: searchText) { _, value in updateFilter(searchText: value) }
         .onChange(of: dateFilter) { _, value in updateFilter(dateFilter: value) }
         .onChange(of: selectedDate) { _, value in updateFilter(selectedDate: value) }
@@ -115,6 +93,13 @@ public struct VocabularyNotebookView: View {
         .onChange(of: sortOrder) { _, value in updateFilter(sortOrder: value) }
         .onChange(of: manager.entries) { _, entries in
             selectedEntryIDs.formIntersection(Set(entries.map(\.id)))
+        }
+        .onChange(of: manager.currentNotebookID) { _, _ in
+            selectedSource = manager.selectedSource
+            selectedEntryIDs.removeAll()
+        }
+        .onChange(of: manager.selectedSource) { _, value in
+            if selectedSource != value { selectedSource = value }
         }
     }
 
@@ -130,6 +115,7 @@ public struct VocabularyNotebookView: View {
                 }
             }
             .listStyle(.sidebar)
+            .disabled(manager.isWorking)
 
             Divider()
 
@@ -163,7 +149,15 @@ public struct VocabularyNotebookView: View {
             filterBar
             Divider()
 
-            if manager.entries.isEmpty {
+            if manager.isLoadingEntries && manager.entries.isEmpty {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text(lang.text("正在加载生词本…", "Loading vocabulary…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if manager.entries.isEmpty {
                 ContentUnavailableView(
                     lang.text("生词本中没有匹配的单词", "No Matching Words"),
                     systemImage: "book.closed",
@@ -207,6 +201,7 @@ public struct VocabularyNotebookView: View {
                     .width(min: 100, ideal: 150)
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
+                .disabled(manager.isWorking)
             }
 
             if manager.isWorking || manager.statusMessage != nil || manager.lastErrorMessage != nil {
@@ -345,12 +340,7 @@ public struct VocabularyNotebookView: View {
             do {
                 _ = try await manager.deleteEntries(ids: ids)
                 selectedEntryIDs.subtract(ids)
-            } catch {
-                notice = VocabularyNotebookNotice(
-                    title: lang.text("删除失败", "Delete Failed"),
-                    message: error.localizedDescription
-                )
-            }
+            } catch { }
         }
     }
 
@@ -362,12 +352,7 @@ public struct VocabularyNotebookView: View {
                 _ = try await manager.moveEntries(ids: ids, to: destinationID)
                 selectedEntryIDs.subtract(ids)
                 pendingMoveDestinationID = nil
-            } catch {
-                notice = VocabularyNotebookNotice(
-                    title: lang.text("移动失败", "Move Failed"),
-                    message: error.localizedDescription
-                )
-            }
+            } catch { }
         }
     }
 
@@ -410,12 +395,6 @@ private struct VocabularyNotebookCreationView: View {
         onCreate(trimmed)
         dismiss()
     }
-}
-
-private struct VocabularyNotebookNotice: Identifiable {
-    let id = UUID()
-    let title: String
-    let message: String
 }
 
 private struct VocabularyNotebookNumberCell: View {

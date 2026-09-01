@@ -1,15 +1,15 @@
 import Foundation
 import AppKit
 
-private enum DictionaryResponseEvent {
-    case progress(fraction: Double, phase: String?)
+enum DictionaryResponseEvent {
+    case progress(id: String?, fraction: Double, phase: String?)
     case response(id: String, data: Data?, errorMessage: String?)
 }
 
 /// JSONL parsing is intentionally kept off the main actor. Rust responses
 /// can contain large HTML records; decoding and re-encoding them on the main
 /// actor made fast lookup sequences visibly stutter.
-private final class DictionaryResponseParser: @unchecked Sendable {
+final class DictionaryResponseParser: @unchecked Sendable {
     private var buffer = Data()
     private let onEvent: (DictionaryResponseEvent) -> Void
 
@@ -29,6 +29,7 @@ private final class DictionaryResponseParser: @unchecked Sendable {
 
             if dictionary["event"] as? String == "progress" {
                 onEvent(.progress(
+                    id: dictionary["id"] as? String,
                     fraction: dictionary["fraction"] as? Double ?? 0,
                     phase: dictionary["phase"] as? String
                 ))
@@ -37,7 +38,18 @@ private final class DictionaryResponseParser: @unchecked Sendable {
             guard let id = dictionary["id"] as? String else { continue }
             if (dictionary["ok"] as? Bool) == true,
                let result = dictionary["result"],
-               let resultData = try? JSONSerialization.data(withJSONObject: result) {
+               // Rust responses may legitimately contain a JSON fragment at
+               // the top level: `delete` returns a Boolean and `findAudio`
+               // returns null when no pronunciation resource exists. The
+               // default Foundation writer rejects those fragments by
+               // throwing an Objective-C exception, which cannot be caught by
+               // Swift's `try?` and terminates the application. Allowing JSON
+               // fragments keeps the JSONL bridge total for every valid Rust
+               // response shape.
+               let resultData = try? JSONSerialization.data(
+                   withJSONObject: result,
+                   options: [.fragmentsAllowed]
+               ) {
                 onEvent(.response(id: id, data: resultData, errorMessage: nil))
             } else {
                 let message = (dictionary["error"] as? [String: Any])?["message"] as? String
@@ -265,6 +277,8 @@ public final class DictionaryEngine: ObservableObject {
     /// package while a search is still in flight can leave the WebKit result
     /// view pointing at a package that is being removed.
     private var dictionaryMutationTask: Task<Void, Never>?
+    private var dictionaryMutationGeneration: UInt64 = 0
+    private var activeProgressRequestID: String?
     private var lastProgressDate = Date.distantPast
     private var lastProgressPhase: String?
 
@@ -342,7 +356,10 @@ public final class DictionaryEngine: ObservableObject {
     ) {
         queryDebounceTask?.cancel()
         searchTask?.cancel()
+        detailTask?.cancel()
+        detailTask = nil
         searchGeneration &+= 1
+        detailGeneration &+= 1
         let generation = searchGeneration
         let trimmed = Self.normalizedQuery(query)
 
@@ -356,17 +373,12 @@ public final class DictionaryEngine: ObservableObject {
         }
 
         if includeDetails {
-            detailTask?.cancel()
-            detailGeneration &+= 1
             searchResults = []
             definitionQuery = nil
             isLoadingDefinition = true
         } else {
             // A new window search must not let an older detail request finish
             // later and overwrite the definition selected for this query.
-            detailTask?.cancel()
-            detailTask = nil
-            detailGeneration &+= 1
             searchResults = []
             definitionQuery = nil
             isLoadingDefinition = false
@@ -569,6 +581,9 @@ public final class DictionaryEngine: ObservableObject {
         refreshTask = nil
         Self.detailCache.removeAllObjects()
 
+        dictionaryMutationGeneration &+= 1
+        let generation = dictionaryMutationGeneration
+        activeProgressRequestID = nil
         isBusy = true
         progress = nil
         progressPhase = LanguageManager.shared.text("正在删除词典…", "Deleting dictionary…")
@@ -577,16 +592,24 @@ public final class DictionaryEngine: ObservableObject {
         dictionaryMutationTask?.cancel()
         dictionaryMutationTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.dictionaryMutationTask = nil }
+            defer {
+                if self.dictionaryMutationGeneration == generation {
+                    self.dictionaryMutationTask = nil
+                    self.activeProgressRequestID = nil
+                }
+            }
             do {
                 // Let SwiftUI apply the cleared results and dismantle any
                 // WKWebView that may still reference package resources.
                 await Task.yield()
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
                 let deletedData = try await self.request(
                     operation: "delete",
                     fields: ["dictionaryID": id]
                 )
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
                 let deleted = try await Self.decodeInBackground(Bool.self, from: deletedData)
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
                 guard deleted else {
                     // The row may have been removed by another StudyMate
                     // instance (or by a previous interrupted cleanup). Bring
@@ -611,7 +634,9 @@ public final class DictionaryEngine: ObservableObject {
                 self.dictionaries.removeAll { $0.id == id }
 
                 let value = try await self.request(operation: "list")
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
                 let updated = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
 
                 self.dictionaries = updated
                 self.searchResults.removeAll { $0.dictionaryID == id }
@@ -622,6 +647,7 @@ public final class DictionaryEngine: ObservableObject {
                     LanguageManager.shared.text("已删除词典", "Dictionary deleted")
                 )
             } catch {
+                guard self.dictionaryMutationGeneration == generation else { return }
                 self.isBusy = false
                 self.progressPhase = nil
                 self.lastError = error.localizedDescription
@@ -640,6 +666,9 @@ public final class DictionaryEngine: ObservableObject {
         refreshTask?.cancel()
         refreshTask = nil
         Self.detailCache.removeAllObjects()
+        dictionaryMutationGeneration &+= 1
+        let generation = dictionaryMutationGeneration
+        activeProgressRequestID = nil
         isBusy = true
         progress = 0.05
         progressPhase = LanguageManager.shared.text("正在准备导入词典…", "Preparing to import dictionary…")
@@ -647,13 +676,27 @@ public final class DictionaryEngine: ObservableObject {
 
         let mdxPath = mdx.path
         let mddPaths = mdd.map(\.path)
-        let stem = mdx.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: " ", with: "-")
-
         dictionaryMutationTask?.cancel()
+        // NSOpenPanel grants file access through a security-scoped URL. Keep
+        // each scope alive for the complete helper import, including sibling
+        // `.js`, `.css`, image and font discovery. Starting it only around
+        // `fs.copy` in the UI would end before the Rust child process reads
+        // the source directory, causing scripts to be silently omitted.
+        let scopedURLs = [mdx] + mdd
+        let scopedAccess = scopedURLs.map { url in
+            (url: url, isActive: url.startAccessingSecurityScopedResource())
+        }
         dictionaryMutationTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.dictionaryMutationTask = nil }
+            defer {
+                for scope in scopedAccess where scope.isActive {
+                    scope.url.stopAccessingSecurityScopedResource()
+                }
+                if self.dictionaryMutationGeneration == generation {
+                    self.dictionaryMutationTask = nil
+                    self.activeProgressRequestID = nil
+                }
+            }
             do {
                 var fields: [String: Any] = [
                     "mdxPath": mdxPath,
@@ -665,10 +708,10 @@ public final class DictionaryEngine: ObservableObject {
                 if let userID, !userID.isEmpty {
                     fields["userID"] = userID
                 }
-                if !stem.isEmpty { fields["dictionaryID"] = stem }
-
                 let value = try await self.request(operation: "import", fields: fields)
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
                 let result = try await Self.decodeInBackground(StudyMateDictionaryImportResult.self, from: value)
+                guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
 
                 self.dictionaries.append(result.dictionary)
                 self.dictionaries.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -680,6 +723,7 @@ public final class DictionaryEngine: ObservableObject {
                     LanguageManager.shared.text("已成功导入词典“\(result.dictionary.title)”", "Imported dictionary “\(result.dictionary.title)”")
                 )
             } catch {
+                guard self.dictionaryMutationGeneration == generation else { return }
                 self.isBusy = false
                 self.progress = nil
                 self.progressPhase = nil
@@ -711,26 +755,30 @@ public final class DictionaryEngine: ObservableObject {
         return URL(fileURLWithPath: resource.path, isDirectory: false)
     }
 
-    /// Resolve a pronunciation from the first installed MDX dictionary. The
-    /// Rust core searches the resources imported from its MDD volumes by
-    /// filename, so this remains cheap even for large pronunciation packs.
+    /// Resolve a pronunciation from the installed MDX dictionaries in their
+    /// visible priority order. A missing audio file in the first dictionary
+    /// must not hide a matching pronunciation in a later dictionary.
     public func firstDictionaryPronunciationURL(for word: String) async throws -> URL? {
-        var firstDictionary = dictionaries.first
-        if firstDictionary == nil, !isBusy {
+        var candidates = dictionaries
+        if candidates.isEmpty, !isBusy {
             let value = try await request(operation: "list")
             let summaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
             guard !Task.isCancelled else { return nil }
             dictionaries = summaries
-            firstDictionary = summaries.first
+            candidates = summaries
         }
-        guard let firstDictionary else { return nil }
-        let value = try await request(operation: "findAudio", fields: [
-            "dictionaryID": firstDictionary.id,
-            "word": word
-        ])
-        let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
-        guard let resource, resource.size > 0 else { return nil }
-        return URL(fileURLWithPath: resource.path, isDirectory: false)
+        for dictionary in candidates {
+            try Task.checkCancellation()
+            let value = try await request(operation: "findAudio", fields: [
+                "dictionaryID": dictionary.id,
+                "word": word
+            ])
+            let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
+            if let resource, resource.size > 0 {
+                return URL(fileURLWithPath: resource.path, isDirectory: false)
+            }
+        }
+        return nil
     }
 
     public func reportError(_ message: String) {
@@ -741,22 +789,6 @@ public final class DictionaryEngine: ObservableObject {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         requestedQuery = value
-    }
-
-    /// Capture the currently selected subtitle text before opening the
-    /// dictionary window. SwiftUI's selectable Text is backed by NSTextView
-    /// on macOS, so this keeps the lookup affordance identical for the menu,
-    /// keyboard shortcut, and toolbar button.
-    public func requestLookupFromCurrentSelection() {
-        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
-        let range = textView.selectedRange()
-        let length = (textView.string as NSString).length
-        guard range.length > 0,
-              range.location != NSNotFound,
-              range.location <= length,
-              range.length <= length - range.location else { return }
-        let selected = (textView.string as NSString).substring(with: range)
-        requestLookup(selected)
     }
 
     public func consumeRequestedQuery() -> String? {
@@ -816,6 +848,9 @@ public final class DictionaryEngine: ObservableObject {
         try ensureProcess()
         requestCounter &+= 1
         let id = String(requestCounter)
+        if operation == "import" {
+            activeProgressRequestID = id
+        }
         var object = fields
         object["id"] = id
         object["op"] = operation
@@ -831,7 +866,12 @@ public final class DictionaryEngine: ObservableObject {
                 }
                 pending[id] = continuation
                 do {
-                    try input?.write(contentsOf: line)
+                    guard let input else {
+                        pending.removeValue(forKey: id)
+                        continuation.resume(throwing: StudyMateDictionaryError(message: "词典引擎输入管道不可用。"))
+                        return
+                    }
+                    try input.write(contentsOf: line)
                 } catch {
                     pending.removeValue(forKey: id)
                     continuation.resume(throwing: error)
@@ -851,6 +891,16 @@ public final class DictionaryEngine: ObservableObject {
 
     private func ensureProcess() throws {
         if process?.isRunning == true { return }
+        if process != nil || !pending.isEmpty {
+            // Process.terminationHandler is delivered asynchronously. A new
+            // request can otherwise restart the helper first, causing the
+            // old termination callback to be ignored by the generation guard
+            // and leaving its continuations suspended forever.
+            helperGeneration &+= 1
+            failPending(with: StudyMateDictionaryError(
+                message: "词典引擎已退出，请重试。"
+            ))
+        }
         try FileManager.default.createDirectory(
             at: dictionaryRoot,
             withIntermediateDirectories: true
@@ -874,7 +924,11 @@ public final class DictionaryEngine: ObservableObject {
         responseParser = parser
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self, weak parser] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let self, let parser else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let self, let parser else { return }
             self.responseQueue.async {
                 parser.append(data)
             }
@@ -920,7 +974,8 @@ public final class DictionaryEngine: ObservableObject {
     private func handleResponseEvent(_ event: DictionaryResponseEvent, generation: UInt64) {
         guard generation == helperGeneration else { return }
         switch event {
-        case let .progress(fraction, phase):
+        case let .progress(id, fraction, phase):
+            guard let id, id == activeProgressRequestID else { return }
             let now = Date()
             let phaseChanged = phase != lastProgressPhase
             guard phaseChanged || fraction >= 1 || now.timeIntervalSince(lastProgressDate) >= 0.05 else {
@@ -953,6 +1008,7 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     private func failPending(with error: Error) {
+        output?.readabilityHandler = nil
         let waiting = pending.values
         pending.removeAll()
         for continuation in waiting {
