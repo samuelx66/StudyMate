@@ -216,7 +216,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     private var automaticTranslationTask: Task<Void, Never>?
     private var modelIdleUnloadTask: Task<Void, Never>?
     private var previewSeekTask: Task<Void, Never>?
+    /// Generation for the coalesced video timeline preview loop.  Cancellation
+    /// is cooperative, so an old task can still run its cleanup after a new
+    /// preview has already started; the generation keeps that cleanup from
+    /// clearing the new task's reference.
+    private var previewSeekGeneration: UInt64 = 0
     private var pendingPreviewSeekTime: Double?
+    private var isPreviewSeeking = false
     private var segmentationRequestID = UUID()
     private var translationRequestID = UUID()
     private var mediaSessionID = UUID()
@@ -997,6 +1003,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         seekGeneration &+= 1
         seekTimeoutTask?.cancel()
         seekTimeoutTask = nil
+        previewSeekGeneration &+= 1
         previewSeekTask?.cancel()
         previewSeekTask = nil
         shadowingTask?.cancel()
@@ -1026,6 +1033,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isVideoSubtitleDragging = false
         videoSubtitleDragSegmentID = nil
         pendingPreviewSeekTime = nil
+        isPreviewSeeking = false
         previewEndTime = nil
         previewSegmentID = nil
         completedPreviewSegmentID = nil
@@ -2363,10 +2371,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// Pauses active playback for the duration of a video timeline preview,
     /// while preserving `wantsPlayback` so the final exact seek can resume it.
     public func beginPreviewSeek() {
+        previewSeekGeneration &+= 1
         previewSeekTask?.cancel()
         previewSeekTask = nil
         pendingPreviewSeekTime = nil
-        guard isBackendReady else { return }
+        guard isBackendReady else {
+            isPreviewSeeking = false
+            return
+        }
+        isPreviewSeeking = true
         if isPlaying || wantsPlayback {
             activeBackend.pause()
             isPlaying = false
@@ -2382,8 +2395,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         pendingPreviewSeekTime = max(0, min(seconds, maximum))
         guard previewSeekTask == nil else { return }
 
+        let generation = previewSeekGeneration
         previewSeekTask = Task { @MainActor [weak self] in
-            while let self, !Task.isCancelled {
+            guard let self else { return }
+            while !Task.isCancelled, generation == self.previewSeekGeneration {
                 guard let target = self.pendingPreviewSeekTime else { break }
                 self.pendingPreviewSeekTime = nil
                 self.activeBackend.previewSeek(to: target)
@@ -2393,14 +2408,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     break
                 }
             }
-            self?.previewSeekTask = nil
+            guard generation == self.previewSeekGeneration else { return }
+            self.previewSeekTask = nil
         }
     }
 
     public func endPreviewSeek() {
+        previewSeekGeneration &+= 1
         pendingPreviewSeekTime = nil
         previewSeekTask?.cancel()
         previewSeekTask = nil
+        isPreviewSeeking = false
     }
 
     /// Seek to a sentence start while preserving that sentence as the active
@@ -2467,7 +2485,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.updateActiveSegment(for: backendTime)
                 }
                 self.isSeeking = false
-                if self.wantsPlayback {
+                if self.wantsPlayback && !self.isPreviewSeeking {
                     backend.playbackRate = self.playbackRate
                     backend.play()
                     self.isPlaying = true
@@ -2494,7 +2512,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             self.seekTimeoutTask = nil
             self.markExplicitSelectionSeekCompleted()
             self.isSeeking = false
-            if self.wantsPlayback {
+            if self.wantsPlayback && !self.isPreviewSeeking {
                 backend.playbackRate = self.playbackRate
                 backend.play()
                 self.isPlaying = true

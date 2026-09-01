@@ -306,6 +306,26 @@ public final class DictionaryEngine: ObservableObject {
         }
     }
 
+    /// Invalidate every lookup pipeline before a package mutation. Cancelling
+    /// the Task is not enough by itself: an already-delivered JSON response can
+    /// still reach the main actor after cancellation, so both generations must
+    /// advance before the filesystem mutation starts.
+    private func invalidateLookupTasks() {
+        queryDebounceTask?.cancel()
+        queryDebounceTask = nil
+        searchTask?.cancel()
+        searchTask = nil
+        detailTask?.cancel()
+        detailTask = nil
+        searchGeneration &+= 1
+        detailGeneration &+= 1
+        searchHits = []
+        searchResults = []
+        isSearching = false
+        isLoadingDefinition = false
+        definitionQuery = nil
+    }
+
     /// Schedule a lightweight key search. A short debounce keeps fast typing
     /// from filling the serial JSONL helper with obsolete requests. Callers
     /// that need the complete definition (the lookup popover) opt in with
@@ -403,7 +423,9 @@ public final class DictionaryEngine: ObservableObject {
                 let operation = dictionaryID == nil ? "lookupAllKeys" : "lookupKeys"
                 let value = try await self.request(operation: operation, fields: fields)
                 let hits = try await Self.decodeInBackground([StudyMateDictionarySearchHit].self, from: value)
-                guard !Task.isCancelled, generation == self.searchGeneration else { return }
+                guard !Task.isCancelled,
+                      generation == self.searchGeneration,
+                      !self.isBusy else { return }
 
                 self.searchHits = hits
                 self.isSearching = false
@@ -423,7 +445,7 @@ public final class DictionaryEngine: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                guard generation == self.searchGeneration else { return }
+                guard generation == self.searchGeneration, !self.isBusy else { return }
                 self.searchHits = []
                 self.searchResults = []
                 self.isSearching = false
@@ -486,7 +508,9 @@ public final class DictionaryEngine: ObservableObject {
                 let operation = dictionaryID == nil ? "lookupAll" : "lookup"
                 let value = try await self.request(operation: operation, fields: fields)
                 let entries = try await Self.decodeInBackground([StudyMateDictionaryLookup].self, from: value)
-                guard !Task.isCancelled, generation == self.detailGeneration else { return }
+                guard !Task.isCancelled,
+                      generation == self.detailGeneration,
+                      !self.isBusy else { return }
                 if !entries.isEmpty {
                     Self.detailCache.setObject(
                         DictionaryLookupCacheValue(entries: entries),
@@ -501,7 +525,7 @@ public final class DictionaryEngine: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                guard generation == self.detailGeneration else { return }
+                guard generation == self.detailGeneration, !self.isBusy else { return }
                 self.searchResults = []
                 self.isLoadingDefinition = false
                 self.lastError = error.localizedDescription
@@ -536,19 +560,10 @@ public final class DictionaryEngine: ObservableObject {
         // Stop publishing results that may still reference files inside the
         // package. The view can therefore dismantle its WKWebView before
         // the Rust core removes the package directory.
-        searchTask?.cancel()
-        searchTask = nil
+        invalidateLookupTasks()
         refreshTask?.cancel()
         refreshTask = nil
-        queryDebounceTask?.cancel()
-        queryDebounceTask = nil
-        detailTask?.cancel()
         Self.detailCache.removeAllObjects()
-        searchHits = []
-        searchResults = []
-        isSearching = false
-        isLoadingDefinition = false
-        definitionQuery = nil
 
         isBusy = true
         progress = nil
@@ -617,6 +632,7 @@ public final class DictionaryEngine: ObservableObject {
         userID: String? = nil
     ) {
         guard !isBusy else { return }
+        invalidateLookupTasks()
         refreshTask?.cancel()
         refreshTask = nil
         Self.detailCache.removeAllObjects()
@@ -630,8 +646,10 @@ public final class DictionaryEngine: ObservableObject {
         let stem = mdx.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: " ", with: "-")
 
-        Task { [weak self] in
+        dictionaryMutationTask?.cancel()
+        dictionaryMutationTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.dictionaryMutationTask = nil }
             do {
                 var fields: [String: Any] = [
                     "mdxPath": mdxPath,
@@ -672,19 +690,7 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     public func clearSearch() {
-        queryDebounceTask?.cancel()
-        queryDebounceTask = nil
-        searchTask?.cancel()
-        searchTask = nil
-        detailTask?.cancel()
-        detailTask = nil
-        searchGeneration &+= 1
-        detailGeneration &+= 1
-        searchHits = []
-        searchResults = []
-        isSearching = false
-        isLoadingDefinition = false
-        definitionQuery = nil
+        invalidateLookupTasks()
     }
 
     /// Resolve an MDD resource through the Rust core.  The returned URL is

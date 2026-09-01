@@ -236,7 +236,12 @@ public final class SentenceLibraryManager: ObservableObject {
                     }
                 )
                 mediaURLs[id] = mediaOutputURL
-                let preview = imageGenerator?.jpegData(at: (segment.startTime + segment.endTime) / 2)
+                let preview: Data?
+                if let imageGenerator {
+                    preview = await imageGenerator.jpegData(at: (segment.startTime + segment.endTime) / 2)
+                } else {
+                    preview = nil
+                }
                 if let preview { previews[id] = preview }
                 report(
                     0.82 * Double(offset + 1) / Double(total),
@@ -280,11 +285,14 @@ public final class SentenceLibraryManager: ObservableObject {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         isWorking = true
         defer { isWorking = false }
-        try await Task.detached(priority: .utility) { [store] in
+        let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
             try store.deleteEntries(ids: ids, from: libraryID)
         }.value
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
+        if !cleanupFailures.isEmpty {
+            lastErrorMessage = "句子记录已删除，但部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+        }
     }
 
     public func deleteCurrentLibrary() async throws {
@@ -322,7 +330,7 @@ public final class SentenceLibraryManager: ObservableObject {
             }
         }
 
-        try await Task.detached(priority: .utility) { [store] in
+        let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
             try store.moveEntries(
                 ids: ids,
                 from: sourceLibraryID,
@@ -332,6 +340,9 @@ public final class SentenceLibraryManager: ObservableObject {
         }.value
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
+        if !cleanupFailures.isEmpty {
+            lastErrorMessage = "句子已移动，但源句库部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+        }
     }
 
     public func previewURL(for entry: SentenceLibraryEntry) -> URL? {
@@ -474,10 +485,14 @@ private final class SentencePreviewGenerator {
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.15, preferredTimescale: 600)
     }
 
-    func jpegData(at seconds: Double) -> Data? {
+    func jpegData(at seconds: Double) async -> Data? {
         let safeTime = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: safeTime, actualTime: nil) else { return nil }
-        let bitmap = NSBitmapImageRep(cgImage: cgImage)
-        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
+        do {
+            let result = try await generator.image(at: safeTime)
+            let bitmap = NSBitmapImageRep(cgImage: result.image)
+            return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
+        } catch {
+            return nil
+        }
     }
 }

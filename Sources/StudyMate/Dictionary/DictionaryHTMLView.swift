@@ -418,9 +418,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        if #available(macOS 12.0, *) {
-            webView.underPageBackgroundColor = .clear
-        }
+        webView.underPageBackgroundColor = .clear
         context.coordinator.currentHTML = html
         context.coordinator.currentBodyHTML = bodyHTML
         context.coordinator.currentShellSignature = shellSignature

@@ -490,7 +490,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 }
             } label: {
                 Label(pauseLabel, systemImage: "pause.circle").font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundColor(engine.shadowingPauseRatio == 0 ? .primary : .green)
+                    .foregroundStyle(engine.shadowingPauseRatio == 0 ? Color.primary : StudyMateMediaStyle.success)
             }
             .help(StudyMateShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
             .keyboardShortcut("p", modifiers: [.command, .shift])
@@ -648,7 +648,7 @@ private struct PlaybackStatusBar: View {
                 Divider()
                     .frame(height: 14)
                 Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "pause.circle")
-                    .foregroundColor(engine.isShadowingPaused ? .green : .secondary)
+                    .foregroundStyle(engine.isShadowingPaused ? StudyMateMediaStyle.success : Color.secondary)
             }
 
             Spacer(minLength: 8)
@@ -759,7 +759,7 @@ private struct StatusBarErrorView: View {
     var body: some View {
         HStack(alignment: isHovering ? .top : .center, spacing: 5) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
+                .foregroundStyle(StudyMateMediaStyle.warning)
 
             Text(message)
                 .lineLimit(isHovering ? nil : 1)
@@ -784,7 +784,7 @@ private struct StatusBarErrorView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, isHovering ? 4 : 0)
-        .background(Color.orange.opacity(0.10))
+        .background(StudyMateMediaStyle.warning.opacity(0.10))
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .onHover { isHovering = $0 }
         .help(message)
@@ -796,33 +796,23 @@ private struct PlaybackLoopModeToolbarPicker: View {
     @ObservedObject var lang: LanguageManager
 
     var body: some View {
-        HStack(spacing: 1) {
+        Picker(
+            lang.text("播放模式", "Playback mode"),
+            selection: Binding(
+                get: { engine.loopMode },
+                set: { engine.loopMode = $0 }
+            )
+        ) {
             ForEach(PlaybackLoopMode.allCases) { mode in
-                Button {
-                    engine.loopMode = mode
-                } label: {
-                    Image(systemName: mode.iconName)
-                        .font(.system(size: 11, weight: engine.loopMode == mode ? .semibold : .regular))
-                        .foregroundStyle(engine.loopMode == mode ? Color.accentColor : Color.secondary)
-                        .frame(width: 24, height: 20)
-                        .background(
-                            engine.loopMode == mode
-                                ? Color(NSColor.selectedControlColor).opacity(0.18)
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                }
-                .buttonStyle(.plain)
-                .help(StudyMateShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
+                Image(systemName: mode.iconName)
+                    .accessibilityLabel(mode.localized(with: lang))
+                    .help(StudyMateShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
+                    .tag(mode)
             }
         }
-        .padding(2)
-        .background(Color(NSColor.controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color(NSColor.separatorColor).opacity(0.35), lineWidth: 0.5)
-        )
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
         .help(lang.text("播放模式：连续播放 / 单句重复 / 句后停顿 / 全篇循环（⌘1 / ⌘2 / ⌘3 / ⌘4）", "Playback mode"))
     }
 }

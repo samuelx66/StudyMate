@@ -431,16 +431,9 @@ struct StudyMateApp: App {
     }
 }
 
-/// SwiftUI 的工具栏在全屏时需要显式声明“悬停显示”策略。
-/// macOS 14 没有该 API，保留 AppKit 的 autoHideToolbar 作为原生回退。
 private struct MainWindowToolbarFullScreenVisibilityModifier: ViewModifier {
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.windowToolbarFullScreenVisibility(.onHover)
-        } else {
-            content
-        }
+        content.windowToolbarFullScreenVisibility(.onHover)
     }
 }
 
@@ -490,7 +483,6 @@ struct WindowAccessor: NSViewRepresentable {
         if window.maxSize.width != 10000 || window.maxSize.height != 10000 {
             window.maxSize = NSSize(width: 10000, height: 10000)
         }
-        if !window.showsResizeIndicator { window.showsResizeIndicator = true }
         if window.isMovableByWindowBackground { window.isMovableByWindowBackground = false }
         if window.toolbarStyle != .unifiedCompact { window.toolbarStyle = .unifiedCompact }
         // 全屏时由 AppKit/SwiftUI 的悬停策略接管工具栏可见性；如果这里
@@ -656,17 +648,12 @@ struct WelcomeWindowAccessor: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isOpaque = true
-        window.backgroundColor = NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 24 / 255, green: 24 / 255, blue: 27 / 255, alpha: 1.0)
-                : NSColor(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0, alpha: 1.0)
-        }
+        window.backgroundColor = .windowBackgroundColor
         window.styleMask.insert([.titled, .closable, .miniaturizable, .fullSizeContentView])
         window.styleMask.remove(.resizable)
         window.toolbar?.isVisible = false
         window.minSize = fixedSize
         window.maxSize = fixedSize
-        window.showsResizeIndicator = false
         window.isMovableByWindowBackground = true
         window.tabbingMode = .disallowed
         window.identifier = NSUserInterfaceItemIdentifier("studymate-welcome-window")
@@ -714,7 +701,6 @@ struct SettingsWindowAccessor: NSViewRepresentable {
         window.level = .normal
         window.minSize = NSSize(width: 880, height: 640)
         window.maxSize = NSSize(width: 1400, height: 1200)
-        window.showsResizeIndicator = true
         window.isMovableByWindowBackground = false
         window.tabbingMode = .disallowed
 

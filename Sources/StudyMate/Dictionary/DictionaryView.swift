@@ -32,14 +32,17 @@ private struct DictionaryDefinitionPane: View {
     @ObservedObject var engine: DictionaryEngine
     @ObservedObject private var lang = LanguageManager.shared
     let query: String
-    let selectedResultKey: String?
+    let selectedResultID: String?
     let selectedDictionaryID: String?
     @Binding var textScale: CGFloat
     let onLookupWord: (String) -> Void
     let onPlayAudio: (String) -> Void
 
     private var selectedEntries: [StudyMateDictionaryLookup] {
-        guard let selectedResultKey, !selectedResultKey.isEmpty else { return engine.searchResults }
+        guard let selectedResultID,
+              let selectedHit = engine.searchHits.first(where: { $0.id == selectedResultID }),
+              !selectedHit.key.isEmpty else { return engine.searchResults }
+        let selectedResultKey = selectedHit.key
         let matches = engine.searchResults.filter {
             $0.key.compare(selectedResultKey, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }
@@ -55,7 +58,7 @@ private struct DictionaryDefinitionPane: View {
             if let error = engine.lastError, engine.searchHits.isEmpty, !engine.isBusy, !engine.isSearching {
                 VStack(alignment: .leading, spacing: 10) {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(StudyMateMediaStyle.warning)
                         .textSelection(.enabled)
                     Button(lang.text("关闭提示", "Dismiss")) { engine.clearError() }
                         .buttonStyle(.borderless)
@@ -101,7 +104,7 @@ private struct DictionaryDefinitionPane: View {
                     DictionaryDefinitionSkeleton()
                 } else if let error = engine.lastError {
                     Text(error)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(StudyMateMediaStyle.warning)
                         .textSelection(.enabled)
                         .padding(24)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -129,7 +132,7 @@ public struct DictionaryView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @State private var query = ""
     @State private var selectedDictionaryID: String?
-    @State private var selectedResultKey: String?
+    @State private var selectedResultID: String?
     @State private var dictionaryPendingDeletion: StudyMateDictionarySummary?
     @State private var textScale: CGFloat = 1.0
     @State private var queryHistory: [String] = []
@@ -148,11 +151,10 @@ public struct DictionaryView: View {
     }
 
     private var resultItems: [StudyMateDictionarySearchHit] {
-        var seen = Set<String>()
         return engine.searchHits.filter { entry in
             let normalized = entry.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !normalized.isEmpty else { return false }
-            return seen.insert(normalized).inserted
+            return true
         }
     }
 
@@ -194,7 +196,7 @@ public struct DictionaryView: View {
                 DictionaryDefinitionPane(
                     engine: engine,
                     query: query,
-                    selectedResultKey: selectedResultKey,
+                    selectedResultID: selectedResultID,
                     selectedDictionaryID: selectedDictionaryID,
                     textScale: $textScale,
                     onLookupWord: { word in
@@ -221,12 +223,14 @@ public struct DictionaryView: View {
                             Image(systemName: "chevron.left")
                         }
                         .disabled(!canGoBack)
+                        .accessibilityLabel(lang.text("上一个查询", "Previous search"))
                         .help(lang.text("显示上一个查询", "Show previous search"))
 
                         Button(action: goForward) {
                             Image(systemName: "chevron.right")
                         }
                         .disabled(!canGoForward)
+                        .accessibilityLabel(lang.text("下一个查询", "Next search"))
                         .help(lang.text("显示下一个查询", "Show next search"))
                     }
                 }
@@ -268,6 +272,7 @@ public struct DictionaryView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
+                    .accessibilityLabel(lang.text("词典管理", "Dictionary management"))
                     .help(lang.text("词典管理", "Dictionary Management"))
                 }
             }
@@ -324,29 +329,33 @@ public struct DictionaryView: View {
             }
         }
         .onChange(of: engine.searchHits) { _, newHits in
-            let keys = newHits.map(\.key)
-            if let selectedResultKey,
-               keys.contains(where: { $0.compare(selectedResultKey, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
+            let ids = resultItems.map(\.id)
+            if let selectedResultID, ids.contains(selectedResultID) {
                 return
             }
-            selectedResultKey = resultItems.first?.key
+            selectedResultID = resultItems.first?.id
         }
-        .onChange(of: selectedResultKey) { _, newKey in
-            guard let newKey else { return }
-            engine.loadDefinition(for: newKey, dictionaryID: selectedDictionaryID)
+        .onChange(of: selectedResultID) { _, newID in
+            guard let newID,
+                  let selected = resultItems.first(where: { $0.id == newID }) else { return }
+            engine.loadDefinition(for: selected.key, dictionaryID: selectedDictionaryID)
         }
         .onChange(of: query) { _, newValue in
             if !isApplyingHistory {
-                selectedResultKey = nil
+                selectedResultID = nil
             }
             engine.search(query: newValue, dictionaryID: selectedDictionaryID)
         }
         .onChange(of: selectedDictionaryID) { _, _ in
-            if let key = selectedResultKey {
-                engine.loadDefinition(for: key, dictionaryID: selectedDictionaryID)
+            if let selectedResultID,
+               let selected = resultItems.first(where: { $0.id == selectedResultID }) {
+                engine.loadDefinition(for: selected.key, dictionaryID: selectedDictionaryID)
             } else {
                 engine.search(query: query, dictionaryID: selectedDictionaryID)
             }
+        }
+        .onDisappear {
+            DictionaryInteractionCoordinator.shared.dictionaryWindowDidClose()
         }
     }
 
@@ -374,12 +383,20 @@ public struct DictionaryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(resultItems, id: \.key, selection: $selectedResultKey) { item in
-                Text(item.key)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .tag(item.key)
+            List(resultItems, id: \.id, selection: $selectedResultID) { item in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.key)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if selectedDictionaryID == nil {
+                        Text(item.dictionaryTitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .tag(item.id)
             }
             .listStyle(.sidebar)
         }
@@ -460,12 +477,12 @@ public struct DictionaryView: View {
                         .lineLimit(1)
                 } else if let message = engine.statusMessage {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                     Text(message)
                         .lineLimit(1)
                 } else if let error = engine.lastError {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(StudyMateMediaStyle.warning)
                     Text(error)
                         .lineLimit(1)
                         .textSelection(.enabled)
@@ -519,7 +536,7 @@ public struct DictionaryView: View {
     private func applyHistoryQuery(_ value: String) {
         isApplyingHistory = true
         query = value
-        selectedResultKey = nil
+        selectedResultID = nil
         isApplyingHistory = false
     }
 

@@ -30,7 +30,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private var popoverDelegate: DictionaryPopoverDelegate?
     private var pausedPlaybackForDictionaryInteraction = false
     private var shouldResumePlaybackAfterDictionaryInteraction = false
-    private let speechSynthesizer = NSSpeechSynthesizer()
     private let avSynthesizer = AVSpeechSynthesizer()
     private var dictionaryAudioTask: Task<Void, Never>?
     private var dictionaryAudioPlayer: AVAudioPlayer?
@@ -150,7 +149,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         resumePlaybackIfNeeded()
     }
 
-    public func clearSelectionAndDeselect() {
+    public func clearSelectionAndDeselect(resumePlayback: Bool = true) {
         cancelPendingSelectionUpdate()
         dismissPopover()
         selectedText = nil
@@ -158,7 +157,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         anchorScreenPoint = nil
         anchorScreenRect = nil
         isLookupPresented = false
-        resumePlaybackIfNeeded()
+        if resumePlayback {
+            resumePlaybackIfNeeded()
+        }
         if let activeTextView {
             // NSNotFound is not a valid insertion point for NSTextView and
             // can make AppKit attempt an invalid layout update on the next
@@ -279,13 +280,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        speechSynthesizer.stopSpeaking()
-        let started = speechSynthesizer.startSpeaking(trimmed)
-        if !started {
-            let utterance = AVSpeechUtterance(string: trimmed)
-            avSynthesizer.stopSpeaking(at: .immediate)
-            avSynthesizer.speak(utterance)
-        }
+        let utterance = AVSpeechUtterance(string: trimmed)
+        avSynthesizer.stopSpeaking(at: .immediate)
+        avSynthesizer.speak(utterance)
     }
 
     /// Play an audio record stored in the selected dictionary's MDD package.
@@ -367,7 +364,14 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         }
         NotificationCenter.default.post(name: .studyMateOpenDictionaryWindow, object: nil)
         dismissPopover()
-        clearSelectionAndDeselect()
+        // The full dictionary window owns the interaction now. Keep playback
+        // paused until that window disappears, matching the popover behavior.
+        clearSelectionAndDeselect(resumePlayback: false)
+    }
+
+    /// Called by the full dictionary window when it is closed.
+    public func dictionaryWindowDidClose() {
+        resumePlaybackIfNeeded()
     }
 
     private func pausePlaybackForDictionaryInteractionIfNeeded() {
@@ -937,18 +941,10 @@ public struct DictionarySelectionActionBar: View {
                 coordinator.copySelected()
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThickMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                }
-        }
-        .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
-        .shadow(color: .black.opacity(0.06), radius: 1, x: 0, y: 1)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3.5)
+        .studymateChromeCapsule()
+        .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
         .contextMenu {
             Button(lang.text("查询“\(coordinator.selectedText ?? "")”", "Look up “\(coordinator.selectedText ?? "")”")) {
                 coordinator.lookupSelected()

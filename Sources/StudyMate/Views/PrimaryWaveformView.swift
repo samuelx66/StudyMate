@@ -36,6 +36,7 @@ public struct PrimaryWaveformView: View {
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
+                    .accessibilityLabel(lang.localized(.zoomOut))
                     .help(lang.localized(.zoomOut))
                     
                     Text("\(Int(zoomLevel * 100))%")
@@ -53,6 +54,7 @@ public struct PrimaryWaveformView: View {
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
+                    .accessibilityLabel(lang.localized(.zoomIn))
                     .help(lang.localized(.zoomIn))
                     
                     Button(action: {
@@ -66,6 +68,7 @@ public struct PrimaryWaveformView: View {
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
                     .disabled(zoomLevel == 1.0)
+                    .accessibilityLabel(lang.localized(.resetZoom))
                     .help(lang.localized(.resetZoom))
                 }
             }

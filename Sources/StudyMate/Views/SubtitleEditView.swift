@@ -71,7 +71,7 @@ public struct SubtitleEditView: View {
                 HStack(spacing: 8) {
                     Text(lang.text("译文", "Translation"))
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                         .frame(width: 32, alignment: .trailing)
                     
                     TextField(lang.text("输入译文…", "Enter a translation…"), text: $translationText)

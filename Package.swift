@@ -5,7 +5,7 @@ let package = Package(
     name: "StudyMate",
     defaultLocalization: "zh-Hans",
     platforms: [
-        .macOS(.v14)
+        .macOS("26.0")
     ],
     products: [
         .executable(

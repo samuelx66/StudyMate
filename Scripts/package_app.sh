@@ -235,7 +235,7 @@ actool \
     --app-icon AppIcon \
     --output-partial-info-plist "${ICON_TEMP_DIR}/partial-info.plist" \
     --platform macosx \
-    --minimum-deployment-target 14.0 \
+    --minimum-deployment-target 26.0 \
     "${ROOT_DIR}/Sources/StudyMate/Resources/Assets.xcassets" >/dev/null
 test -f "${ACTOOL_OUTPUT}/AppIcon.icns" || {
     echo "未生成应用图标：${ACTOOL_OUTPUT}/AppIcon.icns" >&2
@@ -276,6 +276,13 @@ while IFS= read -r -d '' helper; do
 done < <(find "${HELPERS_DIR}" -type f -print0)
 codesign "${SIGN_OPTIONS[@]}" "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
+
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "${CURRENT_BRANCH}" == "dev" ]]; then
+    echo "dev 分支仅生成 .app，不生成 zip：${APP_BUNDLE}"
+    ls -lh "${APP_BUNDLE}"
+    exit 0
+fi
 
 ZIP_PATH="${DIST_DIR}/${APP_NAME}-v${VERSION}-macOS-${ARCH_LABEL}.zip"
 rm -f "${ZIP_PATH}"

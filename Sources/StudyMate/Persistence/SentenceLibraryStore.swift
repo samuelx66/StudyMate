@@ -308,23 +308,39 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    public func deleteEntries(ids: Set<UUID>, from libraryID: UUID) throws {
-        guard !ids.isEmpty else { return }
-        try queue.sync {
+    @discardableResult
+    public func deleteEntries(ids: Set<UUID>, from libraryID: UUID) throws -> [String] {
+        guard !ids.isEmpty else { return [] }
+        return try queue.sync {
             try validateLibrary(id: libraryID)
             let oldEntries = try readEntriesUnlocked(libraryID: libraryID, ids: ids)
             try deleteEntriesUnlocked(ids: ids, from: libraryID)
+            var cleanupFailures: [String] = []
             for filename in oldEntries.compactMap(\.previewFilename) {
                 if let safeFilename = safeFilename(filename) {
-                    try? fileManager.removeItem(at: previewsURL(for: libraryID).appendingPathComponent(safeFilename))
+                    removeFileIfPresent(
+                        previewsURL(for: libraryID).appendingPathComponent(safeFilename),
+                        failures: &cleanupFailures
+                    )
                 }
             }
             for filename in oldEntries.compactMap(\.mediaFilename) {
                 if let safeFilename = safeFilename(filename) {
-                    try? fileManager.removeItem(at: mediaURL(for: libraryID).appendingPathComponent(safeFilename))
+                    removeFileIfPresent(
+                        mediaURL(for: libraryID).appendingPathComponent(safeFilename),
+                        failures: &cleanupFailures
+                    )
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            do {
+                try touchManifest(libraryID: libraryID)
+            } catch {
+                // The database deletion is already committed. Surface a
+                // cleanup warning instead of reporting the whole operation as
+                // failed and leaving the UI with stale entries.
+                cleanupFailures.append("句库清单：\(error.localizedDescription)")
+            }
+            return cleanupFailures
         }
     }
 
@@ -344,17 +360,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
 
     /// 将源句库中选中的句子移动到目标句库。媒体和缩略图先复制到目标包，
     /// 目标索引写入成功后才删除源索引，因此任一步失败都不会造成句子内容丢失。
+    @discardableResult
     public func moveEntries(
         ids: Set<UUID>,
         from sourceLibraryID: UUID,
         to destinationLibraryID: UUID,
         progress: @escaping @Sendable (Double, String) -> Void = { _, _ in }
-    ) throws {
-        guard !ids.isEmpty else { return }
+    ) throws -> [String] {
+        guard !ids.isEmpty else { return [] }
         guard sourceLibraryID != destinationLibraryID else {
             throw SentenceLibraryError.database("源句库与目标句库不能相同。")
         }
-        try queue.sync {
+        return try queue.sync {
             try validateLibrary(id: sourceLibraryID)
             try validateLibrary(id: destinationLibraryID)
             let sourceEntries = try readEntriesUnlocked(libraryID: sourceLibraryID, ids: ids).sorted {
@@ -364,7 +381,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 return $0.createdAt < $1.createdAt
             }
-            guard !sourceEntries.isEmpty else { return }
+            guard !sourceEntries.isEmpty else { return [] }
 
             let destinationMediaDirectory = mediaURL(for: destinationLibraryID)
             let destinationPreviewDirectory = previewsURL(for: destinationLibraryID)
@@ -376,6 +393,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             var copiedMedia: [String] = []
             var copiedPreviews: [String] = []
             var sourceDeleted = false
+            var cleanupFailures: [String] = []
             do {
                 for (offset, sourceEntry) in sourceEntries.enumerated() {
                     guard let sourceMediaFilename = safeFilename(sourceEntry.mediaFilename) else {
@@ -435,17 +453,35 @@ public final class SentenceLibraryStore: @unchecked Sendable {
 
                 for filename in sourceEntries.compactMap(\.previewFilename) {
                     if let safeFilename = safeFilename(filename) {
-                        try? fileManager.removeItem(at: previewsURL(for: sourceLibraryID).appendingPathComponent(safeFilename))
+                        removeFileIfPresent(
+                            previewsURL(for: sourceLibraryID).appendingPathComponent(safeFilename),
+                            failures: &cleanupFailures
+                        )
                     }
                 }
                 for filename in sourceEntries.compactMap(\.mediaFilename) {
                     if let safeFilename = safeFilename(filename) {
-                        try? fileManager.removeItem(at: mediaURL(for: sourceLibraryID).appendingPathComponent(safeFilename))
+                        removeFileIfPresent(
+                            mediaURL(for: sourceLibraryID).appendingPathComponent(safeFilename),
+                            failures: &cleanupFailures
+                        )
                     }
                 }
-                try touchManifest(libraryID: sourceLibraryID)
-                try touchManifest(libraryID: destinationLibraryID)
-                progress(1, "移动完成")
+                do {
+                    try touchManifest(libraryID: sourceLibraryID)
+                } catch {
+                    cleanupFailures.append("源句库清单：\(error.localizedDescription)")
+                }
+                do {
+                    try touchManifest(libraryID: destinationLibraryID)
+                } catch {
+                    cleanupFailures.append("目标句库清单：\(error.localizedDescription)")
+                }
+                progress(
+                    1,
+                    cleanupFailures.isEmpty ? "移动完成" : "移动完成，但部分文件清理失败"
+                )
+                return cleanupFailures
             } catch {
                 if !sourceDeleted {
                     for filename in copiedMedia {
@@ -574,6 +610,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
         let data = try Self.encoder.encode(descriptor)
         try data.write(to: packageURL.appendingPathComponent("manifest.json"), options: .atomic)
+    }
+
+    private func removeFileIfPresent(_ url: URL, failures: inout [String]) {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            failures.append("\(url.lastPathComponent)：\(error.localizedDescription)")
+        }
     }
 
     private func touchManifest(libraryID: UUID) throws {

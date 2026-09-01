@@ -45,21 +45,15 @@ public struct WelcomeScreenView: View {
     }
 
     private var leftColumnBackground: Color {
-        colorScheme == .dark
-            ? Color(red: 32 / 255, green: 32 / 255, blue: 35 / 255)
-            : Color.white
+        Color(nsColor: .windowBackgroundColor)
     }
 
     private var rightColumnBackground: Color {
-        colorScheme == .dark
-            ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
-            : Color(red: 233.0 / 255.0, green: 233.0 / 255.0, blue: 233.0 / 255.0)
+        Color(nsColor: .controlBackgroundColor)
     }
 
     private var columnSeparatorColor: Color {
-        colorScheme == .dark
-            ? Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255)
-            : Color(red: 216.0 / 255.0, green: 216.0 / 255.0, blue: 216.0 / 255.0)
+        StudyMateMediaStyle.separator
     }
 
     public var body: some View {

@@ -568,15 +568,9 @@ public actor SpeakerDiarizationEngine {
     }
 
     private static func isUsableModelFolder(_ folder: URL) -> Bool {
-        // SpeakerKit selects W32A32 segmenter on macOS 14 and W8A16 from
-        // macOS 15 onward. Keep both variants in the app so the same release
-        // works on the minimum supported OS and newer Apple Silicon systems.
-        let segmenterVariant: String
-        if #available(macOS 15, *) {
-            segmenterVariant = "W8A16"
-        } else {
-            segmenterVariant = "W32A32"
-        }
+        // macOS 26 uses the Apple Silicon optimized W8A16 segmenter. Keep the
+        // model selection deterministic so release and SwiftPM builds behave
+        let segmenterVariant = "W8A16"
         let requiredPaths = [
             "speaker_segmenter/pyannote-v3/\(segmenterVariant)/SpeakerSegmenter.mlmodelc",
             "speaker_embedder/pyannote-v3/W8A16/SpeakerEmbedder.mlmodelc",

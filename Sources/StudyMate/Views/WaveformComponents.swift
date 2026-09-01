@@ -267,8 +267,8 @@ public struct WaveformSentenceSegmentsOverlay: View {
                 context.fill(paths.oddPath, with: .color(Color.primary.opacity(0.05)))
             }
             if let activePath = paths.activePath {
-                context.fill(activePath, with: .color(Color.blue.opacity(0.24)))
-                context.stroke(activePath, with: .color(Color.blue.opacity(0.75)), lineWidth: 1.5)
+                context.fill(activePath, with: .color(StudyMateMediaStyle.informational.opacity(0.24)))
+                context.stroke(activePath, with: .color(StudyMateMediaStyle.informational.opacity(0.75)), lineWidth: 1.5)
             }
         }
         .frame(width: width, height: height)
@@ -312,13 +312,13 @@ public struct PrimaryPlayhead: View {
     public var body: some View {
         ZStack(alignment: .top) {
             Rectangle()
-                .fill(Color.red)
+                .fill(StudyMateMediaStyle.destructive)
                 .frame(width: 2, height: height)
-                .shadow(color: Color.red.opacity(0.6), radius: 2)
+                .shadow(color: StudyMateMediaStyle.destructive.opacity(0.6), radius: 2)
             
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 7))
-                .foregroundColor(.red)
+                .foregroundStyle(StudyMateMediaStyle.destructive)
                 .offset(y: -2)
         }
         .frame(width: 2, height: height)
@@ -360,7 +360,7 @@ public struct SecondaryWaveformPlayhead: View {
             if clock.currentTime >= viewportStart, clock.currentTime <= viewportEnd {
                 let progress = (clock.currentTime - viewportStart) / max(0.001, viewportEnd - viewportStart)
                 Rectangle()
-                    .fill(Color.red)
+                    .fill(StudyMateMediaStyle.destructive)
                     .frame(width: 2, height: height)
                     .position(x: CGFloat(progress) * width, y: height / 2)
             }

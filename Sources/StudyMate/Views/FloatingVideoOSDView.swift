@@ -16,25 +16,12 @@ public struct FloatingVideoOSDView: View {
     }
     
     public var body: some View {
-        Group {
-            if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: 8) {
-                    osdControls
-                }
-            } else {
-                osdControls
-            }
+        GlassEffectContainer(spacing: 8) {
+            osdControls
         }
+        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.regularMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(StudyMateMediaStyle.separator.opacity(0.45), lineWidth: 0.8)
-        )
         .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
         .frame(maxWidth: 540)
     }
@@ -49,6 +36,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .accessibilityLabel(lang.localized(.repeatSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.repeatSentence),
                 shortcut: .repeatCurrentSegment
@@ -62,6 +50,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .accessibilityLabel(lang.localized(.previousSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.previousSentence),
                 shortcut: .previousSegment
@@ -75,6 +64,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(prominent: true, shape: .circle)
+            .accessibilityLabel(engine.isPlaying ? lang.localized(.pause) : lang.localized(.play))
             .help(StudyMateShortcutCatalog.help(
                 engine.isPlaying ? lang.localized(.pause) : lang.localized(.play),
                 shortcut: .playPause
@@ -88,6 +78,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .accessibilityLabel(lang.localized(.nextSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.nextSentence),
                 shortcut: .nextSegment
@@ -131,6 +122,7 @@ public struct FloatingVideoOSDView: View {
                         .contentShape(Circle())
                 }
                 .studymateChromeButton(shape: .circle)
+                .accessibilityLabel(lang.text("静音 / 取消静音", "Mute / Unmute"))
                 .help(StudyMateShortcutCatalog.help(
                     lang.text("静音 / 取消静音", "Mute / Unmute"),
                     shortcut: .mute
@@ -144,6 +136,8 @@ public struct FloatingVideoOSDView: View {
                     in: 0...1.0
                 )
                 .labelsHidden()
+                .accessibilityLabel(lang.text("音量", "Volume"))
+                .accessibilityValue("\(Int(engine.volume * 100))%")
                 .frame(width: 52)
             }
             .padding(.trailing, 2)
@@ -189,6 +183,8 @@ private struct OSDTimelineSlider: View {
                 }
             }
         )
+        .accessibilityLabel("播放进度 / Playback position")
+        .accessibilityValue(SentenceSegment.formatTimecode(isScrubbing ? scrubTime : clock.currentTime))
     }
 }
 

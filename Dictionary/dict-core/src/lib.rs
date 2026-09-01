@@ -837,9 +837,12 @@ fn import_file(
             if !clean_rel.is_empty() && !clean_rel.contains("..") {
                 let named_path = resources_dir.join(&clean_rel);
                 if let Some(parent) = named_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!("create resource directory {}", parent.display())
+                    })?;
                 }
-                let _ = fs::write(&named_path, &bytes);
+                fs::write(&named_path, &bytes)
+                    .with_context(|| format!("write named resource {}", named_path.display()))?;
             }
 
             let lower_key = raw.key.to_lowercase();
@@ -847,10 +850,16 @@ fn import_file(
                 let css_text = decode_text(&bytes, &header.encoding);
                 if let Some(pkg_dir) = resources_dir.parent() {
                     let style_path = pkg_dir.join("style.css");
-                    let mut existing = fs::read_to_string(&style_path).unwrap_or_default();
+                    let mut existing = if style_path.is_file() {
+                        fs::read_to_string(&style_path)
+                            .with_context(|| format!("read {}", style_path.display()))?
+                    } else {
+                        String::new()
+                    };
                     existing.push_str(&css_text);
                     existing.push('\n');
-                    let _ = fs::write(&style_path, existing);
+                    fs::write(&style_path, existing)
+                        .with_context(|| format!("write {}", style_path.display()))?;
                 }
             }
 
@@ -1147,14 +1156,16 @@ fn copy_sibling_assets(
         Some(p) if p.is_dir() => p,
         _ => return Ok(0),
     };
-    let entries = match fs::read_dir(parent) {
-        Ok(e) => e,
-        Err(_) => return Ok(0),
-    };
+    let entries = fs::read_dir(parent)
+        .with_context(|| format!("read sibling assets in {}", parent.display()))?;
     let mut combined_css = String::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read sibling asset in {}", parent.display()))?;
         let path = entry.path();
-        if path.is_file() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("inspect sibling asset {}", path.display()))?;
+        if file_type.is_file() {
             let ext = path
                 .extension()
                 .and_then(|s| s.to_str())
@@ -1180,47 +1191,64 @@ fn copy_sibling_assets(
                     | "woff2"
             ) {
                 let target_path = resources_dir.join(file_name);
-                let _ = fs::copy(&path, &target_path);
-                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let _ = connection.execute(
-                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
-                    params![file_name, file_name, size as i64],
-                );
-                let _ = connection.execute(
-                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
-                    params![format!("\\{}", file_name), file_name, size as i64],
-                );
-                let _ = connection.execute(
-                    "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
-                    params![format!("/{}", file_name), file_name, size as i64],
-                );
+                fs::copy(&path, &target_path).with_context(|| {
+                    format!(
+                        "copy sibling asset {} -> {}",
+                        path.display(),
+                        target_path.display()
+                    )
+                })?;
+                let size = fs::metadata(&path)
+                    .with_context(|| format!("inspect sibling asset {}", path.display()))?
+                    .len();
+                connection
+                    .execute(
+                        "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                        params![file_name, file_name, size as i64],
+                    )
+                    .with_context(|| format!("register resource {}", file_name))?;
+                connection
+                    .execute(
+                        "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                        params![format!("\\{}", file_name), file_name, size as i64],
+                    )
+                    .with_context(|| format!("register resource \\{}", file_name))?;
+                connection
+                    .execute(
+                        "INSERT OR REPLACE INTO resources(key, path, size) VALUES (?1, ?2, ?3)",
+                        params![format!("/{}", file_name), file_name, size as i64],
+                    )
+                    .with_context(|| format!("register resource /{}", file_name))?;
                 if ext == "css" {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        combined_css.push_str(&content);
-                        combined_css.push('\n');
-                    } else if let Ok(bytes) = fs::read(&path) {
-                        let decoded = decode_text(&bytes, "utf-8");
-                        combined_css.push_str(&decoded);
-                        combined_css.push('\n');
-                    }
+                    let bytes = fs::read(&path)
+                        .with_context(|| format!("read sibling stylesheet {}", path.display()))?;
+                    combined_css.push_str(&decode_text(&bytes, "utf-8"));
+                    combined_css.push('\n');
                 }
                 added += 1;
             }
-        } else if path.is_dir() {
+        } else if file_type.is_dir() {
             let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if matches!(
                 dir_name.to_lowercase().as_str(),
                 "fonts" | "images" | "img" | "css" | "js" | "media"
             ) {
                 let target_subdir = resources_dir.join(dir_name);
-                let _ = copy_dir_all(&path, &target_subdir);
+                copy_dir_all(&path, &target_subdir)
+                    .with_context(|| format!("copy sibling asset directory {}", path.display()))?;
             }
         }
     }
     if !combined_css.is_empty() {
-        let mut existing = fs::read_to_string(style_css_path).unwrap_or_default();
+        let mut existing = if style_css_path.is_file() {
+            fs::read_to_string(style_css_path)
+                .with_context(|| format!("read {}", style_css_path.display()))?
+        } else {
+            String::new()
+        };
         existing.push_str(&combined_css);
-        let _ = fs::write(style_css_path, existing);
+        fs::write(style_css_path, existing)
+            .with_context(|| format!("write {}", style_css_path.display()))?;
     }
     Ok(added)
 }

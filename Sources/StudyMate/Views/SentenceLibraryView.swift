@@ -55,6 +55,7 @@ public struct SentenceLibraryView: View {
                             .tag(library.id)
                     }
                 }
+                .listStyle(.sidebar)
 
                 Divider()
 
@@ -79,15 +80,11 @@ public struct SentenceLibraryView: View {
                 .buttonStyle(.plain)
                 .padding(10)
             }
+            .navigationTitle(lang.text("句库", "Libraries"))
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } detail: {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField(lang.text("搜索原文或译文…", "Search original or translation…"), text: $searchText)
-                        .textFieldStyle(.plain)
-
                     Picker("", selection: $dateFilter) {
                         Text(lang.text("全部日期", "All Dates")).tag(SentenceLibraryDateFilter.all)
                         Text(lang.text("今天", "Today")).tag(SentenceLibraryDateFilter.today)
@@ -230,6 +227,11 @@ public struct SentenceLibraryView: View {
                 }
             }
             .navigationTitle(manager.currentLibrary?.name ?? lang.text("句库", "Sentence Library"))
+            .searchable(
+                text: $searchText,
+                placement: .toolbar,
+                prompt: Text(lang.text("搜索原文或译文…", "Search original or translation…"))
+            )
         }
         .frame(minWidth: 820, minHeight: 560)
         .onAppear {
@@ -672,7 +674,7 @@ private struct SentenceLibraryPlaybackBar: View {
             if let errorMessage = player.errorMessage {
                 Text(errorMessage)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(StudyMateMediaStyle.destructive)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

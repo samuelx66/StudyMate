@@ -318,7 +318,7 @@ public struct IntensiveSettingsPopover: View {
             case .notDownloaded:
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.down.circle")
-                        .foregroundColor(.blue)
+                        .foregroundStyle(StudyMateMediaStyle.informational)
                     Text(lang.text(
                         "未下载（约 \(currentLevel.approximateSize)）",
                         "Not downloaded (about \(currentLevel.approximateSize))"
@@ -343,11 +343,11 @@ public struct IntensiveSettingsPopover: View {
                     HStack {
                         Text(lang.text("正在下载…", "Downloading…"))
                             .font(.caption)
-                            .foregroundColor(.blue)
+                            .foregroundStyle(StudyMateMediaStyle.informational)
                         Spacer()
                         Text("\(Int(progress * 100))%")
                             .font(.caption.monospacedDigit().bold())
-                            .foregroundColor(.blue)
+                            .foregroundStyle(StudyMateMediaStyle.informational)
                     }
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
@@ -362,10 +362,10 @@ public struct IntensiveSettingsPopover: View {
             case .ready(let fileSize):
                 HStack(spacing: 5) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                     Text(lang.text("已就绪（\(fileSize)）", "Ready (\(fileSize))"))
                         .font(.caption.bold())
-                        .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                 }
 
                 Spacer()
@@ -374,16 +374,16 @@ public struct IntensiveSettingsPopover: View {
                     modelManager.deleteModel(for: currentLevel)
                 }
                 .buttonStyle(.borderless)
-                .foregroundColor(.red.opacity(0.85))
+                .foregroundStyle(StudyMateMediaStyle.destructive.opacity(0.85))
                 .controlSize(.small)
 
             case .error(let message):
                 HStack(spacing: 5) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
+                        .foregroundStyle(StudyMateMediaStyle.destructive)
                     Text(message)
                         .font(.caption)
-                        .foregroundColor(.red)
+                        .foregroundStyle(StudyMateMediaStyle.destructive)
                         .lineLimit(2)
                 }
 
@@ -447,7 +447,7 @@ public struct IntensiveSettingsPopover: View {
                 }
                 .controlSize(.small)
                 .buttonStyle(.borderless)
-                .foregroundColor(.red)
+                .foregroundStyle(StudyMateMediaStyle.destructive)
                 .disabled(translationSettings.selectedService?.isBuiltIn != false)
                 .help(lang.text("删除当前自定义模型", "Delete the selected custom model"))
             }
@@ -469,7 +469,7 @@ public struct IntensiveSettingsPopover: View {
                             if translationSettings.hasAPIKey(for: service.id) {
                                 Image(systemName: "key.fill")
                                     .font(.caption2)
-                                    .foregroundColor(.green)
+                                    .foregroundStyle(StudyMateMediaStyle.success)
                             }
                         }
                         .tag(service.id)
@@ -649,7 +649,7 @@ public struct IntensiveSettingsPopover: View {
 
                 if translationSettings.hasAPIKey(for: service.id) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                         .help(lang.text("已保存到钥匙串", "Saved in Keychain"))
 
                     Button {
@@ -701,11 +701,11 @@ public struct IntensiveSettingsPopover: View {
         case let .loaded(count):
             Label(lang.text("已读取 \(count) 个可用模型", "Loaded \(count) available models"), systemImage: "checkmark.circle.fill")
                 .font(.caption)
-                .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
         case let .failed(message):
             Label(lang.text("模型列表读取失败：\(message)", "Could not load models: \(message)"), systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
-                .foregroundColor(.orange)
+                .foregroundStyle(StudyMateMediaStyle.warning)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

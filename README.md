@@ -73,8 +73,8 @@ Scripts/                工程生成、图标和应用打包脚本
 
 ## 环境要求
 
-- macOS 14 或更高版本
-- Xcode（支持 Swift 5.9）
+- macOS 26 或更高版本
+- Xcode 26 或更高版本（项目源码保持 Swift 5 语言模式）
 - Apple Silicon 或 Intel Mac
 
 ## 构建与测试

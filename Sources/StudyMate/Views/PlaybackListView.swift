@@ -151,7 +151,7 @@ public struct PlaybackListView: View {
                     .fill(
                         isCurrent
                             ? Color.accentColor.opacity(0.18)
-                            : (exists ? Color.primary.opacity(0.06) : Color.red.opacity(0.12))
+                            : (exists ? Color.primary.opacity(0.06) : StudyMateMediaStyle.destructive.opacity(0.12))
                     )
                     .frame(width: 28, height: 28)
 
@@ -160,7 +160,7 @@ public struct PlaybackListView: View {
                     .foregroundStyle(
                         isCurrent
                             ? Color.accentColor
-                            : (exists ? Color.primary.opacity(0.7) : Color.red)
+                            : (exists ? Color.primary.opacity(0.7) : StudyMateMediaStyle.destructive)
                     )
             }
 
@@ -183,7 +183,7 @@ public struct PlaybackListView: View {
                         Text(lang.text("原文件已不存在或移动", "Original file is missing"))
                             .font(.system(size: 10))
                     }
-                    .foregroundStyle(.red.opacity(0.85))
+                    .foregroundStyle(StudyMateMediaStyle.destructive.opacity(0.85))
                 } else {
                     Text(entry.mediaURL.deletingLastPathComponent().lastPathComponent)
                         .font(.system(size: 10))

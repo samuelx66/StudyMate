@@ -24,6 +24,10 @@ public struct SubtitleImportSheet: View {
     @State private var pendingImportKind = 0
     @State private var targetMediaID: UUID?
     @State private var parsingTask: Task<Void, Never>?
+    @State private var plainTextLoadTask: Task<Void, Never>?
+    @State private var plainTextParsingTask: Task<Void, Never>?
+    @State private var plainTextParseGeneration = UUID()
+    @State private var subtitleParseGeneration = UUID()
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -87,7 +91,13 @@ public struct SubtitleImportSheet: View {
         }
         .frame(width: 660, height: 500)
         .onAppear { targetMediaID = engine.currentMedia?.id }
-        .onDisappear { parsingTask?.cancel() }
+        .onDisappear {
+            parsingTask?.cancel()
+            plainTextLoadTask?.cancel()
+            plainTextParsingTask?.cancel()
+            subtitleParseGeneration = UUID()
+            plainTextParseGeneration = UUID()
+        }
         .confirmationDialog(
             lang.text("当前断句将被替换", "Current Sentences Will Be Replaced"),
             isPresented: $showReplacementConfirmation,
@@ -123,7 +133,7 @@ public struct SubtitleImportSheet: View {
                     Spacer()
                     Image(systemName: "doc.badge.plus")
                         .font(.system(size: 48))
-                        .foregroundColor(.blue)
+                        .foregroundStyle(StudyMateMediaStyle.informational)
 
                     Text(lang.text("拖拽 SRT、LRC、VTT、ASS、SSA 或 TXT 字幕文件到此处", "Drop an SRT, LRC, VTT, ASS, SSA, or TXT file here"))
                         .font(.headline)
@@ -144,7 +154,7 @@ public struct SubtitleImportSheet: View {
                 .background(
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
-                        .foregroundColor(isFileTargeted ? .blue : .gray.opacity(0.4))
+                        .foregroundStyle(isFileTargeted ? StudyMateMediaStyle.informational : Color.gray.opacity(0.4))
                         .padding(16)
                 )
                 .onDrop(of: [.fileURL], isTargeted: $isFileTargeted) { providers in
@@ -193,7 +203,7 @@ public struct SubtitleImportSheet: View {
                                     HStack {
                                         Text("#\(item.index)")
                                             .font(.caption2.bold())
-                                            .foregroundColor(.blue)
+                                            .foregroundStyle(StudyMateMediaStyle.informational)
                                         Text("\(SentenceSegment.formatTimecode(item.startTime)) - \(SentenceSegment.formatTimecode(item.endTime))")
                                             .font(.system(size: 9).monospacedDigit())
                                             .foregroundColor(.secondary)
@@ -240,6 +250,8 @@ public struct SubtitleImportSheet: View {
 
                 if !plainTextContent.isEmpty {
                     Button(lang.text("清空", "Clear")) {
+                        plainTextParsingTask?.cancel()
+                        plainTextParseGeneration = UUID()
                         plainTextContent = ""
                         splitSentencesPreview = []
                         plainTextMode = 0
@@ -281,7 +293,7 @@ public struct SubtitleImportSheet: View {
                 }
                 .padding(.horizontal, 14)
                 .onChange(of: plainTextContent) { _, newText in
-                    splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(newText)
+                    schedulePlainTextPreview(for: newText)
                 }
                 .onDrop(of: [.fileURL], isTargeted: $isPlainTextTargeted) { providers in
                     guard let provider = providers.first else { return false }
@@ -301,7 +313,7 @@ public struct SubtitleImportSheet: View {
                             HStack(alignment: .top, spacing: 8) {
                                 Text("#\(index + 1)")
                                     .font(.caption2.bold())
-                                    .foregroundColor(.blue)
+                                    .foregroundStyle(StudyMateMediaStyle.informational)
                                     .frame(width: 34, alignment: .leading)
                                 Text(sentence)
                                     .font(.caption)
@@ -320,7 +332,7 @@ public struct SubtitleImportSheet: View {
             if !splitSentencesPreview.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                        .foregroundStyle(StudyMateMediaStyle.success)
                         .font(.caption)
                     Text(lang.text(
                         "已识别 \(splitSentencesPreview.count) 个独立断句，点击下方“对齐并应用”即可与音频时间轴对齐",
@@ -357,14 +369,55 @@ public struct SubtitleImportSheet: View {
     }
 
     private func loadPlainText(from url: URL) {
+        plainTextLoadTask?.cancel()
+        plainTextParsingTask?.cancel()
+        let generation = UUID()
+        plainTextParseGeneration = generation
         let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        if let content = try? String(contentsOf: url, encoding: .utf8) {
+        plainTextLoadTask = Task { @MainActor in
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            let content = await Task.detached(priority: .userInitiated) {
+                (try? String(contentsOf: url, encoding: .utf8))
+                    ?? (try? String(contentsOf: url, encoding: .unicode))
+            }.value
+            guard !Task.isCancelled, generation == plainTextParseGeneration else { return }
+            plainTextLoadTask = nil
+            guard let content else { return }
             plainTextContent = content
-            splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(content)
-        } else if let content = try? String(contentsOf: url, encoding: .unicode) {
-            plainTextContent = content
-            splitSentencesPreview = TextAlignmentEngine.shared.splitTextIntoSentences(content)
+        }
+    }
+
+    private func schedulePlainTextPreview(for text: String) {
+        plainTextParsingTask?.cancel()
+        let generation = UUID()
+        plainTextParseGeneration = generation
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            splitSentencesPreview = []
+            plainTextParsingTask = nil
+            return
+        }
+        // Do not leave an older preview actionable while the new text is
+        // waiting for its background parse to finish.
+        splitSentencesPreview = []
+
+        plainTextParsingTask = Task { @MainActor in
+            do {
+                // A short debounce keeps TextEditor input responsive while the
+                // user is still composing a paragraph.
+                try await Task.sleep(nanoseconds: 120_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let sentences = await Task.detached(priority: .userInitiated) {
+                TextAlignmentEngine.shared.splitTextIntoSentences(text)
+            }.value
+            guard !Task.isCancelled, generation == plainTextParseGeneration else { return }
+            splitSentencesPreview = sentences
+            plainTextParsingTask = nil
         }
     }
 
@@ -389,6 +442,8 @@ public struct SubtitleImportSheet: View {
 
     private func parseSubtitleFile(at url: URL) {
         parsingTask?.cancel()
+        let generation = UUID()
+        subtitleParseGeneration = generation
         isParsing = true
         importErrorMessage = nil
         parsingTask = Task { @MainActor in
@@ -401,8 +456,9 @@ public struct SubtitleImportSheet: View {
                     return .failure(error)
                 }
             }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == subtitleParseGeneration else { return }
             isParsing = false
+            parsingTask = nil
             switch result {
             case .success(let items) where !items.isEmpty:
                 importedItems = items

@@ -171,30 +171,6 @@ public struct VideoPlayerView: View {
                                 x: positionOffset.width + dragTranslation.width,
                                 y: positionOffset.height + dragTranslation.height
                             )
-                            .gesture(
-                                DragGesture(minimumDistance: 4)
-                                    .onChanged { value in
-                                        handlePointerActivity()
-                                        let candidate = CGSize(
-                                            width: positionOffset.width + value.translation.width,
-                                            height: positionOffset.height + value.translation.height
-                                        )
-                                        let bounded = boundedPanelOffset(candidate, in: geometry.size)
-                                        dragTranslation = CGSize(
-                                            width: bounded.width - positionOffset.width,
-                                            height: bounded.height - positionOffset.height
-                                        )
-                                    }
-                                    .onEnded { value in
-                                        let candidate = CGSize(
-                                            width: positionOffset.width + value.translation.width,
-                                            height: positionOffset.height + value.translation.height
-                                        )
-                                        positionOffset = boundedPanelOffset(candidate, in: geometry.size)
-                                        dragTranslation = .zero
-                                        scheduleOverlayAutoHide()
-                                    }
-                            )
                             .background(
                                 GeometryReader { panelGeometry in
                                     Color.clear
@@ -209,6 +185,40 @@ public struct VideoPlayerView: View {
                                 // 视频移到面板时底层 tracking area 会收到
                                 // mouseExited，这里重新确认指针仍在播放区域。
                                 if hovering { handlePointerActivity() }
+                            }
+                            // Keep dragging on a dedicated native hit target so
+                            // the timeline and volume sliders retain their own
+                            // gestures and never move the whole control panel.
+                            .overlay(alignment: .topLeading) {
+                                FloatingOSDDragHandle(
+                                    label: lang.text("拖动播放控制条", "Drag playback controls")
+                                )
+                                .padding(.leading, 4)
+                                .padding(.top, 3)
+                                .gesture(
+                                    DragGesture(minimumDistance: 4)
+                                        .onChanged { value in
+                                            handlePointerActivity()
+                                            let candidate = CGSize(
+                                                width: positionOffset.width + value.translation.width,
+                                                height: positionOffset.height + value.translation.height
+                                            )
+                                            let bounded = boundedPanelOffset(candidate, in: geometry.size)
+                                            dragTranslation = CGSize(
+                                                width: bounded.width - positionOffset.width,
+                                                height: bounded.height - positionOffset.height
+                                            )
+                                        }
+                                        .onEnded { value in
+                                            let candidate = CGSize(
+                                                width: positionOffset.width + value.translation.width,
+                                                height: positionOffset.height + value.translation.height
+                                            )
+                                            positionOffset = boundedPanelOffset(candidate, in: geometry.size)
+                                            dragTranslation = .zero
+                                            scheduleOverlayAutoHide()
+                                        }
+                                )
                             }
                             .opacity(shouldShowOverlay ? 1.0 : 0.0)
                             .animation(.easeInOut(duration: 0.2), value: shouldShowOverlay)
@@ -257,6 +267,21 @@ public struct VideoPlayerView: View {
             overlayHideTask?.cancel()
             overlayHideTask = nil
         }
+    }
+}
+
+private struct FloatingOSDDragHandle: View {
+    let label: String
+
+    var body: some View {
+        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 22, height: 22)
+            .contentShape(Circle())
+            .help(label)
+            .accessibilityLabel(label)
+            .accessibilityHint("拖动以移动控制条位置 / Drag to move the controls")
     }
 }
 

@@ -299,7 +299,7 @@ public struct SpeechInferenceResourcePolicy: Equatable, Sendable {
         #if arch(arm64)
         let speakerAccelerated = !constrained
         // The bundled whisper.cpp Metal backend currently aborts during
-        // process teardown on some macOS 14/Apple Silicon combinations. An
+        // process teardown on some Apple Silicon combinations. An
         // abort cannot be caught as a normal inference error, so keep the
         // stable CPU path as the release default. Developers can opt in after
         // upgrading the vendor framework to a fixed build.

@@ -53,7 +53,7 @@ public struct SecondaryWaveformView: View {
                         HStack(spacing: 2) {
                             Text("S:")
                                 .font(.caption2.bold())
-                                .foregroundColor(.green)
+                                .foregroundStyle(StudyMateMediaStyle.success)
                             
                             Button(action: { nudgeStart(by: -0.05) }) {
                                 Text("-50ms").font(.system(size: 8))
@@ -68,7 +68,7 @@ public struct SecondaryWaveformView: View {
                             
                             Text(seg.formattedStartTime)
                                 .font(.system(size: 10, weight: .bold).monospacedDigit())
-                                .foregroundColor(.green)
+                                .foregroundStyle(StudyMateMediaStyle.success)
                             
                             Button(action: { nudgeStart(by: 0.05) }) {
                                 Text("+50ms").font(.system(size: 8))
@@ -88,7 +88,7 @@ public struct SecondaryWaveformView: View {
                         HStack(spacing: 2) {
                             Text("E:")
                                 .font(.caption2.bold())
-                                .foregroundColor(.orange)
+                                .foregroundStyle(StudyMateMediaStyle.warning)
                             
                             Button(action: { nudgeEnd(by: -0.05) }) {
                                 Text("-50ms").font(.system(size: 8))
@@ -103,7 +103,7 @@ public struct SecondaryWaveformView: View {
                             
                             Text(seg.formattedEndTime)
                                 .font(.system(size: 10, weight: .bold).monospacedDigit())
-                                .foregroundColor(.orange)
+                                .foregroundStyle(StudyMateMediaStyle.warning)
                             
                             Button(action: { nudgeEnd(by: 0.05) }) {
                                 Text("+50ms").font(.system(size: 8))

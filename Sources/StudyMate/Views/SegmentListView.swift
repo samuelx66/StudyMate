@@ -1627,10 +1627,10 @@ struct SegmentRowView: View, Equatable {
                             }()
                             Text(speakerLabel)
                                 .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(seg.isSpeakerOverlap ? .orange : .purple)
+                                .foregroundStyle(seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple)
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 1)
-                                .background((seg.isSpeakerOverlap ? Color.orange : Color.purple).opacity(0.12))
+                                .background((seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple).opacity(0.12))
                                 .cornerRadius(3)
                                 .segmentListHelp(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
                         }
@@ -1715,7 +1715,7 @@ struct SegmentRowView: View, Equatable {
                                         Image(systemName: "trash")
                                             .font(.system(size: 9))
                                             .frame(width: 20, height: 20)
-                                            .foregroundColor(.red)
+                                            .foregroundStyle(StudyMateMediaStyle.destructive)
                                     }
                                     .studymateChromeButton(shape: .circle)
                                     .segmentListHelp(StudyMateShortcutCatalog.help(
@@ -2060,7 +2060,7 @@ private struct TranslationExecutionSheet: View {
                     Image(systemName: settings.hasAPIKey(for: selectedService.id)
                         ? "checkmark.circle.fill"
                         : "exclamationmark.triangle.fill")
-                        .foregroundColor(settings.hasAPIKey(for: selectedService.id) ? .green : .orange)
+                        .foregroundStyle(settings.hasAPIKey(for: selectedService.id) ? StudyMateMediaStyle.success : StudyMateMediaStyle.warning)
                     Text(settings.hasAPIKey(for: selectedService.id)
                         ? lang.text("API Key 已配置，将使用 \(selectedService.provider.displayName) / \(selectedService.model)。", "API key is configured. Using \(selectedService.provider.displayName) / \(selectedService.model).")
                         : lang.text("当前服务尚未配置 API Key，请先在设置中填写。", "This service has no API key. Add it in Settings first."))
