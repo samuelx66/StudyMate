@@ -350,7 +350,7 @@ struct StudyMateApp: App {
             DictionaryView()
                 .environmentObject(languageManager)
         }
-        .defaultSize(width: 900, height: 600)
+        .defaultSize(width: 1000, height: 680)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
     }

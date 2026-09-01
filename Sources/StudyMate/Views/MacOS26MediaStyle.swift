@@ -205,6 +205,37 @@ extension View {
         self.buttonStyle(StudyMateChromeButtonStyle(prominent: prominent, shape: shape))
     }
 
+    /// Functional chrome surface used by macOS 26's floating controls and
+    /// navigation containers. Content panels should use
+    /// `studymateContentSurface` instead so Liquid Glass does not compete
+    /// with readable media or dictionary content.
+    @ViewBuilder
+    func studymateChromeSurface(cornerRadius: CGFloat = 12) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(StudyMateMediaStyle.separator.opacity(0.5), lineWidth: 0.7)
+                )
+        }
+    }
+
+    /// Capsule variant for search fields and compact source controls.
+    @ViewBuilder
+    func studymateChromeCapsule() -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: Capsule())
+        } else {
+            self.background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(StudyMateMediaStyle.separator.opacity(0.5), lineWidth: 0.7))
+        }
+    }
+
     func studymateSelectableRowSurface(isActive: Bool, isHovered: Bool) -> some View {
         modifier(StudyMateSelectableRowSurface(isActive: isActive, isHovered: isHovered))
     }
