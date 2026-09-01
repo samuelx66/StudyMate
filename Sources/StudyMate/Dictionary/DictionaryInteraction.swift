@@ -177,7 +177,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     public func lookupSelected() {
         guard let selectedText else { return }
         pausePlaybackForDictionaryInteractionIfNeeded()
-        isLookupPresented = true
         DictionaryEngine.shared.clearSearch()
         DictionaryEngine.shared.search(query: selectedText, includeDetails: true, immediate: true)
         showNativePopover()
@@ -206,9 +205,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         let popoverView = DictionaryLookupPopoverContent(
             query: query,
             context: contextText,
-            onPronounce: { [weak self] in self?.speak(query) },
-            onCopy: { [weak self] in
-                self?.copyDefinition(DictionaryEngine.shared.searchResults)
+            onPronounce: { [weak self] in self?.speakPreferred(query) },
+            onToggleVocabulary: { [weak self] in
+                self?.toggleVocabulary(word: query, exampleSentence: self?.contextText ?? "")
             },
             onOpenDictionary: { [weak self] in
                 self?.openDictionaryWindow(query: query)
@@ -248,15 +247,51 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             popover.show(relativeTo: targetRect, of: contentView, preferredEdge: .maxY)
         }
 
+        guard popover.isShown else {
+            popover.delegate = nil
+            popoverDelegate = nil
+            isLookupPresented = false
+            return
+        }
         self.activePopover = popover
+        isLookupPresented = true
+    }
+
+    private func vocabularySourceName() -> String {
+        if let title = playbackEngine?.currentMedia?.title,
+           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title
+        }
+        var names: [String] = []
+        var seen = Set<String>()
+        for title in DictionaryEngine.shared.searchResults.map(\.dictionaryTitle) {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            names.append(trimmed)
+        }
+        return names.joined(separator: "、")
     }
 
     public func dismissPopover() {
         if let popover = activePopover {
             activePopover = nil
+            popover.delegate = nil
             popover.close()
         }
+        popoverDelegate = nil
         isLookupPresented = false
+    }
+
+    /// Ignore delayed close callbacks from an older popover. Replacing a
+    /// lookup quickly closes the previous NSPopover asynchronously; without
+    /// identity checking that callback can clear the new selection and close
+    /// the newly presented popover.
+    fileprivate func popoverDidClose(_ popover: NSPopover) {
+        guard activePopover === popover else { return }
+        activePopover = nil
+        popoverDelegate = nil
+        isLookupPresented = false
+        clearSelectionAndDeselect()
     }
 
     /// Control-Command-D 的统一入口：优先使用选区，没有选区时取光标所在单词。
@@ -280,9 +315,54 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        dictionaryAudioTask?.cancel()
+        dictionaryAudioTask = nil
+        dictionaryAudioPlayer?.stop()
+        dictionaryAudioPlayer = nil
         let utterance = AVSpeechUtterance(string: trimmed)
         avSynthesizer.stopSpeaking(at: .immediate)
         avSynthesizer.speak(utterance)
+    }
+
+    /// Prefer a pronunciation resource from the first installed dictionary;
+    /// use AVSpeechSynthesizer only when no matching MDD audio is available.
+    public func speakPreferred(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        dictionaryAudioTask?.cancel()
+        dictionaryAudioPlayer?.stop()
+        dictionaryAudioPlayer = nil
+        avSynthesizer.stopSpeaking(at: .immediate)
+
+        dictionaryAudioTask = Task { [weak self] in
+            do {
+                guard let url = try await DictionaryEngine.shared.firstDictionaryPronunciationURL(for: trimmed) else {
+                    guard !Task.isCancelled else { return }
+                    self?.speak(trimmed)
+                    return
+                }
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url, options: [.mappedIfSafe])
+                }.value
+                try Task.checkCancellation()
+                guard !data.isEmpty, let player = try? AVAudioPlayer(data: data) else {
+                    self?.speak(trimmed)
+                    return
+                }
+                player.prepareToPlay()
+                guard player.play() else {
+                    self?.speak(trimmed)
+                    return
+                }
+                self?.dictionaryAudioPlayer = player
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.speak(trimmed)
+            }
+        }
     }
 
     /// Play an audio record stored in the selected dictionary's MDD package.
@@ -293,14 +373,21 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     public func playDictionaryAudio(dictionaryID: String, key: String) {
         let id = dictionaryID.trimmingCharacters(in: .whitespacesAndNewlines)
         let resourceKey = key.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        let fallbackText: String
+        if let selected = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
+            fallbackText = selected
+        } else {
+            fallbackText = resourceKey
+        }
         guard !id.isEmpty, !resourceKey.isEmpty else {
-            speak(resourceKey)
+            speakPreferred(fallbackText)
             return
         }
 
         dictionaryAudioTask?.cancel()
         dictionaryAudioPlayer?.stop()
         dictionaryAudioPlayer = nil
+        avSynthesizer.stopSpeaking(at: .immediate)
 
         dictionaryAudioTask = Task { [weak self] in
             do {
@@ -309,7 +396,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     key: resourceKey
                 ) else {
                     guard !Task.isCancelled else { return }
-                    self?.speak(resourceKey)
+                    self?.speakPreferred(fallbackText)
                     return
                 }
                 let data = try await Task.detached(priority: .userInitiated) {
@@ -317,16 +404,16 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                 }.value
                 try Task.checkCancellation()
                 guard !data.isEmpty else {
-                    self?.speak(resourceKey)
+                    self?.speakPreferred(fallbackText)
                     return
                 }
                 guard let player = try? AVAudioPlayer(data: data) else {
-                    self?.speak(resourceKey)
+                    self?.speakPreferred(fallbackText)
                     return
                 }
                 player.prepareToPlay()
                 guard player.play() else {
-                    self?.speak(resourceKey)
+                    self?.speakPreferred(fallbackText)
                     return
                 }
                 self?.dictionaryAudioPlayer = player
@@ -334,27 +421,35 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.speak(resourceKey)
+                self?.speakPreferred(fallbackText)
             }
         }
     }
 
     public func speakSelected() {
         let text = selectedText ?? DictionaryEngine.shared.requestedQuery ?? ""
-        speak(text)
+        speakPreferred(text)
     }
 
-    public func copySelected() {
+    public func toggleVocabulary(word: String, exampleSentence: String = "") {
+        let source = vocabularySourceName()
+        Task { @MainActor in
+            do {
+                _ = try await VocabularyNotebookManager.shared.toggleWord(
+                    word: word,
+                    exampleSentence: exampleSentence,
+                    source: source
+                )
+            } catch {
+                // VocabularyNotebookManager publishes the failure in the
+                // status bar; the action bar itself should remain lightweight.
+            }
+        }
+    }
+
+    public func toggleSelectedVocabulary() {
         guard let selectedText else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(selectedText, forType: .string)
-    }
-
-    public func copyDefinition(_ entries: [StudyMateDictionaryLookup]) {
-        let value = entries.map { "\($0.key)\n\(Self.plainTextForDisplay($0.text))" }.joined(separator: "\n\n")
-        guard !value.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        toggleVocabulary(word: selectedText, exampleSentence: contextText ?? "")
     }
 
     public func openDictionaryWindow(query: String? = nil) {
@@ -877,15 +972,10 @@ private struct DictionaryActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text(title)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.primary)
-            }
-            .padding(.horizontal, 7)
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 24, height: 22)
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -894,6 +984,56 @@ private struct DictionaryActionButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .onHover { isHovered = $0 }
+        .help(help)
+    }
+}
+
+/// 生词本按钮使用稳定存在的基础 SF Symbols 组合，避免某些系统符号
+/// 集合中不存在 book.badge.minus 时 Image 退化为空白。
+@MainActor
+private struct VocabularyStateIcon: View {
+    let isSaved: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.primary)
+            Image(systemName: isSaved ? "minus.circle.fill" : "plus.circle.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.primary)
+                .background(Color(nsColor: .windowBackgroundColor), in: Circle())
+                .offset(x: 3, y: 3)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// 选中文字操作条中的生词本切换按钮。
+@MainActor
+private struct DictionaryVocabularyActionButton: View {
+    let title: String
+    let help: String
+    let isSaved: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            VocabularyStateIcon(isSaved: isSaved)
+                .frame(width: 24, height: 22)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isHovered ? Color.primary.opacity(0.09) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .accessibilityLabel(title)
         .onHover { isHovered = $0 }
         .help(help)
     }
@@ -905,6 +1045,7 @@ public struct DictionarySelectionActionBar: View {
     private let playbackEngine: PlaybackEngine
     @ObservedObject private var coordinator = DictionaryInteractionCoordinator.shared
     @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
 
     public init(playbackEngine: PlaybackEngine) {
         self.playbackEngine = playbackEngine
@@ -933,13 +1074,18 @@ public struct DictionarySelectionActionBar: View {
 
             divider
 
-            DictionaryActionButton(
-                title: lang.text("复制", "Copy"),
-                systemImage: "doc.on.doc",
-                help: lang.text("复制到剪贴板", "Copy to clipboard")
+            DictionaryVocabularyActionButton(
+                title: vocabularyManager.isWordSaved(coordinator.selectedText ?? "")
+                    ? lang.text("从生词本移除", "Remove from Vocabulary")
+                    : lang.text("加入生词本", "Add to Vocabulary"),
+                help: vocabularyManager.isWordSaved(coordinator.selectedText ?? "")
+                    ? lang.text("从生词本移除", "Remove from Vocabulary")
+                    : lang.text("加入生词本", "Add to Vocabulary"),
+                isSaved: vocabularyManager.isWordSaved(coordinator.selectedText ?? "")
             ) {
-                coordinator.copySelected()
+                coordinator.toggleSelectedVocabulary()
             }
+            .disabled(vocabularyManager.isWorking)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3.5)
@@ -1018,11 +1164,12 @@ private struct DictionaryLookupPopoverContent: View {
     let query: String
     let context: String?
     let onPronounce: () -> Void
-    let onCopy: () -> Void
+    let onToggleVocabulary: () -> Void
     let onOpenDictionary: () -> Void
     let onDismiss: () -> Void
     @ObservedObject private var engine = DictionaryEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1031,9 +1178,26 @@ private struct DictionaryLookupPopoverContent: View {
                     .font(.title3.weight(.semibold))
                 Spacer()
                 Button(action: onPronounce) {
-                    Label(lang.text("播放发音", "Pronounce"), systemImage: "speaker.wave.2.fill")
+                    Image(systemName: "speaker.wave.2.fill")
                 }
                 .buttonStyle(.borderless)
+                .focusable(false)
+                .accessibilityLabel(lang.text("播放发音", "Pronounce"))
+                .help(lang.text("播放发音", "Pronounce"))
+
+                DictionaryVocabularyActionButton(
+                    title:
+                    vocabularyManager.isWordSaved(query)
+                        ? lang.text("从生词本移除", "Remove from Vocabulary")
+                        : lang.text("加入生词本", "Add to Vocabulary"),
+                    help:
+                    vocabularyManager.isWordSaved(query)
+                        ? lang.text("从生词本移除", "Remove from Vocabulary")
+                        : lang.text("加入生词本", "Add to Vocabulary"),
+                    isSaved: vocabularyManager.isWordSaved(query),
+                    action: onToggleVocabulary
+                )
+                .disabled(vocabularyManager.isWorking)
             }
 
             Divider()
@@ -1059,11 +1223,20 @@ private struct DictionaryLookupPopoverContent: View {
                 DictionaryHTMLView(
                     entries: engine.searchResults,
                     isCompact: true,
+                    // The popover must remain a safe, responsive preview. MDX
+                    // scripts are enabled only in the full detail pane.
+                    allowsJavaScript: false,
                     onLookupWord: { word in
                         DictionaryEngine.shared.search(query: word, includeDetails: true, immediate: true)
                     },
                     onPlayAudio: { audioKey in
-                        DictionaryInteractionCoordinator.shared.speak(audioKey)
+                        DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
+                    },
+                    onPlayDictionaryAudio: { dictionaryID, key in
+                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                            dictionaryID: dictionaryID,
+                            key: key
+                        )
                     }
                 )
                 .frame(height: 240)
@@ -1084,7 +1257,6 @@ private struct DictionaryLookupPopoverContent: View {
 
             Divider()
             HStack {
-                Button(lang.text("复制释义", "Copy definition"), action: onCopy)
                 Button(lang.text("在词典中打开", "Open in Dictionary"), action: onOpenDictionary)
                 Spacer()
                 Button(lang.text("关闭", "Close"), action: onDismiss)
@@ -1105,30 +1277,11 @@ private final class DictionaryPopoverDelegate: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover else { return }
         Task { @MainActor [weak self] in
             guard let self, let coordinator = self.coordinator else { return }
-            if coordinator.isLookupPresented {
-                coordinator.clearSelectionAndDeselect()
-            }
+            coordinator.popoverDidClose(popover)
         }
-    }
-}
-
-public extension DictionaryInteractionCoordinator {
-    static func plainTextForDisplay(_ value: String) -> String {
-        var text = value
-        text = text.replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: "<ranks[^>]*>[\\s\\S]*?</ranks>", with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: "<div class=\"extras\"[\\s\\S]*?</div>", with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
-        text = text.replacingOccurrences(of: "&amp;", with: "&")
-        text = text.replacingOccurrences(of: "&lt;", with: "<")
-        text = text.replacingOccurrences(of: "&gt;", with: ">")
-        text = text.replacingOccurrences(of: "&quot;", with: "\"")
-        text = text.replacingOccurrences(of: "&#39;", with: "'")
-        return text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
 

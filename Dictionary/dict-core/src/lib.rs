@@ -223,6 +223,114 @@ fn stable_id(path: &Path) -> String {
     format!("{}-{:08x}", sanitize_id(stem), hasher.finish() as u32)
 }
 
+/// Return the resource volumes belonging to an MDX file.
+///
+/// MDict normally names these `<stem>.mdd`, `<stem>.1.mdd`, ... .  The
+/// explicit paths are retained as well because some vendors keep resources
+/// in a separate directory or use a non-standard filename.  Directory
+/// enumeration can be denied by the macOS sandbox, so the fallback probes a
+/// bounded range of conventional numbered names instead of silently losing
+/// the resource volumes.
+pub fn discover_mdd_paths(mdx: &Path, explicit: &[PathBuf]) -> Vec<PathBuf> {
+    let directory = mdx.parent().unwrap_or_else(|| Path::new("."));
+    let stem = mdx
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let lower_stem = stem.to_lowercase();
+    let mut discovered: Vec<(PathBuf, usize)> = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(directory) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file()
+                || !path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.eq_ignore_ascii_case("mdd"))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            let sibling_stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            let lower_sibling_stem = sibling_stem.to_lowercase();
+            let order = if lower_sibling_stem == lower_stem {
+                Some(0)
+            } else {
+                lower_sibling_stem
+                    .strip_prefix(&(lower_stem.clone() + "."))
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .map(|value| value.saturating_add(1))
+            };
+            if let Some(order) = order {
+                discovered.push((path, order));
+            }
+        }
+    } else {
+        // The parent may be visible as a security-scoped file URL while
+        // contentsOfDirectory/read_dir is unavailable.  Probe enough
+        // numbered volumes for normal MDict packages and do not stop at the
+        // first gap (vendors occasionally omit a volume number).
+        for number in 0usize..=64 {
+            let filename = if number == 0 {
+                format!("{stem}.mdd")
+            } else {
+                format!("{stem}.{number}.mdd")
+            };
+            let path = directory.join(filename);
+            if path.is_file() {
+                discovered.push((path, number.saturating_add(1)));
+            }
+        }
+    }
+
+    // Explicit selections may include a conventional sibling or a vendor's
+    // non-standard resource volume. Put both sources through the same stable
+    // ordering before deduplicating so the import order is reproducible.
+    for path in explicit {
+        let sibling_stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let order = if sibling_stem == lower_stem {
+            0
+        } else {
+            sibling_stem
+                .strip_prefix(&(lower_stem.clone() + "."))
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .map(|value| value.saturating_add(1))
+                .unwrap_or(usize::MAX)
+        };
+        discovered.push((path.clone(), order));
+    }
+
+    discovered.sort_by(|lhs, rhs| {
+        lhs.1
+            .cmp(&rhs.1)
+            .then_with(|| lhs.0.to_string_lossy().cmp(&rhs.0.to_string_lossy()))
+    });
+
+    let mut result = Vec::new();
+    let mut add_unique = |path: PathBuf| {
+        let identity = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !result.iter().any(|existing: &PathBuf| {
+            fs::canonicalize(existing).unwrap_or_else(|_| existing.clone()) == identity
+        }) {
+            result.push(path);
+        }
+    };
+    for (path, _) in discovered {
+        add_unique(path);
+    }
+    result
+}
+
 // MDict v2 uses RIPEMD-128 and Salsa20 reduced to eight rounds for its
 // optional keyword-header encryption.  The digest comes from the small,
 // portable `ripemd` crate; Salsa20/8 and the MDict nibble cipher remain local
@@ -560,25 +668,80 @@ fn decompress_block(
     Ok(output)
 }
 
-fn parse_key_index(bytes: &[u8], blocks: usize, encoding: &str) -> Result<()> {
+fn parse_key_index_layout(
+    bytes: &[u8],
+    blocks: usize,
+    encoding: &str,
+    includes_terminators: bool,
+    sizes_are_code_units: bool,
+) -> Result<Vec<(usize, usize)>> {
     let mut reader = Reader::new(bytes);
+    let unit = if encoding.to_ascii_uppercase().contains("UTF-16") {
+        2
+    } else {
+        1
+    };
+    let mut block_sizes = Vec::with_capacity(blocks);
     for _ in 0..blocks {
         let _entries = reader.u64()?;
         let first_units = reader.u16()? as usize;
-        let unit = if encoding.to_ascii_uppercase().contains("UTF-16") {
-            2
+        let first_size = if sizes_are_code_units {
+            first_units
+                .checked_mul(unit)
+                .ok_or_else(|| anyhow!("MDX key index word length overflow"))?
         } else {
-            1
+            first_units
         };
-        reader.take(first_units * unit)?;
-        // v2 key-index word lengths exclude the terminating NUL unit.
-        reader.take(unit)?;
+        reader.take(first_size)?;
+        // The standard v2 layout stores the first/last words with their
+        // terminating NUL unit, while a few older builders omit those units.
+        // The lengths themselves exclude the terminator in both variants.
+        if includes_terminators {
+            reader.take(unit)?;
+        }
         let last_units = reader.u16()? as usize;
-        reader.take(last_units * unit)?;
-        reader.take(unit)?;
-        reader.take(16)?;
+        let last_size = if sizes_are_code_units {
+            last_units
+                .checked_mul(unit)
+                .ok_or_else(|| anyhow!("MDX key index word length overflow"))?
+        } else {
+            last_units
+        };
+        reader.take(last_size)?;
+        if includes_terminators {
+            reader.take(unit)?;
+        }
+        let compressed_size = reader.u64()? as usize;
+        let decompressed_size = reader.u64()? as usize;
+        block_sizes.push((compressed_size, decompressed_size));
     }
-    Ok(())
+    if reader.remaining() != 0 {
+        bail!(
+            "MDX key index has {} trailing bytes after {} blocks",
+            reader.remaining(),
+            blocks
+        )
+    }
+    Ok(block_sizes)
+}
+
+fn parse_key_index(bytes: &[u8], blocks: usize, encoding: &str) -> Result<Vec<(usize, usize)>> {
+    let mut last_error = None;
+    for includes_terminators in [true, false] {
+        for sizes_are_code_units in [false, true] {
+            match parse_key_index_layout(
+                bytes,
+                blocks,
+                encoding,
+                includes_terminators,
+                sizes_are_code_units,
+            ) {
+                Ok(block_sizes) => return Ok(block_sizes),
+                Err(error) => last_error = Some(error),
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("MDX key index is invalid")))
 }
 
 fn parse_dictionary_keys(
@@ -634,27 +797,8 @@ fn parse_dictionary_keys(
         key_index_compressed[8..].copy_from_slice(&decrypted);
     }
     let key_index = decompress_block(&key_index_compressed, key_index_decomp_len, encryption_key)?;
-    parse_key_index(&key_index, block_count, &header.encoding).context("parse MDX key index")?;
-
-    let mut index_reader = Reader::new(&key_index);
-    let mut block_sizes = Vec::with_capacity(block_count);
-    for _ in 0..block_count {
-        let _entries = index_reader.u64()?;
-        let first_units = index_reader.u16()? as usize;
-        let unit = if header.encoding.to_ascii_uppercase().contains("UTF-16") {
-            2
-        } else {
-            1
-        };
-        index_reader.take(first_units * unit)?;
-        index_reader.take(unit)?;
-        let last_units = index_reader.u16()? as usize;
-        index_reader.take(last_units * unit)?;
-        index_reader.take(unit)?;
-        let comp = index_reader.u64()? as usize;
-        let decomp = index_reader.u64()? as usize;
-        block_sizes.push((comp, decomp));
-    }
+    let block_sizes = parse_key_index(&key_index, block_count, &header.encoding)
+        .context("parse MDX key index")?;
 
     let mut raw_keys = Vec::new();
     let mut consumed = 0u64;
@@ -673,8 +817,7 @@ fn parse_dictionary_keys(
                 let start = key_reader.pos;
                 let mut end = start;
                 while end + 1 < decompressed.len()
-                    && decompressed[end] != 0
-                    && decompressed[end + 1] != 0
+                    && !(decompressed[end] == 0 && decompressed[end + 1] == 0)
                 {
                     end += 2;
                 }
@@ -934,7 +1077,13 @@ pub fn import_dictionary_with_progress(
     if let Some(p) = progress.as_deref_mut() {
         p("正在复制源文件…", 0.15);
     }
-    fs::copy(&options.mdx, &source_mdx)?;
+    fs::copy(&options.mdx, &source_mdx).with_context(|| {
+        format!(
+            "copy MDX source {} -> {}",
+            options.mdx.display(),
+            source_mdx.display()
+        )
+    })?;
     // MDict permits a sibling `<dictionary>.key` file containing the
     // registration code.  Keep it inside the package while importing so the
     // encrypted reader behaves the same after the source file is copied.
@@ -964,12 +1113,13 @@ pub fn import_dictionary_with_progress(
         &temp_package.join("resources"),
         sibling_resources,
         options,
-    )?;
+    )
+    .with_context(|| format!("import MDX {}", options.mdx.display()))?;
     resource_count += sibling_resources;
     if let Some(p) = progress.as_deref_mut() {
         p("正在导入多媒体资源…", 0.70);
     }
-    for mdd in &options.mdd {
+    for mdd in discover_mdd_paths(&options.mdx, &options.mdd) {
         if !mdd.is_file() {
             bail!("MDD file does not exist: {}", mdd.display())
         }
@@ -978,7 +1128,13 @@ pub fn import_dictionary_with_progress(
                 .and_then(|s| s.to_str())
                 .unwrap_or("resources.mdd"),
         );
-        fs::copy(mdd, &source_mdd)?;
+        fs::copy(&mdd, &source_mdd).with_context(|| {
+            format!(
+                "copy MDD source {} -> {}",
+                mdd.display(),
+                source_mdd.display()
+            )
+        })?;
         let mdd_records = temp_package.join(format!("records-{}.tmp", resource_count));
         let (_mdd_header, _entries, resources) = import_file(
             &source_mdd,
@@ -988,7 +1144,8 @@ pub fn import_dictionary_with_progress(
             &temp_package.join("resources"),
             resource_count,
             options,
-        )?;
+        )
+        .with_context(|| format!("import MDD {}", mdd.display()))?;
         resource_count += resources;
         let _ = fs::remove_file(mdd_records);
     }
@@ -1156,8 +1313,17 @@ fn copy_sibling_assets(
         Some(p) if p.is_dir() => p,
         _ => return Ok(0),
     };
-    let entries = fs::read_dir(parent)
-        .with_context(|| format!("read sibling assets in {}", parent.display()))?;
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        // A sandboxed import can have access to the selected file without
+        // access to enumerate its parent. Optional sibling assets are skipped
+        // in that case; the MDX and directly probed MDD volumes still import.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(0),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read sibling assets in {}", parent.display()))
+        }
+    };
     let mut combined_css = String::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("read sibling asset in {}", parent.display()))?;
@@ -1179,6 +1345,7 @@ fn copy_sibling_assets(
                 ext.as_str(),
                 "css"
                     | "js"
+                    | "ini"
                     | "png"
                     | "jpg"
                     | "jpeg"
@@ -1698,15 +1865,33 @@ pub fn resource(root: &Path, dictionary_id: &str, key: &str) -> Result<Option<Re
     let (package, _manifest) = open_manifest(root, dictionary_id)?;
     let connection = Connection::open(package.join("Library.sqlite3"))?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
-    let record: Option<(String, i64)> = connection
+    let record: Option<(String, String, i64)> = connection
         .query_row(
-            "SELECT path, size FROM resources WHERE key = ?1",
+            "SELECT key, path, size FROM resources WHERE key = ?1",
             params![key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    Ok(record.map(|(path, size)| ResourceResult {
-        key: key.to_owned(),
+    let record = match record {
+        Some(record) => Some(record),
+        None => {
+            // MDD keys are commonly written with a leading slash or
+            // backslash. WebKit normalizes the sound URL before it reaches
+            // this function, so compare a slash-normalized form as well.
+            let normalized = key.trim_matches(['/', '\\']).replace('\\', "/");
+            connection
+                .query_row(
+                    "SELECT key, path, size FROM resources
+                     WHERE lower(trim(replace(key, char(92), '/'), '/')) = lower(?1)
+                     LIMIT 1",
+                    params![normalized],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+        }
+    };
+    Ok(record.map(|(stored_key, path, size)| ResourceResult {
+        key: stored_key,
         path: package
             .join("resources")
             .join(path)
@@ -1714,6 +1899,85 @@ pub fn resource(root: &Path, dictionary_id: &str, key: &str) -> Result<Option<Re
             .into_owned(),
         size: size.max(0) as u64,
     }))
+}
+
+const AUDIO_EXTENSIONS: [&str; 10] = [
+    ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".aiff", ".aif", ".caf", ".opus",
+];
+
+fn audio_word_variants(word: &str) -> Vec<String> {
+    let trimmed = word.trim().to_lowercase();
+    let normalized = normalize_key(&trimmed);
+    let mut variants = Vec::new();
+    for value in [
+        trimmed,
+        normalized.clone(),
+        normalized.replace(' ', "_"),
+        normalized.replace(' ', "-"),
+        normalized.replace(' ', ""),
+    ] {
+        if !value.is_empty() && !variants.contains(&value) {
+            variants.push(value);
+        }
+    }
+    variants
+}
+
+/// Find an audio resource whose filename corresponds to a word. MDX entries
+/// can still use an explicit `sound:` key, but this fallback is needed for
+/// the standalone pronunciation button before a definition has been loaded.
+/// It intentionally searches only the first dictionary selected by the UI and
+/// returns no result when the package has no matching audio resource.
+pub fn find_audio_resource(
+    root: &Path,
+    dictionary_id: &str,
+    word: &str,
+) -> Result<Option<ResourceResult>> {
+    let (package, _manifest) = open_manifest(root, dictionary_id)?;
+    let connection = Connection::open(package.join("Library.sqlite3"))?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+
+    for variant in audio_word_variants(word) {
+        for extension in AUDIO_EXTENSIONS {
+            let candidate = format!("{variant}{extension}");
+            let exact: Option<(String, String, i64)> = connection
+                .query_row(
+                    "SELECT key, path, size FROM resources
+                     WHERE lower(key) = lower(?1) AND size > 0 LIMIT 1",
+                    params![candidate],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+
+            let match_result = if exact.is_some() {
+                exact
+            } else {
+                let suffix = format!("%/{}", escape_like_pattern(&candidate));
+                connection
+                    .query_row(
+                        "SELECT key, path, size FROM resources
+                         WHERE replace(lower(key), char(92), '/') LIKE ?1 ESCAPE '\\'
+                           AND size > 0 LIMIT 1",
+                        params![suffix],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?
+            };
+
+            if let Some((key, path, size)) = match_result {
+                return Ok(Some(ResourceResult {
+                    key,
+                    path: package
+                        .join("resources")
+                        .join(path)
+                        .to_string_lossy()
+                        .into_owned(),
+                    size: size.max(0) as u64,
+                }));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1795,12 +2059,64 @@ mod tests {
         output
     }
 
+    fn mdd_fixture(resources: &[(&str, &[u8])]) -> Vec<u8> {
+        let header = "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Encrypted=\"0\" Format=\"Binary\" Title=\"Resources\" Library_Data=\"1\"/>";
+        let header_bytes: Vec<u8> = header.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut output = Vec::new();
+        be_u32(header_bytes.len() as u32, &mut output);
+        output.extend_from_slice(&header_bytes);
+        output.extend_from_slice(&[0, 0, 0, 0]);
+
+        let mut record_bytes = Vec::new();
+        let mut keys = Vec::new();
+        for (key, bytes) in resources {
+            be_u64(record_bytes.len() as u64, &mut keys);
+            keys.extend(key.encode_utf16().flat_map(u16::to_le_bytes));
+            keys.extend_from_slice(&[0, 0]);
+            record_bytes.extend_from_slice(bytes);
+        }
+        let key_block = block(&keys);
+        let first = resources.first().map(|(key, _)| *key).unwrap_or("");
+        let last = resources.last().map(|(key, _)| *key).unwrap_or("");
+        let mut key_index = Vec::new();
+        be_u64(resources.len() as u64, &mut key_index);
+        be_u16(first.encode_utf16().count() as u16 * 2, &mut key_index);
+        key_index.extend(first.encode_utf16().flat_map(u16::to_le_bytes));
+        be_u16(last.encode_utf16().count() as u16 * 2, &mut key_index);
+        key_index.extend(last.encode_utf16().flat_map(u16::to_le_bytes));
+        be_u64(key_block.len() as u64, &mut key_index);
+        be_u64(keys.len() as u64, &mut key_index);
+        let key_index_block = block(&key_index);
+
+        be_u64(1, &mut output);
+        be_u64(resources.len() as u64, &mut output);
+        be_u64(key_index.len() as u64, &mut output);
+        be_u64(key_index_block.len() as u64, &mut output);
+        be_u64(key_block.len() as u64, &mut output);
+        be_u32(0, &mut output);
+        output.extend_from_slice(&key_index_block);
+        output.extend_from_slice(&key_block);
+
+        let record_block = block(&record_bytes);
+        be_u64(1, &mut output);
+        be_u64(resources.len() as u64, &mut output);
+        be_u64(16, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(record_bytes.len() as u64, &mut output);
+        output.extend_from_slice(&record_block);
+        output
+    }
+
     #[test]
     fn imports_and_queries_uncompressed_mdx() {
         let root = std::env::temp_dir().join(format!("studymate-dict-test-{}", now_seconds()));
         let source = root.join("fixture.mdx");
         fs::create_dir_all(&root).unwrap();
         fs::write(&source, fixture()).unwrap();
+        // Several production MDX dictionaries load JavaScript configuration
+        // from a sibling `.ini` file via `<script src="...">`.
+        fs::write(root.join("config.ini"), b"window.fixtureEnabled = true;").unwrap();
         let package_root = root.join("Dictionaries");
         let result = import_dictionary(&ImportOptions {
             root: package_root.clone(),
@@ -1812,6 +2128,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result.dictionary.entry_count, 2);
+        assert_eq!(result.dictionary.resource_count, 1);
+        let config = resource(&package_root, "fixture", "config.ini")
+            .unwrap()
+            .expect("script-style ini sibling should be imported");
+        assert_eq!(
+            fs::read(config.path).unwrap(),
+            b"window.fixtureEnabled = true;"
+        );
         let matches = lookup(&package_root, "fixture", "cat", 20).unwrap();
         assert_eq!(matches[0].text, "feline");
         assert_eq!(
@@ -1887,6 +2211,60 @@ mod tests {
         let plaintext = b"encrypted mdx key header";
         let stream = salsa20_8_xor(plaintext, &key);
         assert_eq!(salsa20_8_xor(&stream, &key), plaintext);
+    }
+
+    #[test]
+    fn imports_matching_numbered_mdd_volumes_and_finds_audio_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-mdd-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mdx = root.join("TLD.mdx");
+        let mdd = root.join("TLD.mdd");
+        let numbered = root.join("TLD.1.mdd");
+        fs::write(&mdx, fixture()).unwrap();
+        fs::write(&mdd, mdd_fixture(&[(r"\audio/cat.mp3", b"audio-one")])).unwrap();
+        fs::write(&numbered, mdd_fixture(&[("audio/dog.mp3", b"audio-two")])).unwrap();
+
+        let discovered = discover_mdd_paths(&mdx, &[]);
+        assert_eq!(
+            discovered,
+            vec![mdd.clone(), numbered.clone()],
+            "volumes should be ordered base then numbered"
+        );
+        assert_eq!(
+            discover_mdd_paths(&mdx, &[numbered.clone(), mdd.clone()]),
+            vec![mdd.clone(), numbered.clone()],
+            "explicit and discovered volumes should be merged and deduplicated"
+        );
+
+        let package_root = root.join("Dictionaries");
+        let imported = import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx,
+            mdd: Vec::new(),
+            id: Some("tld".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+        assert_eq!(imported.dictionary.resource_count, 2);
+
+        let audio = find_audio_resource(&package_root, "tld", "CAT")
+            .unwrap()
+            .expect("MDD audio should match by filename");
+        assert_eq!(audio.key, r"\audio/cat.mp3");
+        assert_eq!(fs::read(audio.path).unwrap(), b"audio-one");
+        let direct = resource(&package_root, "tld", "/audio/cat.mp3")
+            .unwrap()
+            .expect("sound URL should resolve slash-normalized MDD key");
+        assert_eq!(fs::read(direct.path).unwrap(), b"audio-one");
+        assert!(find_audio_resource(&package_root, "tld", "missing")
+            .unwrap()
+            .is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

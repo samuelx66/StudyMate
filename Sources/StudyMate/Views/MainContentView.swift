@@ -144,6 +144,7 @@ public struct MainContentView: View {
             isVideoSubtitleFontSettingsPresented: $isVideoSubtitleFontSettingsPresented,
             isSidebarVisible: $isSidebarVisible,
             onOpenLibrary: { openWindow(id: "sentence-library") },
+            onOpenVocabulary: { openWindow(id: "vocabulary") },
             onOpenDictionary: {
                 if let query = dictionaryCoordinator.selectedText, !query.isEmpty {
                     DictionaryEngine.shared.requestLookup(query)
@@ -413,6 +414,7 @@ private struct MainWindowToolbar: ToolbarContent {
     @Binding var isVideoSubtitleFontSettingsPresented: Bool
     @Binding var isSidebarVisible: Bool
     let onOpenLibrary: () -> Void
+    let onOpenVocabulary: () -> Void
     let onOpenDictionary: () -> Void
     let onOpenMedia: () -> Void
     let onTogglePlaylist: () -> Void
@@ -451,6 +453,10 @@ private struct MainWindowToolbar: ToolbarContent {
             Button(action: onOpenLibrary) { Image(systemName: "books.vertical") }
                 .help(StudyMateShortcutCatalog.help(lang.text("打开句库", "Open sentence library"), shortcut: .openSentenceLibrary))
                 .keyboardShortcut("l", modifiers: [.command])
+        }
+        ToolbarItem(placement: .navigation) {
+            Button(action: onOpenVocabulary) { Image(systemName: "book.closed") }
+                .help(lang.text("打开生词本", "Open vocabulary"))
         }
         ToolbarItem(placement: .navigation) {
             Button(action: onOpenMedia) { Image(systemName: "folder.badge.plus") }

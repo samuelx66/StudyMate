@@ -115,9 +115,16 @@ private struct DictionaryDefinitionPane: View {
                 DictionaryHTMLView(
                     entries: selectedEntries,
                     isCompact: false,
+                    allowsJavaScript: true,
                     textScale: textScale,
                     onLookupWord: onLookupWord,
-                    onPlayAudio: onPlayAudio
+                    onPlayAudio: onPlayAudio,
+                    onPlayDictionaryAudio: { dictionaryID, key in
+                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                            dictionaryID: dictionaryID,
+                            key: key
+                        )
+                    }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -205,7 +212,7 @@ public struct DictionaryView: View {
                         engine.search(query: word, dictionaryID: selectedDictionaryID, includeDetails: true, immediate: true)
                     },
                     onPlayAudio: { audioKey in
-                        DictionaryInteractionCoordinator.shared.speak(audioKey)
+                        DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -347,12 +354,16 @@ public struct DictionaryView: View {
             engine.search(query: newValue, dictionaryID: selectedDictionaryID)
         }
         .onChange(of: selectedDictionaryID) { _, _ in
-            if let selectedResultID,
-               let selected = resultItems.first(where: { $0.id == selectedResultID }) {
-                engine.loadDefinition(for: selected.key, dictionaryID: selectedDictionaryID)
-            } else {
-                engine.search(query: query, dictionaryID: selectedDictionaryID)
-            }
+            // Candidate rows are scoped by dictionary in the Rust query. A
+            // source switch must therefore run a new key search instead of
+            // reusing rows from the previous source and only reloading its
+            // selected definition.
+            selectedResultID = nil
+            engine.search(
+                query: query,
+                dictionaryID: selectedDictionaryID,
+                immediate: true
+            )
         }
         .onDisappear {
             DictionaryInteractionCoordinator.shared.dictionaryWindowDidClose()
@@ -555,14 +566,104 @@ public struct DictionaryView: View {
             engine.reportError(lang.text("请选择至少一个 MDX 文件。", "Select at least one MDX file."))
             return
         }
-        var mdd = panel.urls.filter { $0.pathExtension.lowercased() == "mdd" }
-        if mdd.isEmpty {
-            let sibling = mdx.deletingPathExtension().appendingPathExtension("mdd")
-            if FileManager.default.fileExists(atPath: sibling.path) {
-                mdd = [sibling]
+        guard mdxFiles.count == 1 else {
+            engine.reportError(lang.text(
+                "一次只能导入一个 MDX 文件；可同时选择它配套的多个 MDD 分卷。",
+                "Import one MDX file at a time; you may select all of its MDD volumes together."
+            ))
+            return
+        }
+        let explicitlySelectedMDDs = panel.urls.filter { $0.pathExtension.lowercased() == "mdd" }
+        // Always merge the user's explicit selection with conventional sibling
+        // volumes. Users often select the first MDD manually while the later
+        // `.1.mdd`, `.2.mdd` volumes remain unselected in the panel.
+        let discoveredMDDs = matchingMDDs(for: mdx)
+        let mdd = mergeMDDs(explicitlySelectedMDDs, with: discoveredMDDs, for: mdx)
+        engine.importDictionary(mdx: mdx, mdd: mdd)
+    }
+
+    /// MDict dictionaries commonly split their resources into
+    /// `<name>.mdd`, `<name>.1.mdd`, ... files. Keep explicit user selections
+    /// untouched, but when only the MDX is selected automatically collect all
+    /// matching resource volumes in a deterministic order.
+    private func matchingMDDs(for mdx: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let directory = mdx.deletingLastPathComponent()
+        let baseName = mdx.deletingPathExtension().lastPathComponent
+        let lowerBaseName = baseName.lowercased()
+
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            // A security-scoped MDX URL does not always grant enumeration of
+            // its parent directory. Probe conventional volumes directly so
+            // TLD.1.mdd and later volumes are still imported.
+            return (0...64).compactMap { number in
+                let filename = number == 0
+                    ? "\(baseName).mdd"
+                    : "\(baseName).\(number).mdd"
+                let candidate = directory.appendingPathComponent(filename)
+                return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
             }
         }
-        engine.importDictionary(mdx: mdx, mdd: mdd)
+
+        return urls
+            .compactMap { url -> (url: URL, order: Int)? in
+                guard url.pathExtension.lowercased() == "mdd",
+                      let isRegularFile = try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile,
+                      isRegularFile == true else { return nil }
+                let stem = url.deletingPathExtension().lastPathComponent
+                let lowerStem = stem.lowercased()
+                if lowerStem == lowerBaseName {
+                    return (url, 0)
+                }
+                let prefix = lowerBaseName + "."
+                guard lowerStem.hasPrefix(prefix),
+                      let order = Int(lowerStem.dropFirst(prefix.count)),
+                      order >= 0 else { return nil }
+                return (url, order + 1)
+            }
+            .sorted { lhs, rhs in
+                if lhs.order != rhs.order { return lhs.order < rhs.order }
+                return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
+            }
+            .map { $0.url }
+    }
+
+    private func mergeMDDs(_ explicit: [URL], with discovered: [URL], for mdx: URL) -> [URL] {
+        let baseName = mdx.deletingPathExtension().lastPathComponent
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for url in discovered + explicit {
+            guard url.pathExtension.caseInsensitiveCompare("mdd") == .orderedSame else { continue }
+            let identity = url.resolvingSymlinksInPath().standardizedFileURL.path
+            let normalizedIdentity = identity.precomposedStringWithCanonicalMapping.lowercased()
+            guard seen.insert(normalizedIdentity).inserted else { continue }
+            unique.append(url)
+        }
+
+        let lowerBaseName = baseName.lowercased()
+        return unique.sorted { lhs, rhs in
+            let lhsOrder = mddVolumeOrder(lhs, baseName: lowerBaseName)
+            let rhsOrder = mddVolumeOrder(rhs, baseName: lowerBaseName)
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            let comparison = lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent)
+            return comparison == .orderedAscending ||
+                (comparison == .orderedSame && lhs.path < rhs.path)
+        }
+    }
+
+    private func mddVolumeOrder(_ url: URL, baseName: String) -> Int {
+        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        guard !baseName.isEmpty else { return Int.max }
+        if stem == baseName { return 0 }
+        let prefix = baseName + "."
+        guard stem.hasPrefix(prefix),
+              let number = Int(stem.dropFirst(prefix.count)),
+              number >= 0 else { return Int.max }
+        return number + 1
     }
 
     @MainActor

@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use studymate_dict_core::{
-    delete_dictionary, import_dictionary_with_progress, resource, DictionaryQueryCache,
-    ImportOptions,
+    delete_dictionary, find_audio_resource, import_dictionary_with_progress, resource,
+    DictionaryQueryCache, ImportOptions,
 };
 
 fn request_id(value: &Value) -> Value {
@@ -80,6 +80,14 @@ fn handle(
             let id = string_field(value, "dictionaryID")?;
             let key = string_field(value, "key")?;
             Ok(serde_json::to_value(resource(&root, &id, &key)?)?)
+        }
+        "findAudio" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            let word = string_field(value, "word")?;
+            Ok(serde_json::to_value(find_audio_resource(
+                &root, &id, &word,
+            )?)?)
         }
         "import" => {
             let root = path_field(value, "root")?;

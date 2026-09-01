@@ -126,7 +126,10 @@ public enum DictionaryHTMLFormatter {
     }
 
     public static func scaledFontSize(isCompact: Bool, textScale: CGFloat) -> String {
-        let scale = min(max(textScale, 0.8), 1.4)
+        // Keep the formatter in sync with the native toolbar controls. The UI
+        // exposes 70%...180%; clamping more narrowly made several button
+        // presses appear broken at both ends of the range.
+        let scale = min(max(textScale, 0.7), 1.8)
         let baseFontSize = isCompact ? 13.0 : 14.5
         return "\(baseFontSize * scale)px"
     }
@@ -265,9 +268,9 @@ public enum DictionaryHTMLFormatter {
             guard match.numberOfRanges == 4 else { continue }
             let value = nsHTML.substring(with: match.range(at: 2))
             guard shouldRewriteResource(value) else { continue }
-            let clean = value.hasPrefix("/") ? String(value.dropFirst()) : value
-            let encoded = clean.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? clean
-            let replacement = nsHTML.substring(with: match.range(at: 1)) + prefix + encoded + nsHTML.substring(with: match.range(at: 3))
+            let replacement = nsHTML.substring(with: match.range(at: 1))
+                + localResourceURL(value, prefix: prefix)
+                + nsHTML.substring(with: match.range(at: 3))
             if let swiftRange = Range(match.range, in: result) {
                 result.replaceSubrange(swiftRange, with: replacement)
             }
@@ -287,9 +290,9 @@ public enum DictionaryHTMLFormatter {
         for match in matches.reversed() {
             let value = nsCSS.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard shouldRewriteResource(value) else { continue }
-            let clean = value.hasPrefix("/") ? String(value.dropFirst()) : value
-            let encoded = clean.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? clean
-            let replacement = nsCSS.substring(with: match.range(at: 1)) + prefix + encoded + nsCSS.substring(with: match.range(at: 3))
+            let replacement = nsCSS.substring(with: match.range(at: 1))
+                + localResourceURL(value, prefix: prefix)
+                + nsCSS.substring(with: match.range(at: 3))
             if let swiftRange = Range(match.range, in: result) {
                 result.replaceSubrange(swiftRange, with: replacement)
             }
@@ -298,12 +301,37 @@ public enum DictionaryHTMLFormatter {
     }
 
     private static func shouldRewriteResource(_ value: String) -> Bool {
-        let lower = value.lowercased()
-        return !lower.isEmpty && !lower.hasPrefix(("http://")) && !lower.hasPrefix("https://") &&
-            !lower.hasPrefix("data:") && !lower.hasPrefix("file:") && !lower.hasPrefix("sound:") &&
-            !lower.hasPrefix("studymate-sound:") &&
-            !lower.hasPrefix("entry:") && !lower.hasPrefix("lookup:") && !lower.hasPrefix("javascript:") &&
-            !lower.hasPrefix("#")
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        guard !lower.isEmpty, !lower.hasPrefix("#"), !lower.hasPrefix("//") else { return false }
+
+        // Preserve every explicit URL scheme (entry:, sound:, javascript:,
+        // mailto:, data:, and vendor-specific schemes). Only relative file
+        // references belong under the imported dictionary resource root.
+        if let colon = lower.firstIndex(of: ":") {
+            let scheme = lower[..<colon]
+            let validScheme = !scheme.isEmpty && scheme.enumerated().allSatisfy { index, character in
+                if index == 0 { return character.isLetter }
+                return character.isLetter || character.isNumber || character == "+" || character == "-" || character == "."
+            }
+            if validScheme { return false }
+        }
+        return true
+    }
+
+    /// Percent-encode only the local path portion. Cache-busting queries and
+    /// SVG fragments must stay URL delimiters; encoding `?`/`#` into the file
+    /// name makes otherwise valid MDX resources fail to load.
+    private static func localResourceURL(_ value: String, prefix: String) -> String {
+        let splitIndex = value.firstIndex { $0 == "?" || $0 == "#" }
+        let pathEnd = splitIndex ?? value.endIndex
+        var path = String(value[..<pathEnd])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+        while path.hasPrefix("/") { path.removeFirst() }
+        let suffix = splitIndex.map { String(value[$0...]) } ?? ""
+        let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        return prefix + encodedPath + suffix
     }
 
     private static func escapeHTML(_ string: String) -> String {
@@ -324,6 +352,9 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     public let shellSignature: Int
     public let baseURL: URL?
     public let isCompact: Bool
+    /// MDX scripts are enabled only for the full dictionary detail pane. The
+    /// lookup popover deliberately keeps content JavaScript disabled.
+    public let allowsJavaScript: Bool
     public let textScale: CGFloat
     public var onLookupWord: ((String) -> Void)?
     public var onPlayAudio: ((String) -> Void)?
@@ -333,6 +364,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         html: String,
         baseURL: URL? = nil,
         isCompact: Bool = false,
+        allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
@@ -344,6 +376,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.shellSignature = DictionaryHTMLView.signature(DictionaryHTMLView.extractDocumentShell(from: html))
         self.baseURL = baseURL
         self.isCompact = isCompact
+        self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
@@ -354,6 +387,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         entries: [StudyMateDictionaryLookup],
         baseURL: URL? = nil,
         isCompact: Bool = false,
+        allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
@@ -371,6 +405,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.shellSignature = DictionaryHTMLFormatter.shellSignature(entries: entries, isCompact: isCompact)
         self.baseURL = resolvedBaseURL
         self.isCompact = isCompact
+        self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
@@ -414,6 +449,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -424,6 +460,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         context.coordinator.currentShellSignature = shellSignature
         context.coordinator.currentBodySignature = bodySignature
         context.coordinator.currentBaseURL = baseURL
+        context.coordinator.currentAllowsJavaScript = allowsJavaScript
         context.coordinator.currentTextScale = textScale
         context.coordinator.hasLoadedDocument = false
         webView.loadHTMLString(html, baseURL: baseURL)
@@ -436,14 +473,18 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         let bodyChanged = context.coordinator.currentBodySignature != bodySignature
         let scaleChanged = context.coordinator.currentTextScale != textScale
         let shellChanged = context.coordinator.currentShellSignature != shellSignature
+        let javaScriptPolicyChanged = context.coordinator.currentAllowsJavaScript != allowsJavaScript
 
-        if baseURLChanged || shellChanged || (!context.coordinator.hasLoadedDocument && context.coordinator.currentHTML != html) {
+        if baseURLChanged || shellChanged || javaScriptPolicyChanged ||
+            (!context.coordinator.hasLoadedDocument && context.coordinator.currentHTML != html) ||
+            (allowsJavaScript && bodyChanged) {
             context.coordinator.updateRevision &+= 1
             context.coordinator.currentHTML = html
             context.coordinator.currentBodyHTML = bodyHTML
             context.coordinator.currentShellSignature = shellSignature
             context.coordinator.currentBodySignature = bodySignature
             context.coordinator.currentBaseURL = baseURL
+            context.coordinator.currentAllowsJavaScript = allowsJavaScript
             context.coordinator.currentTextScale = textScale
             context.coordinator.hasLoadedDocument = false
             webView.loadHTMLString(html, baseURL: baseURL)
@@ -453,14 +494,28 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             context.coordinator.currentShellSignature = shellSignature
             context.coordinator.currentBodySignature = bodySignature
             context.coordinator.currentTextScale = textScale
+            context.coordinator.currentAllowsJavaScript = allowsJavaScript
             context.coordinator.updateRevision &+= 1
-            context.coordinator.updateDocument(
-                in: webView,
-                bodyHTML: bodyHTML,
-                fontSize: DictionaryHTMLFormatter.scaledFontSize(isCompact: isCompact, textScale: textScale),
-                reloadHTML: html,
-                revision: context.coordinator.updateRevision
-            )
+            if allowsJavaScript {
+                // Body changes in script-enabled definitions are handled by
+                // the full reload branch above. A scale-only change should
+                // preserve scroll position and script state.
+                context.coordinator.updateTextScale(
+                    in: webView,
+                    fontSize: DictionaryHTMLFormatter.scaledFontSize(
+                        isCompact: isCompact,
+                        textScale: textScale
+                    )
+                )
+            } else {
+                context.coordinator.updateDocument(
+                    in: webView,
+                    bodyHTML: bodyHTML,
+                    fontSize: DictionaryHTMLFormatter.scaledFontSize(isCompact: isCompact, textScale: textScale),
+                    reloadHTML: html,
+                    revision: context.coordinator.updateRevision
+                )
+            }
         }
     }
 
@@ -476,6 +531,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var currentShellSignature: Int = 0
         var currentBodySignature: Int = 0
         var currentBaseURL: URL?
+        var currentAllowsJavaScript = false
         var currentTextScale: CGFloat = 1.0
         var hasLoadedDocument = false
         var updateRevision: UInt64 = 0
@@ -515,6 +571,15 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                     }
                 }
             }
+        }
+
+        func updateTextScale(in webView: WKWebView, fontSize: String) {
+            webView.callAsyncJavaScript(
+                "document.documentElement.style.setProperty('--studymate-font-size', fontSize); true;",
+                arguments: ["fontSize": fontSize],
+                in: nil,
+                in: .page
+            )
         }
 
         public func webView(

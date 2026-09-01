@@ -248,6 +248,10 @@ public final class DictionaryEngine: ObservableObject {
     private var responseParser: DictionaryResponseParser?
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
     private var requestCounter: UInt64 = 0
+    /// Identifies the currently running helper process. Process termination
+    /// and pipe callbacks can arrive after a replacement helper has started;
+    /// stale callbacks must never fail that new process's pending requests.
+    private var helperGeneration: UInt64 = 0
     private var searchTask: Task<Void, Never>?
     private var queryDebounceTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
@@ -707,6 +711,28 @@ public final class DictionaryEngine: ObservableObject {
         return URL(fileURLWithPath: resource.path, isDirectory: false)
     }
 
+    /// Resolve a pronunciation from the first installed MDX dictionary. The
+    /// Rust core searches the resources imported from its MDD volumes by
+    /// filename, so this remains cheap even for large pronunciation packs.
+    public func firstDictionaryPronunciationURL(for word: String) async throws -> URL? {
+        var firstDictionary = dictionaries.first
+        if firstDictionary == nil, !isBusy {
+            let value = try await request(operation: "list")
+            let summaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
+            guard !Task.isCancelled else { return nil }
+            dictionaries = summaries
+            firstDictionary = summaries.first
+        }
+        guard let firstDictionary else { return nil }
+        let value = try await request(operation: "findAudio", fields: [
+            "dictionaryID": firstDictionary.id,
+            "word": word
+        ])
+        let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
+        guard let resource, resource.size > 0 else { return nil }
+        return URL(fileURLWithPath: resource.path, isDirectory: false)
+    }
+
     public func reportError(_ message: String) {
         lastError = message
     }
@@ -724,7 +750,11 @@ public final class DictionaryEngine: ObservableObject {
     public func requestLookupFromCurrentSelection() {
         guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
         let range = textView.selectedRange()
-        guard range.length > 0 else { return }
+        let length = (textView.string as NSString).length
+        guard range.length > 0,
+              range.location != NSNotFound,
+              range.location <= length,
+              range.length <= length - range.location else { return }
         let selected = (textView.string as NSString).substring(with: range)
         requestLookup(selected)
     }
@@ -827,6 +857,8 @@ public final class DictionaryEngine: ObservableObject {
         )
         let executable = try helperURL()
         let process = Process()
+        helperGeneration &+= 1
+        let generation = helperGeneration
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         process.executableURL = executable
@@ -836,7 +868,7 @@ public final class DictionaryEngine: ObservableObject {
         process.standardError = FileHandle.standardError
         let parser = DictionaryResponseParser { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.handleResponseEvent(event)
+                self?.handleResponseEvent(event, generation: generation)
             }
         }
         responseParser = parser
@@ -849,9 +881,7 @@ public final class DictionaryEngine: ObservableObject {
         }
         process.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.failPending(with: StudyMateDictionaryError(
-                    message: "词典引擎已退出，请重试。"
-                ))
+                self?.helperDidTerminate(generation: generation)
             }
         }
         try process.run()
@@ -887,7 +917,8 @@ public final class DictionaryEngine: ObservableObject {
         )
     }
 
-    private func handleResponseEvent(_ event: DictionaryResponseEvent) {
+    private func handleResponseEvent(_ event: DictionaryResponseEvent, generation: UInt64) {
+        guard generation == helperGeneration else { return }
         switch event {
         case let .progress(fraction, phase):
             let now = Date()
@@ -909,6 +940,16 @@ public final class DictionaryEngine: ObservableObject {
                 ))
             }
         }
+    }
+
+    private func helperDidTerminate(generation: UInt64) {
+        guard generation == helperGeneration else { return }
+        // Invalidate any pipe/parser callbacks already queued for this helper
+        // before a retry is allowed to start a replacement process.
+        helperGeneration &+= 1
+        failPending(with: StudyMateDictionaryError(
+            message: "词典引擎已退出，请重试。"
+        ))
     }
 
     private func failPending(with error: Error) {

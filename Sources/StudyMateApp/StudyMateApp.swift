@@ -338,6 +338,14 @@ struct StudyMateApp: App {
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
 
+        Window(languageManager.text("生词本", "Vocabulary"), id: "vocabulary") {
+            VocabularyNotebookView(manager: VocabularyNotebookManager.shared)
+                .environmentObject(languageManager)
+        }
+        .defaultSize(width: 980, height: 640)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+
         Window(languageManager.text("快捷键", "Keyboard Shortcuts"), id: "shortcuts") {
             ShortcutHelpView()
         }
