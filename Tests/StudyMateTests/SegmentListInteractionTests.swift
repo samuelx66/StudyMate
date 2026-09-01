@@ -159,8 +159,10 @@ final class SegmentListInteractionTests: XCTestCase {
 
     func testDictionarySelectableTextCoordinatorUpdatesCallbacksDynamically() {
         var clickedSegmentIndex: Int?
+        var doubleClicked = false
         let coordinator = DictionarySelectableText.Coordinator(
             onSingleClick: { clickedSegmentIndex = 0 },
+            onDoubleClick: { doubleClicked = true },
             onHoverChanged: nil
         )
 
@@ -172,6 +174,51 @@ final class SegmentListInteractionTests: XCTestCase {
         coordinator.onSingleClick = { clickedSegmentIndex = 5 }
         coordinator.onSingleClick?()
         XCTAssertEqual(clickedSegmentIndex, 5)
+
+        coordinator.onDoubleClick?()
+        XCTAssertTrue(doubleClicked)
+    }
+
+    @MainActor
+    func testVideoSubtitleSelectionPausesPlayingMediaAndResumesAfterDismissal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudyMate-DictionaryInteractionTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lookup-pause.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+
+        let engine = makeTestPlaybackEngine()
+        engine.loadMedia(from: mediaURL)
+        engine.play()
+
+        let coordinator = DictionaryInteractionCoordinator.shared
+        coordinator.clearSelectionAndDeselect()
+        coordinator.bindPlaybackEngine(engine)
+        coordinator.pausePlaybackForVideoSubtitleSelection()
+
+        XCTAssertFalse(engine.isPlaying)
+
+        coordinator.updateSelection(text: "pause")
+        coordinator.clearSelectionAndDeselect()
+
+        XCTAssertTrue(engine.isPlaying)
+
+        engine.pause()
+        coordinator.clearSelectionAndDeselect()
+    }
+
+    @MainActor
+    func testVideoSubtitleSelectionDoesNotResumeMediaThatWasAlreadyPaused() {
+        let engine = makeTestPlaybackEngine()
+        let coordinator = DictionaryInteractionCoordinator.shared
+        coordinator.clearSelectionAndDeselect()
+        coordinator.bindPlaybackEngine(engine)
+        coordinator.pausePlaybackForVideoSubtitleSelection()
+        coordinator.updateSelection(text: "pause")
+        coordinator.clearSelectionAndDeselect()
+
+        XCTAssertFalse(engine.isPlaying)
     }
 
     @MainActor

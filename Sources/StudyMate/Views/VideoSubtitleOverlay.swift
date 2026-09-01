@@ -250,6 +250,11 @@ private struct DraggableVideoSubtitle: View {
             onSingleClick: {
                 engine.jumpToSegment(id: segmentID)
             },
+            onDoubleClick: {
+                let coordinator = DictionaryInteractionCoordinator.shared
+                coordinator.bindPlaybackEngine(engine)
+                coordinator.pausePlaybackForVideoSubtitleSelection()
+            },
             onOptionDrag: { phase in
                 switch phase {
                 case .started:

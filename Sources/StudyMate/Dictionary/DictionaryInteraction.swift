@@ -12,7 +12,7 @@ private var dictionaryTextContextAssociationKey: UInt8 = 0
 private var dictionarySelectableTextMarkerKey: UInt8 = 0
 
 /// 统一管理字幕取词状态。这个对象负责选区、浮动操作条和词典弹窗，
-/// 仅通过播放器的弱引用在取词期间暂时暂停/恢复，不参与句子选中状态，
+/// 仅通过播放器的弱引用在视频字幕取词期间暂时暂停/恢复，不参与句子选中状态，
 /// 因此点击句子仍然保持原有的播放逻辑。
 @MainActor
 public final class DictionaryInteractionCoordinator: ObservableObject {
@@ -28,8 +28,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private weak var playbackEngine: PlaybackEngine?
     private var activePopover: NSPopover?
     private var popoverDelegate: DictionaryPopoverDelegate?
-    private var pausedPlaybackForLookup = false
-    private var shouldResumePlaybackAfterLookup = false
+    private var pausedPlaybackForDictionaryInteraction = false
+    private var shouldResumePlaybackAfterDictionaryInteraction = false
     private let speechSynthesizer = NSSpeechSynthesizer()
     private let avSynthesizer = AVSpeechSynthesizer()
     private var dictionaryAudioTask: Task<Void, Never>?
@@ -175,11 +175,18 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
 
     public func lookupSelected() {
         guard let selectedText else { return }
-        pausePlaybackIfNeeded()
+        pausePlaybackForDictionaryInteractionIfNeeded()
         isLookupPresented = true
         DictionaryEngine.shared.clearSearch()
         DictionaryEngine.shared.search(query: selectedText, includeDetails: true, immediate: true)
         showNativePopover()
+    }
+
+    /// 视频字幕双击选词时暂停当前媒体。播放前的状态会被记录，
+    /// 供选区操作条或词典气泡消失后恢复；如果双击前本来就是暂停状态，
+    /// 则不会在交互结束后错误地启动播放。
+    public func pausePlaybackForVideoSubtitleSelection() {
+        pausePlaybackForDictionaryInteractionIfNeeded()
     }
 
     public func showNativePopover() {
@@ -363,21 +370,21 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         clearSelectionAndDeselect()
     }
 
-    private func pausePlaybackIfNeeded() {
+    private func pausePlaybackForDictionaryInteractionIfNeeded() {
         guard let playbackEngine else { return }
-        if !pausedPlaybackForLookup {
-            shouldResumePlaybackAfterLookup = playbackEngine.isPlaying
-            pausedPlaybackForLookup = true
+        if !pausedPlaybackForDictionaryInteraction {
+            shouldResumePlaybackAfterDictionaryInteraction = playbackEngine.isPlaying
+            pausedPlaybackForDictionaryInteraction = true
         }
         guard playbackEngine.isPlaying else { return }
         playbackEngine.pause()
     }
 
     private func resumePlaybackIfNeeded() {
-        guard pausedPlaybackForLookup else { return }
-        let shouldResume = shouldResumePlaybackAfterLookup
-        pausedPlaybackForLookup = false
-        shouldResumePlaybackAfterLookup = false
+        guard pausedPlaybackForDictionaryInteraction else { return }
+        let shouldResume = shouldResumePlaybackAfterDictionaryInteraction
+        pausedPlaybackForDictionaryInteraction = false
+        shouldResumePlaybackAfterDictionaryInteraction = false
         guard shouldResume, playbackEngine?.currentMedia != nil else { return }
         playbackEngine?.play()
     }
@@ -532,6 +539,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
     public let alignment: NSTextAlignment
     public let onHoverChanged: ((Bool) -> Void)?
     public let onSingleClick: (() -> Void)?
+    public let onDoubleClick: (() -> Void)?
     public let onOptionDrag: ((TextDragPhase) -> Void)?
 
     public init(
@@ -542,6 +550,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         alignment: NSTextAlignment = .left,
         onHoverChanged: ((Bool) -> Void)? = nil,
         onSingleClick: (() -> Void)? = nil,
+        onDoubleClick: (() -> Void)? = nil,
         onOptionDrag: ((TextDragPhase) -> Void)? = nil
     ) {
         self.text = text
@@ -551,20 +560,24 @@ public struct DictionarySelectableText: NSViewRepresentable {
         self.alignment = alignment
         self.onHoverChanged = onHoverChanged
         self.onSingleClick = onSingleClick
+        self.onDoubleClick = onDoubleClick
         self.onOptionDrag = onOptionDrag
     }
 
     public final class Coordinator: NSObject {
         var onSingleClick: (() -> Void)?
+        var onDoubleClick: (() -> Void)?
         var onHoverChanged: ((Bool) -> Void)?
         var onOptionDrag: ((TextDragPhase) -> Void)?
 
         public init(
             onSingleClick: (() -> Void)? = nil,
+            onDoubleClick: (() -> Void)? = nil,
             onHoverChanged: ((Bool) -> Void)? = nil,
             onOptionDrag: ((TextDragPhase) -> Void)? = nil
         ) {
             self.onSingleClick = onSingleClick
+            self.onDoubleClick = onDoubleClick
             self.onHoverChanged = onHoverChanged
             self.onOptionDrag = onOptionDrag
         }
@@ -574,6 +587,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
     public func makeCoordinator() -> Coordinator {
         Coordinator(
             onSingleClick: onSingleClick,
+            onDoubleClick: onDoubleClick,
             onHoverChanged: onHoverChanged,
             onOptionDrag: onOptionDrag
         )
@@ -584,6 +598,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         // text container safely on all supported macOS versions.
         let textView = DictionaryTextView(frame: .zero)
         textView.onSingleClick = context.coordinator.onSingleClick
+        textView.onDoubleClick = context.coordinator.onDoubleClick
         textView.onHoverChanged = context.coordinator.onHoverChanged
         textView.onOptionDrag = context.coordinator.onOptionDrag
         textView.isEditable = false
@@ -618,10 +633,12 @@ public struct DictionarySelectableText: NSViewRepresentable {
 
     public func updateNSView(_ textView: NSTextView, context: Context) {
         context.coordinator.onSingleClick = onSingleClick
+        context.coordinator.onDoubleClick = onDoubleClick
         context.coordinator.onHoverChanged = onHoverChanged
         context.coordinator.onOptionDrag = onOptionDrag
         if let dictTextView = textView as? DictionaryTextView {
             dictTextView.onSingleClick = onSingleClick
+            dictTextView.onDoubleClick = onDoubleClick
             dictTextView.onHoverChanged = onHoverChanged
             dictTextView.onOptionDrag = onOptionDrag
         }
@@ -692,6 +709,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
     /// reliable for both original and translation subtitles.
     private final class DictionaryTextView: NSTextView {
         var onSingleClick: (() -> Void)?
+        var onDoubleClick: (() -> Void)?
         var onHoverChanged: ((Bool) -> Void)?
         var onOptionDrag: ((TextDragPhase) -> Void)?
         private var trackingArea: NSTrackingArea?
@@ -752,6 +770,11 @@ public struct DictionarySelectableText: NSViewRepresentable {
             isOptionDragging = false
             plainMouseDownPoint = event.locationInWindow
             plainMouseDidMove = false
+            if event.clickCount == 2 {
+                // Notify before NSTextView handles the second click so media
+                // pauses at the same time as native word selection begins.
+                onDoubleClick?()
+            }
             super.mouseDown(with: event)
         }
 
