@@ -29,4 +29,16 @@ final class DictionaryResponseParserTests: XCTestCase {
             "[{\"key\":\"cat\"}]"
         )
     }
+
+    func testResourceDataCanOmitMetadataPath() throws {
+        let data = Data(
+            "{\"key\":\"audio/meet.mp3\",\"size\":3,\"data_base64\":\"YWJj\",\"mime_type\":\"audio/mpeg\"}".utf8
+        )
+        let resource = try JSONDecoder().decode(StudyMateDictionaryResource.self, from: data)
+
+        XCTAssertEqual(resource.path, "")
+        XCTAssertEqual(resource.size, 3)
+        XCTAssertEqual(resource.dataBase64, "YWJj")
+        XCTAssertEqual(resource.mimeType, "audio/mpeg")
+    }
 }

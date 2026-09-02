@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import OSLog
 
 /// NSTextView 不会把 SwiftUI representable 的附加上下文带回选择通知。
 /// 将上下文绑定在具体文本视图上，拖动选词时仍能在词典弹窗中显示完整字幕上下文。
@@ -17,6 +18,11 @@ private var dictionarySelectableTextMarkerKey: UInt8 = 0
 @MainActor
 public final class DictionaryInteractionCoordinator: ObservableObject {
     public static let shared = DictionaryInteractionCoordinator()
+
+    private static let dictionaryAudioLogger = Logger(
+        subsystem: "com.samuel.StudyMate",
+        category: "dictionary-audio"
+    )
 
     @Published public private(set) var selectedText: String?
     @Published public private(set) var contextText: String?
@@ -344,29 +350,40 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        Self.dictionaryAudioLogger.debug("preferred pronunciation requested for \(trimmed, privacy: .public)")
+
         let generation = beginAudioRequest()
 
         dictionaryAudioTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let url = try await DictionaryEngine.shared.firstDictionaryPronunciationURL(for: trimmed) else {
+                guard let resource = try await DictionaryEngine.shared.firstDictionaryPronunciation(for: trimmed) else {
+                    Self.dictionaryAudioLogger.debug("no MDD pronunciation found; falling back to system speech")
                     guard !Task.isCancelled, self.audioGeneration == generation else { return }
                     self.speak(trimmed)
                     return
                 }
-                let data = try await Task.detached(priority: .userInitiated) {
-                    try Data(contentsOf: url, options: [.mappedIfSafe])
-                }.value
                 try Task.checkCancellation()
                 guard self.audioGeneration == generation else { return }
-                guard !data.isEmpty, let player = try? AVAudioPlayer(data: data) else {
+                Self.dictionaryAudioLogger.debug(
+                    "MDD pronunciation loaded: \(resource.data.count, privacy: .public) bytes, MIME \(resource.mimeType ?? "nil", privacy: .public)"
+                )
+                guard !resource.data.isEmpty,
+                      let player = Self.makeDictionaryAudioPlayer(
+                          data: resource.data,
+                          mimeType: resource.mimeType
+                      ) else {
                     guard self.audioGeneration == generation else { return }
                     self.speak(trimmed)
                     return
                 }
+                Self.dictionaryAudioLogger.debug("MDD pronunciation player initialized; duration \(player.duration, format: .fixed(precision: 3), privacy: .public)")
+                self.dictionaryAudioPlayer = player
                 player.prepareToPlay()
                 guard self.audioGeneration == generation else { return }
-                guard player.play() else {
+                let didPlay = player.play()
+                Self.dictionaryAudioLogger.debug("MDD pronunciation play returned \(didPlay, privacy: .public)")
+                guard didPlay else {
                     guard self.audioGeneration == generation else { return }
                     self.speak(trimmed)
                     return
@@ -375,10 +392,10 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     player.stop()
                     return
                 }
-                self.dictionaryAudioPlayer = player
             } catch is CancellationError {
                 return
             } catch {
+                Self.dictionaryAudioLogger.error("preferred pronunciation failed: \(error.localizedDescription, privacy: .public)")
                 guard !Task.isCancelled, self.audioGeneration == generation else { return }
                 self.speak(trimmed)
             }
@@ -404,37 +421,44 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return
         }
 
+        Self.dictionaryAudioLogger.debug(
+            "entry pronunciation requested: dictionary \(id, privacy: .public), key \(resourceKey, privacy: .public)"
+        )
+
         let generation = beginAudioRequest()
 
         dictionaryAudioTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let url = try await DictionaryEngine.shared.resourceURL(
+                guard let resource = try await DictionaryEngine.shared.resourceData(
                     dictionaryID: id,
                     key: resourceKey
-                ) else {
+                ), !resource.data.isEmpty else {
+                    Self.dictionaryAudioLogger.debug("entry MDD resource missing; falling back to preferred pronunciation")
                     guard !Task.isCancelled, self.audioGeneration == generation else { return }
                     self.speakPreferred(fallbackText)
                     return
                 }
-                let data = try await Task.detached(priority: .userInitiated) {
-                    try Data(contentsOf: url, options: [.mappedIfSafe])
-                }.value
                 try Task.checkCancellation()
                 guard self.audioGeneration == generation else { return }
-                guard !data.isEmpty else {
+                Self.dictionaryAudioLogger.debug(
+                    "entry MDD resource loaded: \(resource.data.count, privacy: .public) bytes, MIME \(resource.mimeType, privacy: .public)"
+                )
+                guard let player = Self.makeDictionaryAudioPlayer(
+                    data: resource.data,
+                    mimeType: resource.mimeType
+                ) else {
                     guard self.audioGeneration == generation else { return }
                     self.speakPreferred(fallbackText)
                     return
                 }
-                guard let player = try? AVAudioPlayer(data: data) else {
-                    guard self.audioGeneration == generation else { return }
-                    self.speakPreferred(fallbackText)
-                    return
-                }
+                Self.dictionaryAudioLogger.debug("entry MDD player initialized; duration \(player.duration, format: .fixed(precision: 3), privacy: .public)")
+                self.dictionaryAudioPlayer = player
                 player.prepareToPlay()
                 guard self.audioGeneration == generation else { return }
-                guard player.play() else {
+                let didPlay = player.play()
+                Self.dictionaryAudioLogger.debug("entry MDD play returned \(didPlay, privacy: .public)")
+                guard didPlay else {
                     guard self.audioGeneration == generation else { return }
                     self.speakPreferred(fallbackText)
                     return
@@ -443,14 +467,41 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     player.stop()
                     return
                 }
-                self.dictionaryAudioPlayer = player
             } catch is CancellationError {
                 return
             } catch {
+                Self.dictionaryAudioLogger.error("entry pronunciation failed: \(error.localizedDescription, privacy: .public)")
                 guard !Task.isCancelled, self.audioGeneration == generation else { return }
                 self.speakPreferred(fallbackText)
             }
         }
+    }
+
+    /// MDD records are returned as bytes rather than temporary files, so the
+    /// decoder cannot infer the container from a path suffix. Supplying the
+    /// native file type hint keeps raw MPEG/PCM records decodable while still
+    /// falling back to content sniffing for less common dictionary formats.
+    private static func makeDictionaryAudioPlayer(
+        data: Data,
+        mimeType: String?
+    ) -> AVAudioPlayer? {
+        let normalized = mimeType?.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)
+            .map { $0.lowercased() }
+        let hint: String?
+        switch normalized {
+        case "audio/mpeg": hint = AVFileType.mp3.rawValue
+        case "audio/wav", "audio/x-wav": hint = AVFileType.wav.rawValue
+        case "audio/mp4", "audio/x-m4a": hint = AVFileType.m4a.rawValue
+        case "audio/aiff", "audio/x-aiff": hint = AVFileType.aiff.rawValue
+        case "audio/x-caf": hint = AVFileType.caf.rawValue
+        default: hint = nil
+        }
+        if let hint, let player = try? AVAudioPlayer(data: data, fileTypeHint: hint) {
+            return player
+        }
+        return try? AVAudioPlayer(data: data)
     }
 
     private func beginAudioRequest() -> UInt64 {

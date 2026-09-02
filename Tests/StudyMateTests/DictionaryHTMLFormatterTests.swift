@@ -59,6 +59,21 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertFalse(html.contains("icon.svg%23speaker"))
     }
 
+    func testCustomDictionaryResourceRootUsesTheNativeResourceScheme() {
+        let entry = StudyMateDictionaryLookup(
+            key: "cat",
+            text: #"<script src="dict.js"></script><img src="images/cat.png">"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            resourceRoot: "studymate-resource://fixture/"
+        )
+
+        let html = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+
+        XCTAssertTrue(html.contains("studymate-resource://fixture/dict.js"))
+        XCTAssertTrue(html.contains("studymate-resource://fixture/images/cat.png"))
+    }
+
     func testRelativeDictionaryLinksAreNotRewrittenAsResources() {
         let root = URL(fileURLWithPath: "/tmp/StudyMate Dictionary/resources", isDirectory: true)
         let entry = StudyMateDictionaryLookup(
@@ -75,6 +90,22 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains("file:///tmp/StudyMate%20Dictionary/resources/theme.css"))
         XCTAssertTrue(html.contains("file:///tmp/StudyMate%20Dictionary/resources/icons/test.png"))
         XCTAssertFalse(html.contains("resources/another-word"))
+    }
+
+    func testTextFormatEscapesMarkupInsteadOfTreatingItAsHTML() {
+        let entry = StudyMateDictionaryLookup(
+            key: "literal",
+            text: "<b>literal</b>\nsecond line",
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            format: "Text"
+        )
+
+        let html = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+
+        XCTAssertTrue(html.contains("&lt;b&gt;literal&lt;/b&gt;"))
+        XCTAssertTrue(html.contains("second line"))
+        XCTAssertFalse(html.contains("<b>literal</b>"))
     }
 
     func testJavaScriptLinksAndDynamicResourceAttributesArePreserved() {

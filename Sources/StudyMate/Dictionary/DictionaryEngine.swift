@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import OSLog
 
 enum DictionaryResponseEvent {
     case progress(id: String?, fraction: Double, phase: String?)
@@ -126,6 +127,7 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
     public let text: String
     public let dictionaryID: String
     public let dictionaryTitle: String
+    public let format: String
     public let css: String?
     public let resourceRoot: String?
 
@@ -136,6 +138,7 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         text: String,
         dictionaryID: String,
         dictionaryTitle: String,
+        format: String = "Html",
         css: String? = nil,
         resourceRoot: String? = nil
     ) {
@@ -143,15 +146,27 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         self.text = text
         self.dictionaryID = dictionaryID
         self.dictionaryTitle = dictionaryTitle
+        self.format = format
         self.css = css
         self.resourceRoot = resourceRoot
     }
 
     enum CodingKeys: String, CodingKey {
-        case key, text, css
+        case key, text, format, css
         case dictionaryID = "dictionary_id"
         case dictionaryTitle = "dictionary_title"
         case resourceRoot = "resource_root"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        text = try container.decode(String.self, forKey: .text)
+        dictionaryID = try container.decode(String.self, forKey: .dictionaryID)
+        dictionaryTitle = try container.decode(String.self, forKey: .dictionaryTitle)
+        format = try container.decodeIfPresent(String.self, forKey: .format) ?? "Html"
+        css = try container.decodeIfPresent(String.self, forKey: .css)
+        resourceRoot = try container.decodeIfPresent(String.self, forKey: .resourceRoot)
     }
 }
 
@@ -180,20 +195,92 @@ public struct StudyMateDictionarySearchHit: Codable, Identifiable, Hashable, Sen
     }
 }
 
-/// A dictionary resource extracted from an MDD package.
-///
-/// The path points inside the imported `.mabdict` package and is exposed as a
-/// value object so a future AppKit/iOS/Android adapter can hand the resource
-/// to an image/audio renderer without knowing the SQLite schema.
+/// A dictionary resource returned by the native MDX/MDD reader. Embedded MDD
+/// resources are transferred only when requested; `dataBase64` is absent for
+/// metadata-only responses and `path` may be a `studymate-resource://` URL.
 public struct StudyMateDictionaryResource: Codable, Identifiable, Hashable, Sendable {
     public let key: String
     public let path: String
     public let size: Int
+    public let dataBase64: String?
+    public let mimeType: String?
 
     public var id: String { key }
 
+    public init(
+        key: String,
+        path: String = "",
+        size: Int,
+        dataBase64: String? = nil,
+        mimeType: String? = nil
+    ) {
+        self.key = key
+        self.path = path
+        self.size = size
+        self.dataBase64 = dataBase64
+        self.mimeType = mimeType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        // `resourceData` intentionally omits `path` for embedded MDD data.
+        // The bytes are transferred directly, so path must remain optional at
+        // the JSON boundary even though metadata-only `resource` responses
+        // still provide it.
+        path = try container.decodeIfPresent(String.self, forKey: .path) ?? ""
+        size = try container.decodeIfPresent(Int.self, forKey: .size) ?? 0
+        dataBase64 = try container.decodeIfPresent(String.self, forKey: .dataBase64)
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+    }
+
     enum CodingKeys: String, CodingKey {
         case key, path, size
+        case dataBase64 = "data_base64"
+        case mimeType = "mime_type"
+    }
+}
+
+/// Finds the first usable pronunciation resource while preserving dictionary
+/// priority.  The lookup and readability checks are injected so this logic
+/// can be tested without installing real user dictionaries.
+enum DictionaryPronunciationResolver {
+    typealias ResourceLookup =
+        (StudyMateDictionarySummary, String) async throws -> StudyMateDictionaryResource?
+
+    static func firstReadableURL(
+        in dictionaries: [StudyMateDictionarySummary],
+        word: String,
+        lookup: @escaping ResourceLookup,
+        isReadable: (URL) -> Bool = { url in
+            FileManager.default.isReadableFile(atPath: url.path)
+        }
+    ) async throws -> URL? {
+        for dictionary in dictionaries {
+            try Task.checkCancellation()
+
+            do {
+                guard let resource = try await lookup(dictionary, word),
+                      resource.size > 0,
+                      !resource.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else {
+                    continue
+                }
+
+                let url = URL(fileURLWithPath: resource.path, isDirectory: false)
+                guard isReadable(url) else { continue }
+                return url
+            } catch is CancellationError {
+                // Cancellation is control flow, not a failed dictionary. It
+                // must reach speakPreferred so it cannot trigger TTS.
+                throw CancellationError()
+            } catch {
+                // A broken package or failed per-dictionary request should
+                // not hide a matching pronunciation in a later dictionary.
+                continue
+            }
+        }
+        return nil
     }
 }
 
@@ -211,17 +298,28 @@ public struct StudyMateDictionaryError: LocalizedError, Sendable {
 public final class DictionaryEngine: ObservableObject {
     public static let shared = DictionaryEngine()
 
+    private static let dictionaryEngineLogger = Logger(
+        subsystem: "com.samuel.StudyMate",
+        category: "dictionary-engine"
+    )
+
     private static let detailCache: NSCache<NSString, DictionaryLookupCacheValue> = {
         let cache = NSCache<NSString, DictionaryLookupCacheValue>()
-        cache.countLimit = 64
-        // Keep repeated lookups fast without allowing a large dictionary
-        // definition to grow the app's resident memory without a bound.
-        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 8
+        // This is only a small UI responsiveness cache; dictionary data
+        // itself remains in the native block reader. Keep it small so a
+        // sequence of large definitions cannot compete with WebKit or the
+        // reader's block cache for resident memory.
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 
     @Published public private(set) var dictionaries: [StudyMateDictionarySummary] = []
     @Published public private(set) var searchHits: [StudyMateDictionarySearchHit] = []
+    /// Changes for every completed key search, including a response whose
+    /// hits are equal to the previous response. Views use this as the search
+    /// lifecycle signal instead of relying only on array equality.
+    @Published public private(set) var searchRevision: UInt64 = 0
     /// Full definitions for the currently selected hit. Kept separately from
     /// `searchHits` so prefix search never has to transfer/render full HTML.
     @Published public private(set) var searchResults: [StudyMateDictionaryLookup] = []
@@ -233,21 +331,17 @@ public final class DictionaryEngine: ObservableObject {
     @Published public private(set) var progressPhase: String?
     @Published public private(set) var lastError: String?
     @Published public private(set) var requestedQuery: String?
+    /// Each explicit request gets a new identity, including repeated text.
+    /// This lets the standalone dictionary window synchronize when the query
+    /// string itself did not change.
+    @Published public private(set) var lookupRequestID: UInt64 = 0
 
     public let dictionaryRoot: URL
 
     public func resourcesURL(for dictionaryID: String) -> URL {
-        let sanitized = dictionaryID.unicodeScalars.map { scalar -> String in
-            let value = scalar.value
-            if (48...57).contains(value) || (65...90).contains(value) ||
-                (97...122).contains(value) || value == 45 || value == 95 || value == 46 {
-                return String(Character(scalar))
-            }
-            return "-"
-        }.joined().replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        let safeName = sanitized.isEmpty ? "dictionary" : String(sanitized.prefix(80))
-        return dictionaryRoot.appendingPathComponent("\(safeName).mabdict").appendingPathComponent("resources")
+        let encodedID = dictionaryID.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? dictionaryID
+        return URL(string: "studymate-resource://\(encodedID)/")
+            ?? URL(string: "studymate-resource://dictionary/")!
     }
 
     private var process: Process?
@@ -338,6 +432,7 @@ public final class DictionaryEngine: ObservableObject {
         searchGeneration &+= 1
         detailGeneration &+= 1
         searchHits = []
+        searchRevision &+= 1
         searchResults = []
         isSearching = false
         isLoadingDefinition = false
@@ -365,6 +460,7 @@ public final class DictionaryEngine: ObservableObject {
 
         guard !trimmed.isEmpty else {
             searchHits = []
+            searchRevision &+= 1
             searchResults = []
             isSearching = false
             isLoadingDefinition = false
@@ -444,6 +540,7 @@ public final class DictionaryEngine: ObservableObject {
                       !self.isBusy else { return }
 
                 self.searchHits = hits
+                self.searchRevision &+= 1
                 self.isSearching = false
                 self.lastError = nil
                 if hits.isEmpty {
@@ -463,6 +560,7 @@ public final class DictionaryEngine: ObservableObject {
             } catch {
                 guard generation == self.searchGeneration, !self.isBusy else { return }
                 self.searchHits = []
+                self.searchRevision &+= 1
                 self.searchResults = []
                 self.isSearching = false
                 self.isLoadingDefinition = false
@@ -682,7 +780,12 @@ public final class DictionaryEngine: ObservableObject {
         // `.js`, `.css`, image and font discovery. Starting it only around
         // `fs.copy` in the UI would end before the Rust child process reads
         // the source directory, causing scripts to be silently omitted.
-        let scopedURLs = [mdx] + mdd
+        // A file selection grants the helper access to the selected file, but
+        // sibling resource discovery also needs the MDX directory itself.
+        // Keep both the directory and explicitly selected MDD scopes alive
+        // until the Rust import has fully completed.
+        let sourceDirectoryURL = mdx.deletingLastPathComponent()
+        let scopedURLs = [sourceDirectoryURL, mdx] + mdd
         let scopedAccess = scopedURLs.map { url in
             (url: url, isActive: url.startAccessingSecurityScopedResource())
         }
@@ -741,10 +844,9 @@ public final class DictionaryEngine: ObservableObject {
         invalidateLookupTasks()
     }
 
-    /// Resolve an MDD resource through the Rust core.  The returned URL is
-    /// only valid while its dictionary package remains installed; callers
-    /// should copy the bytes they need rather than persist this path as an
-    /// external application reference.
+    /// Resolve one resource through the native MDX/MDD reader. Embedded MDD
+    /// data is decompressed only for this request; no resource database or
+    /// extracted MDD tree is created.
     public func resourceURL(dictionaryID: String, key: String) async throws -> URL? {
         let value = try await request(operation: "resource", fields: [
             "dictionaryID": dictionaryID,
@@ -752,7 +854,40 @@ public final class DictionaryEngine: ObservableObject {
         ])
         let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
         guard let resource else { return nil }
+        if let url = URL(string: resource.path), url.scheme?.lowercased() == "studymate-resource" {
+            return url
+        }
+        guard !resource.path.isEmpty else { return nil }
         return URL(fileURLWithPath: resource.path, isDirectory: false)
+    }
+
+    public func resourceData(dictionaryID: String, key: String) async throws -> (data: Data, mimeType: String)? {
+        Self.dictionaryEngineLogger.debug(
+            "resourceData request: dictionary \(dictionaryID, privacy: .public), key \(key, privacy: .public)"
+        )
+        do {
+            let value = try await request(operation: "resourceData", fields: [
+                "dictionaryID": dictionaryID,
+                "key": key
+            ])
+            Self.dictionaryEngineLogger.debug("resourceData JSON payload received: \(value.count, privacy: .public) bytes")
+            let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
+            guard let resource, let encoded = resource.dataBase64,
+                  let data = Data(base64Encoded: encoded), !data.isEmpty else {
+                Self.dictionaryEngineLogger.debug("resourceData response did not contain usable base64 data")
+                return nil
+            }
+            Self.dictionaryEngineLogger.debug(
+                "resourceData decoded: \(data.count, privacy: .public) bytes, MIME \(resource.mimeType ?? "nil", privacy: .public)"
+            )
+            return (data, resource.mimeType ?? "application/octet-stream")
+        } catch {
+            let nsError = error as NSError
+            Self.dictionaryEngineLogger.error(
+                "resourceData failed: domain \(nsError.domain, privacy: .public), code \(nsError.code, privacy: .public), message \(nsError.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
     }
 
     /// Resolve a pronunciation from the installed MDX dictionaries in their
@@ -767,18 +902,72 @@ public final class DictionaryEngine: ObservableObject {
             dictionaries = summaries
             candidates = summaries
         }
-        for dictionary in candidates {
-            try Task.checkCancellation()
-            let value = try await request(operation: "findAudio", fields: [
+
+        return try await DictionaryPronunciationResolver.firstReadableURL(
+            in: candidates,
+            word: word
+        ) { [weak self] dictionary, word in
+            guard let self else { return nil }
+            let value = try await self.request(operation: "findAudio", fields: [
                 "dictionaryID": dictionary.id,
                 "word": word
             ])
-            let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
-            if let resource, resource.size > 0 {
-                return URL(fileURLWithPath: resource.path, isDirectory: false)
+            return try await Self.decodeInBackground(
+                StudyMateDictionaryResource?.self,
+                from: value
+            )
+        }
+    }
+
+    /// Read the first pronunciation resource directly from the dictionaries
+    /// in UI priority order. Returning the MIME type matters: MDD audio is
+    /// transferred as raw bytes and has no filename extension for the native
+    /// audio decoder to inspect.
+    public func firstDictionaryPronunciation(for word: String) async throws -> (data: Data, mimeType: String?)? {
+        var candidates = dictionaries
+        if candidates.isEmpty, !isBusy {
+            let value = try await request(operation: "list")
+            let summaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
+            guard !Task.isCancelled else { return nil }
+            dictionaries = summaries
+            candidates = summaries
+        }
+
+        for dictionary in candidates {
+            try Task.checkCancellation()
+            do {
+                let value = try await request(operation: "findAudio", fields: [
+                    "dictionaryID": dictionary.id,
+                    "word": word
+                ])
+                let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
+                guard let resource else { continue }
+                if let encoded = resource.dataBase64,
+                   let data = Data(base64Encoded: encoded), !data.isEmpty {
+                    return (data, resource.mimeType)
+                }
+                if !resource.path.isEmpty,
+                   !resource.path.lowercased().hasPrefix("studymate-resource:") {
+                    let url = URL(fileURLWithPath: resource.path)
+                    if FileManager.default.isReadableFile(atPath: url.path) {
+                        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                        if !data.isEmpty { return (data, resource.mimeType) }
+                    }
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
             }
         }
         return nil
+    }
+
+    /// Data-only compatibility wrapper for callers that do not need the
+    /// decoder hint. The audio UI uses `firstDictionaryPronunciation` above
+    /// so an embedded MP3 is decoded with its MDD MIME type.
+    public func firstDictionaryPronunciationData(for word: String) async throws -> Data? {
+        try await firstDictionaryPronunciation(for: word)?.data
     }
 
     public func reportError(_ message: String) {
@@ -789,6 +978,7 @@ public final class DictionaryEngine: ObservableObject {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         requestedQuery = value
+        lookupRequestID &+= 1
     }
 
     public func consumeRequestedQuery() -> String? {

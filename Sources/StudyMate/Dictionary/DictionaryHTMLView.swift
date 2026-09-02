@@ -8,12 +8,14 @@ import AppKit
 public enum DictionaryHTMLFormatter {
     private static let bodyCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>()
-        cache.countLimit = 32
+        cache.countLimit = 8
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
     private static let documentCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>()
-        cache.countLimit = 16
+        cache.countLimit = 4
+        cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
 
@@ -121,7 +123,11 @@ public enum DictionaryHTMLFormatter {
         </body>
         </html>
         """
-        documentCache.setObject(document as NSString, forKey: cacheKey as NSString)
+        documentCache.setObject(
+            document as NSString,
+            forKey: cacheKey as NSString,
+            cost: document.utf8.count
+        )
         return document
     }
 
@@ -169,6 +175,7 @@ public enum DictionaryHTMLFormatter {
                 : ""
             let formattedContent = formatEntryContent(
                 entry.text,
+                format: entry.format,
                 resourceRoot: entry.resourceRoot,
                 dictionaryID: entry.dictionaryID
             )
@@ -190,7 +197,7 @@ public enum DictionaryHTMLFormatter {
             """
         }.joined(separator: "\n<hr class=\"dict-divider\">\n")
         let body = bodyEntries + deferredScripts.joined()
-        bodyCache.setObject(body as NSString, forKey: cacheKey as NSString)
+        bodyCache.setObject(body as NSString, forKey: cacheKey as NSString, cost: body.utf8.count)
         return body
     }
 
@@ -207,6 +214,7 @@ public enum DictionaryHTMLFormatter {
             hasher.combine(entry.text)
             hasher.combine(entry.dictionaryID)
             hasher.combine(entry.dictionaryTitle)
+            hasher.combine(entry.format)
             hasher.combine(entry.css)
             hasher.combine(entry.resourceRoot)
         }
@@ -215,11 +223,13 @@ public enum DictionaryHTMLFormatter {
 
     private static func formatEntryContent(
         _ raw: String,
+        format: String,
         resourceRoot: String?,
         dictionaryID: String?
     ) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.contains("<") && trimmed.contains(">") {
+        if !format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("text")
+            && trimmed.contains("<") && trimmed.contains(">") {
             let withAudio = rewriteSoundReferences(trimmed, dictionaryID: dictionaryID)
             return rewriteResourceReferences(withAudio, resourceRoot: resourceRoot)
         }
@@ -301,8 +311,7 @@ public enum DictionaryHTMLFormatter {
         // URL.absoluteString already percent-escapes spaces and unicode path
         // components. Encoding it a second time would turn `%20` into
         // `%2520`, breaking resources whose dictionary path contains spaces.
-        let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
-        let prefix = rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+        let prefix = resourcePrefix(resourceRoot)
         // Only rewrite attributes that point to embedded resources. A normal
         // `<a href="another-word">` is a dictionary navigation link, not a
         // file, and must remain available to the WebKit navigation delegate.
@@ -382,8 +391,7 @@ public enum DictionaryHTMLFormatter {
 
     private static func rewriteCSSResourceReferences(_ css: String, resourceRoot: String?) -> String {
         guard let resourceRoot else { return css }
-        let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
-        let prefix = rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+        let prefix = resourcePrefix(resourceRoot)
         let pattern = #"(url\(\s*[\"']?)([^\)\"']+)([\"']?\s*\))"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return css }
         let nsCSS = css as NSString
@@ -436,6 +444,15 @@ public enum DictionaryHTMLFormatter {
         return prefix + encodedPath + suffix
     }
 
+    private static func resourcePrefix(_ resourceRoot: String) -> String {
+        if let url = URL(string: resourceRoot), url.scheme?.lowercased() == "studymate-resource" {
+            let value = url.absoluteString
+            return value.hasSuffix("/") ? value : value + "/"
+        }
+        let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
+        return rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+    }
+
     private static func escapeHTML(_ string: String) -> String {
         string
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -443,6 +460,127 @@ public enum DictionaryHTMLFormatter {
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
     }
+}
+
+/// Supplies MDD resources to WebKit one URL at a time. The Rust helper seeks
+/// to and decompresses only the requested resource block; the entire MDD is
+/// never extracted to disk or loaded into the WebKit process.
+private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandler {
+    weak var coordinator: DictionaryHTMLView.Coordinator?
+
+    init(coordinator: DictionaryHTMLView.Coordinator? = nil) {
+        self.coordinator = coordinator
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url,
+              let dictionaryID = url.host?.removingPercentEncoding,
+              !dictionaryID.isEmpty else {
+            urlSchemeTask.didFailWithError(NSError(domain: "StudyMate.DictionaryResource", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid dictionary resource URL"]))
+            return
+        }
+        let key = url.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .removingPercentEncoding ?? url.path
+        guard !key.isEmpty else {
+            urlSchemeTask.didFailWithError(NSError(domain: "StudyMate.DictionaryResource", code: 404, userInfo: [NSLocalizedDescriptionKey: "Empty dictionary resource key"]))
+            return
+        }
+
+        Task { @MainActor in
+            do {
+                if let documentData = self.coordinator?.documentData(for: url) {
+                    let response = makeResponse(
+                        url: url,
+                        mimeType: "text/html",
+                        length: documentData.count,
+                        textEncodingName: "utf-8"
+                    )
+                    urlSchemeTask.didReceive(response)
+                    urlSchemeTask.didReceive(documentData)
+                    urlSchemeTask.didFinish()
+                    return
+                }
+                guard let resource = try await DictionaryEngine.shared.resourceData(dictionaryID: dictionaryID, key: key) else {
+                    throw NSError(domain: "StudyMate.DictionaryResource", code: 404, userInfo: [NSLocalizedDescriptionKey: "Dictionary resource not found"])
+                }
+                let response = makeResponse(
+                    url: url,
+                    mimeType: resource.mimeType,
+                    length: resource.data.count,
+                    textEncodingName: resource.mimeType.hasPrefix("text/") ? "utf-8" : nil
+                )
+                urlSchemeTask.didReceive(response)
+                urlSchemeTask.didReceive(resource.data)
+                urlSchemeTask.didFinish()
+            } catch {
+                urlSchemeTask.didFailWithError(error)
+            }
+        }
+    }
+
+    private func makeResponse(
+        url: URL,
+        mimeType: String,
+        length: Int,
+        textEncodingName: String?
+    ) -> URLResponse {
+        var headers = [
+            "Content-Type": mimeType,
+            "Content-Length": String(length),
+            // A full “All dictionaries” definition can contain resources
+            // hosted by several dictionary IDs. The custom resource scheme
+            // must explicitly opt those requests into CORS.
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        ]
+        if let textEncodingName {
+            headers["Content-Type"] = "\(mimeType); charset=\(textEncodingName)"
+        }
+        return HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) ?? URLResponse(
+            url: url,
+            mimeType: mimeType,
+            expectedContentLength: length,
+            textEncodingName: textEncodingName
+        )
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+}
+
+/// Handles the MDX `sound://` convention at the WebKit boundary. Relying only
+/// on `WKNavigationDelegate` works for a normal anchor click, but WebKit can
+/// treat the same URL as a media load when a dictionary script creates an
+/// `Audio` element. Handling both forms here keeps vendor pronunciation links
+/// functional without exposing MDD files as extracted temporary files.
+private final class DictionarySoundSchemeHandler: NSObject, WKURLSchemeHandler {
+    weak var coordinator: DictionaryHTMLView.Coordinator?
+
+    init(coordinator: DictionaryHTMLView.Coordinator) {
+        self.coordinator = coordinator
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url else {
+            urlSchemeTask.didFinish()
+            return
+        }
+        Task { @MainActor [weak self] in
+            self?.coordinator?.handleSoundURL(url)
+            // The native audio player owns playback. Finish the WebKit task
+            // without returning the MDD bytes to WebKit, so a dictionary's
+            // normal sound link cannot trigger a second, broken media load.
+            urlSchemeTask.didFinish()
+        }
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 }
 
 /// A lightweight, transparent AppKit WebKit view wrapper designed for smooth
@@ -497,6 +635,9 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     ) {
         let resolvedBaseURL = baseURL ?? entries.first.flatMap { entry in
             if let root = entry.resourceRoot {
+                if let url = URL(string: root), url.scheme?.lowercased() == "studymate-resource" {
+                    return url
+                }
                 return URL(fileURLWithPath: root, isDirectory: true)
             }
             return DictionaryEngine.shared.resourcesURL(for: entry.dictionaryID)
@@ -553,6 +694,27 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        if allowsJavaScript {
+            // Some legacy MDX packages ship a small controller script whose
+            // URL cannot be loaded by WebKit because the resource response is
+            // rejected. Keep common fold/toggle controls usable in that case,
+            // while never replacing a vendor-provided function.
+            config.userContentController.addUserScript(
+                WKUserScript(
+                    source: Self.detailInteractionCompatibilityScript,
+                    injectionTime: .atDocumentEnd,
+                    forMainFrameOnly: true
+                )
+            )
+        }
+        config.setURLSchemeHandler(
+            DictionarySoundSchemeHandler(coordinator: context.coordinator),
+            forURLScheme: "sound"
+        )
+        config.setURLSchemeHandler(
+            DictionaryResourceSchemeHandler(coordinator: context.coordinator),
+            forURLScheme: "studymate-resource"
+        )
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -622,6 +784,65 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         }
     }
 
+    private static let detailInteractionCompatibilityScript = """
+    (function() {
+        if (typeof window.toggle_active !== "function") {
+            window.toggle_active = function(control) {
+                if (control && control.parentElement) {
+                    control.parentElement.classList.toggle("is-active");
+                }
+            };
+        }
+        if (typeof window.toggle_chn !== "function") {
+            window.toggle_chn = function() {
+                var translations = document.getElementsByClassName("OALECD_chn");
+                for (var i = 0; i < translations.length; i += 1) {
+                    translations[i].style.display = translations[i].style.display === "inline" ? "none" : "inline";
+                }
+                var texts = document.getElementsByClassName("OALECD_tx");
+                for (var j = 0; j < texts.length; j += 1) {
+                    texts[j].style.display = texts[j].style.display === "block" ? "none" : "block";
+                }
+            };
+        }
+        if (typeof window.switch_entry !== "function") {
+            window.switch_entry = function(control) {
+                var currentEvent = window.event;
+                var target = currentEvent && currentEvent.target;
+                if (!target && document.activeElement) {
+                    target = document.activeElement;
+                }
+                if (!target || !control) {
+                    return;
+                }
+                while (target && target !== control && target.tagName !== "BUTTON") {
+                    target = target.parentElement;
+                }
+                if (!target || target === control || target.tagName !== "BUTTON") {
+                    return;
+                }
+                var prefix = control.id ? control.id.substring(4) : "";
+                var entries = document.getElementsByClassName("OALD9_entry");
+                for (var i = 0; i < entries.length; i += 1) {
+                    if (prefix && entries[i].id.substring(0, prefix.length) === prefix) {
+                        entries[i].style.display = "none";
+                    }
+                }
+                var entry = document.getElementById(target.id.substring(4));
+                if (entry) {
+                    entry.style.display = "block";
+                    target.style.backgroundColor = "#4577bf";
+                }
+                for (var j = 0; j < control.children.length; j += 1) {
+                    if (control.children[j] !== target) {
+                        control.children[j].style.backgroundColor = "";
+                    }
+                }
+            };
+        }
+    })();
+    """
+
     public static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -641,6 +862,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var hasLoadedDocument = false
         var updateRevision: UInt64 = 0
         private var renderedDocumentURL: URL?
+        private var renderedDocumentHTML: String?
 
         init(parent: DictionaryHTMLView) {
             self.parent = parent
@@ -650,62 +872,38 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             removeRenderedDocument()
         }
 
-        /// Load dictionary HTML as a real local file instead of an in-memory
-        /// HTML string. `loadHTMLString(_:baseURL:)` resolves the page URL,
-        /// but it does not reliably grant the WebKit content process read
-        /// access to sibling local `script`/`link` resources in a sandboxed
-        /// macOS app. CSS that is already inlined can therefore look correct
-        /// while the dictionary controller JavaScript never loads.
-        ///
-        /// The generated file is kept in a private sibling directory of the
-        /// imported dictionaries. `loadFileURL` then receives only that
-        /// dictionaries directory as its read scope, so local MDX resources
-        /// work without exposing an unrestricted filesystem scope.
+        /// Load the full dictionary page through the same custom scheme used
+        /// for embedded MDD resources. A file page whose `<base>` points at
+        /// `studymate-resource://` is cross-origin in WebKit and can silently
+        /// skip external dictionary scripts even though CSS appears correct.
+        /// Serving the generated page and its JS/CSS/MDD assets from the same
+        /// scheme and dictionary host gives WebKit a stable origin while
+        /// keeping all resource reads on the native, on-demand bridge.
         func loadDocument(
             in webView: WKWebView,
             html: String,
             baseURL: URL?
         ) {
-            guard let baseURL, baseURL.isFileURL else {
+            guard let baseURL else {
                 webView.loadHTMLString(html, baseURL: baseURL)
                 return
             }
 
-            let resourceDirectory = baseURL.standardizedFileURL
-            let accessDirectory = resourceDirectory
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-            let renderDirectory = accessDirectory.appendingPathComponent(
-                ".studymate-web",
-                isDirectory: true
-            )
-
-            do {
-                try FileManager.default.createDirectory(
-                    at: renderDirectory,
-                    withIntermediateDirectories: true
-                )
-                let documentURL = renderDirectory.appendingPathComponent(
-                    "dictionary-\(UUID().uuidString).html"
-                )
-                let documentHTML = htmlWithBaseURL(html, baseURL: resourceDirectory)
-                try documentHTML.write(to: documentURL, atomically: true, encoding: .utf8)
-
-                let previousDocumentURL = renderedDocumentURL
-                renderedDocumentURL = documentURL
-                if let previousDocumentURL {
-                    try? FileManager.default.removeItem(at: previousDocumentURL)
-                }
-
-                webView.loadFileURL(
-                    documentURL,
-                    allowingReadAccessTo: accessDirectory
-                )
-            } catch {
-                // Keep the existing in-memory path as a defensive fallback
-                // for read-only or unusual custom resource locations.
+            guard !baseURL.isFileURL,
+                  let host = baseURL.host,
+                  !host.isEmpty,
+                  let documentURL = URL(string: "studymate-resource://\(host)/.studymate-document/\(UUID().uuidString).html") else {
+                // A caller-provided file base remains supported for ordinary
+                // local HTML documents. Imported MDX entries use the custom
+                // resource root above and therefore take the same-origin
+                // path instead.
                 webView.loadHTMLString(html, baseURL: baseURL)
+                return
             }
+
+            renderedDocumentURL = documentURL
+            renderedDocumentHTML = htmlWithBaseURL(html, baseURL: baseURL)
+            webView.load(URLRequest(url: documentURL))
         }
 
         private func htmlWithBaseURL(_ html: String, baseURL: URL) -> String {
@@ -725,9 +923,14 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         }
 
         func removeRenderedDocument() {
-            guard let renderedDocumentURL else { return }
-            try? FileManager.default.removeItem(at: renderedDocumentURL)
-            self.renderedDocumentURL = nil
+            renderedDocumentURL = nil
+            renderedDocumentHTML = nil
+        }
+
+        func documentData(for url: URL) -> Data? {
+            guard url == renderedDocumentURL,
+                  let renderedDocumentHTML else { return nil }
+            return renderedDocumentHTML.data(using: .utf8)
         }
 
         func updateDocument(
@@ -785,28 +988,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             let scheme = url.scheme?.lowercased() ?? ""
 
             if scheme == "sound" {
-                // `sound://audio/cat.mp3` stores `audio` in host and the
-                // remainder in path. Joining both is required for WebKit
-                // navigation and also matches the path used by MDX scripts.
-                let audioResource = (url.host ?? "") + url.path
-                let cleanAudio = audioResource.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                if let fragment = url.fragment,
-                   fragment.hasPrefix("studymate-dictionary=") {
-                    let dictionaryID = String(fragment.dropFirst("studymate-dictionary=".count))
-                        .removingPercentEncoding ?? String(fragment.dropFirst("studymate-dictionary=".count))
-                    if !dictionaryID.isEmpty, !cleanAudio.isEmpty {
-                        if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
-                            onPlayDictionaryAudio(dictionaryID, cleanAudio)
-                        } else {
-                            DictionaryInteractionCoordinator.shared.playDictionaryAudio(
-                                dictionaryID: dictionaryID,
-                                key: cleanAudio
-                            )
-                        }
-                    }
-                } else {
-                    parent.onPlayAudio?(cleanAudio)
-                }
+                handleSoundURL(url)
                 decisionHandler(.cancel)
                 return
             }
@@ -829,6 +1011,24 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
 
+            if scheme == "studymate-resource" {
+                // A relative MDX link resolves against the resource scheme
+                // base. It is a dictionary entry unless it originated from a
+                // resource element (which WebKit loads without navigation).
+                if navigationAction.navigationType == .linkActivated {
+                    let word = url.path
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        .removingPercentEncoding ?? url.path
+                    if !word.isEmpty {
+                        parent.onLookupWord?(word)
+                        decisionHandler(.cancel)
+                        return
+                    }
+                }
+                decisionHandler(.allow)
+                return
+            }
+
             if scheme == "entry" || scheme == "lookup" {
                 let word = url.host ?? url.path
                 let cleanWord = word.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -840,7 +1040,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-
             if scheme == "http" || scheme == "https" {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
@@ -877,6 +1076,34 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             }
 
             decisionHandler(.allow)
+        }
+
+        /// Resolve a sound URL from either the navigation delegate or the
+        /// dedicated URL scheme handler. Keep the original `sound://` shape so
+        /// dictionary JavaScript that inspects the link continues to work.
+        func handleSoundURL(_ url: URL) {
+            let audioResource = (url.host ?? "") + url.path
+            let cleanAudio = (audioResource.removingPercentEncoding ?? audioResource)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !cleanAudio.isEmpty else { return }
+
+            if let fragment = url.fragment,
+               fragment.hasPrefix("studymate-dictionary=") {
+                let dictionaryID = String(fragment.dropFirst("studymate-dictionary=".count))
+                    .removingPercentEncoding
+                    ?? String(fragment.dropFirst("studymate-dictionary=".count))
+                guard !dictionaryID.isEmpty else { return }
+                if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
+                    onPlayDictionaryAudio(dictionaryID, cleanAudio)
+                } else {
+                    DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                        dictionaryID: dictionaryID,
+                        key: cleanAudio
+                    )
+                }
+            } else {
+                parent.onPlayAudio?(cleanAudio)
+            }
         }
 
         // Native MDX scripts occasionally call alert/confirm/prompt. Without

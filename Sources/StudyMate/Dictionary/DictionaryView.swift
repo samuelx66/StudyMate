@@ -2,6 +2,31 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Resolves the row that should be selected for a query without depending on
+/// SwiftUI view timing. Exact keys win over prefix matches, while a selected
+/// dictionary scopes the candidates before matching. In “All” mode the
+/// returned hit remains the source of truth for the owning dictionary.
+enum DictionaryCandidateSelection {
+    static func resolve(
+        query: String,
+        candidates: [StudyMateDictionarySearchHit],
+        dictionaryID: String?
+    ) -> StudyMateDictionarySearchHit? {
+        let scoped = candidates.filter { dictionaryID == nil || $0.dictionaryID == dictionaryID }
+        guard !scoped.isEmpty else { return nil }
+
+        let normalizedQuery = normalizedKey(query)
+        return scoped.first(where: { normalizedKey($0.key) == normalizedQuery }) ?? scoped.first
+    }
+
+    static func normalizedKey(_ value: String) -> String {
+        value
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+}
+
 private struct DictionaryDefinitionSkeleton: View {
     @ObservedObject private var lang = LanguageManager.shared
     var body: some View {
@@ -333,25 +358,27 @@ public struct DictionaryView: View {
         .task {
             engine.refresh()
             if let pending = engine.consumeRequestedQuery() {
-                query = pending
+                applyRequestedLookup(pending)
             }
         }
-        .onChange(of: engine.requestedQuery) { _, pending in
-            guard let pending else { return }
-            query = pending
-            _ = engine.consumeRequestedQuery()
+        .onChange(of: engine.lookupRequestID) { _, _ in
+            guard let pending = engine.consumeRequestedQuery() else { return }
+            applyRequestedLookup(pending)
         }
         .onChange(of: engine.dictionaries) { _, newDicts in
             if let sel = selectedDictionaryID, !newDicts.contains(where: { $0.id == sel }) {
                 selectedDictionaryID = nil
             }
         }
-        .onChange(of: engine.searchHits) { _, newHits in
-            let ids = resultItems.map(\.id)
-            if let selectedResultID, ids.contains(selectedResultID) {
-                return
-            }
-            selectedResultID = resultItems.first?.id
+        .onChange(of: engine.searchHits) { _, _ in
+            synchronizeSelectedCandidate()
+        }
+        .onChange(of: engine.searchRevision) { _, _ in
+            // A repeated query can publish an array equal to the previous
+            // one, which does not trigger the array-based onChange above.
+            // The revision is the search lifecycle signal, so selection is
+            // also synchronized whenever a search completes.
+            synchronizeSelectedCandidate()
         }
         .onChange(of: selectedResultID) { _, newID in
             guard let newID,
@@ -567,6 +594,42 @@ public struct DictionaryView: View {
         query = value
         selectedResultID = nil
         isApplyingHistory = false
+    }
+
+    private func applyRequestedLookup(_ pending: String) {
+        query = pending
+        selectedResultID = nil
+        // Opening the standalone window is an explicit lookup lifecycle
+        // event. Start a fresh key search even when the popover already left
+        // the same hits/results in the shared engine; the search revision
+        // below will select the exact candidate when the response arrives.
+        engine.search(
+            query: pending,
+            dictionaryID: selectedDictionaryID,
+            immediate: true
+        )
+    }
+
+    private func synchronizeSelectedCandidate() {
+        let candidates = resultItems
+        guard let candidate = DictionaryCandidateSelection.resolve(
+            query: query,
+            candidates: candidates,
+            dictionaryID: selectedDictionaryID
+        ) else {
+            if selectedResultID != nil {
+                selectedResultID = nil
+            }
+            return
+        }
+
+        let selectedCandidate = candidates.first { $0.id == selectedResultID }
+        let selectedCandidateIsInScope = selectedCandidate.map {
+            selectedDictionaryID == nil || $0.dictionaryID == selectedDictionaryID
+        } ?? false
+        if !selectedCandidateIsInScope {
+            selectedResultID = candidate.id
+        }
     }
 
     private func importDictionary() {

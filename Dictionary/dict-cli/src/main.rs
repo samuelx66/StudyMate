@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use studymate_dict_core::{
-    delete_dictionary, find_audio_resource, import_dictionary_with_progress, resource,
-    DictionaryQueryCache, ImportOptions,
+    delete_dictionary, find_audio_data, import_dictionary_with_progress, resource, resource_data,
+    DictionaryReaderCache, ImportOptions,
 };
 
 fn request_id(value: &Value) -> Value {
@@ -26,7 +26,7 @@ fn path_field(value: &Value, name: &str) -> Result<PathBuf> {
 fn handle(
     value: &Value,
     stdout: &mut impl Write,
-    query_cache: &mut DictionaryQueryCache,
+    query_cache: &mut DictionaryReaderCache,
 ) -> Result<Value> {
     let op = string_field(value, "op")?;
     match op.as_str() {
@@ -81,13 +81,17 @@ fn handle(
             let key = string_field(value, "key")?;
             Ok(serde_json::to_value(resource(&root, &id, &key)?)?)
         }
+        "resourceData" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            let key = string_field(value, "key")?;
+            Ok(serde_json::to_value(resource_data(&root, &id, &key)?)?)
+        }
         "findAudio" => {
             let root = path_field(value, "root")?;
             let id = string_field(value, "dictionaryID")?;
             let word = string_field(value, "word")?;
-            Ok(serde_json::to_value(find_audio_resource(
-                &root, &id, &word,
-            )?)?)
+            Ok(serde_json::to_value(find_audio_data(&root, &id, &word)?)?)
         }
         "import" => {
             let root = path_field(value, "root")?;
@@ -164,7 +168,7 @@ fn main() -> Result<()> {
     }
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
-    let mut query_cache = DictionaryQueryCache::default();
+    let mut query_cache = DictionaryReaderCache::default();
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
