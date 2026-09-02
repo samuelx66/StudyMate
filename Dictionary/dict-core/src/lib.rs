@@ -12,7 +12,7 @@ use flate2::read::ZlibDecoder;
 use ripemd::{Digest, Ripemd128};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -1627,6 +1627,79 @@ struct CachedDictionary {
     last_used: u64,
 }
 
+const MAX_MDX_LINK_DEPTH: usize = 32;
+
+/// MDict uses a record containing `@@@LINK=<keyword>` as an alias entry. The
+/// directive is metadata, not user-facing dictionary markup, so resolve it
+/// before handing the record to WebKit. A few dictionaries add a BOM or
+/// trailing line ending; tolerate those without accepting arbitrary HTML that
+/// merely happens to contain the marker.
+fn mdict_link_target(record: &str) -> Option<String> {
+    let trimmed = record.trim_start_matches('\u{feff}').trim();
+    let prefix = "@@@LINK=";
+    if trimmed.len() < prefix.len() || !trimmed[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    let target = trimmed[prefix.len()..].trim();
+    (!target.is_empty()).then(|| target.to_owned())
+}
+
+/// Follow nested MDict aliases while protecting the UI from malformed or
+/// cyclic dictionaries. If an alias target is missing or a cycle is found,
+/// retain the original record so the caller can still show a diagnostic
+/// instead of silently replacing it with an empty definition.
+fn resolve_mdict_link(connection: &Connection, record: &str) -> Result<String> {
+    let original = record.to_owned();
+    let mut current = original.clone();
+    let mut visited = HashSet::new();
+
+    for _ in 0..MAX_MDX_LINK_DEPTH {
+        let Some(target) = mdict_link_target(&current) else {
+            return Ok(current);
+        };
+        let normalized_target = normalize_key(&target);
+        if normalized_target.is_empty() || !visited.insert(normalized_target.clone()) {
+            return Ok(original);
+        }
+        let linked_record = mdict_target_record(connection, &normalized_target)?;
+        let Some(linked_record) = linked_record else {
+            return Ok(original);
+        };
+        current = linked_record;
+    }
+
+    Ok(original)
+}
+
+/// A normalized target can have duplicate records. Prefer a concrete
+/// definition over another alias, while still retaining an alias when it is
+/// the only record available so nested links continue to work.
+fn mdict_target_record(connection: &Connection, normalized_target: &str) -> Result<Option<String>> {
+    let mut statement = connection.prepare_cached(
+        "SELECT record_text FROM entries
+         WHERE normalized = ?1 ORDER BY key",
+    )?;
+    let rows = statement.query_map(params![normalized_target], |row| row.get::<_, String>(0))?;
+    let mut first_record = None;
+    for row in rows {
+        let record = row?;
+        if first_record.is_none() {
+            first_record = Some(record.clone());
+        }
+        if mdict_link_target(&record).is_none() {
+            return Ok(Some(record));
+        }
+    }
+    Ok(first_record)
+}
+
+fn resolve_lookup_aliases(connection: &Connection, entries: &mut [LookupEntry]) -> Result<()> {
+    for entry in entries {
+        entry.text = resolve_mdict_link(connection, &entry.text)?;
+    }
+    Ok(())
+}
+
 /// Reusable query state for the long-lived JSONL helper. The process handles
 /// requests serially, so a mutable cache is sufficient and avoids the
 /// overhead of reopening manifests, CSS files and SQLite connections for
@@ -1828,7 +1901,9 @@ impl DictionaryQueryCache {
                     resource_root: Some(resource_root.clone()),
                 })
             })?;
-            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            let mut entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            resolve_lookup_aliases(&dictionary.connection, &mut entries)?;
+            result.extend(entries);
         }
         if result.len() < limit {
             let remaining = limit - result.len();
@@ -1852,7 +1927,9 @@ impl DictionaryQueryCache {
                     })
                 },
             )?;
-            result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            let mut entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            resolve_lookup_aliases(&dictionary.connection, &mut entries)?;
+            result.extend(entries);
         }
         Ok(result)
     }
@@ -1904,7 +1981,9 @@ pub fn lookup(
                 resource_root: Some(resource_root.clone()),
             })
         })?;
-        result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        let mut entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        resolve_lookup_aliases(&connection, &mut entries)?;
+        result.extend(entries);
     }
     if result.len() < limit {
         let remaining = limit - result.len();
@@ -1925,7 +2004,9 @@ pub fn lookup(
                 resource_root: Some(resource_root.clone()),
             })
         })?;
-        result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        let mut entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        resolve_lookup_aliases(&connection, &mut entries)?;
+        result.extend(entries);
     }
     Ok(result)
 }
@@ -2139,6 +2220,59 @@ mod tests {
         let record_block = block(records);
         be_u64(1, &mut output);
         be_u64(2, &mut output);
+        be_u64(16, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(record_block.len() as u64, &mut output);
+        be_u64(records.len() as u64, &mut output);
+        output.extend_from_slice(&record_block);
+        output
+    }
+
+    fn mdx_text_fixture(entries: &[(&str, &str)]) -> Vec<u8> {
+        let header = "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Encrypted=\"0\" Encoding=\"UTF-8\" Format=\"Html\" Title=\"Link Fixture\"/>";
+        let header_bytes: Vec<u8> = header.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut output = Vec::new();
+        be_u32(header_bytes.len() as u32, &mut output);
+        output.extend_from_slice(&header_bytes);
+        output.extend_from_slice(&[0, 0, 0, 0]);
+
+        let mut records = Vec::new();
+        let mut keys = Vec::new();
+        let mut record_offset = 0u64;
+        for (key, text) in entries {
+            be_u64(record_offset, &mut keys);
+            keys.extend_from_slice(key.as_bytes());
+            keys.push(0);
+            records.extend_from_slice(text.as_bytes());
+            records.push(0);
+            record_offset = records.len() as u64;
+        }
+
+        let key_block = block(&keys);
+        let first = entries.first().map(|(key, _)| *key).unwrap_or("");
+        let last = entries.last().map(|(key, _)| *key).unwrap_or("");
+        let mut key_index = Vec::new();
+        be_u64(entries.len() as u64, &mut key_index);
+        be_u16(first.len() as u16, &mut key_index);
+        key_index.extend_from_slice(first.as_bytes());
+        be_u16(last.len() as u16, &mut key_index);
+        key_index.extend_from_slice(last.as_bytes());
+        be_u64(key_block.len() as u64, &mut key_index);
+        be_u64(keys.len() as u64, &mut key_index);
+        let key_index_block = block(&key_index);
+
+        be_u64(1, &mut output);
+        be_u64(entries.len() as u64, &mut output);
+        be_u64(key_index.len() as u64, &mut output);
+        be_u64(key_index_block.len() as u64, &mut output);
+        be_u64(key_block.len() as u64, &mut output);
+        be_u32(0, &mut output);
+        output.extend_from_slice(&key_index_block);
+        output.extend_from_slice(&key_block);
+
+        let record_block = block(&records);
+        be_u64(1, &mut output);
+        be_u64(entries.len() as u64, &mut output);
         be_u64(16, &mut output);
         be_u64(record_block.len() as u64, &mut output);
         be_u64(record_block.len() as u64, &mut output);
@@ -2515,6 +2649,59 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_nested_mdict_links_and_protects_against_cycles() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-link-test-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("links.mdx");
+        fs::write(
+            &source,
+            mdx_text_fixture(&[
+                ("alias", "@@@LINK=relate"),
+                ("cycle-a", "@@@LINK=cycle-b"),
+                ("cycle-b", "@@@LINK=cycle-a"),
+                ("missing", "@@@LINK=does-not-exist"),
+                ("nested", "@@@LINK=alias"),
+                ("relate", "<b>the related definition</b>"),
+            ]),
+        )
+        .unwrap();
+        let package_root = root.join("Dictionaries");
+        import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("links".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+
+        let alias = lookup(&package_root, "links", "alias", 20).unwrap();
+        assert_eq!(alias.len(), 1);
+        assert_eq!(alias[0].key, "alias");
+        assert_eq!(alias[0].text, "<b>the related definition</b>");
+
+        let nested = lookup(&package_root, "links", "nested", 20).unwrap();
+        assert_eq!(nested[0].text, "<b>the related definition</b>");
+
+        let missing = lookup(&package_root, "links", "missing", 20).unwrap();
+        assert_eq!(missing[0].text, "@@@LINK=does-not-exist");
+
+        let cycle = lookup(&package_root, "links", "cycle-a", 20).unwrap();
+        assert_eq!(cycle[0].text, "@@@LINK=cycle-b");
+
+        let mut cache = DictionaryQueryCache::default();
+        let cached = cache.lookup(&package_root, "links", "alias", 20).unwrap();
+        assert_eq!(cached[0].text, "<b>the related definition</b>");
 
         fs::remove_dir_all(root).unwrap();
     }

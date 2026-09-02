@@ -20,6 +20,23 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains("sound://audio/cat.mp3#studymate-dictionary=fixture"))
     }
 
+    func testScriptsAreDeferredUntilEntryMarkupExists() throws {
+        let entry = StudyMateDictionaryLookup(
+            key: "food",
+            text: #"<script src="jquery.js"></script><script>window.fixtureReady = !!document.querySelector('.fixture-content');</script><div class="fixture-content">ready</div>"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture"
+        )
+
+        let body = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+        let contentEnd = try XCTUnwrap(body.range(of: "</div>", options: .backwards))
+        let jquery = try XCTUnwrap(body.range(of: "jquery.js"))
+        let inlineScript = try XCTUnwrap(body.range(of: "fixtureReady"))
+
+        XCTAssertGreaterThan(jquery.lowerBound, contentEnd.lowerBound)
+        XCTAssertGreaterThan(inlineScript.lowerBound, contentEnd.lowerBound)
+    }
+
     func testLocalResourcesPreserveQueriesFragmentsAndExplicitSchemes() {
         let root = URL(fileURLWithPath: "/tmp/StudyMate Dictionary/resources", isDirectory: true)
         let entry = StudyMateDictionaryLookup(

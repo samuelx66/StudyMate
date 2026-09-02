@@ -162,24 +162,34 @@ public enum DictionaryHTMLFormatter {
         if let cached = bodyCache.object(forKey: cacheKey as NSString) {
             return cached as String
         }
-        let body = entries.map { entry -> String in
+        var deferredScripts: [String] = []
+        let bodyEntries = entries.map { entry -> String in
             let badgeHTML = entries.count > 1
                 ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
                 : ""
-            let contentHTML = formatEntryContent(
+            let formattedContent = formatEntryContent(
                 entry.text,
                 resourceRoot: entry.resourceRoot,
                 dictionaryID: entry.dictionaryID
             )
+            // MDX entries commonly put jQuery and the dictionary controller
+            // before the actual entry markup. Executing those tags in-place
+            // makes initialization race the HTML parser: LM5Switch.js runs
+            // while `.lm5ppbody` and its foldable sections do not exist yet.
+            // Keep the vendor-provided script order, but execute all scripts
+            // after every selected entry has been parsed.
+            let extracted = extractScriptTags(from: formattedContent)
+            deferredScripts.append(contentsOf: extracted.scripts)
             return """
             <div class="dict-entry" data-dict-id="\(escapeHTML(entry.dictionaryID))">
                 \(badgeHTML)
                 <div class="entry-body">
-                    \(contentHTML)
+                    \(extracted.html)
                 </div>
             </div>
             """
         }.joined(separator: "\n<hr class=\"dict-divider\">\n")
+        let body = bodyEntries + deferredScripts.joined()
         bodyCache.setObject(body as NSString, forKey: cacheKey as NSString)
         return body
     }
@@ -219,6 +229,38 @@ public enum DictionaryHTMLFormatter {
         } else {
             return "<p>\(escapeHTML(trimmed).replacingOccurrences(of: "\n", with: "<br>"))</p>"
         }
+    }
+
+    private struct ScriptExtraction {
+        let html: String
+        let scripts: [String]
+    }
+
+    /// Remove executable script elements from their original MDX position
+    /// and return them in source order. A script at the beginning of an MDX
+    /// record otherwise executes before the rest of that record has been
+    /// parsed into the DOM. Appending the untouched elements to the complete
+    /// body preserves vendor code and dependency order while making the DOM
+    /// available to initialization code.
+    private static func extractScriptTags(from html: String) -> ScriptExtraction {
+        let pattern = #"(?is)<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/\s*>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return ScriptExtraction(html: html, scripts: [])
+        }
+        let source = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else {
+            return ScriptExtraction(html: html, scripts: [])
+        }
+
+        var content = html
+        var scripts: [String] = []
+        for match in matches.reversed() {
+            scripts.insert(source.substring(with: match.range), at: 0)
+            guard let range = Range(match.range, in: content) else { continue }
+            content.removeSubrange(range)
+        }
+        return ScriptExtraction(html: content, scripts: scripts)
     }
 
     /// Keep the standard `sound://` shape because MDX scripts commonly read
@@ -524,7 +566,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         context.coordinator.currentAllowsJavaScript = allowsJavaScript
         context.coordinator.currentTextScale = textScale
         context.coordinator.hasLoadedDocument = false
-        webView.loadHTMLString(html, baseURL: baseURL)
+        context.coordinator.loadDocument(in: webView, html: html, baseURL: baseURL)
         return webView
     }
 
@@ -548,7 +590,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             context.coordinator.currentAllowsJavaScript = allowsJavaScript
             context.coordinator.currentTextScale = textScale
             context.coordinator.hasLoadedDocument = false
-            webView.loadHTMLString(html, baseURL: baseURL)
+            context.coordinator.loadDocument(in: webView, html: html, baseURL: baseURL)
         } else if bodyChanged || scaleChanged {
             context.coordinator.currentHTML = html
             context.coordinator.currentBodyHTML = bodyHTML
@@ -584,6 +626,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.stopLoading()
+        coordinator.removeRenderedDocument()
     }
 
     public final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
@@ -597,9 +640,94 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var currentTextScale: CGFloat = 1.0
         var hasLoadedDocument = false
         var updateRevision: UInt64 = 0
+        private var renderedDocumentURL: URL?
 
         init(parent: DictionaryHTMLView) {
             self.parent = parent
+        }
+
+        deinit {
+            removeRenderedDocument()
+        }
+
+        /// Load dictionary HTML as a real local file instead of an in-memory
+        /// HTML string. `loadHTMLString(_:baseURL:)` resolves the page URL,
+        /// but it does not reliably grant the WebKit content process read
+        /// access to sibling local `script`/`link` resources in a sandboxed
+        /// macOS app. CSS that is already inlined can therefore look correct
+        /// while the dictionary controller JavaScript never loads.
+        ///
+        /// The generated file is kept in a private sibling directory of the
+        /// imported dictionaries. `loadFileURL` then receives only that
+        /// dictionaries directory as its read scope, so local MDX resources
+        /// work without exposing an unrestricted filesystem scope.
+        func loadDocument(
+            in webView: WKWebView,
+            html: String,
+            baseURL: URL?
+        ) {
+            guard let baseURL, baseURL.isFileURL else {
+                webView.loadHTMLString(html, baseURL: baseURL)
+                return
+            }
+
+            let resourceDirectory = baseURL.standardizedFileURL
+            let accessDirectory = resourceDirectory
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let renderDirectory = accessDirectory.appendingPathComponent(
+                ".studymate-web",
+                isDirectory: true
+            )
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: renderDirectory,
+                    withIntermediateDirectories: true
+                )
+                let documentURL = renderDirectory.appendingPathComponent(
+                    "dictionary-\(UUID().uuidString).html"
+                )
+                let documentHTML = htmlWithBaseURL(html, baseURL: resourceDirectory)
+                try documentHTML.write(to: documentURL, atomically: true, encoding: .utf8)
+
+                let previousDocumentURL = renderedDocumentURL
+                renderedDocumentURL = documentURL
+                if let previousDocumentURL {
+                    try? FileManager.default.removeItem(at: previousDocumentURL)
+                }
+
+                webView.loadFileURL(
+                    documentURL,
+                    allowingReadAccessTo: accessDirectory
+                )
+            } catch {
+                // Keep the existing in-memory path as a defensive fallback
+                // for read-only or unusual custom resource locations.
+                webView.loadHTMLString(html, baseURL: baseURL)
+            }
+        }
+
+        private func htmlWithBaseURL(_ html: String, baseURL: URL) -> String {
+            if html.range(of: "<base\\b", options: .regularExpression) != nil {
+                return html
+            }
+            let href = (baseURL.absoluteString.hasSuffix("/") ? baseURL.absoluteString : baseURL.absoluteString + "/")
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "\"", with: "&quot;")
+            let baseTag = "<base href=\"\(href)\">\n"
+            guard let headStart = html.range(of: "<head", options: .caseInsensitive),
+                  let headEnd = html.range(of: ">", range: headStart.upperBound..<html.endIndex)
+            else {
+                return html
+            }
+            return String(html[..<headEnd.upperBound]) + "\n" + baseTag + String(html[headEnd.upperBound...])
+        }
+
+        func removeRenderedDocument() {
+            guard let renderedDocumentURL else { return }
+            try? FileManager.default.removeItem(at: renderedDocumentURL)
+            self.renderedDocumentURL = nil
         }
 
         func updateDocument(
@@ -629,7 +757,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                     DispatchQueue.main.async {
                         guard self.updateRevision == revision else { return }
                         self.hasLoadedDocument = false
-                        webView.loadHTMLString(reloadHTML, baseURL: self.currentBaseURL)
+                        self.loadDocument(in: webView, html: reloadHTML, baseURL: self.currentBaseURL)
                     }
                 }
             }
