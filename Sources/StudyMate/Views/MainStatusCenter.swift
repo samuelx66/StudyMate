@@ -23,8 +23,10 @@ public final class MainStatusCenter: ObservableObject {
 
     @Published public private(set) var progress: MainStatusProgress?
     @Published public private(set) var errorMessage: String?
+    @Published public private(set) var successMessage: String?
 
     private var progressGeneration = UUID()
+    private var successGeneration = UUID()
 
     private init() {}
 
@@ -47,18 +49,30 @@ public final class MainStatusCenter: ObservableObject {
     }
 
     public func showSuccess(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
         errorMessage = nil
-        let generation = begin(MainStatusProgress(fraction: 1.0, phase: message))
+        let generation = UUID()
+        successGeneration = generation
+        successMessage = normalized
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            self?.finish(generation: generation)
+            guard let self, self.successGeneration == generation else { return }
+            self.successMessage = nil
         }
+    }
+
+    public func clearSuccess() {
+        successGeneration = UUID()
+        successMessage = nil
     }
 
     public func showError(_ message: String) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         progressGeneration = UUID()
         progress = nil
+        successGeneration = UUID()
+        successMessage = nil
         errorMessage = normalized.isEmpty ? nil : normalized
     }
 

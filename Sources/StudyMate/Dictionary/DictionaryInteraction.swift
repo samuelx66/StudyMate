@@ -29,6 +29,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     @Published public private(set) var anchorScreenPoint: NSPoint?
     @Published public private(set) var anchorScreenRect: NSRect?
     @Published public private(set) var isLookupPresented = false
+    public var actionBarFrameInWindow: NSRect?
 
     fileprivate weak var activeTextView: NSTextView?
     private weak var playbackEngine: PlaybackEngine?
@@ -78,23 +79,38 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return event
         }
 
-        // 监控鼠标点击：词典弹窗展示时，点击弹窗外部区域自动关闭弹窗。
-        // 在当前事件中同步清掉旧选区，避免操作条仍然停留在旧单词上；
-        // 下一次鼠标拖选会在后续 selection notification 中重新建立状态。
+        // 监控鼠标点击：
+        // 1. 词典气泡弹窗展示时，点击弹窗外部区域自动关闭弹窗。
+        // 2. 仅显示选词浮动操作条（查词 | 发音 | 生词本）时，点击操作条外部区域自动消除操作条。
+        // 在当前事件中同步清掉旧选区，同时允许事件自然穿透分发给被点击的底层控件。
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { @MainActor [weak self] event in
+            guard let self else { return event }
             let eventWindow = event.window
-            let hadVisiblePopover = self?.isLookupPresented == true
-            let popoverAtEvent = self?.activePopover
-            guard let self, hadVisiblePopover,
-                  let popoverAtEvent,
-                  self.activePopover === popoverAtEvent else {
+
+            if self.isLookupPresented {
+                if let popoverAtEvent = self.activePopover,
+                   let popoverWindow = popoverAtEvent.contentViewController?.view.window,
+                   eventWindow === popoverWindow {
+                    return event
+                }
+                self.clearSelectionAndDeselect()
                 return event
             }
-            if let popoverWindow = popoverAtEvent.contentViewController?.view.window,
-               eventWindow === popoverWindow {
+
+            if self.selectedText != nil {
+                let mouseInWindow = event.locationInWindow
+                let targetWindow = self.activeTextView?.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+                if let barFrame = self.actionBarFrameInWindow,
+                   eventWindow === targetWindow || eventWindow == nil {
+                    // 预留 6pt 点击容差，避免点在操作条胶囊边缘缝隙时误触关闭
+                    if barFrame.insetBy(dx: -6, dy: -6).contains(mouseInWindow) {
+                        return event
+                    }
+                }
+                self.clearSelectionAndDeselect()
                 return event
             }
-            self.clearSelectionAndDeselect()
+
             return event
         }
 
@@ -160,6 +176,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         contextText = nil
         anchorScreenPoint = nil
         anchorScreenRect = nil
+        actionBarFrameInWindow = nil
         activeTextView = nil
         resumePlaybackIfNeeded()
     }
@@ -171,6 +188,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         contextText = nil
         anchorScreenPoint = nil
         anchorScreenRect = nil
+        actionBarFrameInWindow = nil
         isLookupPresented = false
         if resumePlayback {
             resumePlaybackIfNeeded()
@@ -258,15 +276,26 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                 targetRect = textView.bounds
             }
 
-            popover.show(relativeTo: targetRect, of: textView, preferredEdge: .maxY)
+            let viewHeight = textView.bounds.height
+            // 在 flipped 视图中，Y 从上往下增加；当文字位于视图下半区（>58%）时向上展开（.minY），否则向下展开（.maxY）
+            let preferredEdge: NSRectEdge = textView.isFlipped
+                ? (targetRect.midY > viewHeight * 0.58 ? .minY : .maxY)
+                : (targetRect.midY < viewHeight * 0.42 ? .maxY : .minY)
+            popover.show(relativeTo: targetRect, of: textView, preferredEdge: preferredEdge)
         } else if let window = NSApp.keyWindow ?? NSApp.mainWindow, let contentView = window.contentView {
             var targetRect = NSRect(x: contentView.bounds.midX, y: contentView.bounds.midY, width: 1, height: 1)
             if let screenPoint = anchorScreenPoint {
                 let windowPoint = window.convertPoint(fromScreen: screenPoint)
                 let pointInView = contentView.convert(windowPoint, from: nil)
-                targetRect = NSRect(x: pointInView.x, y: pointInView.y, width: 1, height: 1)
+                let safeX = min(max(20, pointInView.x), max(20, contentView.bounds.width - 20))
+                let safeY = min(max(20, pointInView.y), max(20, contentView.bounds.height - 20))
+                targetRect = NSRect(x: safeX, y: safeY, width: 1, height: 1)
             }
-            popover.show(relativeTo: targetRect, of: contentView, preferredEdge: .maxY)
+            let viewHeight = contentView.bounds.height
+            let preferredEdge: NSRectEdge = contentView.isFlipped
+                ? (targetRect.midY > viewHeight * 0.58 ? .minY : .maxY)
+                : (targetRect.midY < viewHeight * 0.42 ? .maxY : .minY)
+            popover.show(relativeTo: targetRect, of: contentView, preferredEdge: preferredEdge)
         }
 
         guard popover.isShown else {
@@ -1237,6 +1266,20 @@ public struct DictionarySelectionActionBar: View {
         .padding(.vertical, 3.5)
         .studymateChromeCapsule()
         .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear {
+                        coordinator.actionBarFrameInWindow = geo.frame(in: .global)
+                    }
+                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                        coordinator.actionBarFrameInWindow = newFrame
+                    }
+            }
+        )
+        .onDisappear {
+            coordinator.actionBarFrameInWindow = nil
+        }
         .contextMenu {
             Button(lang.text("查询“\(coordinator.selectedText ?? "")”", "Look up “\(coordinator.selectedText ?? "")”")) {
                 coordinator.lookupSelected()

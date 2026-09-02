@@ -41,6 +41,10 @@ public enum WhisperModelLevel: String, CaseIterable, Identifiable, Codable, Send
         URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")!
     }
 
+    public var mirrorDownloadURL: URL {
+        URL(string: "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/\(filename)")!
+    }
+
     /// 仅用于识别明显残缺的下载或代理返回的错误页面，不改变模型选择。
     public var minimumValidFileSize: Int64 {
         switch self {
@@ -77,6 +81,7 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
     
     private var downloadTasks: [WhisperModelLevel: URLSessionDownloadTask] = [:]
     private var activeDownloads: [Int: WhisperModelLevel] = [:]
+    private var attemptedMirrors: Set<WhisperModelLevel> = []
     private var urlSession: URLSession!
     
     public let modelsDirectoryURL: URL
@@ -129,14 +134,15 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
         }
     }
     
-    /// 开始下载指定级别的 Whisper 离线模型
-    public func startDownload(for level: WhisperModelLevel) {
+    /// 开始下载指定级别的 Whisper 离线模型，支持国内镜像源自动回退
+    public func startDownload(for level: WhisperModelLevel, useMirror: Bool = false) {
         guard downloadTasks[level] == nil else { return }
         
         modelStatuses[level] = .downloading(progress: 0.0)
         isDownloading = true
         
-        let task = urlSession.downloadTask(with: level.downloadURL)
+        let targetURL = useMirror ? level.mirrorDownloadURL : level.downloadURL
+        let task = urlSession.downloadTask(with: targetURL)
         downloadTasks[level] = task
         activeDownloads[task.taskIdentifier] = level
         task.resume()
@@ -144,6 +150,7 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
     
     /// 取消下载
     public func cancelDownload(for level: WhisperModelLevel) {
+        attemptedMirrors.remove(level)
         if let task = downloadTasks[level] {
             task.cancel()
             downloadTasks.removeValue(forKey: level)
@@ -198,6 +205,7 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
             } else {
                 try FileManager.default.moveItem(at: location, to: targetURL)
             }
+            attemptedMirrors.remove(level)
             let formatted = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
             modelStatuses[level] = .ready(fileSize: formatted)
         } catch {
@@ -220,6 +228,12 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
         isDownloading = !downloadTasks.isEmpty
         
         if let error = error, (error as NSError).code != NSURLErrorCancelled {
+            // 如果官方源下载受阻且尚未尝试镜像，自动使用国内高可用镜像源重试
+            if !attemptedMirrors.contains(level) {
+                attemptedMirrors.insert(level)
+                startDownload(for: level, useMirror: true)
+                return
+            }
             modelStatuses[level] = .error(message: "下载出错: \(error.localizedDescription)")
         } else if modelStatuses[level] == nil || !isModelDownloaded(level) {
             modelStatuses[level] = .notDownloaded

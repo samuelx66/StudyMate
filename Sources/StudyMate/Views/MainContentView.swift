@@ -131,6 +131,7 @@ public struct MainContentView: View {
             || libraryStatus.errorMessage != nil
             || statusCenter.progress != nil
             || statusCenter.errorMessage != nil
+            || statusCenter.successMessage != nil
     }
 
     private var windowToolbar: MainWindowToolbar {
@@ -701,7 +702,9 @@ private struct PlaybackStatusBar: View {
 
             Spacer(minLength: 8)
 
-            if let progress = currentProgress {
+            if let successMessage = statusCenter.successMessage {
+                StatusBarSuccessView(message: successMessage)
+            } else if let progress = currentProgress {
                 StatusBarProgressView(
                     progress: progress,
                     canCancel: canCancelCurrentProgress,
@@ -710,7 +713,7 @@ private struct PlaybackStatusBar: View {
             }
 
             if let currentErrorMessage {
-                if currentProgress != nil {
+                if currentProgress != nil || statusCenter.successMessage != nil {
                     Divider()
                         .frame(height: 14)
                 }
@@ -749,6 +752,26 @@ private struct PlaybackStatusBar: View {
         engine.dismissStatusError()
         libraryManager.dismissErrorMessage()
         statusCenter.clearError()
+    }
+}
+
+private struct StatusBarSuccessView: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(StudyMateMediaStyle.success)
+                .font(.system(size: 12, weight: .semibold))
+
+            Text(message)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundColor(.primary)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message)
     }
 }
 

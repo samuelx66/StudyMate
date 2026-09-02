@@ -91,7 +91,8 @@ public struct PrimaryWaveformView: View {
                         viewportStart: viewport.start,
                         viewportEnd: viewport.end,
                         width: width,
-                        height: height
+                        height: height,
+                        isWindowResizing: engine.isWindowResizing
                     )
                     
                     // 2. 波形 Canvas (随拖拽平移实时渲染前后波形)

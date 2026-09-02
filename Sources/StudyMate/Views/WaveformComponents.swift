@@ -195,19 +195,22 @@ public struct WaveformSentenceSegmentsOverlay: View {
     let viewportEnd: Double
     let width: CGFloat
     let height: CGFloat
+    let isWindowResizing: Bool
     
     public init(
         engine: PlaybackEngine,
         viewportStart: Double,
         viewportEnd: Double,
         width: CGFloat,
-        height: CGFloat
+        height: CGFloat,
+        isWindowResizing: Bool = false
     ) {
         self.engine = engine
         self.viewportStart = viewportStart
         self.viewportEnd = viewportEnd
         self.width = width
         self.height = height
+        self.isWindowResizing = isWindowResizing
     }
     
     public var body: some View {
@@ -227,7 +230,12 @@ public struct WaveformSentenceSegmentsOverlay: View {
                 boundaryHasher.combine(segment.endTime.bitPattern)
             }
             let boundarySignature = boundaryHasher.finalize()
-            let cacheKey = "\(segments.count)|\(firstId)|\(lastId)|\(boundarySignature)|\(activeIndex ?? -1)|\(Int(viewportStart * 100))|\(Int(viewportEnd * 100))|\(Int(size.width))|\(Int(size.height))" as NSString
+
+            // 窗口缩放期间，按 16pt 分桶量化宽度，避免每一像素变动连续穿透缓存
+            let quantizedWidth = isWindowResizing
+                ? max(16, (size.width / 16).rounded() * 16)
+                : size.width
+            let cacheKey = "\(segments.count)|\(firstId)|\(lastId)|\(boundarySignature)|\(activeIndex ?? -1)|\(Int(viewportStart * 100))|\(Int(viewportEnd * 100))|\(Int(quantizedWidth))|\(Int(size.height))" as NSString
 
             let paths: WaveformSegmentsPathCache.Box
             if let cached = WaveformSegmentsPathCache.cache.object(forKey: cacheKey) {
@@ -238,8 +246,8 @@ public struct WaveformSentenceSegmentsOverlay: View {
                 var activeSegmentPath: Path?
 
                 for seg in segments {
-                    let segX1 = max(0, (seg.startTime - viewportStart) / span * width)
-                    let segX2 = min(width, (seg.endTime - viewportStart) / span * width)
+                    let segX1 = max(0, (seg.startTime - viewportStart) / span * quantizedWidth)
+                    let segX2 = min(quantizedWidth, (seg.endTime - viewportStart) / span * quantizedWidth)
                     let segW = max(2, segX2 - segX1)
                     let rect = CGRect(x: segX1, y: 0, width: segW, height: height)
                     let isActive = activeIndex == (seg.index - 1)
@@ -258,6 +266,10 @@ public struct WaveformSentenceSegmentsOverlay: View {
                     activePath: activeSegmentPath
                 )
                 WaveformSegmentsPathCache.cache.setObject(paths, forKey: cacheKey)
+            }
+
+            if isWindowResizing && quantizedWidth > 0 && abs(size.width - quantizedWidth) > 0.5 {
+                context.scaleBy(x: size.width / quantizedWidth, y: 1.0)
             }
 
             if !paths.evenPath.isEmpty {

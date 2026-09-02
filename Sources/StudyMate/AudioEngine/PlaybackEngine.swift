@@ -2744,15 +2744,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         shadowingTask?.cancel()
         shadowingTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
-            var remaining = duration
+            let deadline = ContinuousClock.now + .seconds(duration)
             let step = 0.1
 
-            while remaining > 0 && !Task.isCancelled {
-                self.shadowingCountdownRemaining = max(0, remaining)
+            while !Task.isCancelled {
+                let now = ContinuousClock.now
+                let remainingDuration = deadline - now
+                let seconds = Double(remainingDuration.components.seconds) + Double(remainingDuration.components.attoseconds) / 1e18
+                let remaining = max(0, seconds)
+                self.shadowingCountdownRemaining = remaining
+                if remaining <= 0.05 {
+                    break
+                }
                 do {
-                    try await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
-                    remaining -= step
-                    self.shadowingCountdownRemaining = max(0, remaining)
+                    try await Task.sleep(nanoseconds: UInt64(min(step, remaining) * 1_000_000_000))
                 } catch {
                     break
                 }

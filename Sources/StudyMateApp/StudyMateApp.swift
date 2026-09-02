@@ -16,11 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        SentenceLibraryManager.cleanOrphanedTempFiles()
+
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard event.keyCode == 49, modifiers.isEmpty else { return event }
-            // 输入字幕时空格必须留给文本编辑器，不能误触播放。
-            if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+            // 输入字幕、搜索框或在任何输入法/编辑框中时，空格必须留给文本编辑器，不能误触播放。
+            if let responder = NSApp.keyWindow?.firstResponder {
+                if responder is NSTextView || responder is NSTextField || responder is NSTextInputClient {
+                    return event
+                }
+            }
             PlaybackEngine.shared.togglePlayPause()
             return nil
         }

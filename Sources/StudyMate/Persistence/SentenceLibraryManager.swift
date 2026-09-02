@@ -76,8 +76,36 @@ public final class SentenceLibraryManager: ObservableObject {
         self.store = store
         self.defaults = defaults
         publishStatusProjection()
+        Self.cleanOrphanedTempFiles()
         Task { [weak self] in
             await self?.reloadLibraries(createDefaultIfNeeded: true)
+        }
+    }
+
+    /// 清理 SentenceLibraryTemp 下超过 1 小时的孤立临时文件夹
+    public static func cleanOrphanedTempFiles() {
+        Task.detached(priority: .background) {
+            let fileManager = FileManager.default
+            guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+            let tempRoot = support
+                .appendingPathComponent("StudyMate", isDirectory: true)
+                .appendingPathComponent("SentenceLibraryTemp", isDirectory: true)
+            guard fileManager.fileExists(atPath: tempRoot.path) else { return }
+
+            guard let contents = try? fileManager.contentsOfDirectory(
+                at: tempRoot,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+
+            let now = Date()
+            for folder in contents {
+                if let attrs = try? folder.resourceValues(forKeys: [.contentModificationDateKey]),
+                   let modDate = attrs.contentModificationDate,
+                   now.timeIntervalSince(modDate) > 3600 {
+                    try? fileManager.removeItem(at: folder)
+                }
+            }
         }
     }
 
@@ -91,11 +119,19 @@ public final class SentenceLibraryManager: ObservableObject {
     }
 
     public func createLibrary(name: String) async throws {
-        let descriptor = try await Task.detached(priority: .utility) { [store] in
-            try store.createLibrary(name: name)
-        }.value
-        await reloadLibraries(createDefaultIfNeeded: false)
-        selectLibrary(descriptor.id)
+        do {
+            let descriptor = try await Task.detached(priority: .utility) { [store] in
+                try store.createLibrary(name: name)
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            selectLibrary(descriptor.id)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("句库“\(name)”创建成功", "Library “\(name)” created successfully")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
     }
 
     public func selectLibrary(_ id: UUID) {
@@ -278,30 +314,54 @@ public final class SentenceLibraryManager: ObservableObject {
         operationProgress = SentenceLibraryOperationProgress(fraction: 1, phase: "句库保存完成")
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadEntries()
+        MainStatusCenter.shared.showSuccess(
+            LanguageManager.shared.text("已成功保存 \(prepared) 个句子到句库", "Successfully saved \(prepared) sentences to library")
+        )
         return prepared
     }
 
     public func deleteEntries(ids: Set<UUID>) async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !ids.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
-        let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
-            try store.deleteEntries(ids: ids, from: libraryID)
-        }.value
-        await reloadLibraries(createDefaultIfNeeded: false)
-        reloadEntries()
-        if !cleanupFailures.isEmpty {
-            lastErrorMessage = "句子记录已删除，但部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+        do {
+            let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
+                try store.deleteEntries(ids: ids, from: libraryID)
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            reloadEntries()
+            if !cleanupFailures.isEmpty {
+                lastErrorMessage = "句子记录已删除，但部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+                MainStatusCenter.shared.showError(lastErrorMessage ?? "")
+            } else {
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已从句库删除 \(ids.count) 个句子", "Deleted \(ids.count) sentences from library")
+                )
+            }
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
         }
     }
 
     public func deleteCurrentLibrary() async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        try await Task.detached(priority: .utility) { [store] in
-            try store.deleteLibrary(id: libraryID)
-        }.value
-        currentLibraryID = nil
-        await reloadLibraries(createDefaultIfNeeded: true)
+        let libraryName = currentLibrary?.name ?? ""
+        do {
+            try await Task.detached(priority: .utility) { [store] in
+                try store.deleteLibrary(id: libraryID)
+            }.value
+            currentLibraryID = nil
+            await reloadLibraries(createDefaultIfNeeded: true)
+            let msg = libraryName.isEmpty
+                ? LanguageManager.shared.text("句库已删除", "Library deleted successfully")
+                : LanguageManager.shared.text("句库“\(libraryName)”已删除", "Library “\(libraryName)” deleted successfully")
+            MainStatusCenter.shared.showSuccess(msg)
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
     }
 
     /// 将勾选的句子移动到另一个句库。目标句库收到独立媒体副本后，
@@ -330,18 +390,28 @@ public final class SentenceLibraryManager: ObservableObject {
             }
         }
 
-        let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
-            try store.moveEntries(
-                ids: ids,
-                from: sourceLibraryID,
-                to: destinationLibraryID,
-                progress: report
-            )
-        }.value
-        await reloadLibraries(createDefaultIfNeeded: false)
-        reloadEntries()
-        if !cleanupFailures.isEmpty {
-            lastErrorMessage = "句子已移动，但源句库部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+        do {
+            let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
+                try store.moveEntries(
+                    ids: ids,
+                    from: sourceLibraryID,
+                    to: destinationLibraryID,
+                    progress: report
+                )
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            reloadEntries()
+            if !cleanupFailures.isEmpty {
+                lastErrorMessage = "句子已移动，但源句库部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
+                MainStatusCenter.shared.showError(lastErrorMessage ?? "")
+            } else {
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已移动 \(ids.count) 个句子到目标句库", "Moved \(ids.count) sentences to destination library")
+                )
+            }
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
         }
     }
 
