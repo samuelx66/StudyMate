@@ -92,4 +92,34 @@ final class DictionaryCandidateSelectionTests: XCTestCase {
         XCTAssertEqual(engine.consumeRequestedQuery(), "word")
     }
 
+    func testPunctuationCleaningStripsBoundaryPunctuation() {
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("\"hello,\""), "hello")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("“world!”"), "world")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("‘apple’"), "apple")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("(test)"), "test")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("—phrase—"), "phrase")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("...wait..."), "wait")
+    }
+
+    func testPunctuationCleaningPreservesInternalApostropheAndHyphen() {
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("don't"), "don't")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("\"don't\""), "don't")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("state-of-the-art"), "state-of-the-art")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("(state-of-the-art)"), "state-of-the-art")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("C#"), "C#")
+        XCTAssertEqual(DictionaryEngine.cleanQueryWord("_private_value_"), "_private_value_")
+    }
+
+    func testLemmatizerReducesInflectedWordsToBaseForm() {
+        XCTAssertEqual(StudyMateLemmatizer.lemma(for: "running"), "run")
+        XCTAssertEqual(StudyMateLemmatizer.lemma(for: "studied"), "study")
+        XCTAssertEqual(StudyMateLemmatizer.lemma(for: "cities"), "city")
+        XCTAssertEqual(StudyMateLemmatizer.lemma(for: "watches"), "watch")
+    }
+
+    func testLemmatizerReturnsNilForBaseForms() {
+        XCTAssertNil(StudyMateLemmatizer.lemma(for: "run"))
+        XCTAssertNil(StudyMateLemmatizer.lemma(for: "study"))
+        XCTAssertNil(StudyMateLemmatizer.lemma(for: "good"))
+    }
 }

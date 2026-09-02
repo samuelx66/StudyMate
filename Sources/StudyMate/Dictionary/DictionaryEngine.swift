@@ -1,6 +1,27 @@
 import Foundation
 import AppKit
 import OSLog
+import NaturalLanguage
+
+/// macOS 原生自然语言词形还原器，用于在词典查询变形词（如 running、studied、better）未命中时，
+/// 自动分析提取原型（lemma，如 run、study、good）进行无感回退查询。
+public enum StudyMateLemmatizer {
+    public static func lemma(for word: String) -> String? {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace }) else { return nil }
+        let tagger = NLTagger(tagSchemes: [.lemma])
+        tagger.string = trimmed
+        let (tag, _) = tagger.tag(at: trimmed.startIndex, unit: .word, scheme: .lemma)
+        guard let raw = tag?.rawValue else { return nil }
+        let rawLemma = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawLemma.isEmpty,
+              rawLemma.lowercased() != trimmed.lowercased() else {
+            return nil
+        }
+        return rawLemma
+    }
+}
 
 enum DictionaryResponseEvent {
     case progress(id: String?, fraction: Double, phase: String?)
@@ -72,6 +93,12 @@ private final class DictionaryLookupCacheValue: NSObject {
     init(entries: [StudyMateDictionaryLookup]) {
         self.entries = entries
     }
+}
+
+private struct DeferredDictionarySearch: Sendable {
+    let query: String
+    let dictionaryID: String?
+    let includeDetails: Bool
 }
 
 /// A platform-neutral value returned by the Rust dictionary core.
@@ -335,6 +362,9 @@ public final class DictionaryEngine: ObservableObject {
     /// This lets the standalone dictionary window synchronize when the query
     /// string itself did not change.
     @Published public private(set) var lookupRequestID: UInt64 = 0
+    /// If the current search result was produced via automatic lemmatization fallback
+    /// (e.g. searching for "running" fell back to "run"), this holds the original query.
+    @Published public private(set) var lemmaOriginalQuery: String?
 
     public let dictionaryRoot: URL
 
@@ -361,6 +391,11 @@ public final class DictionaryEngine: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var queryDebounceTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
+    private var prefetchGeneration: UInt64 = 0
+    /// Keep only the latest query typed while a dictionary package is being
+    /// imported or deleted. Retry it after the serialized mutation finishes.
+    private var deferredSearchAfterBusy: DeferredDictionarySearch?
     private var searchGeneration: UInt64 = 0
     private var detailGeneration: UInt64 = 0
     /// A refresh started while the window opens must not publish a stale
@@ -394,6 +429,7 @@ public final class DictionaryEngine: ObservableObject {
         searchTask?.cancel()
         queryDebounceTask?.cancel()
         detailTask?.cancel()
+        prefetchTask?.cancel()
         refreshTask?.cancel()
         dictionaryMutationTask?.cancel()
         output?.readabilityHandler = nil
@@ -429,14 +465,17 @@ public final class DictionaryEngine: ObservableObject {
         searchTask = nil
         detailTask?.cancel()
         detailTask = nil
+        cancelPrefetch()
         searchGeneration &+= 1
         detailGeneration &+= 1
+        deferredSearchAfterBusy = nil
         searchHits = []
         searchRevision &+= 1
         searchResults = []
         isSearching = false
         isLoadingDefinition = false
         definitionQuery = nil
+        lemmaOriginalQuery = nil
     }
 
     /// Schedule a lightweight key search. A short debounce keeps fast typing
@@ -456,17 +495,38 @@ public final class DictionaryEngine: ObservableObject {
         searchGeneration &+= 1
         detailGeneration &+= 1
         let generation = searchGeneration
-        let trimmed = Self.normalizedQuery(query)
+        let lookupQuery = Self.canonicalQuery(query)
 
-        guard !trimmed.isEmpty else {
+        guard !lookupQuery.isEmpty else {
+            deferredSearchAfterBusy = nil
             searchHits = []
             searchRevision &+= 1
             searchResults = []
             isSearching = false
             isLoadingDefinition = false
             definitionQuery = nil
+            lemmaOriginalQuery = nil
             return
         }
+
+        if isBusy {
+            deferredSearchAfterBusy = DeferredDictionarySearch(
+                query: lookupQuery,
+                dictionaryID: dictionaryID,
+                includeDetails: includeDetails
+            )
+            searchHits = []
+            searchRevision &+= 1
+            searchResults = []
+            definitionQuery = nil
+            isSearching = true
+            isLoadingDefinition = includeDetails
+            lemmaOriginalQuery = nil
+            return
+        }
+        deferredSearchAfterBusy = nil
+        cancelPrefetch()
+        lemmaOriginalQuery = nil
 
         if includeDetails {
             searchResults = []
@@ -485,7 +545,7 @@ public final class DictionaryEngine: ObservableObject {
         // toolbar/shortcut lookups bypass the debounce entirely.
         if immediate {
             startSearch(
-                query: trimmed,
+                query: lookupQuery,
                 dictionaryID: dictionaryID,
                 includeDetails: includeDetails,
                 generation: generation
@@ -496,8 +556,8 @@ public final class DictionaryEngine: ObservableObject {
             do {
                 try await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled, let self else { return }
-                    self.startSearch(
-                    query: trimmed,
+                self.startSearch(
+                    query: lookupQuery,
                     dictionaryID: dictionaryID,
                     includeDetails: includeDetails,
                     generation: generation
@@ -514,10 +574,16 @@ public final class DictionaryEngine: ObservableObject {
         query: String,
         dictionaryID: String?,
         includeDetails: Bool,
-        generation: UInt64
+        generation: UInt64,
+        isLemmaFallback: Bool = false,
+        originalQuery: String? = nil
     ) {
-        guard generation == searchGeneration, !isBusy else {
-            if generation == searchGeneration { isSearching = false }
+        guard generation == searchGeneration else {
+            return
+        }
+        guard !isBusy else {
+            // A package mutation may start after the debounce expires. Keep
+            // the latest search pending and retry after the mutation finishes.
             return
         }
 
@@ -539,10 +605,27 @@ public final class DictionaryEngine: ObservableObject {
                       generation == self.searchGeneration,
                       !self.isBusy else { return }
 
+                if hits.isEmpty && !isLemmaFallback,
+                   let lemma = StudyMateLemmatizer.lemma(for: query),
+                   lemma.caseInsensitiveCompare(query) != .orderedSame {
+                    // 当原始词查不到任何候选时，自动回退到原生词形还原（如 running -> run, better -> good）
+                    self.startSearch(
+                        query: lemma,
+                        dictionaryID: dictionaryID,
+                        includeDetails: includeDetails,
+                        generation: generation,
+                        isLemmaFallback: true,
+                        originalQuery: query
+                    )
+                    return
+                }
+
                 self.searchHits = hits
                 self.searchRevision &+= 1
                 self.isSearching = false
                 self.lastError = nil
+                self.lemmaOriginalQuery = isLemmaFallback ? originalQuery : nil
+
                 if hits.isEmpty {
                     self.searchResults = []
                     self.definitionQuery = nil
@@ -565,6 +648,7 @@ public final class DictionaryEngine: ObservableObject {
                 self.isSearching = false
                 self.isLoadingDefinition = false
                 self.definitionQuery = nil
+                self.lemmaOriginalQuery = nil
                 self.lastError = error.localizedDescription
             }
         }
@@ -572,6 +656,7 @@ public final class DictionaryEngine: ObservableObject {
 
     /// Load one complete definition after a result row is selected.
     public func loadDefinition(for key: String, dictionaryID: String? = nil) {
+        cancelPrefetch()
         loadDefinition(for: key, dictionaryID: dictionaryID, expectedSearchGeneration: nil, immediate: false)
     }
 
@@ -649,6 +734,72 @@ public final class DictionaryEngine: ObservableObject {
                 self.lastError = error.localizedDescription
             }
         }
+    }
+
+    /// Quietly prefetch the full definition for a selected word into memory cache
+    /// while the user sees the floating action bar. If the user clicks "Look up",
+    /// the definition will appear instantly (0ms) from cache.
+    public func prefetchDefinition(for word: String, dictionaryID: String? = nil) {
+        let lookupKey = Self.canonicalQuery(word)
+        guard !lookupKey.isEmpty, !isBusy else { return }
+        let cacheKey = Self.detailCacheKey(for: lookupKey, dictionaryID: dictionaryID)
+        if Self.detailCache.object(forKey: cacheKey) != nil {
+            return
+        }
+
+        cancelPrefetch()
+        let generation = prefetchGeneration
+        prefetchTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            do {
+                // Selection notifications can arrive for every glyph while a
+                // phrase is being dragged. Wait for the selection to settle
+                // before issuing a full-definition IPC request.
+                try await Task.sleep(nanoseconds: 140_000_000)
+                try Task.checkCancellation()
+                var fields: [String: Any] = [
+                    "query": lookupKey,
+                    "limit": 1
+                ]
+                if let dictionaryID {
+                    fields["dictionaryID"] = dictionaryID
+                }
+                let operation = dictionaryID == nil ? "lookupAll" : "lookup"
+                let value = try await self.request(operation: operation, fields: fields)
+                let entries = try await Self.decodeInBackground([StudyMateDictionaryLookup].self, from: value)
+                guard !Task.isCancelled,
+                      self.prefetchGeneration == generation,
+                      !self.isBusy else { return }
+                guard !entries.isEmpty else { return }
+                Self.detailCache.setObject(
+                    DictionaryLookupCacheValue(entries: entries),
+                    forKey: cacheKey,
+                    cost: Self.detailCacheCost(entries)
+                )
+            } catch {
+                // Background prefetch is best-effort
+            }
+            if self.prefetchGeneration == generation {
+                self.prefetchTask = nil
+            }
+        }
+    }
+
+    private func cancelPrefetch() {
+        prefetchGeneration &+= 1
+        prefetchTask?.cancel()
+        prefetchTask = nil
+    }
+
+    private func retryDeferredSearchIfNeeded() {
+        guard !isBusy, let deferred = deferredSearchAfterBusy else { return }
+        deferredSearchAfterBusy = nil
+        search(
+            query: deferred.query,
+            dictionaryID: deferred.dictionaryID,
+            includeDetails: deferred.includeDetails,
+            immediate: true
+        )
     }
 
     private func adaptiveSearchLimit(for query: String) -> Int {
@@ -745,6 +896,7 @@ public final class DictionaryEngine: ObservableObject {
                 self.isBusy = false
                 self.progressPhase = nil
                 self.lastError = nil
+                self.retryDeferredSearchIfNeeded()
                 self.showNotification(
                     LanguageManager.shared.text("已删除词典", "Dictionary deleted")
                 )
@@ -752,6 +904,7 @@ public final class DictionaryEngine: ObservableObject {
                 guard self.dictionaryMutationGeneration == generation else { return }
                 self.isBusy = false
                 self.progressPhase = nil
+                self.retryDeferredSearchIfNeeded()
                 self.lastError = error.localizedDescription
             }
         }
@@ -821,11 +974,12 @@ public final class DictionaryEngine: ObservableObject {
                 guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
 
                 self.dictionaries.append(result.dictionary)
-                self.dictionaries.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                self.dictionaries.sort(by: Self.dictionaryPrioritySort)
                 self.progress = 1.0
                 self.progressPhase = nil
                 self.isBusy = false
                 self.lastError = nil
+                self.retryDeferredSearchIfNeeded()
                 self.showNotification(
                     LanguageManager.shared.text("已成功导入词典“\(result.dictionary.title)”", "Imported dictionary “\(result.dictionary.title)”")
                 )
@@ -834,6 +988,7 @@ public final class DictionaryEngine: ObservableObject {
                 self.isBusy = false
                 self.progress = nil
                 self.progressPhase = nil
+                self.retryDeferredSearchIfNeeded()
                 self.lastError = error.localizedDescription
             }
         }
@@ -907,8 +1062,11 @@ public final class DictionaryEngine: ObservableObject {
             candidates = summaries
         }
 
+        let audioCandidates = candidates.filter { $0.resourceCount > 0 }
+        guard !audioCandidates.isEmpty else { return nil }
+
         return try await DictionaryPronunciationResolver.firstReadableURL(
-            in: candidates,
+            in: audioCandidates,
             word: word
         ) { [weak self] dictionary, word in
             guard let self else { return nil }
@@ -937,7 +1095,11 @@ public final class DictionaryEngine: ObservableObject {
             candidates = summaries
         }
 
-        for dictionary in candidates {
+        // Fast-path: 仅探测包含实际资源（resourceCount > 0）的词典，跳过纯文本词典，避免串行无意义 IPC 延迟
+        let audioCandidates = candidates.filter { $0.resourceCount > 0 }
+        guard !audioCandidates.isEmpty else { return nil }
+
+        for dictionary in audioCandidates {
             try Task.checkCancellation()
             do {
                 let value = try await request(operation: "findAudio", fields: [
@@ -1001,12 +1163,34 @@ public final class DictionaryEngine: ObservableObject {
         }
     }
 
-    private nonisolated static func normalizedQuery(_ value: String) -> String {
+    public nonisolated static let boundaryPunctuation = CharacterSet(charactersIn: #",.:;!?…"'“”‘’`()[]{}<>«»—–/"#)
+        .union(.whitespacesAndNewlines)
+
+    public nonisolated static func cleanQueryWord(_ value: String) -> String {
+        value.trimmingCharacters(in: boundaryPunctuation)
+    }
+
+    public nonisolated static func normalizedQuery(_ value: String) -> String {
         canonicalQuery(value).lowercased()
     }
 
-    private nonisolated static func canonicalQuery(_ value: String) -> String {
-        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    public nonisolated static func canonicalQuery(_ value: String) -> String {
+        let cleaned = cleanQueryWord(value)
+        return cleaned.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    private nonisolated static func dictionaryPrioritySort(
+        _ lhs: StudyMateDictionarySummary,
+        _ rhs: StudyMateDictionarySummary
+    ) -> Bool {
+        if lhs.importedAt != rhs.importedAt {
+            return lhs.importedAt < rhs.importedAt
+        }
+        let titleOrder = lhs.title.localizedStandardCompare(rhs.title)
+        if titleOrder != .orderedSame {
+            return titleOrder == .orderedAscending
+        }
+        return lhs.id < rhs.id
     }
 
     private nonisolated static func detailCacheKey(for query: String, dictionaryID: String?) -> NSString {

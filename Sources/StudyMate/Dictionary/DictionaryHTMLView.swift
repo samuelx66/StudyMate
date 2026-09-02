@@ -479,6 +479,14 @@ private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandle
             urlSchemeTask.didFailWithError(NSError(domain: "StudyMate.DictionaryResource", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid dictionary resource URL"]))
             return
         }
+        guard self.coordinator?.allowsResourceDictionaryID(dictionaryID) == true else {
+            urlSchemeTask.didFailWithError(NSError(
+                domain: "StudyMate.DictionaryResource",
+                code: 403,
+                userInfo: [NSLocalizedDescriptionKey: "Dictionary resource is outside the current entry scope"]
+            ))
+            return
+        }
         let key = url.path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .removingPercentEncoding ?? url.path
@@ -596,6 +604,11 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     /// lookup popover deliberately keeps content JavaScript disabled.
     public let allowsJavaScript: Bool
     public let textScale: CGFloat
+    /// Resource hosts referenced by the currently rendered entries. Limiting
+    /// the bridge to these IDs prevents a dictionary script from probing every
+    /// installed package while still allowing “All dictionaries” definitions
+    /// to use resources from each displayed entry.
+    public let resourceDictionaryIDs: Set<String>
     public var onLookupWord: ((String) -> Void)?
     public var onPlayAudio: ((String) -> Void)?
     public var onPlayDictionaryAudio: ((String, String) -> Void)?
@@ -618,6 +631,11 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.isCompact = isCompact
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
+        if let host = baseURL?.host, baseURL?.scheme?.lowercased() == "studymate-resource" {
+            self.resourceDictionaryIDs = [host]
+        } else {
+            self.resourceDictionaryIDs = []
+        }
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
         self.onPlayDictionaryAudio = onPlayDictionaryAudio
@@ -650,6 +668,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.isCompact = isCompact
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
+        self.resourceDictionaryIDs = Set(entries.map(\.dictionaryID))
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
         self.onPlayDictionaryAudio = onPlayDictionaryAudio
@@ -693,7 +712,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     public func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
-        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        config.preferences.javaScriptCanOpenWindowsAutomatically = allowsJavaScript
         if allowsJavaScript {
             // Some legacy MDX packages ship a small controller script whose
             // URL cannot be loaded by WebKit because the resource response is
@@ -725,6 +744,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         context.coordinator.currentShellSignature = shellSignature
         context.coordinator.currentBodySignature = bodySignature
         context.coordinator.currentBaseURL = baseURL
+        context.coordinator.updateResourceScope(resourceDictionaryIDs)
         context.coordinator.currentAllowsJavaScript = allowsJavaScript
         context.coordinator.currentTextScale = textScale
         context.coordinator.hasLoadedDocument = false
@@ -734,6 +754,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
     public func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.updateResourceScope(resourceDictionaryIDs)
         let baseURLChanged = context.coordinator.currentBaseURL != baseURL
         let bodyChanged = context.coordinator.currentBodySignature != bodySignature
         let scaleChanged = context.coordinator.currentTextScale != textScale
@@ -861,11 +882,37 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var currentTextScale: CGFloat = 1.0
         var hasLoadedDocument = false
         var updateRevision: UInt64 = 0
+        private var allowedResourceDictionaryIDs: Set<String> = []
+        private var defaultResourceDictionaryID: String?
         private var renderedDocumentURL: URL?
         private var renderedDocumentHTML: String?
 
         init(parent: DictionaryHTMLView) {
             self.parent = parent
+            self.allowedResourceDictionaryIDs = parent.resourceDictionaryIDs
+            self.defaultResourceDictionaryID = parent.resourceDictionaryIDs.count == 1
+                ? parent.resourceDictionaryIDs.first
+                : nil
+            super.init()
+        }
+
+        func updateResourceScope(_ dictionaryIDs: Set<String>) {
+            allowedResourceDictionaryIDs = dictionaryIDs
+            defaultResourceDictionaryID = dictionaryIDs.count == 1 ? dictionaryIDs.first : nil
+            if allowedResourceDictionaryIDs.isEmpty,
+               let host = currentBaseURL?.host,
+               currentBaseURL?.scheme?.lowercased() == "studymate-resource" {
+                allowedResourceDictionaryIDs = [host]
+                defaultResourceDictionaryID = host
+            }
+        }
+
+        func allowsResourceDictionaryID(_ dictionaryID: String) -> Bool {
+            guard !dictionaryID.isEmpty else { return false }
+            if allowedResourceDictionaryIDs.contains(dictionaryID) {
+                return true
+            }
+            return allowedResourceDictionaryIDs.isEmpty && currentBaseURL?.host == dictionaryID
         }
 
         deinit {
@@ -1102,7 +1149,18 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                     )
                 }
             } else {
-                parent.onPlayAudio?(cleanAudio)
+                if let dictionaryID = defaultResourceDictionaryID {
+                    if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
+                        onPlayDictionaryAudio(dictionaryID, cleanAudio)
+                    } else {
+                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                            dictionaryID: dictionaryID,
+                            key: cleanAudio
+                        )
+                    }
+                } else {
+                    parent.onPlayAudio?(cleanAudio)
+                }
             }
         }
 
@@ -1185,6 +1243,35 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
         private func handleNewWindowURL(_ url: URL) {
             let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "sound" {
+                handleSoundURL(url)
+                return
+            }
+            if scheme == "studymate-sound" {
+                let dictionaryID = url.host ?? ""
+                let cleanAudio = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    .removingPercentEncoding ?? url.path
+                if !dictionaryID.isEmpty, !cleanAudio.isEmpty {
+                    if let onPlayDictionaryAudio = parent.onPlayDictionaryAudio {
+                        onPlayDictionaryAudio(dictionaryID, cleanAudio)
+                    } else {
+                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
+                            dictionaryID: dictionaryID,
+                            key: cleanAudio
+                        )
+                    }
+                }
+                return
+            }
+            if scheme == "studymate-resource" {
+                let word = url.path
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    .removingPercentEncoding ?? url.path
+                if !word.isEmpty, !word.hasPrefix(".studymate-document/") {
+                    parent.onLookupWord?(word)
+                }
+                return
+            }
             if scheme == "http" || scheme == "https" {
                 NSWorkspace.shared.open(url)
                 return

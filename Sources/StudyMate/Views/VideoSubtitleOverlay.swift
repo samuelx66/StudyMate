@@ -247,9 +247,6 @@ private struct DraggableVideoSubtitle: View {
                     }
                 }
             },
-            onSingleClick: {
-                engine.jumpToSegment(id: segmentID)
-            },
             onDoubleClick: {
                 let coordinator = DictionaryInteractionCoordinator.shared
                 coordinator.bindPlaybackEngine(engine)

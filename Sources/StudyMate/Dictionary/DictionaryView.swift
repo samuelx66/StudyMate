@@ -222,6 +222,11 @@ public struct DictionaryView: View {
         if engine.isSearching {
             return lang.text("正在查找…", "Searching…")
         }
+        if let original = engine.lemmaOriginalQuery,
+           let resolved = engine.definitionQuery,
+           resolved.caseInsensitiveCompare(original) != .orderedSame {
+            return lang.text("找到 \(resultItems.count) 个（词形还原：\(resolved)）", "\(resultItems.count) matches (base form: \(resolved))")
+        }
         return lang.text("找到 \(resultItems.count) 个", "\(resultItems.count) matches")
     }
 
@@ -395,13 +400,11 @@ public struct DictionaryView: View {
         .onChange(of: selectedResultID) { _, newID in
             guard let newID,
                   let selected = resultItems.first(where: { $0.id == newID }) else { return }
-            // In “All” mode each candidate belongs to a specific dictionary.
-            // Loading only by the global filter would otherwise return the
-            // first dictionary's definition for a row selected from another
-            // source.
+            // 在“全部”模式（selectedDictionaryID 为 nil）下，向 loadDefinition 传入 nil
+            // 从而触发底层 lookupAll，聚合加载所有已导入词典中该词的完整释义。
             engine.loadDefinition(
                 for: selected.key,
-                dictionaryID: selectedDictionaryID ?? selected.dictionaryID
+                dictionaryID: selectedDictionaryID
             )
         }
         .onChange(of: query) { _, newValue in
@@ -609,14 +612,19 @@ public struct DictionaryView: View {
     }
 
     private func applyRequestedLookup(_ pending: String) {
-        query = pending
+        let clean = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        recordQuery(clean)
+        isApplyingHistory = true
+        query = clean
         selectedResultID = nil
+        isApplyingHistory = false
         // Opening the standalone window is an explicit lookup lifecycle
         // event. Start a fresh key search even when the popover already left
         // the same hits/results in the shared engine; the search revision
         // below will select the exact candidate when the response arrives.
         engine.search(
-            query: pending,
+            query: clean,
             dictionaryID: selectedDictionaryID,
             immediate: true
         )

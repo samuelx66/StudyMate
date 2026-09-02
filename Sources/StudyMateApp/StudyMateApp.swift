@@ -437,7 +437,12 @@ struct StudyMateApp: App {
             coordinator.bindPlaybackEngine(engine)
             coordinator.pausePlaybackForVideoSubtitleSelection()
         }
-        coordinator.openDictionaryWindow()
+        // The menu can be invoked while only the welcome window exists, so
+        // there may be no MainContentView subscriber for the notification.
+        // Open the scene directly here; toolbar/popover callers still use the
+        // notification path owned by the media window.
+        coordinator.openDictionaryWindow(postNotification: false)
+        openWindow(id: "dictionary")
     }
 }
 

@@ -1629,7 +1629,16 @@ pub fn list_dictionaries(root: &Path) -> Result<Vec<DictionarySummary>> {
             result.push(manifest_to_summary(&manifest));
         }
     }
-    result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    // Dictionary order is also pronunciation priority. Keep the import order
+    // stable so the first dictionary with a matching MDD audio wins; title
+    // sorting made an alphabetically earlier book unexpectedly override the
+    // book the user imported first.
+    result.sort_by(|a, b| {
+        a.imported_at
+            .cmp(&b.imported_at)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     Ok(result)
 }
 
@@ -2211,7 +2220,8 @@ impl NativeDictionaryFile {
             let _ = (block, position);
         }
         if result.len() < limit {
-            let matches = self.matching_keys(&normalized, false, 8192)?;
+            let prefix_limit = limit.saturating_mul(8).clamp(limit, 2048);
+            let matches = self.matching_keys(query, false, prefix_limit)?;
             let mut prefix = Vec::new();
             for (block, position, raw) in matches {
                 if normalize_search_key(&raw.key, self.header.key_case_sensitive) == normalized {
@@ -2490,9 +2500,14 @@ impl NativeDictionary {
         if normalized.is_empty() {
             return Ok(Vec::new());
         }
-        let mut matches = self.mdx.matching_keys(&normalized, true, limit)?;
+        let mut matches = self.mdx.matching_keys(query, true, limit)?;
         if matches.len() < limit {
-            matches.extend(self.mdx.matching_keys(&normalized, false, 8192)?);
+            // The reader already stops after `max` matching keys. A bounded
+            // prefix window avoids decoding thousands of candidates for very
+            // short queries while retaining enough alternatives for the UI's
+            // maximum result count.
+            let prefix_limit = limit.saturating_mul(8).clamp(limit, 2048);
+            matches.extend(self.mdx.matching_keys(query, false, prefix_limit)?);
         }
         let mut exact = Vec::new();
         let mut prefix = Vec::new();
@@ -2509,7 +2524,11 @@ impl NativeDictionary {
                 prefix.push(item);
             }
         }
-        exact.sort_by(|left, right| left.2.key.cmp(&right.2.key));
+        exact.sort_by(|left, right| {
+            (left.2.key != query)
+                .cmp(&(right.2.key != query))
+                .then_with(|| left.2.key.cmp(&right.2.key))
+        });
         prefix.sort_by(|left, right| {
             normalize_search_key(&left.2.key, self.manifest.key_case_sensitive)
                 .len()
@@ -2766,10 +2785,20 @@ impl DictionaryReaderCache {
         query: &str,
         limit_per_dictionary: usize,
     ) -> Result<Vec<LookupKey>> {
+        const MAX_ALL_DICTIONARY_KEYS: usize = 500;
         let dictionaries = self.list(root)?;
         let mut result = Vec::new();
         for dictionary in dictionaries {
-            result.extend(self.lookup_keys(root, &dictionary.id, query, limit_per_dictionary)?);
+            let remaining = MAX_ALL_DICTIONARY_KEYS.saturating_sub(result.len());
+            if remaining == 0 {
+                break;
+            }
+            result.extend(self.lookup_keys(
+                root,
+                &dictionary.id,
+                query,
+                limit_per_dictionary.min(remaining),
+            )?);
         }
         Ok(result)
     }
@@ -3296,6 +3325,38 @@ mod tests {
         let upper = lookup(&package_root, "fixture", "Relate", 1).unwrap();
         assert_eq!(upper[0].key, "Relate");
         assert_eq!(upper[0].text, "short proper-name");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn key_lookup_preserves_original_case_priority() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-case-keys-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mdx = root.join("fixture.mdx");
+        fs::write(
+            &mdx,
+            mdx_text_fixture(&[
+                ("Relate", "short proper-name"),
+                ("relate", "full verb definition"),
+            ]),
+        )
+        .unwrap();
+        let package_root = root.join("Dictionaries");
+        import_fixture(&package_root, &mdx, "fixture");
+
+        let mut cache = DictionaryReaderCache::default();
+        let lower = cache
+            .lookup_keys(&package_root, "fixture", "relate", 10)
+            .unwrap();
+        assert_eq!(lower.first().map(|hit| hit.key.as_str()), Some("relate"));
+        let upper = cache
+            .lookup_keys(&package_root, "fixture", "Relate", 10)
+            .unwrap();
+        assert_eq!(upper.first().map(|hit| hit.key.as_str()), Some("Relate"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -30,7 +30,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     @Published public private(set) var anchorScreenRect: NSRect?
     @Published public private(set) var isLookupPresented = false
 
-    private weak var activeTextView: NSTextView?
+    fileprivate weak var activeTextView: NSTextView?
     private weak var playbackEngine: PlaybackEngine?
     private var activePopover: NSPopover?
     private var popoverDelegate: DictionaryPopoverDelegate?
@@ -68,7 +68,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         // SwiftUI 的 Text 选择最终由 NSTextView 承载。鼠标松开时再次读取
         // 选区，可以覆盖跨行拖选及系统菜单弹出时通知顺序不同的情况。
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
-            let screenPoint = event.locationInWindow
+            let screenPoint = event.window?.convertToScreen(NSRect(origin: event.locationInWindow, size: .zero)).origin ?? NSEvent.mouseLocation
             Task { @MainActor [weak self] in
                 guard let self, !self.isLookupPresented else { return }
                 if let textView = self.currentSelectionTextView {
@@ -78,22 +78,23 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return event
         }
 
-        // 监控鼠标点击：词典弹窗展示时，点击弹窗外部区域自动关闭弹窗
+        // 监控鼠标点击：词典弹窗展示时，点击弹窗外部区域自动关闭弹窗。
+        // 在当前事件中同步清掉旧选区，避免操作条仍然停留在旧单词上；
+        // 下一次鼠标拖选会在后续 selection notification 中重新建立状态。
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { @MainActor [weak self] event in
             let eventWindow = event.window
-            // 在事件进入队列时固定当前气泡状态，避免工具条的“查词”点击
-            // 创建新气泡后，被这个延迟执行的监视器误判为气泡外点击。
             let hadVisiblePopover = self?.isLookupPresented == true
             let popoverAtEvent = self?.activePopover
-            Task { @MainActor [weak self, eventWindow, hadVisiblePopover, popoverAtEvent] in
-                guard let self, hadVisiblePopover,
-                      let popoverAtEvent,
-                      self.activePopover === popoverAtEvent,
-                      let popoverWindow = popoverAtEvent.contentViewController?.view.window,
-                      eventWindow !== popoverWindow else { return }
-                self.dismissPopover()
-                self.clearSelectionAndDeselect()
+            guard let self, hadVisiblePopover,
+                  let popoverAtEvent,
+                  self.activePopover === popoverAtEvent else {
+                return event
             }
+            if let popoverWindow = popoverAtEvent.contentViewController?.view.window,
+               eventWindow === popoverWindow {
+                return event
+            }
+            self.clearSelectionAndDeselect()
             return event
         }
 
@@ -131,7 +132,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         screenPoint: NSPoint? = nil,
         screenRect: NSRect? = nil
     ) {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = DictionaryEngine.cleanQueryWord(text)
         guard !value.isEmpty else {
             clearSelection()
             return
@@ -146,6 +147,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         } else {
             anchorScreenPoint = NSEvent.mouseLocation
         }
+        // 静默预取释义，用户移动鼠标点击“查词”时实现 0ms 秒开
+        DictionaryEngine.shared.prefetchDefinition(for: value)
     }
 
     public func clearSelection() {
@@ -157,6 +160,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         contextText = nil
         anchorScreenPoint = nil
         anchorScreenRect = nil
+        activeTextView = nil
         resumePlaybackIfNeeded()
     }
 
@@ -314,9 +318,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
 
     /// Control-Command-D 的统一入口：优先使用选区，没有选区时取光标所在单词。
     public func lookupCurrentSelectionOrWord() {
-        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
-            return
-        }
+        guard let textView = currentSelectionTextView,
+              textView.window?.isKeyWindow == true else { return }
         guard Self.isDictionarySelectableTextView(textView) else { return }
         let range = textView.selectedRange()
         let length = (textView.string as NSString).length
@@ -336,11 +339,33 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         lookupSelected()
     }
 
+    private static func preferredSpeechVoice(for text: String) -> AVSpeechSynthesisVoice? {
+        let hasCJK = text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+        }
+        if hasCJK {
+            return AVSpeechSynthesisVoice(language: "zh-CN")
+        }
+        let hasKana = text.unicodeScalars.contains { scalar in
+            (0x3040...0x30FF).contains(scalar.value)
+        }
+        if hasKana {
+            return AVSpeechSynthesisVoice(language: "ja-JP")
+        }
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        if let enhanced = voices.first(where: { $0.language == "en-US" && $0.quality == .enhanced }) {
+            return enhanced
+        }
+        return AVSpeechSynthesisVoice(language: "en-US") ?? AVSpeechSynthesisVoice(language: Locale.preferredLanguages.first ?? "en-US")
+    }
+
     public func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         _ = beginAudioRequest()
         let utterance = AVSpeechUtterance(string: trimmed)
+        utterance.voice = Self.preferredSpeechVoice(for: trimmed)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
         avSynthesizer.speak(utterance)
     }
 
@@ -540,12 +565,14 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         toggleVocabulary(word: selectedText, exampleSentence: contextText ?? "")
     }
 
-    public func openDictionaryWindow(query: String? = nil) {
+    public func openDictionaryWindow(query: String? = nil, postNotification: Bool = true) {
         let targetQuery = query ?? selectedText ?? DictionaryEngine.shared.requestedQuery ?? ""
         if !targetQuery.isEmpty {
             DictionaryEngine.shared.requestLookup(targetQuery)
         }
-        NotificationCenter.default.post(name: .studyMateOpenDictionaryWindow, object: nil)
+        if postNotification {
+            NotificationCenter.default.post(name: .studyMateOpenDictionaryWindow, object: nil)
+        }
         dismissPopover()
         // The full dictionary window owns the interaction now. Keep playback
         // paused until that window disappears, matching the popover behavior.
@@ -562,19 +589,25 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         guard let textView = currentSelectionTextView else { return false }
         let range = textView.selectedRange()
         let length = (textView.string as NSString).length
-        guard range.length > 0,
-              range.location != NSNotFound,
+        guard range.location != NSNotFound,
               range.location >= 0,
               range.location <= length,
+              range.length >= 0,
               range.length <= length - range.location else { return false }
-        let value = (textView.string as NSString).substring(with: range)
-        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let value: String
+        if range.length > 0 {
+            value = (textView.string as NSString).substring(with: range)
+        } else {
+            guard let word = Self.wordAtCaret(in: textView) else { return false }
+            value = word
+        }
+        guard !DictionaryEngine.cleanQueryWord(value).isEmpty else { return false }
         updateSelection(
             text: value,
             context: objc_getAssociatedObject(textView, &dictionaryTextContextAssociationKey) as? String,
             screenPoint: NSEvent.mouseLocation
         )
-        DictionaryEngine.shared.requestLookup(value)
+        DictionaryEngine.shared.requestLookup(DictionaryEngine.cleanQueryWord(value))
         return true
     }
 
@@ -677,14 +710,17 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
 
     private var currentSelectionTextView: NSTextView? {
         if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+           textView.window?.isKeyWindow == true,
            Self.isDictionarySelectableTextView(textView) {
             return textView
         }
         if let pendingSelectionTextView,
+           pendingSelectionTextView.window?.isKeyWindow == true,
            Self.isDictionarySelectableTextView(pendingSelectionTextView) {
             return pendingSelectionTextView
         }
         if let activeTextView,
+           activeTextView.window?.isKeyWindow == true,
            Self.isDictionarySelectableTextView(activeTextView) {
             return activeTextView
         }
@@ -701,21 +737,15 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         let location = textView.selectedRange().location
         guard location != NSNotFound, location >= 0 else { return nil }
         let caret = min(location, string.length)
-        let characterSet = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "'_"))
-        var start = caret
-        var end = caret
-        while start > 0 {
-            let scalar = string.character(at: start - 1)
-            guard let unicode = UnicodeScalar(scalar), characterSet.contains(unicode) else { break }
-            start -= 1
-        }
-        while end < string.length {
-            let scalar = string.character(at: end)
-            guard let unicode = UnicodeScalar(scalar), characterSet.contains(unicode) else { break }
-            end += 1
-        }
-        guard end > start else { return nil }
-        return string.substring(with: NSRange(location: start, length: end - start))
+        let wordRange = textView.selectionRange(
+            forProposedRange: NSRange(location: caret, length: 0),
+            granularity: .selectByWord
+        )
+        guard wordRange.location != NSNotFound, wordRange.length > 0,
+              wordRange.location + wordRange.length <= string.length else { return nil }
+        let rawWord = string.substring(with: wordRange)
+        let cleaned = DictionaryEngine.cleanQueryWord(rawWord)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private static func plainText(_ value: String) -> String {
@@ -872,7 +902,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
             target.text = text
             target.context = self.context
             if let lookupItem = textView.menu?.items.first {
-                lookupItem.title = LanguageManager.shared.text("查询“\(text)”", "Look up “\(text)”")
+                lookupItem.title = LanguageManager.shared.text("查询所选词", "Look Up Selection")
             }
         }
         if textView.font != font {
@@ -895,12 +925,12 @@ public struct DictionarySelectableText: NSViewRepresentable {
     private func contextMenu(for textView: NSTextView) -> NSMenu {
         let menu = NSMenu()
         let lookup = NSMenuItem(
-            title: "查询“\(text)”",
+            title: LanguageManager.shared.text("查询所选词", "Look Up Selection"),
             action: #selector(ContextMenuTarget.lookup(_:)),
             keyEquivalent: ""
         )
         let copy = NSMenuItem(
-            title: "复制",
+            title: LanguageManager.shared.text("复制", "Copy"),
             action: #selector(ContextMenuTarget.copy(_:)),
             keyEquivalent: ""
         )
@@ -1252,7 +1282,7 @@ public struct DictionaryLookupOverlay: View {
 
     private func targetAnchorPosition(in size: CGSize) -> CGPoint {
         guard let screenPoint = coordinator.anchorScreenPoint,
-              let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
+              let window = coordinator.activeTextView?.window ?? NSApp.mainWindow ?? NSApp.keyWindow ?? NSApp.windows.first,
               let contentView = window.contentView else {
             return CGPoint(x: size.width / 2, y: size.height / 2)
         }
@@ -1311,8 +1341,17 @@ private struct DictionaryLookupPopoverContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(displayedQuery)
-                    .font(.title3.weight(.semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayedQuery)
+                        .font(.title3.weight(.semibold))
+                    if let original = engine.lemmaOriginalQuery,
+                       let resolved = engine.definitionQuery,
+                       resolved.caseInsensitiveCompare(original) != .orderedSame {
+                        Text(lang.text("已还原原型：\(resolved)", "Base form: \(resolved)"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
                 Button { onPronounce(displayedQuery) } label: {
                     Image(systemName: "speaker.wave.2.fill")
@@ -1377,7 +1416,7 @@ private struct DictionaryLookupPopoverContent: View {
                         )
                     }
                 )
-                .frame(height: 240)
+                .frame(height: 360)
             }
 
             if let context, !context.isEmpty {
@@ -1405,7 +1444,7 @@ private struct DictionaryLookupPopoverContent: View {
             .buttonStyle(.borderless)
         }
         .padding(14)
-        .frame(width: 390)
+        .frame(width: 420)
     }
 }
 
