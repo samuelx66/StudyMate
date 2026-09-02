@@ -580,18 +580,16 @@ public actor AudioPCMExtractor {
         cacheURL: URL,
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> AudioPCMData {
-        do {
-            try await extractWithAVFoundation(
+        if Self.ffmpegExecutableURL() != nil {
+            // 与无缓存路径保持一致：正式包优先使用可控的 ffmpeg，避免
+            // AVAssetReader 在 macOS 26 的并发 AAC 解码路径中触发进程级异常。
+            try await extractWithFFmpeg(
                 from: url,
                 writingTo: cacheURL,
                 progress: progress
             )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch PCMExtractionError.cacheWriteFailed {
-            throw PCMExtractionError.cacheWriteFailed
-        } catch {
-            try await extractWithFFmpeg(
+        } else {
+            try await extractWithAVFoundation(
                 from: url,
                 writingTo: cacheURL,
                 progress: progress
@@ -775,14 +773,15 @@ public actor AudioPCMExtractor {
         from url: URL,
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> AudioPCMData {
-        do {
-            return try await extractWithAVFoundation(from: url, progress: progress)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // AVFoundation 不支持的容器/编码交给随应用打包的 ffmpeg。
+        // macOS 26 的 AVAssetReader 在多个媒体同时打开、或 AAC 尾包异常时
+        // 可能触发 AVFAudio 的进程级异常（Swift 无法 catch）。应用已有
+        // ffmpeg 解码器时优先走同一条可控路径，保证波形、断句和播放器不会
+        // 因系统解码器的内部状态导致整个应用退出。仅在正式包没有 ffmpeg
+        // 时保留 AVFoundation 作为系统原生兜底。
+        if Self.ffmpegExecutableURL() != nil {
             return try await extractWithFFmpeg(from: url, progress: progress)
         }
+        return try await extractWithAVFoundation(from: url, progress: progress)
     }
 
     private static func extractWithAVFoundation(

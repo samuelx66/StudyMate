@@ -1721,7 +1721,7 @@ final class PlaybackEngineTests: XCTestCase {
         )
 
         // 以实际解码采样读到 EOF，确认合并文件不是只有容器头或被提前截断。
-        let mergedDuration = try fullyDecodeAudio(at: result.location)
+        let mergedDuration = try await fullyDecodeAudio(at: result.location)
         XCTAssertEqual(mergedDuration, 1.4, accuracy: 0.12)
         let subtitleURL = result.location.deletingPathExtension().appendingPathExtension("srt")
         let parsedItems = try SubtitleParser.shared.parse(from: subtitleURL)
@@ -1774,20 +1774,12 @@ final class PlaybackEngineTests: XCTestCase {
         try file.write(from: buffer)
     }
 
-    private func fullyDecodeAudio(at url: URL) throws -> Double {
-        let file = try AVAudioFile(forReading: url)
-        let totalFrames = file.length
-        let sampleRate = file.processingFormat.sampleRate
-        let capacity = AVAudioFrameCount(min(Int64(65_536), totalFrames))
-        let buffer = try XCTUnwrap(
-            AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: capacity)
-        )
-        while file.framePosition < totalFrames {
-            let remaining = totalFrames - file.framePosition
-            try file.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(capacity), remaining)))
-            XCTAssertGreaterThan(buffer.frameLength, 0)
-        }
-        return Double(totalFrames) / sampleRate
+    private func fullyDecodeAudio(at url: URL) async throws -> Double {
+        // Use the production decoder path for this integration assertion. It
+        // fully consumes the audio while avoiding AVFAudio's process-level
+        // `fmt?` failure when the test suite has just created another AAC file.
+        let pcm = try await AudioPCMExtractor.shared.extract(from: url)
+        return Double(pcm.sampleCount) / Double(pcm.sampleRate)
     }
 
     func testManualSubtitleImportReplacesEveryExistingSegmentAndTargetsTranslation() {

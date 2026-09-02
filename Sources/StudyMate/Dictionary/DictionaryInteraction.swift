@@ -12,6 +12,53 @@ private var dictionaryTextContextAssociationKey: UInt8 = 0
 /// subtitle lookup HUD.
 private var dictionarySelectableTextMarkerKey: UInt8 = 0
 
+/// Reports a SwiftUI-hosted control's frame in AppKit's window coordinate
+/// space. `GeometryProxy.frame(in: .global)` uses a different coordinate
+/// system on macOS, which made the global mouse monitor dismiss the action bar
+/// before its own button could receive the click.
+private struct DictionaryActionBarFrameReader: NSViewRepresentable {
+    let onChange: (NSRect?) -> Void
+
+    func makeNSView(context: Context) -> DictionaryActionBarFrameReportingView {
+        let view = DictionaryActionBarFrameReportingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ nsView: DictionaryActionBarFrameReportingView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportFrame()
+    }
+}
+
+private final class DictionaryActionBarFrameReportingView: NSView {
+    var onChange: ((NSRect?) -> Void)?
+    private var lastFrame: NSRect?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reportFrame()
+    }
+
+    override func layout() {
+        super.layout()
+        reportFrame()
+    }
+
+    func reportFrame() {
+        guard window != nil else {
+            guard lastFrame != nil else { return }
+            lastFrame = nil
+            onChange?(nil)
+            return
+        }
+        let frame = convert(bounds, to: nil)
+        guard lastFrame != frame else { return }
+        lastFrame = frame
+        onChange?(frame)
+    }
+}
+
 /// 统一管理字幕取词状态。这个对象负责选区、浮动操作条和词典弹窗，
 /// 仅通过播放器的弱引用在视频字幕取词期间暂时暂停/恢复，不参与句子选中状态，
 /// 因此点击句子仍然保持原有的播放逻辑。
@@ -1266,15 +1313,13 @@ public struct DictionarySelectionActionBar: View {
         .padding(.vertical, 3.5)
         .studymateChromeCapsule()
         .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
+        // NSEvent.locationInWindow is in the AppKit window coordinate space;
+        // SwiftUI's .global frame is not. Report the frame from an embedded
+        // NSView so a click on one of these buttons cannot be mistaken for an
+        // outside click that clears the selection first.
         .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear {
-                        coordinator.actionBarFrameInWindow = geo.frame(in: .global)
-                    }
-                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
-                        coordinator.actionBarFrameInWindow = newFrame
-                    }
+            DictionaryActionBarFrameReader { frame in
+                coordinator.actionBarFrameInWindow = frame
             }
         )
         .onDisappear {
@@ -1442,9 +1487,10 @@ private struct DictionaryLookupPopoverContent: View {
                 DictionaryHTMLView(
                     entries: engine.searchResults,
                     isCompact: true,
-                    // The popover must remain a safe, responsive preview. MDX
-                    // scripts are enabled only in the full detail pane.
-                    allowsJavaScript: false,
+                    // Keep the popover on the same WebKit/MDX execution path
+                    // as the full dictionary pane so fold controls and
+                    // dictionary-provided interactions behave consistently.
+                    allowsJavaScript: true,
                     onLookupWord: { word in
                         displayedQuery = word
                         onLookupWord(word)

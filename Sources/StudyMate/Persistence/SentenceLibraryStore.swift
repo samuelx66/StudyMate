@@ -8,6 +8,7 @@ public enum SentenceLibraryError: LocalizedError {
     case invalidName
     case libraryAlreadyExists
     case defaultLibraryCannotBeDeleted
+    case operationInProgress
 
     public var errorDescription: String? {
         switch self {
@@ -17,6 +18,7 @@ public enum SentenceLibraryError: LocalizedError {
         case .invalidName: return "请输入有效的句库名称。"
         case .libraryAlreadyExists: return "这个句库已经存在。"
         case .defaultLibraryCannotBeDeleted: return "默认句库不能删除。"
+        case .operationInProgress: return "句库正在处理上一项操作，请稍候。"
         }
     }
 }
@@ -222,8 +224,13 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             do {
                 for (id, data) in previewData {
                     let destination = previewDirectory.appendingPathComponent("\(id.uuidString).jpg")
-                    if (try? data.write(to: destination, options: .atomic)) != nil {
+                    do {
+                        try data.write(to: destination, options: .atomic)
                         storedPreviewIDs.insert(id)
+                    } catch {
+                        throw SentenceLibraryError.database(
+                            "预览图写入失败：\(destination.lastPathComponent)（\(error.localizedDescription)）"
+                        )
                     }
                 }
                 for entry in entries {

@@ -196,9 +196,37 @@ public enum DictionaryHTMLFormatter {
             </div>
             """
         }.joined(separator: "\n<hr class=\"dict-divider\">\n")
-        let body = bodyEntries + deferredScripts.joined()
+        // A combined lookup can contain the same vendor bundle once per
+        // dictionary entry. Executing that bundle repeatedly replaces event
+        // handlers and can make fold controls appear to do nothing. Keep
+        // inline scripts in their original order, but execute each external
+        // bundle only at its first occurrence.
+        let body = bodyEntries + deduplicateDeferredScripts(deferredScripts).joined()
         bodyCache.setObject(body as NSString, forKey: cacheKey as NSString, cost: body.utf8.count)
         return body
+    }
+
+    private static func deduplicateDeferredScripts(_ scripts: [String]) -> [String] {
+        var seenSources = Set<String>()
+        return scripts.filter { script in
+            guard let source = scriptSource(from: script) else {
+                // Inline scripts can carry per-entry state and must never be
+                // removed merely because their text happens to match.
+                return true
+            }
+            return seenSources.insert(source).inserted
+        }
+    }
+
+    private static func scriptSource(from script: String) -> String? {
+        let pattern = #"(?is)<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: script, range: NSRange(location: 0, length: (script as NSString).length)),
+              match.numberOfRanges > 1 else { return nil }
+        let source = (script as NSString).substring(with: match.range(at: 1))
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return source.isEmpty ? nil : source
     }
 
     private static func markupCacheKey(
@@ -495,8 +523,12 @@ private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandle
             return
         }
 
-        Task { @MainActor in
+        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
+        let task = Task { @MainActor [weak self] in
+            defer { self?.removeTask(withID: taskID) }
             do {
+                try Task.checkCancellation()
+                guard let self else { return }
                 if let documentData = self.coordinator?.documentData(for: url) {
                     let response = makeResponse(
                         url: url,
@@ -512,6 +544,7 @@ private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandle
                 guard let resource = try await DictionaryEngine.shared.resourceData(dictionaryID: dictionaryID, key: key) else {
                     throw NSError(domain: "StudyMate.DictionaryResource", code: 404, userInfo: [NSLocalizedDescriptionKey: "Dictionary resource not found"])
                 }
+                try Task.checkCancellation()
                 let response = makeResponse(
                     url: url,
                     mimeType: resource.mimeType,
@@ -522,9 +555,12 @@ private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandle
                 urlSchemeTask.didReceive(resource.data)
                 urlSchemeTask.didFinish()
             } catch {
-                urlSchemeTask.didFailWithError(error)
+                if !Task.isCancelled {
+                    urlSchemeTask.didFailWithError(error)
+                }
             }
         }
+        tasks[taskID] = task
     }
 
     private func makeResponse(
@@ -559,7 +595,19 @@ private final class DictionaryResourceSchemeHandler: NSObject, WKURLSchemeHandle
         )
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        cancelTask(withID: ObjectIdentifier(urlSchemeTask as AnyObject))
+    }
+
+    private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    private func removeTask(withID id: ObjectIdentifier) {
+        tasks.removeValue(forKey: id)
+    }
+
+    private func cancelTask(withID id: ObjectIdentifier) {
+        tasks.removeValue(forKey: id)?.cancel()
+    }
 }
 
 /// Handles the MDX `sound://` convention at the WebKit boundary. Relying only
@@ -579,16 +627,34 @@ private final class DictionarySoundSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFinish()
             return
         }
-        Task { @MainActor [weak self] in
+        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
+        let task = Task { @MainActor [weak self] in
+            defer { self?.removeTask(withID: taskID) }
+            guard !Task.isCancelled else { return }
             self?.coordinator?.handleSoundURL(url)
             // The native audio player owns playback. Finish the WebKit task
             // without returning the MDD bytes to WebKit, so a dictionary's
             // normal sound link cannot trigger a second, broken media load.
-            urlSchemeTask.didFinish()
+            if !Task.isCancelled {
+                urlSchemeTask.didFinish()
+            }
         }
+        tasks[taskID] = task
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        cancelTask(withID: ObjectIdentifier(urlSchemeTask as AnyObject))
+    }
+
+    private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    private func removeTask(withID id: ObjectIdentifier) {
+        tasks.removeValue(forKey: id)
+    }
+
+    private func cancelTask(withID id: ObjectIdentifier) {
+        tasks.removeValue(forKey: id)?.cancel()
+    }
 }
 
 /// A lightweight, transparent AppKit WebKit view wrapper designed for smooth
@@ -600,8 +666,9 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     public let shellSignature: Int
     public let baseURL: URL?
     public let isCompact: Bool
-    /// MDX scripts are enabled only for the full dictionary detail pane. The
-    /// lookup popover deliberately keeps content JavaScript disabled.
+    /// MDX content JavaScript is enabled in both dictionary presentation
+    /// modes. The full pane and lookup popover therefore execute the same
+    /// entry scripts and use the same native resource/audio bridge.
     public let allowsJavaScript: Bool
     public let textScale: CGFloat
     /// Resource hosts referenced by the currently rendered entries. Limiting

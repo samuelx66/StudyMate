@@ -263,6 +263,30 @@ private struct DraggableVideoSubtitle: View {
         CGSize(width: max(1, subtitleSize.width - 24), height: max(1, subtitleSize.height - 10))
     }
 
+    /// Positions are stored as normalized centers. Keep the entire rendered
+    /// subtitle card inside the video bounds, not just its center; this also
+    /// repairs old saved positions after a window resize or font change.
+    private var constrainedSavedPosition: CGPoint {
+        constrainedPosition(savedPosition)
+    }
+
+    private func constrainedPosition(_ point: CGPoint) -> CGPoint {
+        let safeWidth = max(1, containerSize.width)
+        let safeHeight = max(1, containerSize.height)
+        let halfWidth = min(0.5, subtitleSize.width / safeWidth / 2)
+        let halfHeight = min(0.5, subtitleSize.height / safeHeight / 2)
+        let minX = halfWidth
+        let maxX = max(minX, 1 - halfWidth)
+        let minY = halfHeight
+        let maxY = max(minY, 1 - halfHeight)
+        let safeX = point.x.isFinite ? point.x : 0.5
+        let safeY = point.y.isFinite ? point.y : 0.5
+        return CGPoint(
+            x: min(maxX, max(minX, safeX)),
+            y: min(maxY, max(minY, safeY))
+        )
+    }
+
     private func updateCachedLayout() {
         let font = makeSubtitleFont()
         cachedSubtitleFont = font
@@ -302,9 +326,11 @@ private struct DraggableVideoSubtitle: View {
                 case .ended(let translation):
                     let width = max(1, containerSize.width)
                     let height = max(1, containerSize.height)
-                    let finalX = min(0.96, max(0.04, savedPosition.x + translation.width / width))
-                    let finalY = min(0.96, max(0.04, savedPosition.y + translation.height / height))
-                    setPosition(CGPoint(x: finalX, y: finalY))
+                    let finalPosition = constrainedPosition(CGPoint(
+                        x: constrainedSavedPosition.x + translation.width / width,
+                        y: constrainedSavedPosition.y + translation.height / height
+                    ))
+                    setPosition(finalPosition)
                     dragOffset = .zero
                     isDragging = false
                     appKitDragActive = false
@@ -353,9 +379,11 @@ private struct DraggableVideoSubtitle: View {
                     guard !appKitDragActive, isDragging else { return }
                     let width = max(1, containerSize.width)
                     let height = max(1, containerSize.height)
-                    let finalX = min(0.96, max(0.04, savedPosition.x + value.translation.width / width))
-                    let finalY = min(0.96, max(0.04, savedPosition.y + value.translation.height / height))
-                    setPosition(CGPoint(x: finalX, y: finalY))
+                    let finalPosition = constrainedPosition(CGPoint(
+                        x: constrainedSavedPosition.x + value.translation.width / width,
+                        y: constrainedSavedPosition.y + value.translation.height / height
+                    ))
+                    setPosition(finalPosition)
                     dragOffset = .zero
                     isDragging = false
                     if hasNotifiedEngineOfDrag {
@@ -366,8 +394,8 @@ private struct DraggableVideoSubtitle: View {
         )
         .offset(dragOffset)
         .position(
-            x: savedPosition.x * containerSize.width,
-            y: savedPosition.y * containerSize.height
+            x: constrainedSavedPosition.x * containerSize.width,
+            y: constrainedSavedPosition.y * containerSize.height
         )
         .onDisappear {
             if hasNotifiedEngineOfDrag {
@@ -385,6 +413,7 @@ private struct DraggableVideoSubtitle: View {
     }
 
     private func setPosition(_ point: CGPoint) {
+        let point = constrainedPosition(point)
         switch track {
         case .original:
             settings.originalPositionX = point.x

@@ -9,6 +9,7 @@ public enum VocabularyNotebookError: LocalizedError {
     case notebookAlreadyExists
     case defaultNotebookCannotBeDeleted
     case emptyWord
+    case operationInProgress
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +20,7 @@ public enum VocabularyNotebookError: LocalizedError {
         case .notebookAlreadyExists: return "这个生词本已经存在。"
         case .defaultNotebookCannotBeDeleted: return "默认生词本不能删除。"
         case .emptyWord: return "不能保存空单词。"
+        case .operationInProgress: return "生词本正在处理上一项操作，请稍候。"
         }
     }
 }
@@ -41,6 +43,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.studymate.vocabulary-notebook.store", qos: .utility)
     private var openDatabases: [UUID: OpaquePointer] = [:]
     private var initializedDatabases: Set<UUID> = []
+    private var pendingWriteWarnings: [String] = []
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(rootURL: URL? = nil, fileManager: FileManager = .default) {
@@ -203,6 +206,16 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
         }
     }
 
+    /// Manifest timestamps are auxiliary metadata: a failed timestamp write
+    /// must not undo a committed SQLite change, but it must be visible to the
+    /// status bar instead of being silently discarded.
+    public func consumeWriteWarnings() -> [String] {
+        queue.sync {
+            defer { pendingWriteWarnings.removeAll(keepingCapacity: true) }
+            return pendingWriteWarnings
+        }
+    }
+
     public func contains(word: String, in notebookID: UUID) throws -> Bool {
         let key = Self.normalizedWord(word)
         guard !key.isEmpty else { return false }
@@ -249,7 +262,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
             // The entry transaction is already committed. Manifest ordering is
             // auxiliary metadata, so a write failure here must not report a
             // failed add or roll back a successfully stored word.
-            try? touchManifestUnlocked(notebookID: notebookID)
+            touchManifestBestEffortUnlocked(notebookID: notebookID)
             return saved
         }
     }
@@ -274,7 +287,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                     guard sqlite3_step(deleteStatement) == SQLITE_DONE else { throw databaseError(db) }
                     if sqlite3_changes(db) > 0 {
                         try execute("COMMIT;", in: db)
-                        try? touchManifestUnlocked(notebookID: notebookID)
+                        touchManifestBestEffortUnlocked(notebookID: notebookID)
                         return false
                     }
 
@@ -293,7 +306,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                     bind(entry.source, at: 6, to: insertStatement)
                     guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw databaseError(db) }
                     try execute("COMMIT;", in: db)
-                    try? touchManifestUnlocked(notebookID: notebookID)
+                    touchManifestBestEffortUnlocked(notebookID: notebookID)
                     return true
                 } catch {
                     try? execute("ROLLBACK;", in: db)
@@ -316,7 +329,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 bind(key, at: 1, to: statement)
                 guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
                 let changed = sqlite3_changes(db) > 0
-                if changed { try? touchManifestUnlocked(notebookID: notebookID) }
+                if changed { touchManifestBestEffortUnlocked(notebookID: notebookID) }
                 return changed
             }
         }
@@ -342,7 +355,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                         changed += Int(sqlite3_changes(db))
                     }
                     try execute("COMMIT;", in: db)
-                    if changed > 0 { try? touchManifestUnlocked(notebookID: notebookID) }
+                    if changed > 0 { touchManifestBestEffortUnlocked(notebookID: notebookID) }
                     return changed
                 } catch {
                     try? execute("ROLLBACK;", in: db)
@@ -420,8 +433,8 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
             do {
                 let deletedCount = try deleteEntriesUnlocked(ids: ids, notebookID: sourceNotebookID)
                 if deletedCount > 0 {
-                    try? touchManifestUnlocked(notebookID: sourceNotebookID)
-                    try? touchManifestUnlocked(notebookID: destinationNotebookID)
+                    touchManifestBestEffortUnlocked(notebookID: sourceNotebookID)
+                    touchManifestBestEffortUnlocked(notebookID: destinationNotebookID)
                 }
                 try? fileManager.removeItem(at: journalURL)
                 return deletedCount
@@ -581,8 +594,18 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
         try writeManifest(descriptor, to: package)
     }
 
+    private func touchManifestBestEffortUnlocked(notebookID: UUID) {
+        do {
+            try touchManifestUnlocked(notebookID: notebookID)
+        } catch {
+            pendingWriteWarnings.append(
+                "生词本清单更新时间写入失败：\(error.localizedDescription)"
+            )
+        }
+    }
+
     private func pendingMoveURL(for id: UUID) -> URL {
-        rootURL.appendingPathComponent(".move-(id.uuidString).json")
+        rootURL.appendingPathComponent(".move-\(id.uuidString).json")
     }
 
     private func writePendingMoveJournal(_ journal: PendingMoveJournal, to url: URL) throws {

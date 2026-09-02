@@ -15,6 +15,8 @@ public struct DraggableWaveformOverlay: View {
     /// 普通波形点击仍使用 `onSelectSegment`，两者的行为必须分开。
     let onSelectSegmentForBoundaryDrag: (UUID) -> Void
     let onPanViewport: ((Double) -> Void)?
+    let onPanViewportBegan: (() -> Void)?
+    let onPanViewportEnded: (() -> Void)?
     
     public init(
         engine: PlaybackEngine,
@@ -26,7 +28,9 @@ public struct DraggableWaveformOverlay: View {
         onBoundaryDragBegan: @escaping () -> Void = {},
         onBoundaryDragEnded: @escaping () -> Void = {},
         onSelectSegmentForBoundaryDrag: @escaping (UUID) -> Void,
-        onPanViewport: ((Double) -> Void)? = nil
+        onPanViewport: ((Double) -> Void)? = nil,
+        onPanViewportBegan: (() -> Void)? = nil,
+        onPanViewportEnded: (() -> Void)? = nil
     ) {
         self.engine = engine
         self.viewportStart = viewportStart
@@ -38,6 +42,8 @@ public struct DraggableWaveformOverlay: View {
         self.onBoundaryDragEnded = onBoundaryDragEnded
         self.onSelectSegmentForBoundaryDrag = onSelectSegmentForBoundaryDrag
         self.onPanViewport = onPanViewport
+        self.onPanViewportBegan = onPanViewportBegan
+        self.onPanViewportEnded = onPanViewportEnded
     }
     
     public var body: some View {
@@ -84,6 +90,8 @@ public struct DraggableWaveformOverlay: View {
                 onBoundaryDragEnded: onBoundaryDragEnded,
                 onSelectSegmentForBoundaryDrag: onSelectSegmentForBoundaryDrag,
                 onPanViewport: onPanViewport,
+                onPanViewportBegan: onPanViewportBegan,
+                onPanViewportEnded: onPanViewportEnded,
                 onSelectSegment: { id in
                     engine.jumpToSegment(id: id)
                 },
@@ -278,8 +286,10 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
     let isBoundaryDragging: Bool
     let onBoundaryDragBegan: () -> Void
     let onBoundaryDragEnded: () -> Void
-        let onSelectSegmentForBoundaryDrag: (UUID) -> Void
+    let onSelectSegmentForBoundaryDrag: (UUID) -> Void
     let onPanViewport: ((Double) -> Void)?
+    let onPanViewportBegan: (() -> Void)?
+    let onPanViewportEnded: (() -> Void)?
     
     let onSelectSegment: (UUID) -> Void
     let onUpdateStartAnchor: (UUID, Double) -> Void
@@ -309,6 +319,8 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         view.onBoundaryDragEnded = onBoundaryDragEnded
         view.onSelectSegmentForBoundaryDrag = onSelectSegmentForBoundaryDrag
         view.onPanViewport = onPanViewport
+        view.onPanViewportBegan = onPanViewportBegan
+        view.onPanViewportEnded = onPanViewportEnded
         view.onSelectSegment = onSelectSegment
         view.onUpdateStartAnchor = onUpdateStartAnchor
         view.onUpdateEndAnchor = onUpdateEndAnchor
@@ -331,6 +343,8 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         var onBoundaryDragEnded: (() -> Void)?
         var onSelectSegmentForBoundaryDrag: ((UUID) -> Void)?
         var onPanViewport: ((Double) -> Void)?
+        var onPanViewportBegan: (() -> Void)?
+        var onPanViewportEnded: (() -> Void)?
         
         var onSelectSegment: ((UUID) -> Void)?
         var onUpdateStartAnchor: ((UUID, Double) -> Void)?
@@ -359,6 +373,16 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         /// makes the marker follow the exact point grabbed instead of jumping
         /// when the user starts on the wider hit target.
         private var boundaryGrabOffsetX: CGFloat = 0
+
+        private func endPanIfNeeded() {
+            if case .pan(_, true, _) = activeDrag {
+                onPanViewportEnded?()
+            }
+        }
+
+        deinit {
+            endPanIfNeeded()
+        }
         
         public override var isFlipped: Bool {
             return true // 坐标原点设置在左上角 (0, 0)
@@ -371,6 +395,14 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         
         public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
             return true
+        }
+
+        public override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                endPanIfNeeded()
+                activeDrag = nil
+            }
         }
 
         func updateBoundaryDragState(_ dragging: Bool) {
@@ -711,6 +743,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         
         public override func mouseUp(with event: NSEvent) {
             selectBoundarySegmentAfterDragIfNeeded()
+            endPanIfNeeded()
             switch activeDrag {
             case .pan(_, let didMove, let pendingSegmentID),
                  .tap(_, let didMove, let pendingSegmentID):
@@ -731,6 +764,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         
         public override func rightMouseUp(with event: NSEvent) {
             selectBoundarySegmentAfterDragIfNeeded()
+            endPanIfNeeded()
             if isBoundaryDragging {
                 onBoundaryDragEnded?()
                 isBoundaryDragging = false
@@ -928,6 +962,9 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                 let deltaX = currentLocX - lastX
                 let hasMoved = didMove || abs(deltaX) > 2
                 guard hasMoved else { return }
+                if !didMove {
+                    onPanViewportBegan?()
+                }
                 let span = max(0.001, viewportEnd - viewportStart)
                 let deltaTime = -Double(deltaX / max(1, bounds.width)) * span
                 activeDrag = .pan(lastX: currentLocX, didMove: true, pendingSegmentID: nil)

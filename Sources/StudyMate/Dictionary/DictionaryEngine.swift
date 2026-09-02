@@ -13,13 +13,53 @@ public enum StudyMateLemmatizer {
         let tagger = NLTagger(tagSchemes: [.lemma])
         tagger.string = trimmed
         let (tag, _) = tagger.tag(at: trimmed.startIndex, unit: .word, scheme: .lemma)
-        guard let raw = tag?.rawValue else { return nil }
+        guard let raw = tag?.rawValue else { return fallbackLemma(for: trimmed) }
         let rawLemma = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawLemma.isEmpty,
               rawLemma.lowercased() != trimmed.lowercased() else {
-            return nil
+            return fallbackLemma(for: trimmed)
         }
         return rawLemma
+    }
+
+    /// NaturalLanguage normally supplies the result, but its bundled language
+    /// resources can be unavailable during early app startup or in a fresh
+    /// test/runtime sandbox. Keep common English inflections usable in that
+    /// case so a missing system tag does not silently disable dictionary
+    /// fallback lookup.
+    private static func fallbackLemma(for word: String) -> String? {
+        let lower = word.lowercased()
+        let candidate: String?
+        if lower.hasSuffix("ies"), lower.count > 4 {
+            candidate = String(lower.dropLast(3)) + "y"
+        } else if lower.hasSuffix("es"), lower.count > 4 {
+            let stem = String(lower.dropLast(2))
+            candidate = ["s", "x", "z", "ch", "sh"].contains(where: { stem.hasSuffix($0) })
+                ? stem
+                : nil
+        } else if lower.hasSuffix("ing"), lower.count > 5 {
+            var stem = String(lower.dropLast(3))
+            if stem.count >= 2 {
+                let chars = Array(stem)
+                if chars[chars.count - 1] == chars[chars.count - 2] {
+                    stem.removeLast()
+                }
+            }
+            candidate = stem
+        } else if lower.hasSuffix("ed"), lower.count > 4 {
+            var stem = String(lower.dropLast(2))
+            if stem.hasSuffix("i") {
+                stem.removeLast()
+                stem.append("y")
+            }
+            candidate = stem
+        } else if lower.hasSuffix("s"), lower.count > 3 {
+            candidate = String(lower.dropLast())
+        } else {
+            candidate = nil
+        }
+        guard let candidate, candidate != lower, candidate.count > 1 else { return nil }
+        return candidate
     }
 }
 
@@ -849,6 +889,9 @@ public final class DictionaryEngine: ObservableObject {
                 if self.dictionaryMutationGeneration == generation {
                     self.dictionaryMutationTask = nil
                     self.activeProgressRequestID = nil
+                    self.isBusy = false
+                    self.progress = nil
+                    self.progressPhase = nil
                 }
             }
             do {

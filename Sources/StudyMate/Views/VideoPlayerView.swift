@@ -325,7 +325,8 @@ private struct DraggableFloatingOSDContainer: View {
                         dragTranslation = .zero
                     }
                     onDragEnded()
-                }
+                },
+                including: .gesture
         )
         .opacity(shouldShowOverlay ? 1.0 : 0.0)
         .allowsHitTesting(shouldShowOverlay)

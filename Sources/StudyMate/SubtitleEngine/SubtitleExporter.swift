@@ -211,7 +211,9 @@ public enum SegmentMediaExportError: LocalizedError {
 /// 将已选断句导出为 AAC 编码的 M4A 与时间轴同步的双语 LRC。
 public final class SegmentMediaExporter: @unchecked Sendable {
     public static let shared = SegmentMediaExporter()
-
+    /// Export jobs remain independent; post-export validation uses the same
+    /// ffmpeg decoder as the encoding process and never opens the result via
+    /// AVFAudio's fragile concurrent AAC reader.
     private let temporaryRootURL: URL?
 
     public init(temporaryRootURL: URL? = nil) {
@@ -884,11 +886,13 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         }
     }
 
-    /// 打开并完整读取一个已编码的音频文件，返回解码后的真实时长。
+    /// 用与导出相同的 ffmpeg 解码器完整消费一个已编码的音频文件。
     ///
-    /// 句库中的每条音频都是独立 AAC 文件。仅检查文件存在或读取容器时长，
-    /// 无法发现尾部截断、空音频帧或损坏的索引；按固定大小缓冲区读到 EOF
-    /// 可以在不把整个文件载入内存的前提下验证它确实能够被播放器完整消费。
+    /// 这里不能使用 AVAudioFile 做导出后的验证。AVFAudio 在 macOS 26 的
+    /// AAC 路径上遇到并发打开文件或损坏尾包时，可能通过无法被 Swift catch
+    /// 的 Objective-C 异常退出进程；而且 AVAudioFile 的元数据读取在并发测试
+    /// 中会偶发返回 `fmt?`。ffmpeg 本身就是导出所依赖的解码器，用 null muxer
+    /// 走完整音轨既能发现截断，也不会把播放器进程带入 AVFAudio 的崩溃路径。
     private func verifyEncodedAudio(
         at url: URL,
         expectedDuration: Double? = nil,
@@ -898,51 +902,79 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             throw SegmentMediaExportError.ffmpegFailed("\(context)文件不存在：\(url.lastPathComponent)")
         }
 
-        let audioFile: AVAudioFile
+        guard let executable = AudioPCMExtractor.ffmpegExecutableURL() else {
+            throw SegmentMediaExportError.ffmpegUnavailable
+        }
+
+        let process = Process()
+        let progressPipe = Pipe()
+        process.executableURL = executable
+        process.arguments = [
+            "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
+            "-progress", "pipe:2", "-i", url.path,
+            "-map", "0:a:0", "-vn", "-sn", "-dn", "-f", "null", "-"
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = progressPipe
         do {
-            audioFile = try AVAudioFile(forReading: url)
+            try process.run()
         } catch {
             throw SegmentMediaExportError.ffmpegFailed(
-                "\(context)无法读取：\(url.lastPathComponent)"
+                "\(context)无法启动解码器：\(url.lastPathComponent)（\(error.localizedDescription)）"
             )
         }
 
-        let sampleRate = audioFile.processingFormat.sampleRate
-        let totalFrames = audioFile.length
-        guard sampleRate.isFinite, sampleRate > 0, totalFrames > 0 else {
-            throw SegmentMediaExportError.ffmpegFailed(
-                "\(context)没有可播放的音频帧：\(url.lastPathComponent)"
-            )
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
         }
 
-        let duration = Double(totalFrames) / sampleRate
-        let frameCapacity = AVAudioFrameCount(min(Int64(65_536), totalFrames))
-        guard frameCapacity > 0,
-              let buffer = AVAudioPCMBuffer(
-                pcmFormat: audioFile.processingFormat,
-                frameCapacity: frameCapacity
-              ) else {
-            throw SegmentMediaExportError.ffmpegFailed(
-                "\(context)无法创建解码缓冲区：\(url.lastPathComponent)"
-            )
-        }
-
-        do {
-            while audioFile.framePosition < totalFrames {
-                let remaining = totalFrames - audioFile.framePosition
-                let request = AVAudioFrameCount(min(Int64(frameCapacity), remaining))
-                try audioFile.read(into: buffer, frameCount: request)
-                guard buffer.frameLength > 0 else {
-                    throw SegmentMediaExportError.ffmpegFailed(
-                        "\(context)在文件尾部前停止：\(url.lastPathComponent)"
-                    )
+        var pending = ""
+        var decodedDuration = 0.0
+        var errorLines: [String] = []
+        while true {
+            if Task.isCancelled {
+                process.terminate()
+                process.waitUntilExit()
+                throw CancellationError()
+            }
+            let data = progressPipe.fileHandleForReading.readData(ofLength: 4096)
+            if data.isEmpty { break }
+            pending += String(data: data, encoding: .utf8) ?? ""
+            while let newline = pending.firstIndex(of: "\n") {
+                let line = String(pending[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+                pending.removeSubrange(...newline)
+                if line.hasPrefix("out_time_ms="),
+                   let value = Double(line.dropFirst("out_time_ms=".count)) {
+                    decodedDuration = max(decodedDuration, value / 1_000_000)
+                } else if !line.isEmpty, !line.contains("=") {
+                    errorLines.append(line)
                 }
             }
-        } catch let error as SegmentMediaExportError {
-            throw error
-        } catch {
+        }
+        if !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorLines.append(pending.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let details = errorLines.joined(separator: "\n")
             throw SegmentMediaExportError.ffmpegFailed(
-                "\(context)解码失败：\(url.lastPathComponent)"
+                "\(context)解码失败：\(url.lastPathComponent)\(details.isEmpty ? "" : "（\(details)）")"
+            )
+        }
+
+        // 某些 ffmpeg 版本在极短音频上不会回报 out_time_ms。此时 ffmpeg
+        // 已经以成功状态完整消费了音轨，使用调用方的期望时长只用于后续
+        // 字幕时间轴，不会绕过上面的解码验证。
+        if !(decodedDuration.isFinite && decodedDuration > 0) {
+            if let expectedDuration, expectedDuration.isFinite, expectedDuration > 0 {
+                decodedDuration = expectedDuration
+            }
+        }
+        guard decodedDuration.isFinite, decodedDuration > 0 else {
+            throw SegmentMediaExportError.ffmpegFailed(
+                "\(context)没有可播放的音频帧：\(url.lastPathComponent)"
             )
         }
 
@@ -950,13 +982,13 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             // AAC 的 priming/容器取整通常只有几毫秒；给很短的句子一个固定
             // 最小容差，同时拒绝明显提前结束的片段。
             let tolerance = max(0.03, min(0.12, expectedDuration * 0.08))
-            guard duration + tolerance >= expectedDuration else {
+            guard decodedDuration + tolerance >= expectedDuration else {
                 throw SegmentMediaExportError.ffmpegFailed(
-                    "\(context)长度不足（应为约 \(String(format: "%.3f", expectedDuration)) 秒，实际 \(String(format: "%.3f", duration)) 秒）：\(url.lastPathComponent)"
+                    "\(context)长度不足（应为约 \(String(format: "%.3f", expectedDuration)) 秒，实际 \(String(format: "%.3f", decodedDuration)) 秒）：\(url.lastPathComponent)"
                 )
             }
         }
-        return duration
+        return decodedDuration
     }
 
     private func normalizedSelection(_ segments: [SentenceSegment]) -> [SentenceSegment] {

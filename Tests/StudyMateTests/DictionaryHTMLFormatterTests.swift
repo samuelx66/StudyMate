@@ -37,6 +37,27 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertGreaterThan(inlineScript.lowerBound, contentEnd.lowerBound)
     }
 
+    func testCombinedEntriesLoadSharedExternalScriptOnlyOnce() {
+        let first = StudyMateDictionaryLookup(
+            key: "one",
+            text: #"<script src="shared.js"></script><div>one</div>"#,
+            dictionaryID: "fixture-a",
+            dictionaryTitle: "Fixture A"
+        )
+        let second = StudyMateDictionaryLookup(
+            key: "two",
+            text: #"<script src="shared.js"></script><div>two</div>"#,
+            dictionaryID: "fixture-b",
+            dictionaryTitle: "Fixture B"
+        )
+
+        let body = DictionaryHTMLFormatter.composeBodyHTML(entries: [first, second], isCompact: false)
+
+        XCTAssertEqual(body.components(separatedBy: "shared.js").count - 1, 1)
+        XCTAssertTrue(body.contains("one"))
+        XCTAssertTrue(body.contains("two"))
+    }
+
     func testLocalResourcesPreserveQueriesFragmentsAndExplicitSchemes() {
         let root = URL(fileURLWithPath: "/tmp/StudyMate Dictionary/resources", isDirectory: true)
         let entry = StudyMateDictionaryLookup(

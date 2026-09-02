@@ -191,6 +191,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// allowed to advance the active sentence during that interaction.
     @Published public private(set) var isVideoSubtitleDragging: Bool = false
     private var videoSubtitleDragSegmentID: UUID?
+    /// While the user pans the primary waveform, playback-follow must yield
+    /// and pan updates are coalesced to the next main-queue turn. This keeps
+    /// the pointer responsive without publishing a full viewport update for
+    /// every high-frequency NSEvent.
+    @Published public private(set) var isPrimaryViewportPanning = false
     /// During a marker drag keep the working boundaries off the published
     /// `segments` array.  Publishing a new full array for every NSEvent makes
     /// SwiftUI rebuild the waveform tree and is the main source of the
@@ -220,6 +225,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
     private var boundaryDragSession: BoundaryDragSession?
+    private var pendingPrimaryPanDelta = 0.0
+    private var primaryPanUpdateScheduled = false
     private var shadowingTask: Task<Void, Never>?
     private var shadowingOnFinished: (@MainActor () -> Void)?
     private var debouncedSaveTask: Task<Void, Never>?
@@ -859,6 +866,39 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 主波形图左右拖拽平移浏览时间轴
     public func panPrimaryViewport(by deltaTime: Double) {
+        guard deltaTime.isFinite else { return }
+        if isPrimaryViewportPanning {
+            pendingPrimaryPanDelta += deltaTime
+            guard !primaryPanUpdateScheduled else { return }
+            primaryPanUpdateScheduled = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.primaryPanUpdateScheduled = false
+                self.flushPendingPrimaryPan()
+            }
+            return
+        }
+        applyPrimaryViewportPan(by: deltaTime)
+    }
+
+    public func beginPrimaryViewportPan() {
+        flushPendingPrimaryPan()
+        isPrimaryViewportPanning = true
+    }
+
+    public func endPrimaryViewportPan() {
+        flushPendingPrimaryPan()
+        isPrimaryViewportPanning = false
+    }
+
+    private func flushPendingPrimaryPan() {
+        let delta = pendingPrimaryPanDelta
+        pendingPrimaryPanDelta = 0
+        guard delta != 0 else { return }
+        applyPrimaryViewportPan(by: delta)
+    }
+
+    private func applyPrimaryViewportPan(by deltaTime: Double) {
         guard duration > 0 else { return }
         let span = max(1.0, primaryViewport.end - primaryViewport.start)
         var newStart = primaryViewport.start + deltaTime
@@ -885,6 +925,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard isPlaying,
               !isWaveformFrozenAtNaturalEnd,
               !isBoundaryDragging,
+              !isPrimaryViewportPanning,
               duration > 0,
               // 边界处理可能在同一时钟回调内完成一次 Seek。此时传入的
               // `current` 仍是旧句末尾时间，不能再用它把已重置的视口推回尾部。
@@ -1042,6 +1083,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isPreviewingAnchor = false
         isBoundaryDragging = false
         boundaryDragSource = nil
+        isPrimaryViewportPanning = false
+        pendingPrimaryPanDelta = 0
+        primaryPanUpdateScheduled = false
         isVideoSubtitleDragging = false
         videoSubtitleDragSegmentID = nil
         pendingPreviewSeekTime = nil

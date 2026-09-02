@@ -63,6 +63,7 @@ public struct SentenceLibraryView: View {
                     Button { showCreateSheet = true } label: {
                         Image(systemName: "plus")
                     }
+                    .disabled(manager.isWorking)
                     .help(lang.text("新建句库", "New Library"))
 
                     Spacer()

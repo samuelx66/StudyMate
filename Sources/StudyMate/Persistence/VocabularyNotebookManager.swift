@@ -59,6 +59,7 @@ public final class VocabularyNotebookManager: ObservableObject {
     }
 
     public func createNotebook(name: String) async throws {
+        guard !isWorking else { throw VocabularyNotebookError.operationInProgress }
         isWorking = true
         defer { isWorking = false }
         do {
@@ -195,8 +196,8 @@ public final class VocabularyNotebookManager: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         do {
-            let added = try await Task.detached(priority: .userInitiated) { [store] in
-                try store.toggle(
+            let result = try await Task.detached(priority: .userInitiated) { [store] in
+                let added = try store.toggle(
                     VocabularyWordEntry(
                         word: trimmedWord,
                         exampleSentence: exampleSentence,
@@ -204,10 +205,13 @@ public final class VocabularyNotebookManager: ObservableObject {
                     ),
                     in: notebookID
                 )
+                return (added, store.consumeWriteWarnings())
             }.value
+            let (added, writeWarnings) = result
             guard currentNotebookID == notebookID,
                   notebookSelectionGeneration == selectionGeneration else {
                 publishSuccess(added ? "已加入生词本" : "已从生词本移除")
+                publishWriteWarnings(writeWarnings)
                 return added
             }
             let wordKey = VocabularyNotebookStore.normalizedWord(trimmedWord)
@@ -219,6 +223,7 @@ public final class VocabularyNotebookManager: ObservableObject {
             markNotebooksUpdated([notebookID])
             refreshAfterWrite(notebookID: notebookID)
             publishSuccess(added ? "已加入生词本" : "已从生词本移除")
+            publishWriteWarnings(writeWarnings)
             return added
         } catch {
             publishFailure(error)
@@ -238,18 +243,22 @@ public final class VocabularyNotebookManager: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         do {
-            let count = try await Task.detached(priority: .userInitiated) { [store] in
-                try store.deleteEntries(ids: ids, from: notebookID)
+            let result = try await Task.detached(priority: .userInitiated) { [store] in
+                let count = try store.deleteEntries(ids: ids, from: notebookID)
+                return (count, store.consumeWriteWarnings())
             }.value
+            let (count, writeWarnings) = result
             guard currentNotebookID == notebookID,
                   notebookSelectionGeneration == selectionGeneration else {
                 publishSuccess("已删除 " + String(count) + " 个生词")
+                publishWriteWarnings(writeWarnings)
                 return count
             }
             savedWordKeys.subtract(deletedWordKeys)
             markNotebooksUpdated([notebookID])
             refreshAfterWrite(notebookID: notebookID)
             publishSuccess("已删除 " + String(count) + " 个生词")
+            publishWriteWarnings(writeWarnings)
             return count
         } catch {
             publishFailure(error)
@@ -269,22 +278,26 @@ public final class VocabularyNotebookManager: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         do {
-            let count = try await Task.detached(priority: .userInitiated) { [store] in
-                try store.moveEntries(
+            let result = try await Task.detached(priority: .userInitiated) { [store] in
+                let count = try store.moveEntries(
                     ids: ids,
                     from: sourceNotebookID,
                     to: destinationNotebookID
                 )
+                return (count, store.consumeWriteWarnings())
             }.value
+            let (count, writeWarnings) = result
             guard currentNotebookID == sourceNotebookID,
                   notebookSelectionGeneration == selectionGeneration else {
                 publishSuccess("已移动 " + String(count) + " 个生词")
+                publishWriteWarnings(writeWarnings)
                 return count
             }
             savedWordKeys.subtract(movedWordKeys)
             markNotebooksUpdated([sourceNotebookID, destinationNotebookID])
             refreshAfterWrite(notebookID: sourceNotebookID)
             publishSuccess("已移动 " + String(count) + " 个生词")
+            publishWriteWarnings(writeWarnings)
             return count
         } catch {
             publishFailure(error)
@@ -421,6 +434,13 @@ public final class VocabularyNotebookManager: ObservableObject {
         let message = error.localizedDescription
         lastErrorMessage = message
         statusMessage = nil
+        MainStatusCenter.shared.showError(message)
+    }
+
+    private func publishWriteWarnings(_ warnings: [String]) {
+        guard !warnings.isEmpty else { return }
+        let message = warnings.joined(separator: "；")
+        lastErrorMessage = message
         MainStatusCenter.shared.showError(message)
     }
 }

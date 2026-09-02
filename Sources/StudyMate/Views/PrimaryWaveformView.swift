@@ -134,6 +134,12 @@ public struct PrimaryWaveformView: View {
                         },
                         onPanViewport: { deltaTime in
                             engine.panPrimaryViewport(by: deltaTime)
+                        },
+                        onPanViewportBegan: {
+                            engine.beginPrimaryViewportPan()
+                        },
+                        onPanViewportEnded: {
+                            engine.endPrimaryViewportPan()
                         }
                     )
                 }

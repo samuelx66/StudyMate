@@ -59,6 +59,7 @@ public final class SentenceLibraryManager: ObservableObject {
     private var dateFilter: SentenceLibraryDateFilter = .all
     private var selectedFilterDate = Date()
     private var queryTask: Task<Void, Never>?
+    private var entryQueryGeneration: UInt64 = 0
     private var operationGeneration = UUID()
 
     private func publishStatusProjection() {
@@ -99,7 +100,17 @@ public final class SentenceLibraryManager: ObservableObject {
             ) else { return }
 
             let now = Date()
+            let currentProcessID = ProcessInfo.processInfo.processIdentifier
             for folder in contents {
+                // A live export marks its work directory with the current
+                // process ID. This prevents an hour-long export from being
+                // removed by a second cleanup pass, while a stale marker from
+                // a crashed process remains recoverable on the next launch.
+                let activeMarker = folder.appendingPathComponent(
+                    ".active-\(currentProcessID)",
+                    isDirectory: false
+                )
+                if fileManager.fileExists(atPath: activeMarker.path) { continue }
                 if let attrs = try? folder.resourceValues(forKeys: [.contentModificationDateKey]),
                    let modDate = attrs.contentModificationDate,
                    now.timeIntervalSince(modDate) > 3600 {
@@ -119,6 +130,9 @@ public final class SentenceLibraryManager: ObservableObject {
     }
 
     public func createLibrary(name: String) async throws {
+        guard !isWorking else { throw SentenceLibraryError.operationInProgress }
+        isWorking = true
+        defer { isWorking = false }
         do {
             let descriptor = try await Task.detached(priority: .utility) { [store] in
                 try store.createLibrary(name: name)
@@ -161,14 +175,17 @@ public final class SentenceLibraryManager: ObservableObject {
 
     public func reloadEntries(debounceNanoseconds: UInt64 = 0) {
         queryTask?.cancel()
+        entryQueryGeneration &+= 1
+        let generation = entryQueryGeneration
         guard let libraryID = currentLibraryID else {
             entries = []
             return
         }
         let query = searchText
+        let filter = dateFilter
         let filterDate = selectedFilterDate
-        let lowerBound = dateFilter.lowerBound(selectedDate: filterDate)
-        let upperBound = dateFilter.upperBound(selectedDate: filterDate)
+        let lowerBound = filter.lowerBound(selectedDate: filterDate)
+        let upperBound = filter.upperBound(selectedDate: filterDate)
         let source = selectedSource
         let order = sortOrder
         queryTask = Task { [weak self, store] in
@@ -190,8 +207,11 @@ public final class SentenceLibraryManager: ObservableObject {
             }.value
             guard !Task.isCancelled,
                   let self,
+                  self.entryQueryGeneration == generation,
                   self.currentLibraryID == libraryID,
                   self.searchText == query,
+                  self.dateFilter.rawValue == filter.rawValue,
+                  self.selectedFilterDate == filterDate,
                   self.selectedSource == source,
                   self.sortOrder == order else { return }
             switch result {
@@ -249,7 +269,15 @@ public final class SentenceLibraryManager: ObservableObject {
             try fileManager.createDirectory(at: tempRoot, withIntermediateDirectories: true)
             let workDirectory = tempRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: false)
-            defer { try? fileManager.removeItem(at: workDirectory) }
+            let activeMarker = workDirectory.appendingPathComponent(
+                ".active-\(ProcessInfo.processInfo.processIdentifier)",
+                isDirectory: false
+            )
+            try Data().write(to: activeMarker, options: .atomic)
+            defer {
+                try? fileManager.removeItem(at: activeMarker)
+                try? fileManager.removeItem(at: workDirectory)
+            }
 
             let exporter = SegmentMediaExporter()
             var entries: [SentenceLibraryEntry] = []
@@ -504,14 +532,24 @@ public final class SentenceLibraryManager: ObservableObject {
     }
 
     private func reloadLibraries(createDefaultIfNeeded: Bool) async {
-        let available = await Task.detached(priority: .utility) { [store] in
-            var result = store.listLibraries()
-            if result.isEmpty, createDefaultIfNeeded,
-               let created = try? store.createLibrary(name: "默认句库") {
-                result = [created]
-            }
-            return result
-        }.value
+        let available: [SentenceLibraryDescriptor]
+        do {
+            available = try await Task.detached(priority: .utility) { [store] in
+                var result = store.listLibraries()
+                if result.isEmpty, createDefaultIfNeeded {
+                    result = [try store.createLibrary(name: "默认句库")]
+                }
+                return result
+            }.value
+        } catch {
+            libraries = []
+            currentLibraryID = nil
+            entries = []
+            availableSources = []
+            lastErrorMessage = error.localizedDescription
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            return
+        }
         libraries = available
         let savedID = defaults.string(forKey: currentLibraryKey).flatMap(UUID.init(uuidString:))
         if let currentLibraryID, available.contains(where: { $0.id == currentLibraryID }) {
@@ -530,14 +568,20 @@ public final class SentenceLibraryManager: ObservableObject {
 
     private func reloadSources(for libraryID: UUID) {
         Task { [weak self, store] in
-            let result = await Task.detached(priority: .utility) {
-                (try? store.sourceMediaNames(libraryID: libraryID)) ?? []
-            }.value
-            guard let self, self.currentLibraryID == libraryID else { return }
-            self.availableSources = result
-            if !self.selectedSource.isEmpty, !result.contains(self.selectedSource) {
-                self.selectedSource = ""
-                self.reloadEntries()
+            do {
+                let result = try await Task.detached(priority: .utility) {
+                    try store.sourceMediaNames(libraryID: libraryID)
+                }.value
+                guard let self, self.currentLibraryID == libraryID else { return }
+                self.availableSources = result
+                if !self.selectedSource.isEmpty, !result.contains(self.selectedSource) {
+                    self.selectedSource = ""
+                    self.reloadEntries()
+                }
+            } catch {
+                guard let self, self.currentLibraryID == libraryID else { return }
+                self.lastErrorMessage = error.localizedDescription
+                MainStatusCenter.shared.showError(error.localizedDescription)
             }
         }
     }
