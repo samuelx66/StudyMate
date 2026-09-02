@@ -12,10 +12,13 @@ public struct VideoPlayerView: View {
     @State private var isPointerActive: Bool = false
     @State private var overlayHideTask: Task<Void, Never>?
     @State private var isScrubbing: Bool = false
+    /// Continuous hover can arrive at display-refresh frequency. Keep the
+    /// deadline in a reference value so refreshing it does not invalidate the
+    /// whole video view on every mouse move.
+    @State private var pointerActivityMarker = PointerActivityMarker()
     
     // 自由拖拽定位坐标
     @State private var positionOffset: CGSize = .zero
-    @State private var dragTranslation: CGSize = .zero
     @State private var controlPanelSize: CGSize = CGSize(width: 572, height: 74)
 
     private static let controlPanelAutoHideDelay: UInt64 = 10_000_000_000
@@ -27,9 +30,8 @@ public struct VideoPlayerView: View {
     
     private var shouldShowOverlay: Bool {
         guard engine.currentMedia != nil else { return false }
-        // 暂停时保留控制面板；播放时只由指针活动、时间轴操作或面板拖动
-        // 维持可见，避免面板长期遮挡视频内容。
-        if !engine.isPlaying || isScrubbing || dragTranslation != .zero {
+        // 暂停时保留控制面板；播放时只由指针活动、时间轴操作维持可见
+        if !engine.isPlaying || isScrubbing {
             return true
         }
         return isHovering && isPointerActive
@@ -38,18 +40,22 @@ public struct VideoPlayerView: View {
     /// 当前指针进入/移动到视频区域时显示面板，并重新开始 10 秒无活动计时。
     private func handlePointerActivity() {
         guard engine.currentMedia != nil else { return }
+        pointerActivityMarker.lastActivityUptime = ProcessInfo.processInfo.systemUptime
         if !isHovering {
             withAnimation(Self.controlPanelAnimation) {
                 isHovering = true
             }
         }
-        withAnimation(Self.controlPanelAnimation) {
-            isPointerActive = true
+        if !isPointerActive {
+            withAnimation(Self.controlPanelAnimation) {
+                isPointerActive = true
+            }
         }
         scheduleOverlayAutoHide()
     }
 
     private func handlePointerExit() {
+        pointerActivityMarker.lastActivityUptime = 0
         overlayHideTask?.cancel()
         overlayHideTask = nil
         withAnimation(Self.controlPanelAnimation) {
@@ -59,18 +65,33 @@ public struct VideoPlayerView: View {
     }
 
     private func scheduleOverlayAutoHide() {
-        overlayHideTask?.cancel()
-        guard engine.isPlaying else { return }
+        pointerActivityMarker.lastActivityUptime = ProcessInfo.processInfo.systemUptime
+        guard engine.isPlaying, overlayHideTask == nil else { return }
 
+        let marker = pointerActivityMarker
         overlayHideTask = Task { @MainActor in
             do {
-                try await Task.sleep(nanoseconds: Self.controlPanelAutoHideDelay)
+                while !Task.isCancelled {
+                    let elapsed = ProcessInfo.processInfo.systemUptime - marker.lastActivityUptime
+                    let remaining = Double(Self.controlPanelAutoHideDelay) / 1_000_000_000 - elapsed
+                    if remaining > 0 {
+                        try await Task.sleep(nanoseconds: UInt64(max(0.001, remaining) * 1_000_000_000))
+                        continue
+                    }
+
+                    guard isHovering, engine.isPlaying else {
+                        overlayHideTask = nil
+                        return
+                    }
+
+                    withAnimation(Self.controlPanelAnimation) {
+                        isPointerActive = false
+                    }
+                    overlayHideTask = nil
+                    return
+                }
             } catch {
                 return
-            }
-            guard !Task.isCancelled, isHovering, engine.isPlaying else { return }
-            withAnimation(Self.controlPanelAnimation) {
-                isPointerActive = false
             }
         }
     }
@@ -156,68 +177,16 @@ public struct VideoPlayerView: View {
                 if engine.currentMedia != nil {
                     VStack {
                         Spacer()
-                        FloatingVideoOSDView(
+                        DraggableFloatingOSDContainer(
                             engine: engine,
-                            isScrubbing: $isScrubbing
+                            containerSize: geometry.size,
+                            controlPanelSize: $controlPanelSize,
+                            positionOffset: $positionOffset,
+                            isScrubbing: $isScrubbing,
+                            shouldShowOverlay: shouldShowOverlay,
+                            onPointerActivity: { handlePointerActivity() },
+                            onDragEnded: { scheduleOverlayAutoHide() }
                         )
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 14)
-                            .offset(
-                                x: positionOffset.width + dragTranslation.width,
-                                y: positionOffset.height + dragTranslation.height
-                            )
-                            .background(
-                                GeometryReader { panelGeometry in
-                                    Color.clear
-                                        .preference(
-                                            key: FloatingOSDSizePreferenceKey.self,
-                                            value: panelGeometry.size
-                                        )
-                                }
-                            )
-                            .onHover { hovering in
-                                // 视频渲染层与控制面板是两个兄弟视图。指针从
-                                // 视频移到面板时底层 tracking area 会收到
-                                // mouseExited，这里重新确认指针仍在播放区域。
-                                if hovering { handlePointerActivity() }
-                            }
-                            // Keep dragging on a dedicated native hit target so
-                            // the timeline and volume sliders retain their own
-                            // gestures and never move the whole control panel.
-                            .overlay(alignment: .topLeading) {
-                                FloatingOSDDragHandle(
-                                    label: lang.text("拖动播放控制条", "Drag playback controls")
-                                )
-                                .padding(.leading, 4)
-                                .padding(.top, 3)
-                                .gesture(
-                                    DragGesture(minimumDistance: 4)
-                                        .onChanged { value in
-                                            handlePointerActivity()
-                                            let candidate = CGSize(
-                                                width: positionOffset.width + value.translation.width,
-                                                height: positionOffset.height + value.translation.height
-                                            )
-                                            let bounded = boundedPanelOffset(candidate, in: geometry.size)
-                                            dragTranslation = CGSize(
-                                                width: bounded.width - positionOffset.width,
-                                                height: bounded.height - positionOffset.height
-                                            )
-                                        }
-                                        .onEnded { value in
-                                            let candidate = CGSize(
-                                                width: positionOffset.width + value.translation.width,
-                                                height: positionOffset.height + value.translation.height
-                                            )
-                                            positionOffset = boundedPanelOffset(candidate, in: geometry.size)
-                                            dragTranslation = .zero
-                                            scheduleOverlayAutoHide()
-                                        }
-                                )
-                            }
-                            .opacity(shouldShowOverlay ? 1.0 : 0.0)
-                            .animation(.easeInOut(duration: 0.2), value: shouldShowOverlay)
-                            .allowsHitTesting(shouldShowOverlay)
                     }
                 }
             }
@@ -237,10 +206,12 @@ public struct VideoPlayerView: View {
             }
             .onPreferenceChange(FloatingOSDSizePreferenceKey.self) { size in
                 guard size.width > 0, size.height > 0 else { return }
-                controlPanelSize = size
-                // 窗口缩放后立即重新约束已保存的位置，避免面板留在新的
-                // 视频边界之外。
-                positionOffset = boundedPanelOffset(positionOffset, in: geometry.size)
+                if controlPanelSize != size {
+                    controlPanelSize = size
+                    // 窗口缩放后立即重新约束已保存的位置，避免面板留在新的
+                    // 视频边界之外。
+                    positionOffset = boundedPanelOffset(positionOffset, in: geometry.size)
+                }
             }
         }
         .frame(minHeight: 200)
@@ -259,25 +230,134 @@ public struct VideoPlayerView: View {
             if !scrubbing, isHovering { scheduleOverlayAutoHide() }
         }
         .onDisappear {
+            pointerActivityMarker.lastActivityUptime = 0
             overlayHideTask?.cancel()
             overlayHideTask = nil
         }
     }
 }
 
-private struct FloatingOSDDragHandle: View {
-    let label: String
+/// 独立的浮动控制面板拖拽容器，隔离 dragTranslation 状态，避免拖动时上层视频渲染器和字幕层反复重绘
+private struct DraggableFloatingOSDContainer: View {
+    @ObservedObject var engine: PlaybackEngine
+    let containerSize: CGSize
+    @Binding var controlPanelSize: CGSize
+    @Binding var positionOffset: CGSize
+    @Binding var isScrubbing: Bool
+    let shouldShowOverlay: Bool
+    let onPointerActivity: () -> Void
+    let onDragEnded: () -> Void
+
+    @State private var dragTranslation: CGSize = .zero
+    @State private var isVolumeScrubbing: Bool = false
+    @State private var panelDragActive = false
 
     var body: some View {
-        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: 22, height: 22)
-            .contentShape(Circle())
-            .help(label)
-            .accessibilityLabel(label)
-            .accessibilityHint("拖动以移动控制条位置 / Drag to move the controls")
+        FloatingVideoOSDView(
+            engine: engine,
+            isScrubbing: $isScrubbing,
+            isVolumeScrubbing: $isVolumeScrubbing
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
+        .offset(
+            x: positionOffset.width + dragTranslation.width,
+            y: positionOffset.height + dragTranslation.height
+        )
+        .background(
+            GeometryReader { panelGeometry in
+                Color.clear
+                    .preference(
+                        key: FloatingOSDSizePreferenceKey.self,
+                        value: panelGeometry.size
+                    )
+            }
+        )
+        .onHover { hovering in
+            if hovering { onPointerActivity() }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    guard !isScrubbing, !isVolumeScrubbing else {
+                        if panelDragActive {
+                            panelDragActive = false
+                            dragTranslation = .zero
+                        }
+                        return
+                    }
+                    if !panelDragActive {
+                        panelDragActive = true
+                        onPointerActivity()
+                    }
+                    let candidate = CGSize(
+                        width: positionOffset.width + value.translation.width,
+                        height: positionOffset.height + value.translation.height
+                    )
+                    let bounded = boundedPanelOffset(candidate, panelSize: controlPanelSize, in: containerSize)
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        dragTranslation = CGSize(
+                            width: bounded.width - positionOffset.width,
+                            height: bounded.height - positionOffset.height
+                        )
+                    }
+                }
+                .onEnded { value in
+                    guard panelDragActive else {
+                        dragTranslation = .zero
+                        return
+                    }
+                    panelDragActive = false
+                    guard !isScrubbing, !isVolumeScrubbing else {
+                        dragTranslation = .zero
+                        return
+                    }
+                    let candidate = CGSize(
+                        width: positionOffset.width + value.translation.width,
+                        height: positionOffset.height + value.translation.height
+                    )
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        positionOffset = boundedPanelOffset(candidate, panelSize: controlPanelSize, in: containerSize)
+                        dragTranslation = .zero
+                    }
+                    onDragEnded()
+                }
+        )
+        .opacity(shouldShowOverlay ? 1.0 : 0.0)
+        .allowsHitTesting(shouldShowOverlay)
+        .onChange(of: isScrubbing) { _, scrubbing in
+            if scrubbing {
+                panelDragActive = false
+                dragTranslation = .zero
+            }
+        }
+        .onChange(of: isVolumeScrubbing) { _, scrubbing in
+            if scrubbing {
+                panelDragActive = false
+                dragTranslation = .zero
+            }
+        }
     }
+
+    private func boundedPanelOffset(_ offset: CGSize, panelSize: CGSize, in containerSize: CGSize) -> CGSize {
+        let panelWidth = max(1, panelSize.width)
+        let panelHeight = max(1, panelSize.height)
+        let horizontalLimit = max(0, (containerSize.width - panelWidth) / 2)
+        let topLimit = min(0, -(containerSize.height - panelHeight))
+
+        return CGSize(
+            width: min(horizontalLimit, max(-horizontalLimit, offset.width)),
+            height: min(0, max(topLimit, offset.height))
+        )
+    }
+}
+
+private final class PointerActivityMarker {
+    var lastActivityUptime: TimeInterval = 0
 }
 
 private struct FloatingOSDSizePreferenceKey: PreferenceKey {

@@ -153,6 +153,10 @@ private struct DraggableVideoSubtitle: View {
     /// outer SwiftUI gesture remains as a fallback for the rounded padding,
     /// but must stand down while AppKit is handling the same gesture.
     @State private var appKitDragActive = false
+    /// Text measurement is expensive enough to be visible during a native
+    /// modifier-drag. Cache it so only the offset changes at pointer speed.
+    @State private var cachedSubtitleSize: CGSize = .zero
+    @State private var cachedSubtitleFont: NSFont?
 
     private var savedPosition: CGPoint {
         switch track {
@@ -199,6 +203,13 @@ private struct DraggableVideoSubtitle: View {
     }
 
     private var subtitleFont: NSFont {
+        if let cachedSubtitleFont {
+            return cachedSubtitleFont
+        }
+        return makeSubtitleFont()
+    }
+
+    private func makeSubtitleFont() -> NSFont {
         let size = max(10, min(96, fontSize))
         var descriptor = NSFontDescriptor(name: fontName, size: size)
         var traits: NSFontDescriptor.SymbolicTraits = []
@@ -210,18 +221,37 @@ private struct DraggableVideoSubtitle: View {
     }
 
     private var subtitleSize: CGSize {
+        if cachedSubtitleSize.width > 0, cachedSubtitleSize.height > 0 {
+            return cachedSubtitleSize
+        }
+        return calculateSubtitleSize(using: subtitleFont)
+    }
+
+    private var layoutKey: SubtitleLayoutKey {
+        SubtitleLayoutKey(
+            text: text,
+            fontName: fontName,
+            fontSize: fontSize,
+            isBold: isBold,
+            isItalic: isItalic,
+            containerWidth: containerSize.width,
+            containerHeight: containerSize.height
+        )
+    }
+
+    private func calculateSubtitleSize(using font: NSFont) -> CGSize {
         let horizontalPadding: CGFloat = 24
         let verticalPadding: CGFloat = 10
         let maxWidth = max(1, min(containerSize.width * 0.88, 900))
         let maxContentWidth = max(1, maxWidth - horizontalPadding)
-        let attributes: [NSAttributedString.Key: Any] = [.font: subtitleFont]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
         let bounds = (text as NSString).boundingRect(
             with: CGSize(width: maxContentWidth, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes
         )
         let contentWidth = min(maxContentWidth, max(1, ceil(bounds.width)))
-        let lineHeight = max(1, ceil(subtitleFont.ascender - subtitleFont.descender + subtitleFont.leading))
+        let lineHeight = max(1, ceil(font.ascender - font.descender + font.leading))
         let contentHeight = min(lineHeight * 4, max(lineHeight, ceil(bounds.height)))
         return CGSize(
             width: min(maxWidth, contentWidth + horizontalPadding),
@@ -231,6 +261,12 @@ private struct DraggableVideoSubtitle: View {
 
     private var textContentSize: CGSize {
         CGSize(width: max(1, subtitleSize.width - 24), height: max(1, subtitleSize.height - 10))
+    }
+
+    private func updateCachedLayout() {
+        let font = makeSubtitleFont()
+        cachedSubtitleFont = font
+        cachedSubtitleSize = calculateSubtitleSize(using: font)
     }
 
     var body: some View {
@@ -340,6 +376,12 @@ private struct DraggableVideoSubtitle: View {
             }
             appKitDragActive = false
         }
+        .onAppear {
+            updateCachedLayout()
+        }
+        .onChange(of: layoutKey) { _, _ in
+            updateCachedLayout()
+        }
     }
 
     private func setPosition(_ point: CGPoint) {
@@ -352,6 +394,16 @@ private struct DraggableVideoSubtitle: View {
             settings.translationPositionY = point.y
         }
     }
+}
+
+private struct SubtitleLayoutKey: Equatable {
+    let text: String
+    let fontName: String
+    let fontSize: Double
+    let isBold: Bool
+    let isItalic: Bool
+    let containerWidth: CGFloat
+    let containerHeight: CGFloat
 }
 
 /// 只覆盖视频画面的双语字幕层。时间轴和播放仍由 PlaybackEngine 管理，

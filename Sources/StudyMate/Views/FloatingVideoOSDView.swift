@@ -6,22 +6,26 @@ public struct FloatingVideoOSDView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var lang = LanguageManager.shared
     @Binding var isScrubbing: Bool
+    @Binding var isVolumeScrubbing: Bool
     
     public init(
         engine: PlaybackEngine,
-        isScrubbing: Binding<Bool>
+        isScrubbing: Binding<Bool>,
+        isVolumeScrubbing: Binding<Bool>
     ) {
         self.engine = engine
         self._isScrubbing = isScrubbing
+        self._isVolumeScrubbing = isVolumeScrubbing
     }
     
     public var body: some View {
         GlassEffectContainer(spacing: 8) {
             osdControls
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
         }
-        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
         .frame(maxWidth: 540)
     }
@@ -98,7 +102,7 @@ public struct FloatingVideoOSDView: View {
                 onPreviewEnded: { engine.endPreviewSeek() },
                 onSeek: { engine.seek(to: $0) }
             )
-            .frame(minWidth: 80)
+            .frame(minWidth: 80, maxHeight: 22)
             
             // 7. 总时间
             Text(SentenceSegment.formatTimecode(engine.duration))
@@ -133,12 +137,18 @@ public struct FloatingVideoOSDView: View {
                         get: { Double(engine.volume) },
                         set: { engine.volume = Float($0) }
                     ),
-                    in: 0...1.0
+                    in: 0...1.0,
+                    onEditingChanged: { editing in
+                        isVolumeScrubbing = editing
+                    }
                 )
                 .labelsHidden()
                 .accessibilityLabel(lang.text("音量", "Volume"))
                 .accessibilityValue("\(Int(engine.volume * 100))%")
-                .frame(width: 52)
+                .frame(width: 52, height: 22)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
             }
             .padding(.trailing, 2)
         }
@@ -185,6 +195,9 @@ private struct OSDTimelineSlider: View {
         )
         .accessibilityLabel("播放进度 / Playback position")
         .accessibilityValue(SentenceSegment.formatTimecode(isScrubbing ? scrubTime : clock.currentTime))
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
