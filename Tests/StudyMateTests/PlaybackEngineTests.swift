@@ -1907,4 +1907,58 @@ final class PlaybackEngineTests: XCTestCase {
         let filename = "\(digest).pcmcache"
         return cacheDirectory.appendingPathComponent(filename)
     }
+
+    func testShadowingPauseCanBePausedAndResumedWithPlayPauseButton() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let mediaURL = directory.appendingPathComponent("sample.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 2
+        engine.setShadowingPauseSeconds(1.0)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // Sentence 1 reaches end, triggers shadowing pause.
+        native.emitTime(1)
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertGreaterThan(engine.shadowingCountdownRemaining, 0)
+
+        // User clicks Pause button during shadowing pause.
+        engine.pause()
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertTrue(engine.isShadowingPaused)
+        let pausedRemaining = engine.shadowingCountdownRemaining
+
+        // Wait 250ms; countdown must remain frozen while paused.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(engine.shadowingCountdownRemaining, pausedRemaining)
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        // User clicks Play button to resume shadowing pause.
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        // Wait for remaining countdown to finish.
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+    }
 }

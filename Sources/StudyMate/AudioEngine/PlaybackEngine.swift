@@ -221,6 +221,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
     private var boundaryDragSession: BoundaryDragSession?
     private var shadowingTask: Task<Void, Never>?
+    private var shadowingOnFinished: (@MainActor () -> Void)?
     private var debouncedSaveTask: Task<Void, Never>?
     private var waveformTask: Task<Void, Never>?
     private var sidecarTask: Task<Void, Never>?
@@ -1018,8 +1019,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         previewSeekGeneration &+= 1
         previewSeekTask?.cancel()
         previewSeekTask = nil
-        shadowingTask?.cancel()
-        shadowingTask = nil
+        cancelShadowingPause()
         waveformTask?.cancel()
         waveformTask = nil
         sidecarTask?.cancel()
@@ -1138,7 +1138,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         previewSeekTask?.cancel()
         previewSeekTask = nil
         pendingPreviewSeekTime = nil
-        shadowingTask?.cancel()
+        cancelShadowingPause()
         waveformTask?.cancel()
         sidecarTask?.cancel()
         segmentationTask?.cancel()
@@ -1149,8 +1149,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         aiTranscriptionStatusText = ""
         translationErrorMessage = nil
         activeBackend.pause()
-        isShadowingPaused = false
-        shadowingCountdownRemaining = 0
         previewEndTime = nil
         isSeeking = false
         isBackendReady = false
@@ -2318,9 +2316,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         completedPreviewSegmentID = nil
         previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
-        shadowingTask?.cancel()
-        isShadowingPaused = false
         previewEndTime = nil
+
+        if isShadowingPaused && shadowingCountdownRemaining > 0 {
+            resumeShadowingPause()
+            return
+        }
+
+        cancelShadowingPause()
         beginPlayback()
     }
 
@@ -2348,8 +2351,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func pause() {
         isWaveformFrozenAtNaturalEnd = false
-        shadowingTask?.cancel()
-        isShadowingPaused = false
+        if isShadowingPaused {
+            // 句末跟读停顿期间暂停：挂起倒计时任务，保留剩余倒计时秒数与跟读状态
+            shadowingTask?.cancel()
+            shadowingTask = nil
+        } else {
+            cancelShadowingPause()
+        }
         pendingResumePlayback = false
         wantsPlayback = false
         completedPreviewSegmentID = nil
@@ -2361,6 +2369,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func stop() {
+        cancelShadowingPause()
         pause()
         previewEndTime = nil
         seek(to: 0.0)
@@ -2368,6 +2377,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 毫秒级极速精准 Seek（实时刷新视频画面与音频时间戳）
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
+        cancelShadowingPause()
         isWaveformFrozenAtNaturalEnd = false
         explicitSegmentSelection = nil
         completedPreviewSegmentID = nil
@@ -2700,11 +2710,37 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    public func cancelShadowingPause() {
+        shadowingTask?.cancel()
+        shadowingTask = nil
+        isShadowingPaused = false
+        shadowingCountdownRemaining = 0
+        shadowingOnFinished = nil
+    }
+
     private func startShadowingPause(duration: Double, onFinished: @escaping @MainActor () -> Void) {
         activeBackend.pause()
         isShadowingPaused = true
+        isPlaying = true
+        wantsPlayback = true
         shadowingCountdownRemaining = duration
+        shadowingOnFinished = onFinished
+        runShadowingCountdown(duration: duration)
+    }
 
+    private func resumeShadowingPause() {
+        guard isShadowingPaused, shadowingCountdownRemaining > 0 else {
+            cancelShadowingPause()
+            beginPlayback()
+            return
+        }
+        wantsPlayback = true
+        isPlaying = true
+        activeBackend.pause()
+        runShadowingCountdown(duration: shadowingCountdownRemaining)
+    }
+
+    private func runShadowingCountdown(duration: Double) {
         shadowingTask?.cancel()
         shadowingTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
@@ -2712,16 +2748,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let step = 0.1
 
             while remaining > 0 && !Task.isCancelled {
-                self.shadowingCountdownRemaining = remaining
-                try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
-                remaining -= step
+                self.shadowingCountdownRemaining = max(0, remaining)
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+                    remaining -= step
+                    self.shadowingCountdownRemaining = max(0, remaining)
+                } catch {
+                    break
+                }
             }
 
             if !Task.isCancelled {
+                let callback = self.shadowingOnFinished
                 self.isShadowingPaused = false
                 self.shadowingCountdownRemaining = 0
+                self.shadowingOnFinished = nil
                 self.wantsPlayback = true
-                onFinished()
+                callback?()
             }
         }
     }
@@ -3049,6 +3092,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
+        cancelShadowingPause()
         completedPreviewSegmentID = nil
         previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
