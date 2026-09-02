@@ -98,8 +98,37 @@ final class IntensiveListeningTests: XCTestCase {
     
     func testRepeatCountConfiguration() {
         let engine = makeTestPlaybackEngine()
-        engine.repeatCountLimit = 3
-        XCTAssertEqual(engine.repeatCountLimit, 3)
+        engine.repeatCountLimit = 7
+        XCTAssertEqual(engine.repeatCountLimit, 7)
         XCTAssertEqual(engine.currentRepeatCount, 1)
+
+        engine.repeatCountLimit = 20
+        XCTAssertEqual(engine.repeatCountLimit, 20)
+    }
+
+    func testShadowingPauseSecondsConfiguration() {
+        let engine = makeTestPlaybackEngine()
+        engine.setShadowingPauseSeconds(1.0)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 1.0)
+        XCTAssertEqual(engine.shadowingPauseRatio, 0.0)
+
+        engine.setShadowingPauseSeconds(2.0)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 2.0)
+
+        engine.setShadowingPauseSeconds(3.0)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 3.0)
+
+        engine.setShadowingPauseSeconds(5.0)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 5.0)
+
+        // Setting ratio resets seconds
+        engine.setShadowingPauseRatio(1.5)
+        XCTAssertEqual(engine.shadowingPauseRatio, 1.5)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 0.0)
+
+        // Setting seconds resets ratio
+        engine.setShadowingPauseSeconds(2.0)
+        XCTAssertEqual(engine.shadowingPauseSeconds, 2.0)
+        XCTAssertEqual(engine.shadowingPauseRatio, 0.0)
     }
 }

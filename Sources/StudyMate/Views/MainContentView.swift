@@ -424,20 +424,25 @@ private struct MainWindowToolbar: ToolbarContent {
     private var repeatOptions: [(label: String, count: Int)] {
         [(lang.text("1次", "1×"), 1), (lang.text("2次", "2×"), 2),
          (lang.text("3次", "3×"), 3), (lang.text("5次", "5×"), 5),
-         (lang.text("10次", "10×"), 10), (lang.text("无限", "∞"), 0)]
+         (lang.text("7次", "7×"), 7), (lang.text("10次", "10×"), 10),
+         (lang.text("20次", "20×"), 20), (lang.text("无限", "∞"), 0)]
     }
 
-    private var shadowingPauseOptions: [(label: String, ratio: Double)] {
-        [(lang.text("关闭", "Off"), 0), ("0.25×", 0.25), ("0.5×", 0.5),
-         ("0.75×", 0.75), ("1×", 1), ("1.5×", 1.5), ("2×", 2)]
-    }
+    private let shadowingPauseSecondsOptions = [1, 2, 3, 5]
+    private let shadowingPauseRatioOptions: [(label: String, ratio: Double)] = [
+        ("0.25×", 0.25), ("0.5×", 0.5), ("0.75×", 0.75),
+        ("1×", 1.0), ("1.5×", 1.5), ("2×", 2.0)
+    ]
 
     private var repeatLabel: String {
         engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)×"
     }
 
     private var pauseLabel: String {
-        engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
+        if engine.shadowingPauseSeconds > 0 {
+            return "\(Int(engine.shadowingPauseSeconds))s"
+        }
+        return engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
     }
 
     var body: some ToolbarContent {
@@ -491,14 +496,46 @@ private struct MainWindowToolbar: ToolbarContent {
             .keyboardShortcut("c", modifiers: [.command, .shift])
 
             Menu {
-                ForEach(shadowingPauseOptions, id: \.ratio) { option in
-                    Button { engine.shadowingPauseRatio = option.ratio } label: {
-                        if abs(engine.shadowingPauseRatio - option.ratio) < 0.001 { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
+                Button {
+                    engine.setShadowingPauseRatio(0)
+                } label: {
+                    if engine.shadowingPauseRatio == 0 && engine.shadowingPauseSeconds == 0 {
+                        Label(lang.text("关闭", "Off"), systemImage: "checkmark")
+                    } else {
+                        Text(lang.text("关闭", "Off"))
+                    }
+                }
+
+                Divider()
+
+                ForEach(shadowingPauseSecondsOptions, id: \.self) { sec in
+                    Button {
+                        engine.setShadowingPauseSeconds(Double(sec))
+                    } label: {
+                        if abs(engine.shadowingPauseSeconds - Double(sec)) < 0.001 {
+                            Label("\(sec)s", systemImage: "checkmark")
+                        } else {
+                            Text("\(sec)s")
+                        }
+                    }
+                }
+
+                Divider()
+
+                ForEach(shadowingPauseRatioOptions, id: \.ratio) { option in
+                    Button {
+                        engine.setShadowingPauseRatio(option.ratio)
+                    } label: {
+                        if engine.shadowingPauseSeconds == 0 && abs(engine.shadowingPauseRatio - option.ratio) < 0.001 {
+                            Label(option.label, systemImage: "checkmark")
+                        } else {
+                            Text(option.label)
+                        }
                     }
                 }
             } label: {
                 Label(pauseLabel, systemImage: "pause.circle").font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundStyle(engine.shadowingPauseRatio == 0 ? Color.primary : StudyMateMediaStyle.success)
+                    .foregroundStyle((engine.shadowingPauseRatio == 0 && engine.shadowingPauseSeconds == 0) ? Color.primary : StudyMateMediaStyle.success)
             }
             .help(StudyMateShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
             .keyboardShortcut("p", modifiers: [.command, .shift])
@@ -587,6 +624,9 @@ private struct PlaybackStatusBar: View {
             return "\(lang.text("正在跟读", "Shadowing")) \(String(format: "%.1fs", max(0, engine.shadowingCountdownRemaining)))"
         }
 
+        if engine.shadowingPauseSeconds > 0 {
+            return "\(lang.text("跟读停顿", "Shadowing pause")) \(Int(engine.shadowingPauseSeconds))s"
+        }
         return "\(lang.text("跟读停顿", "Shadowing pause")) \(String(format: "%.2g×", engine.shadowingPauseRatio))"
     }
 
@@ -652,7 +692,7 @@ private struct PlaybackStatusBar: View {
                 Label(repeatCountText, systemImage: "repeat.circle")
             }
 
-            if engine.shadowingPauseRatio > 0 {
+            if engine.shadowingPauseRatio > 0 || engine.shadowingPauseSeconds > 0 {
                 Divider()
                     .frame(height: 14)
                 Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "pause.circle")

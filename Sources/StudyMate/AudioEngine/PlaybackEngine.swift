@@ -82,6 +82,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var currentRepeatCount: Int = 1
     /// 跟读停顿倍率 (0.0x 表示不停顿，1.0x 表示停顿当前句相同时长供用户开口跟读)
     @Published public var shadowingPauseRatio: Double = 0.0
+    /// 跟读固定停顿秒数 (0.0 表示不按固定秒数停顿，1.0/2.0/3.0/5.0 表示固定停顿秒数)
+    @Published public var shadowingPauseSeconds: Double = 0.0
+
+    public func setShadowingPauseRatio(_ ratio: Double) {
+        shadowingPauseSeconds = 0.0
+        shadowingPauseRatio = max(0.0, ratio)
+    }
+
+    public func setShadowingPauseSeconds(_ seconds: Double) {
+        shadowingPauseRatio = 0.0
+        shadowingPauseSeconds = max(0.0, seconds)
+    }
     /// 是否正处于句末开口跟读倒计时中
     @Published public var isShadowingPaused: Bool = false
     /// 跟读倒计时剩余秒数
@@ -2639,8 +2651,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if needsRepeat {
                 triggerSentenceRepeat(for: currentSeg)
             } else {
-                if shadowingPauseRatio > 0 {
-                    let pauseDuration = max(0.5, currentSeg.duration * shadowingPauseRatio)
+                if shadowingPauseRatio > 0 || shadowingPauseSeconds > 0 {
+                    let pauseDuration = shadowingPauseSeconds > 0
+                        ? shadowingPauseSeconds
+                        : max(0.5, currentSeg.duration * shadowingPauseRatio)
                     startShadowingPause(duration: pauseDuration) { [weak self] in
                         guard let self = self else { return }
                         self.advanceToNextSentence(from: activeIdx)
@@ -2667,8 +2681,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func triggerSentenceRepeat(for segment: SentenceSegment) {
-        if shadowingPauseRatio > 0 {
-            let pauseDuration = max(0.5, segment.duration * shadowingPauseRatio)
+        if shadowingPauseRatio > 0 || shadowingPauseSeconds > 0 {
+            let pauseDuration = shadowingPauseSeconds > 0
+                ? shadowingPauseSeconds
+                : max(0.5, segment.duration * shadowingPauseRatio)
             startShadowingPause(duration: pauseDuration) { [weak self] in
                 guard let self = self else { return }
                 self.currentRepeatCount += 1
@@ -2752,6 +2768,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 let nextSegment = segments[nextIdx]
                 let isAdjacentNaturalContinuation =
                     shadowingPauseRatio == 0 &&
+                    shadowingPauseSeconds == 0 &&
                     !onlyPlayBookmarked &&
                     nextIdx == currentIndex + 1 &&
                     abs(nextSegment.startTime - currentTime) <= 0.04
@@ -2951,7 +2968,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func shouldIgnoreStaleSentenceEndAfterSeek(at time: Double) -> Bool {
-        guard shadowingPauseRatio > 0,
+        guard (shadowingPauseRatio > 0 || shadowingPauseSeconds > 0),
               let selection = explicitSegmentSelection,
               selection.hasCompletedSeek,
               let completedAt = selection.seekCompletedAtUptime,
