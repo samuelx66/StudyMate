@@ -30,6 +30,21 @@ final class DictionaryCandidateSelectionTests: XCTestCase {
         XCTAssertEqual(selected?.dictionaryID, "second")
     }
 
+    func testOriginalCaseExactKeyWinsBeforeCaseInsensitiveFallback() {
+        let candidates = [
+            hit("Relate", dictionaryID: "oald9"),
+            hit("relate", dictionaryID: "oald9")
+        ]
+
+        let selected = DictionaryCandidateSelection.resolve(
+            query: "relate",
+            candidates: candidates,
+            dictionaryID: nil
+        )
+
+        XCTAssertEqual(selected?.key, "relate")
+    }
+
     func testAllModeUsesOwningDictionaryIDFromSelectedCandidate() {
         let candidates = [
             hit("word", dictionaryID: "oald9", title: "OALD9"),

@@ -2129,6 +2129,7 @@ impl NativeDictionaryFile {
     ) -> Result<Vec<(usize, usize, RawKey)>> {
         let normalized = normalize_search_key(query, self.header.key_case_sensitive);
         let mut result = Vec::new();
+        let mut original_case_match = None;
         let mut seen = HashSet::new();
         for block_index in self.candidate_key_blocks(&normalized, exact) {
             let keys = self.key_block(block_index)?;
@@ -2140,11 +2141,32 @@ impl NativeDictionaryFile {
                 if !seen.insert(raw.key.clone()) {
                     continue;
                 }
-                result.push((block_index, key_index, raw));
-                if result.len() >= max {
+                if exact && raw.key == query {
+                    if max == 1 {
+                        return Ok(vec![(block_index, key_index, raw)]);
+                    }
+                    original_case_match = Some((block_index, key_index, raw));
+                } else {
+                    result.push((block_index, key_index, raw));
+                    if exact {
+                        result.sort_by(|left, right| left.2.key.cmp(&right.2.key));
+                        if result.len() > max {
+                            result.pop();
+                        }
+                    }
+                }
+                if !exact && result.len() >= max {
                     return Ok(result);
                 }
             }
+        }
+        if exact {
+            result.sort_by(|left, right| left.2.key.cmp(&right.2.key));
+            if let Some(preferred) = original_case_match {
+                result.insert(0, preferred);
+            }
+            result.truncate(max);
+            return Ok(result);
         }
         Ok(result)
     }
@@ -2162,7 +2184,15 @@ impl NativeDictionaryFile {
                 decode_record_text(&self.record_for_key(block, position, &keys)?, &self.header);
             result.push((block, position, raw, text));
         }
-        result.sort_by(|left, right| left.2.key.cmp(&right.2.key));
+        // MDict lookup is normally case-insensitive, but a package may carry
+        // distinct records such as `Relate` and `relate`. Preserve the caller's
+        // original spelling when choosing one record for a detail request;
+        // alphabetical ordering would otherwise select the wrong definition.
+        result.sort_by(|left, right| {
+            (left.2.key != query)
+                .cmp(&(right.2.key != query))
+                .then_with(|| left.2.key.cmp(&right.2.key))
+        });
         Ok(result)
     }
 
@@ -2171,7 +2201,7 @@ impl NativeDictionaryFile {
         if normalized.is_empty() {
             return Ok(Vec::new());
         }
-        let exact = self.exact_records(&normalized, limit)?;
+        let exact = self.exact_records(query, limit)?;
         let mut result = Vec::with_capacity(limit);
         for (block, position, raw, text) in exact {
             result.push((raw, self.resolve_link(&text, &mut HashSet::new())?));
@@ -3237,6 +3267,36 @@ mod tests {
         assert!(
             mdict_sort_key("botanical garden", false) < mdict_sort_key("botanic garden", false)
         );
+    }
+
+    #[test]
+    fn detail_lookup_prefers_original_case_exact_key() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-case-detail-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mdx = root.join("fixture.mdx");
+        fs::write(
+            &mdx,
+            mdx_text_fixture(&[
+                ("Relate", "short proper-name"),
+                ("relate", "full verb definition"),
+            ]),
+        )
+        .unwrap();
+        let package_root = root.join("Dictionaries");
+        import_fixture(&package_root, &mdx, "fixture");
+
+        let lower = lookup(&package_root, "fixture", "relate", 1).unwrap();
+        assert_eq!(lower[0].key, "relate");
+        assert_eq!(lower[0].text, "full verb definition");
+
+        let upper = lookup(&package_root, "fixture", "Relate", 1).unwrap();
+        assert_eq!(upper[0].key, "Relate");
+        assert_eq!(upper[0].text, "short proper-name");
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn mdd_fixture(resources: &[(&str, &[u8])]) -> Vec<u8> {

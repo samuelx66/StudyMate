@@ -581,7 +581,8 @@ public final class DictionaryEngine: ObservableObject {
         expectedSearchGeneration: UInt64?,
         immediate: Bool
     ) {
-        let normalizedKey = Self.normalizedQuery(key)
+        let lookupKey = Self.canonicalQuery(key)
+        let normalizedKey = Self.normalizedQuery(lookupKey)
         guard !normalizedKey.isEmpty else { return }
         if let expectedSearchGeneration, expectedSearchGeneration != searchGeneration { return }
 
@@ -592,7 +593,7 @@ public final class DictionaryEngine: ObservableObject {
         // A cached definition still advances the generation and cancels the
         // previous request first.  This makes a fast row change deterministic:
         // an older in-flight lookup cannot publish after this cache hit.
-        if let cached = Self.detailCache.object(forKey: Self.detailCacheKey(for: normalizedKey, dictionaryID: dictionaryID)) {
+        if let cached = Self.detailCache.object(forKey: Self.detailCacheKey(for: lookupKey, dictionaryID: dictionaryID)) {
             searchResults = cached.entries
             definitionQuery = key
             isLoadingDefinition = false
@@ -611,9 +612,12 @@ public final class DictionaryEngine: ObservableObject {
                 }
                 try Task.checkCancellation()
                 var fields: [String: Any] = [
-                    "query": normalizedKey,
-                    // The SQL ordering puts an exact match first. One row per
-                    // dictionary is enough for the selected definition.
+                    // Keep the selected MDX key's original case. The native
+                    // reader uses it to prefer an exact-case record when a
+                    // dictionary contains both `Relate` and `relate`.
+                    "query": lookupKey,
+                    // One row per dictionary is enough once the native reader
+                    // has applied exact-case ordering.
                     "limit": 1
                 ]
                 if let dictionaryID {
@@ -628,7 +632,7 @@ public final class DictionaryEngine: ObservableObject {
                 if !entries.isEmpty {
                     Self.detailCache.setObject(
                         DictionaryLookupCacheValue(entries: entries),
-                        forKey: Self.detailCacheKey(for: normalizedKey, dictionaryID: dictionaryID),
+                        forKey: Self.detailCacheKey(for: lookupKey, dictionaryID: dictionaryID),
                         cost: Self.detailCacheCost(entries)
                     )
                 }
@@ -998,12 +1002,18 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     private nonisolated static func normalizedQuery(_ value: String) -> String {
-        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+        canonicalQuery(value).lowercased()
+    }
+
+    private nonisolated static func canonicalQuery(_ value: String) -> String {
+        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     private nonisolated static func detailCacheKey(for query: String, dictionaryID: String?) -> NSString {
         let scope = dictionaryID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "*"
-        return "\(scope)|\(normalizedQuery(query))" as NSString
+        // Case is significant here: MDX can legally contain distinct records
+        // whose only difference is the original key casing.
+        return "\(scope)|\(canonicalQuery(query))" as NSString
     }
 
     private nonisolated static func detailCacheCost(_ entries: [StudyMateDictionaryLookup]) -> Int {

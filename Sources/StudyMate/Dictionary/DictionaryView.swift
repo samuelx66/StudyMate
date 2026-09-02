@@ -15,14 +15,26 @@ enum DictionaryCandidateSelection {
         let scoped = candidates.filter { dictionaryID == nil || $0.dictionaryID == dictionaryID }
         guard !scoped.isEmpty else { return nil }
 
+        let canonicalQuery = canonicalKey(query)
+        // Preserve the dictionary's original key casing when the MDX contains
+        // both variants (for example `Relate` and `relate`). This must happen
+        // before the case-insensitive fallback, otherwise a short proper-name
+        // entry can hide the full ordinary-word definition.
+        if let exactCase = scoped.first(where: { canonicalKey($0.key) == canonicalQuery }) {
+            return exactCase
+        }
         let normalizedQuery = normalizedKey(query)
         return scoped.first(where: { normalizedKey($0.key) == normalizedQuery }) ?? scoped.first
     }
 
-    static func normalizedKey(_ value: String) -> String {
+    static func canonicalKey(_ value: String) -> String {
         value
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
+    }
+
+    static func normalizedKey(_ value: String) -> String {
+        canonicalKey(value)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 }
