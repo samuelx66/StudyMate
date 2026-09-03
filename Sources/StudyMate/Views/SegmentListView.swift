@@ -31,6 +31,71 @@ struct SegmentListFollowState: Equatable {
     }
 }
 
+/// 预编译生词表过滤器，用于断句列表超低延迟（O(1)级）筛选。
+struct CompiledVocabularyFilter: Equatable, Sendable {
+    let singleAsciiWords: Set<String>
+    let otherWordsOrPhrases: [String]
+
+    init(words: Set<String>) {
+        var singleAscii = Set<String>()
+        var other = [String]()
+        for word in words {
+            let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty else { continue }
+            if trimmed.unicodeScalars.allSatisfy(\.isASCII)
+                && !trimmed.contains(where: \.isWhitespace)
+                && trimmed.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "'" || $0 == "’" }) {
+                singleAscii.insert(trimmed)
+            } else {
+                other.append(trimmed)
+            }
+        }
+        self.singleAsciiWords = singleAscii
+        self.otherWordsOrPhrases = other
+    }
+
+    var isEmpty: Bool {
+        singleAsciiWords.isEmpty && otherWordsOrPhrases.isEmpty
+    }
+
+    func matches(segment: SentenceSegment) -> Bool {
+        guard !isEmpty else { return false }
+
+        // 1. 检查英文/ASCII 单词 token（原文）
+        if !singleAsciiWords.isEmpty {
+            let origTokens = Set(segment.text.lowercased().split { ch in
+                !(ch.isLetter || ch.isNumber || ch == "'" || ch == "’")
+            }.map { String($0) })
+            if !origTokens.isDisjoint(with: singleAsciiWords) {
+                return true
+            }
+
+            // 若译文中也包含英文单词，也一并检查
+            if !segment.translation.isEmpty {
+                let transTokens = Set(segment.translation.lowercased().split { ch in
+                    !(ch.isLetter || ch.isNumber || ch == "'" || ch == "’")
+                }.map { String($0) })
+                if !transTokens.isDisjoint(with: singleAsciiWords) {
+                    return true
+                }
+            }
+        }
+
+        // 2. 检查多词短语或中文等非 ASCII 词汇（包含匹配）
+        if !otherWordsOrPhrases.isEmpty {
+            let origLower = segment.text.lowercased()
+            let transLower = segment.translation.lowercased()
+            for phrase in otherWordsOrPhrases {
+                if origLower.contains(phrase) || transLower.contains(phrase) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+}
+
 /// 断句列表筛选条件。每个条件都是独立的“启用/不启用”复选项，
 /// 启用多个条件时取交集；筛选值为空或无效时不额外排除句子，避免用户输入过程中列表突然清空。
 struct SegmentListFilterCriteria: Equatable, Sendable {
@@ -40,6 +105,9 @@ struct SegmentListFilterCriteria: Equatable, Sendable {
     var minimumDurationText = "5"
     var requiresWord = false
     var wordText = ""
+    var requiresVocabularyNotebook = false
+    var selectedVocabularyNotebookID: UUID?
+    var compiledVocabularyFilter = CompiledVocabularyFilter(words: [])
     var requiresBookmark = false
     var requiresIndexRange = false
     var startIndexText = ""
@@ -50,6 +118,7 @@ struct SegmentListFilterCriteria: Equatable, Sendable {
         requiresTranslation ||
         requiresMinimumDuration ||
         requiresWord ||
+        requiresVocabularyNotebook ||
         requiresBookmark ||
         requiresIndexRange
     }
@@ -71,6 +140,11 @@ struct SegmentListFilterCriteria: Equatable, Sendable {
             if !query.isEmpty,
                !Self.containsWord(query, in: segment.text),
                !Self.containsWord(query, in: segment.translation) {
+                return false
+            }
+        }
+        if requiresVocabularyNotebook {
+            guard compiledVocabularyFilter.matches(segment: segment) else {
                 return false
             }
         }
@@ -184,6 +258,7 @@ public struct SegmentListView: View {
     private let suppressToolTips: Bool
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject private var libraryManager = SentenceLibraryManager.shared
+    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
     @ObservedObject private var translationSettings = TranslationSettings.shared
     @ObservedObject private var statusCenter = MainStatusCenter.shared
     @Environment(\.openWindow) private var openWindow
@@ -299,7 +374,10 @@ public struct SegmentListView: View {
                         selectedCount: selectedDisplayedCount,
                         onSelectAll: selectDisplayedSegments,
                         onDeselectAll: deselectDisplayedSegments,
-                        onInvertSelection: invertDisplayedSegmentSelection
+                        onInvertSelection: invertDisplayedSegmentSelection,
+                        onVocabularyFilterChanged: {
+                            updateVocabularyFilterIfNeeded()
+                        }
                     )
                 }
 
@@ -635,7 +713,10 @@ public struct SegmentListView: View {
                 "Whisper will recognize the existing time ranges again and overwrite original text. Translations, sentence timing, and other sentence data will not change."
             ))
         }
-        .onAppear { refreshDisplayedSegments() }
+        .onAppear {
+            updateVocabularyFilterIfNeeded()
+            refreshDisplayedSegments()
+        }
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
         .onChange(of: searchText) { _, _ in scheduleSearchRefresh() }
         .onChange(of: filterCriteria) { _, _ in
@@ -643,6 +724,11 @@ public struct SegmentListView: View {
                 isFilterInverted = false
             }
             refreshDisplayedSegments(selectMatching: filterCriteria.hasActiveFilters)
+        }
+        .onChange(of: vocabularyManager.notebooks) { _, _ in
+            if filterCriteria.requiresVocabularyNotebook {
+                updateVocabularyFilterIfNeeded()
+            }
         }
         .onDisappear {
             invalidateScheduledDisplayRefresh()
@@ -751,6 +837,36 @@ public struct SegmentListView: View {
     private func deleteActiveSentence() {
         guard let id = activeSegmentID else { return }
         engine.deleteSegment(id: id)
+    }
+
+    private func updateVocabularyFilterIfNeeded() {
+        let defaultID = vocabularyManager.notebooks.first(where: { $0.isDefault })?.id
+            ?? vocabularyManager.currentNotebookID
+            ?? vocabularyManager.notebooks.first?.id
+
+        let targetID: UUID?
+        if let selectedID = filterCriteria.selectedVocabularyNotebookID,
+           vocabularyManager.notebooks.contains(where: { $0.id == selectedID }) {
+            targetID = selectedID
+        } else {
+            targetID = defaultID
+            if filterCriteria.selectedVocabularyNotebookID != defaultID {
+                filterCriteria.selectedVocabularyNotebookID = defaultID
+            }
+        }
+
+        guard let targetID else {
+            if !filterCriteria.compiledVocabularyFilter.isEmpty {
+                filterCriteria.compiledVocabularyFilter = CompiledVocabularyFilter(words: [])
+            }
+            return
+        }
+
+        let words = vocabularyManager.wordKeys(for: targetID)
+        let newCompiled = CompiledVocabularyFilter(words: words)
+        if filterCriteria.compiledVocabularyFilter != newCompiled {
+            filterCriteria.compiledVocabularyFilter = newCompiled
+        }
     }
 
     private func refreshDisplayedSegments(selectMatching: Bool = false) {
@@ -1013,11 +1129,19 @@ public struct SegmentListView: View {
 private struct SegmentFilterPopover: View {
     @Binding var criteria: SegmentListFilterCriteria
     @ObservedObject var lang: LanguageManager
+    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
     let displayedCount: Int
     let selectedCount: Int
     let onSelectAll: () -> Void
     let onDeselectAll: () -> Void
     let onInvertSelection: () -> Void
+    let onVocabularyFilterChanged: () -> Void
+
+    private var defaultNotebookID: UUID? {
+        vocabularyManager.notebooks.first(where: { $0.isDefault })?.id
+            ?? vocabularyManager.currentNotebookID
+            ?? vocabularyManager.notebooks.first?.id
+    }
 
     private var isAllSelected: Bool {
         displayedCount > 0 && selectedCount == displayedCount
@@ -1049,8 +1173,7 @@ private struct SegmentFilterPopover: View {
                     .frame(width: 54)
                     .disabled(!criteria.requiresMinimumDuration)
 
-                Text(lang.text("秒", "sec"))
-                    .foregroundColor(.secondary)
+                Text(lang.text("秒的句子", "sec"))
             }
 
             HStack(spacing: 6) {
@@ -1061,8 +1184,58 @@ private struct SegmentFilterPopover: View {
 
                 TextField(lang.text("单词", "word"), text: $criteria.wordText)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 92)
+                    .frame(width: 80)
                     .disabled(!criteria.requiresWord)
+
+                Text(lang.text("的句子", "sentences"))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Toggle(isOn: Binding(
+                        get: { criteria.requiresVocabularyNotebook },
+                        set: { newValue in
+                            criteria.requiresVocabularyNotebook = newValue
+                            if newValue && criteria.selectedVocabularyNotebookID == nil {
+                                criteria.selectedVocabularyNotebookID = defaultNotebookID
+                            }
+                            onVocabularyFilterChanged()
+                        }
+                    )) {
+                        Text(lang.text("只显示含", "Only words in"))
+                    }
+                    .toggleStyle(.checkbox)
+
+                    Picker("", selection: Binding(
+                        get: {
+                            criteria.selectedVocabularyNotebookID ?? defaultNotebookID
+                        },
+                        set: { newID in
+                            criteria.selectedVocabularyNotebookID = newID
+                            onVocabularyFilterChanged()
+                        }
+                    )) {
+                        if vocabularyManager.notebooks.isEmpty {
+                            Text(lang.text("默认生词本", "Default Notebook")).tag(UUID?.none)
+                        } else {
+                            ForEach(vocabularyManager.notebooks) { notebook in
+                                Text(notebook.name).tag(Optional(notebook.id))
+                            }
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 125)
+                    .disabled(!criteria.requiresVocabularyNotebook)
+
+                    Text(lang.text("中单词的句子", "notebook"))
+                }
+
+                if criteria.requiresVocabularyNotebook && criteria.compiledVocabularyFilter.isEmpty {
+                    Text(lang.text("所选生词本暂无生词", "Selected notebook has no words"))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 20)
+                }
             }
 
             Toggle(isOn: $criteria.requiresBookmark) {
@@ -1072,19 +1245,17 @@ private struct SegmentFilterPopover: View {
 
             HStack(spacing: 6) {
                 Toggle(isOn: $criteria.requiresIndexRange) {
-                    Text(lang.text("只显示编号", "Only sentence numbers"))
+                    Text(lang.text("只显示句子编号范围", "Only sentence numbers"))
                 }
                 .toggleStyle(.checkbox)
 
                 Text("#")
-                    .foregroundColor(.secondary)
                 TextField("x", text: $criteria.startIndexText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 46)
                     .disabled(!criteria.requiresIndexRange)
 
                 Text(lang.text("到 #", "to #"))
-                    .foregroundColor(.secondary)
                 TextField("y", text: $criteria.endIndexText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 46)
@@ -1121,7 +1292,7 @@ private struct SegmentFilterPopover: View {
 
         }
         .padding(14)
-        .frame(width: 310)
+        .frame(width: 335)
     }
 }
 

@@ -54,6 +54,21 @@ public final class VocabularyNotebookManager: ObservableObject {
         savedWordKeys.contains(VocabularyNotebookStore.normalizedWord(word))
     }
 
+    private var wordKeysCache: [UUID: (updatedAt: Date, keys: Set<String>)] = [:]
+
+    public func wordKeys(for notebookID: UUID) -> Set<String> {
+        if let cached = wordKeysCache[notebookID],
+           let notebook = notebooks.first(where: { $0.id == notebookID }),
+           cached.updatedAt == notebook.updatedAt {
+            return cached.keys
+        }
+        let keys = (try? store.wordKeys(notebookID: notebookID)) ?? []
+        if let notebook = notebooks.first(where: { $0.id == notebookID }) {
+            wordKeysCache[notebookID] = (notebook.updatedAt, keys)
+        }
+        return keys
+    }
+
     public func dismissErrorMessage() {
         lastErrorMessage = nil
     }
@@ -429,6 +444,9 @@ public final class VocabularyNotebookManager: ObservableObject {
 
     private func markNotebooksUpdated(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
+        for id in ids {
+            wordKeysCache.removeValue(forKey: id)
+        }
         let now = Date()
         notebooks = notebooks
             .map { notebook in
