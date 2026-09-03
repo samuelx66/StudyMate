@@ -305,6 +305,33 @@ public final class VocabularyNotebookManager: ObservableObject {
         }
     }
 
+    @discardableResult
+    public func exportToPlainText(
+        entries: [VocabularyWordEntry],
+        destinationURL: URL,
+        sourceResolver: ((String) -> String)? = nil
+    ) async throws -> Int {
+        guard !entries.isEmpty else { return 0 }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let count = try await Task.detached(priority: .userInitiated) {
+                let text = VocabularyExportFormatter.formatPlainText(
+                    entries: entries,
+                    sourceResolver: sourceResolver
+                )
+                let data = Data((text.isEmpty ? "" : text + "\n").utf8)
+                try data.write(to: destinationURL, options: .atomic)
+                return entries.count
+            }.value
+            publishSuccess("已导出 " + String(count) + " 个生词到 " + destinationURL.lastPathComponent)
+            return count
+        } catch {
+            publishFailure(error)
+            throw error
+        }
+    }
+
     private func reloadNotebooks(createDefaultIfNeeded: Bool) async {
         do {
             let available = try await Task.detached(priority: .utility) { [store] in
