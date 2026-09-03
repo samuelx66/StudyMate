@@ -1,31 +1,38 @@
 # StudyMate（学伴）
 
-StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视频复读工具，使用 Swift、SwiftUI、AppKit 和 AVFoundation 构建。
+原来使用windows的时候，很喜欢Aboboo这款软件，可惜一直没有等来macOS版本，于是就有了自己实现的想法，所以首先应该致敬Aboboo。
+
+StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音、视频复读工具，使用 Swift、SwiftUI、AppKit 构建的原生应用程序。
 
 ## 当前功能
 
-- 音频、视频播放，系统解码、扩展解码和智能混合解码
-- 主波形图与当前句次波形图，支持直接拖动句首/句尾边界
+- 音频、视频播放，系统解码、扩展解码和智能混合解码实现绝大多数音、视频格式的播放。
 - 快速断句与智能断句两种模式
-- 原文、译文字幕编辑、导入和 LRC/SRT 导出
-- 连续播放、单句重复、句后停顿、全篇循环
+  - 快速断句：适合背景音简单的音、视频，不会自己生成原文。
+  - 智能断句：适合有嘈杂背景音的多人对话材料，会自动区分说话人角色，进行断句。可选自动生成原文。
+- 主波形图与当前句次波形图，支持直接拖动句首/句尾边界，支持50ms的微距调节。
+- 原文、译文字幕编辑。
+- 连续播放、单句重复、句后停顿、全篇循环。
 - 句子筛选、批量导出 AAC M4A 与双语 LRC/SRT
-- 多句库管理：独立 M4A 片段、预览图、搜索、日期/来源筛选和试听
-- DeepSeek、Gemini，以及 OpenAI/Anthropic 协议的自定义翻译服务
-- 独立词典引擎（Rust 实现）：导入标准 MDX/MDD v2，支持 UTF-8/UTF-16/GBK/Big5、zlib/LZO、精确和前缀查询，并兼容 `Encrypted=2` 的索引混淆；需要注册码的 `Encrypted=1/3` 文件支持通过 `RegCode/.key` 与用户标识派生解密密钥
-- 独立的 800×520 双栏欢迎首页、播放列表、快捷键和状态栏进度提示
+- 支持多句库管理。
+- 通过大模型自动翻译原文，支持DeepSeek、Gemini，以及 OpenAI/Anthropic 协议的自定义翻译服务，需要你自己准备api key.
+- 词典功能：独立词典引擎（Rust 实现）：导入标准 MDX/MDD v1、v2，支持 UTF-8/UTF-16/GBK/Big5、zlib/LZO、精确和前缀查询，并兼容 `Encrypted=2` 的索引混淆；需要注册码的 `Encrypted=1/3` 文件支持通过 `RegCode/.key` 与用户标识派生解密密钥。说不定后面可以扩展为独立的mdx词典软件。
+- 支持对断句列表中句子，字幕原文和译文进行双击查词和拖动选择查词，调用的自带 mdx 词典进行。(字幕拖动要先按住option或者command，然后再拖)
+- 也支持三指点击(control+command+d)调用macOS系统字典进行查词。
+- 支持生词本功能。
 
 ## 断句流程
 
-两种断句模式共用同一份 16 kHz、Float32、单声道 PCM：
+如果学习媒体材料自带字幕，则会直接合作字幕文件断句，没有字幕文件时才会自动断句。字幕文件与媒体文件同名会自动使用，也可以打开媒体文件后，拖动加载字幕文件。
 
-1. PCM 按媒体路径、文件大小和修改时间缓存，波形和断句复用同一解码结果；首次解码会逐块写入临时 `.pcmcache`，完成后原子发布并以只读文件映射方式访问，正常路径不会先构造一份完整 `[Float]` 再复制到磁盘。
-2. Silero VAD 输出逐帧概率和语音区间。
+使用到的开源语音AI离线模型：Silero-VAD, SpeakerKit, Whisper
+
+1. Silero VAD 输出逐帧概率和语音区间。
 3. SpeakerKit 在本地使用随应用提供的 Core ML 模型分析说话人轮次和重叠语音；超过五分钟的媒体按带上下文重叠的窗口处理，并通过重叠证据和说话人中心向量维持跨窗口身份一致。
-4. 智能断句额外通过应用内 whisper.cpp 获取词级时间戳、标点和语义证据；每个识别窗口直接读取对应 PCM 映射范围。
+4. 智能断句额外通过应用内 whisper.cpp 获取词级时间戳、标点和语义证据；每个识别窗口直接读取对应映射范围。
 5. 全局边界优化器综合声学停顿、VAD 概率、说话人变化、Whisper 结果和句长硬上限，生成不重叠的断句。
 
-快速断句只运行 Silero 与 SpeakerKit，优先速度和资源占用；智能断句完整联动 Silero、SpeakerKit 与 Whisper，适合需要更精准语义边界的材料。
+快速断句只运行 Silero 与 SpeakerKit，优先速度和资源占用；智能断句完整联动 Silero、SpeakerKit 与 Whisper，适合需要更精准语义边界的材料。智能断句可选生成原文。
 
 ## 数据与隐私
 
@@ -33,43 +40,11 @@ StudyMate（学伴）是一款面向 macOS 的原生英语听力学习与音视�
 - Whisper 模型按需下载到 `~/Library/Application Support/StudyMate/Models/`。
 - PCM、工程和句库数据保存在 `~/Library/Application Support/StudyMate/`。
 - 从播放列表或欢迎页移除媒体、或清空播放列表时，只保留原始音视频文件；对应工程、波形和 PCM 派生缓存会一并清理。
-- 工程和播放历史的后台保存失败会显示在状态栏，不会再被静默忽略。
-- 工程文件当前写入 schema 4，打开时可迁移 schema 1～4 的旧工程；迁移会保留断句、原文、译文、书签和播放位置。工程存在但无法读取或媒体信息不匹配时，程序停止自动断句，不会用新结果覆盖旧工程。媒体信息不匹配时，状态栏的“处理工程”按钮会等待用户选择“继续使用原工程 / 重新断句 / 取消”；继续使用会先备份原工程，再只更新媒体绑定并保留原有字幕，完成后显示实际备份路径。
+
 - 每次实际覆盖工程或波形缓存前，会在 `Projects/` 下保留最近 5 个独立备份快照；从播放列表删除媒体时，对应备份也会一起删除。
-- API Key 仅保存在 macOS 钥匙串；翻译请求只在用户明确点击“开始翻译”后发送。
-- 句库使用当前版本的 `.mablib` 目录包：`manifest.json`、`Library.sqlite3`、`Previews/` 和每句独立的 `Media/*.m4a`。首次扫描时会一次性原地迁移 v1/v2 句库到 v3，保留原 SQLite 数据、音频和缩略图；播放不依赖原始音视频。原文与译文检索由 SQLite FTS5 全文索引加速，并保持短关键词的精确匹配。
-- 默认句库不可删除；勾选的句子可移动到其它句库，移动会保留原文、译文、备注、来源、时间戳、入库日期以及独立音频和缩略图。
-- 句库播放和导出始终使用 `.mablib/Media` 内的独立 M4A，即使原始媒体仍存在也不会重新依赖源文件。
-- 句库、翻译配置和 PCM 缓存继续只使用当前格式；工程文件单独保留向前兼容迁移，避免软件升级造成已编辑字幕丢失。
-- 词典安装到 `~/Library/Application Support/StudyMate/Dictionaries/<dictionary-id>.mabdict/`。每个包包含 `manifest.json`、原始 `source/`、`Library.sqlite3` 索引和 MDD 的 `resources/`；导入过程先写隐藏临时目录，完成后原子发布，查询不依赖原始 MDX/MDD 文件。`Encrypted=2` 可自动导入；`Encrypted=1/3` 如果注册码或用户标识不正确，会明确提示需要授权信息，不会静默生成空词典。
+- 翻译服务使用的 API Key 仅保存在 macOS 钥匙串；翻译请求只在用户明确点击“开始翻译”后发送。
 
-## 性能策略
-
-- 播放边界、复读和换句使用独立高频媒体时钟；隐藏波形或缩放窗口只降低界面显示刷新。
-- 词典查询输入使用 180ms 防抖和请求代际校验；显式查词（选词、快捷键、回车）立即执行，选中释义请求另有 60ms 合并窗口，旧请求取消后不会覆盖新结果。完整释义按“词典范围 + 规范化词条”使用 64 项/32MB 的内存 LRU 缓存，重复选词不再重复读取和解码大段 HTML。
-- 词典 Rust helper 长驻复用 manifest、CSS、SQLite 连接和预编译查询；精确匹配与前缀匹配分成两条索引查询，并启用 `case_sensitive_like`，大词库不再全表扫描；缓存采用 4 本词典 LRU，导入或删除后主动失效，读取连接使用 busy timeout/query-only/WAL。
-- 词典 IPC 的 JSONL 分帧、JSON 解析、编码解码全部在后台串行队列完成；进度通知按 50ms 节流，取消请求会释放待处理 continuation，主线程只接收轻量状态更新。
-- 词典 WebKit 释义切换优先局部替换 body，使用签名比较而不是复制整份 shell；HTML/body 采用有上限缓存，局部更新通过 WebKit 参数传递，只有 CSS、资源根目录或初次加载变化时才重载完整文档。每条词典记录携带自己的资源根，混合词典的图片、音频和字体不会串路径。
-- 词典窗口将结果列表和释义面板拆成独立 SwiftUI 子视图；搜索框使用 AppKit NSTextField 感知 IME marked text，避免组合输入期间反复查词；加载释义显示骨架屏，查询反馈不中断布局。
-- 长断句列表滚动时停用行内复杂悬停控件，波形标线命中只检查当前视口，句库缩略图在后台读取并缓存。
-- 翻译按批次合并写入断句数组，AI 中间缓存同时限制条目数和估算内存，媒体关闭时取消相关后台工作。
-- 长媒体 PCM 首次解码即流式落盘并强制只读映射：波形和 Silero 直接读取映射，Whisper 只读取当前推理窗口；生产接口不再暴露完整样本数组，SpeakerKit 每次最多复制约五分钟音频，避免两小时材料同时常驻多份完整 Float 数组。缓存不可写时仍保留内存解码作为可靠性兜底。
-
-## 项目结构
-
-```text
-Sources/
-  CSpeechRuntime/       whisper.cpp C API 封装
-  StudyMate/            播放、波形、断句、字幕、翻译和句库模块
-    Dictionary/         macOS 词典窗口与 Rust JSONL 适配层（不包含词典解析逻辑）
-  StudyMateApp/         macOS 应用入口
-Dictionary/
-  dict-core/            跨平台 MDX/MDD 解析、SQLite 索引和查询核心
-  dict-cli/             长驻 JSONL 本地桥接进程；发布时放入 Contents/Helpers
-Tests/                  单元测试与集成测试
-Vendor/Whisper/         whisper.cpp macOS XCFramework
-Scripts/                工程生成、图标和应用打包脚本
-```
+- mdx 词典安装到 `~/Library/Application Support/StudyMate/Dictionaries/<dictionary-id>.mabdict/`。
 
 ## 环境要求
 
@@ -96,3 +71,25 @@ cargo test --manifest-path Dictionary/Cargo.toml --workspace
 ## 许可证
 
 第三方组件的许可证位于 `Sources/StudyMate/Resources/ThirdPartyNotices/` 和 `Vendor/Whisper/LICENSE`。发布应用时请同时遵守各依赖项目的许可证要求。
+
+## 打不开？
+
+### 方法一
+
+1. 把 `StudyMate.app` 拖入「应用程序」文件夹
+2. **不要双击打开**
+3. 在访达，**按住 Control‑键 + 点击 App 图标 → 打开**
+4. 在弹窗点「打开」。
+
+>
+> 如果弹出被阻止：打开「系统设置 → 隐私与安全性」往下滑，点击 **仍要打开**，输入管理员密码即可。
+> ✅效果：这台电脑永久记住例外，以后双击正常打开。
+
+### 方法二
+
+```
+sudo xattr -rd com.apple.quarantine /Applications/StudyMate.app
+sudo codesign --force --deep --sign - /Applications/StudyMate.app
+```
+
+![main_window.png](main_window.png)
