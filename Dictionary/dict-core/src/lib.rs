@@ -2835,17 +2835,31 @@ impl DictionaryReaderCache {
         query: &str,
         limit_per_dictionary: usize,
     ) -> Result<Vec<LookupKey>> {
-        const MAX_ALL_DICTIONARY_KEYS: usize = 500;
         let dictionaries = self.list(root)?;
+        let dictionary_ids = dictionaries
+            .into_iter()
+            .map(|dictionary| dictionary.id)
+            .collect::<Vec<_>>();
+        self.lookup_all_keys_with_ids(root, query, limit_per_dictionary, &dictionary_ids)
+    }
+
+    pub fn lookup_all_keys_with_ids(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit_per_dictionary: usize,
+        dictionary_ids: &[String],
+    ) -> Result<Vec<LookupKey>> {
+        const MAX_ALL_DICTIONARY_KEYS: usize = 500;
         let mut result = Vec::new();
-        for dictionary in dictionaries {
+        for dictionary_id in dictionary_ids {
             let remaining = MAX_ALL_DICTIONARY_KEYS.saturating_sub(result.len());
             if remaining == 0 {
                 break;
             }
             result.extend(self.lookup_keys(
                 root,
-                &dictionary.id,
+                dictionary_id,
                 query,
                 limit_per_dictionary.min(remaining),
             )?);
@@ -2871,9 +2885,23 @@ impl DictionaryReaderCache {
         limit_per_dictionary: usize,
     ) -> Result<Vec<LookupEntry>> {
         let dictionaries = self.list(root)?;
+        let dictionary_ids = dictionaries
+            .into_iter()
+            .map(|dictionary| dictionary.id)
+            .collect::<Vec<_>>();
+        self.lookup_all_with_ids(root, query, limit_per_dictionary, &dictionary_ids)
+    }
+
+    pub fn lookup_all_with_ids(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit_per_dictionary: usize,
+        dictionary_ids: &[String],
+    ) -> Result<Vec<LookupEntry>> {
         let mut result = Vec::new();
-        for dictionary in dictionaries {
-            result.extend(self.lookup(root, &dictionary.id, query, limit_per_dictionary)?);
+        for dictionary_id in dictionary_ids {
+            result.extend(self.lookup(root, dictionary_id, query, limit_per_dictionary)?);
         }
         Ok(result)
     }

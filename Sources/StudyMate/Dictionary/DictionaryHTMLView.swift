@@ -397,7 +397,7 @@ public enum DictionaryHTMLFormatter {
         var stylesheetTags: [String] = []
         let bodyEntries = entries.map { entry -> String in
             let badgeHTML = entries.count > 1
-                ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
+                ? "<div class=\"dict-badge\">\(escapeHTML(entry.displayName))</div>"
                 : ""
             let formattedContent = formatEntryContent(
                 entry.text,
@@ -564,6 +564,7 @@ public enum DictionaryHTMLFormatter {
             hasher.combine(entry.text)
             hasher.combine(entry.dictionaryID)
             hasher.combine(entry.dictionaryTitle)
+            hasher.combine(entry.displayName)
             hasher.combine(entry.format)
             hasher.combine(entry.css)
             hasher.combine(entry.resourceRoot)
@@ -982,6 +983,7 @@ private final class DictionarySoundSchemeHandler: NSObject, WKURLSchemeHandler {
 /// A lightweight, transparent AppKit WebKit view wrapper designed for smooth
 /// and responsive dictionary entry rendering in both popovers and full windows.
 public struct DictionaryHTMLView: NSViewRepresentable {
+    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
     public let html: String
     public let bodyHTML: String
     public let bodySignature: Int

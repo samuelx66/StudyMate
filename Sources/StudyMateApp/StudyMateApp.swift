@@ -363,8 +363,18 @@ struct StudyMateApp: App {
         Window(languageManager.text("词典", "Dictionary"), id: "dictionary") {
             DictionaryView()
                 .environmentObject(languageManager)
+                .background(DictionaryInitialFocusAccessor())
         }
         .defaultSize(width: 1000, height: 680)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+
+        // 词典来源设置使用独立原生窗口，和 macOS Dictionary 的参考源设置体验一致。
+        Window(languageManager.text("词典设置", "Dictionary Settings"), id: "dictionary-settings") {
+            DictionarySourceSettingsWindowView()
+                .environmentObject(languageManager)
+        }
+        .defaultSize(width: 560, height: 520)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
     }
@@ -455,6 +465,110 @@ struct StudyMateApp: App {
 private struct MainWindowToolbarFullScreenVisibilityModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.windowToolbarFullScreenVisibility(.onHover)
+    }
+}
+
+/// Gives the standalone dictionary window an immediately usable initial
+/// focus. SwiftUI installs the searchable field lazily, so the accessor waits
+/// briefly for the toolbar before assigning the first responder.
+struct DictionaryInitialFocusAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        DictionaryInitialFocusView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class DictionaryInitialFocusView: NSView {
+    private weak var observedWindow: NSWindow?
+    private var keyWindowObserver: NSObjectProtocol?
+    private var didFocusInitialSearch = false
+    private var focusAttempt = 0
+
+    deinit {
+        if let keyWindowObserver {
+            NotificationCenter.default.removeObserver(keyWindowObserver)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let keyWindowObserver {
+            NotificationCenter.default.removeObserver(keyWindowObserver)
+            self.keyWindowObserver = nil
+        }
+        guard let window else {
+            observedWindow = nil
+            didFocusInitialSearch = false
+            focusAttempt = 0
+            return
+        }
+        observedWindow = window
+        didFocusInitialSearch = false
+        focusAttempt = 0
+        keyWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            guard let self, let window, self.observedWindow === window else { return }
+            self.focusAttempt = 0
+            self.focusInitialSearch(on: window)
+        }
+        focusInitialSearch(on: window)
+    }
+
+    private func focusInitialSearch(on window: NSWindow) {
+        guard !didFocusInitialSearch, focusAttempt < 50 else { return }
+        focusAttempt += 1
+
+        // SwiftUI may install the toolbar search field several run loops
+        // after the content view is attached. The retry is short and bounded
+        // so later user focus is never taken back.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak window] in
+            guard let self,
+                  let window,
+                  self.observedWindow === window,
+                  !self.didFocusInitialSearch else { return }
+
+            if let searchField = self.searchField(in: window) {
+                window.initialFirstResponder = searchField
+                if window.makeFirstResponder(searchField) || window.firstResponder === searchField {
+                    self.didFocusInitialSearch = true
+                } else {
+                    self.focusInitialSearch(on: window)
+                }
+            } else {
+                self.focusInitialSearch(on: window)
+            }
+        }
+    }
+
+    private func searchField(in window: NSWindow) -> NSSearchField? {
+        let toolbarItems = window.toolbar?.items ?? []
+        for item in toolbarItems {
+            if let searchToolbarItem = item as? NSSearchToolbarItem {
+                return searchToolbarItem.searchField
+            }
+        }
+
+        var roots = toolbarItems.compactMap(\.view)
+        if let contentView = window.contentView {
+            roots.append(contentView)
+        }
+        return roots.lazy.compactMap { self.searchField(in: $0) }.first
+    }
+
+    private func searchField(in view: NSView) -> NSSearchField? {
+        if let searchField = view as? NSSearchField {
+            return searchField
+        }
+        for subview in view.subviews {
+            if let searchField = searchField(in: subview) {
+                return searchField
+            }
+        }
+        return nil
     }
 }
 

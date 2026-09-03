@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 import OSLog
 import NaturalLanguage
 
@@ -151,6 +152,13 @@ public struct StudyMateDictionarySummary: Codable, Identifiable, Hashable, Senda
     public let resourceCount: Int
     public let importedAt: Date
 
+    /// The user-facing name. The raw MDX metadata remains available through
+    /// `title`; this presentation name is resolved from the stable package ID
+    /// so renaming never changes lookup, resource, or pronunciation behavior.
+    public var displayName: String {
+        DictionarySourceSettings.shared.displayName(for: id, fallback: title)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, title, encoding, format
         case entryCount = "entry_count"
@@ -189,6 +197,222 @@ public struct StudyMateDictionarySummary: Codable, Identifiable, Hashable, Senda
     }
 }
 
+/// Stores the user's dictionary enablement and lookup priority without
+/// touching the dictionary packages or creating another index. The IDs are
+/// stable Rust package IDs, so renaming a dictionary in its MDX metadata does
+/// not reset the user's choices.
+public final class DictionarySourceSettings: ObservableObject {
+    public static let shared = DictionarySourceSettings()
+
+    public static let orderUserDefaultsKey = "StudyMate.DictionarySourceOrder"
+    public static let enabledUserDefaultsKey = "StudyMate.EnabledDictionaryIDs"
+    public static let displayNamesUserDefaultsKey = "StudyMate.DictionaryDisplayNames"
+
+    @Published public private(set) var orderedDictionaryIDs: [String]
+    @Published public private(set) var enabledDictionaryIDs: Set<String>
+    @Published public private(set) var customDisplayNames: [String: String]
+    /// A lightweight lifecycle signal for views that need to refresh the
+    /// current query after a toggle or a reorder.
+    @Published public private(set) var revision: UInt64 = 0
+    /// Name-only changes refresh labels and rendered source badges without
+    /// restarting the active dictionary query.
+    @Published public private(set) var displayNameRevision: UInt64 = 0
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        orderedDictionaryIDs = defaults.stringArray(forKey: Self.orderUserDefaultsKey) ?? []
+        enabledDictionaryIDs = Set(
+            defaults.stringArray(forKey: Self.enabledUserDefaultsKey) ?? []
+        )
+        customDisplayNames = (defaults.dictionary(forKey: Self.displayNamesUserDefaultsKey) as? [String: String]) ?? [:]
+    }
+
+    /// Reconciles persisted choices with the installed packages. New
+    /// dictionaries are appended and enabled by default; removed packages are
+    /// discarded from both persisted collections.
+    public func synchronize(with dictionaries: [StudyMateDictionarySummary]) {
+        // An empty snapshot can be observed while the helper is still
+        // starting. Keep the persisted choices until a real package list is
+        // available; successful deletion explicitly removes its ID below.
+        guard !dictionaries.isEmpty else { return }
+        let installedIDs = dictionaries.map(\.id)
+        let installedSet = Set(installedIDs)
+
+        var reconciledOrder: [String] = []
+        var seen = Set<String>()
+        for id in orderedDictionaryIDs where installedSet.contains(id) {
+            if seen.insert(id).inserted {
+                reconciledOrder.append(id)
+            }
+        }
+        for id in installedIDs where seen.insert(id).inserted {
+            reconciledOrder.append(id)
+        }
+
+        let hasStoredEnabledState = defaults.object(forKey: Self.enabledUserDefaultsKey) != nil
+        var reconciledEnabled: Set<String> = hasStoredEnabledState
+            ? enabledDictionaryIDs.intersection(installedSet)
+            : installedSet
+        if hasStoredEnabledState {
+            // An installed ID absent from the persisted order is a newly
+            // imported dictionary. Preserve explicit user disables for older
+            // IDs, but make the new package immediately usable by default.
+            let previouslyKnownIDs = Set(orderedDictionaryIDs)
+            for id in installedIDs where !previouslyKnownIDs.contains(id) {
+                reconciledEnabled.insert(id)
+            }
+        }
+
+        let orderChanged = reconciledOrder != orderedDictionaryIDs
+        let enabledChanged = reconciledEnabled != enabledDictionaryIDs
+        let reconciledDisplayNames = customDisplayNames.filter { installedSet.contains($0.key) }
+        let displayNamesChanged = reconciledDisplayNames != customDisplayNames
+        guard orderChanged || enabledChanged || displayNamesChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) else {
+            return
+        }
+
+        orderedDictionaryIDs = reconciledOrder
+        enabledDictionaryIDs = reconciledEnabled
+        customDisplayNames = reconciledDisplayNames
+        persist()
+        if orderChanged || enabledChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) {
+            revision &+= 1
+        }
+        if displayNamesChanged {
+            displayNameRevision &+= 1
+        }
+    }
+
+    public func orderedDictionaries(
+        from dictionaries: [StudyMateDictionarySummary]
+    ) -> [StudyMateDictionarySummary] {
+        let byID = Dictionary(uniqueKeysWithValues: dictionaries.map { ($0.id, $0) })
+        return orderedDictionaryIDs.compactMap { byID[$0] }
+    }
+
+    public func enabledDictionaries(
+        from dictionaries: [StudyMateDictionarySummary]
+    ) -> [StudyMateDictionarySummary] {
+        orderedDictionaries(from: dictionaries).filter {
+            enabledDictionaryIDs.contains($0.id)
+        }
+    }
+
+    public func isEnabled(_ dictionaryID: String) -> Bool {
+        enabledDictionaryIDs.contains(dictionaryID)
+    }
+
+    /// Returns the stable, user-facing name for a dictionary. The fallback is
+    /// deliberately supplied by the caller so this method also works for
+    /// search/detail records that only carry the Rust metadata title.
+    public func displayName(for dictionaryID: String, fallback: String) -> String {
+        guard let customName = customDisplayNames[dictionaryID] else { return fallback }
+        let trimmed = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    public func hasCustomDisplayName(for dictionaryID: String) -> Bool {
+        guard let customName = customDisplayNames[dictionaryID] else { return false }
+        return !customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Empty input restores the MDX metadata name. Names are presentation
+    /// overrides only and never modify the imported dictionary package.
+    public func setDisplayName(_ name: String?, for dictionaryID: String) {
+        guard !dictionaryID.isEmpty else { return }
+        let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var updated = customDisplayNames
+        if let normalizedName, !normalizedName.isEmpty {
+            updated[dictionaryID] = normalizedName
+        } else {
+            updated.removeValue(forKey: dictionaryID)
+        }
+        guard updated != customDisplayNames else { return }
+        customDisplayNames = updated
+        persist()
+        displayNameRevision &+= 1
+    }
+
+    public func setEnabled(_ enabled: Bool, for dictionaryID: String) {
+        guard !dictionaryID.isEmpty else { return }
+        var updated = enabledDictionaryIDs
+        if enabled {
+            updated.insert(dictionaryID)
+        } else {
+            updated.remove(dictionaryID)
+        }
+        guard updated != enabledDictionaryIDs else { return }
+        enabledDictionaryIDs = updated
+        persist()
+        revision &+= 1
+    }
+
+    public func move(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        var updated = orderedDictionaryIDs
+        updated.move(fromOffsets: offsets, toOffset: destination)
+        guard updated != orderedDictionaryIDs else { return }
+        orderedDictionaryIDs = updated
+        persist()
+        revision &+= 1
+    }
+
+    /// Applies a complete visible order in one transaction. Drag previews
+    /// should stay in memory while the pointer moves; persisting and notifying
+    /// the dictionary engine only once when the drop finishes keeps reordering
+    /// responsive even with many installed dictionaries.
+    public func setOrder(_ requestedOrder: [String]) {
+        let knownIDs = Set(orderedDictionaryIDs)
+        var seen = Set<String>()
+        let reorderedKnownIDs = requestedOrder.filter { id in
+            knownIDs.contains(id) && seen.insert(id).inserted
+        }
+        guard !reorderedKnownIDs.isEmpty else { return }
+
+        let updated = reorderedKnownIDs + orderedDictionaryIDs.filter {
+            !seen.contains($0)
+        }
+        guard updated != orderedDictionaryIDs else { return }
+        orderedDictionaryIDs = updated
+        persist()
+        revision &+= 1
+    }
+
+    public func remove(dictionaryID: String) {
+        guard !dictionaryID.isEmpty else { return }
+        let updatedOrder = orderedDictionaryIDs.filter { $0 != dictionaryID }
+        var updatedEnabled = enabledDictionaryIDs
+        updatedEnabled.remove(dictionaryID)
+        var updatedDisplayNames = customDisplayNames
+        updatedDisplayNames.removeValue(forKey: dictionaryID)
+        let sourceSettingsChanged = updatedOrder != orderedDictionaryIDs
+            || updatedEnabled != enabledDictionaryIDs
+        let displayNameChanged = updatedDisplayNames != customDisplayNames
+        guard sourceSettingsChanged || displayNameChanged else { return }
+        orderedDictionaryIDs = updatedOrder
+        enabledDictionaryIDs = updatedEnabled
+        customDisplayNames = updatedDisplayNames
+        persist()
+        if sourceSettingsChanged {
+            revision &+= 1
+        }
+        if displayNameChanged {
+            displayNameRevision &+= 1
+        }
+    }
+
+    private func persist() {
+        defaults.set(orderedDictionaryIDs, forKey: Self.orderUserDefaultsKey)
+        defaults.set(Array(enabledDictionaryIDs), forKey: Self.enabledUserDefaultsKey)
+        if customDisplayNames.isEmpty {
+            defaults.removeObject(forKey: Self.displayNamesUserDefaultsKey)
+        } else {
+            defaults.set(customDisplayNames, forKey: Self.displayNamesUserDefaultsKey)
+        }
+    }
+}
+
 public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendable {
     public let key: String
     public let text: String
@@ -197,6 +421,10 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
     public let format: String
     public let css: String?
     public let resourceRoot: String?
+
+    public var displayName: String {
+        DictionarySourceSettings.shared.displayName(for: dictionaryID, fallback: dictionaryTitle)
+    }
 
     public var id: String { "\(dictionaryID):\(key)" }
 
@@ -244,6 +472,10 @@ public struct StudyMateDictionarySearchHit: Codable, Identifiable, Hashable, Sen
     public let dictionaryID: String
     public let dictionaryTitle: String
     public let resourceRoot: String?
+
+    public var displayName: String {
+        DictionarySourceSettings.shared.displayName(for: dictionaryID, fallback: dictionaryTitle)
+    }
 
     public var id: String { "\(dictionaryID):\(key)" }
 
@@ -407,6 +639,18 @@ public final class DictionaryEngine: ObservableObject {
     @Published public private(set) var lemmaOriginalQuery: String?
 
     public let dictionaryRoot: URL
+    private let dictionarySourceSettings = DictionarySourceSettings.shared
+
+    /// Installed dictionaries in the user's visible priority order.
+    public var orderedDictionaries: [StudyMateDictionarySummary] {
+        dictionarySourceSettings.orderedDictionaries(from: dictionaries)
+    }
+
+    /// Installed and enabled dictionaries in the order used by search,
+    /// definitions, source tabs, and pronunciation fallback.
+    public var enabledDictionaries: [StudyMateDictionarySummary] {
+        dictionarySourceSettings.enabledDictionaries(from: dictionaries)
+    }
 
     public func resourcesURL(for dictionaryID: String) -> URL {
         let encodedID = dictionaryID.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? dictionaryID
@@ -485,7 +729,9 @@ public final class DictionaryEngine: ObservableObject {
             do {
                 let value = try await self.request(operation: "list")
                 guard !Task.isCancelled, !self.isBusy else { return }
-                self.dictionaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
+                let updated = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
+                self.dictionaries = updated
+                self.dictionarySourceSettings.synchronize(with: updated)
                 self.lastError = nil
             } catch {
                 guard !Task.isCancelled else { return }
@@ -631,16 +877,11 @@ public final class DictionaryEngine: ObservableObject {
         searchTask = Task { [weak self] in
             guard let self else { return }
             do {
-                var fields: [String: Any] = [
-                    "query": query,
-                    "limit": limit
-                ]
-                if let dictionaryID {
-                    fields["dictionaryID"] = dictionaryID
-                }
-                let operation = dictionaryID == nil ? "lookupAllKeys" : "lookupKeys"
-                let value = try await self.request(operation: operation, fields: fields)
-                let hits = try await Self.decodeInBackground([StudyMateDictionarySearchHit].self, from: value)
+                let hits = try await self.lookupKeys(
+                    query: query,
+                    limit: limit,
+                    dictionaryID: dictionaryID
+                )
                 guard !Task.isCancelled,
                       generation == self.searchGeneration,
                       !self.isBusy else { return }
@@ -736,21 +977,11 @@ public final class DictionaryEngine: ObservableObject {
                     try await Task.sleep(nanoseconds: 60_000_000)
                 }
                 try Task.checkCancellation()
-                var fields: [String: Any] = [
-                    // Keep the selected MDX key's original case. The native
-                    // reader uses it to prefer an exact-case record when a
-                    // dictionary contains both `Relate` and `relate`.
-                    "query": lookupKey,
-                    // One row per dictionary is enough once the native reader
-                    // has applied exact-case ordering.
-                    "limit": 1
-                ]
-                if let dictionaryID {
-                    fields["dictionaryID"] = dictionaryID
-                }
-                let operation = dictionaryID == nil ? "lookupAll" : "lookup"
-                let value = try await self.request(operation: operation, fields: fields)
-                let entries = try await Self.decodeInBackground([StudyMateDictionaryLookup].self, from: value)
+                let entries = try await self.lookupDefinitions(
+                    query: lookupKey,
+                    limit: 1,
+                    dictionaryID: dictionaryID
+                )
                 guard !Task.isCancelled,
                       generation == self.detailGeneration,
                       !self.isBusy else { return }
@@ -797,16 +1028,11 @@ public final class DictionaryEngine: ObservableObject {
                 // before issuing a full-definition IPC request.
                 try await Task.sleep(nanoseconds: 140_000_000)
                 try Task.checkCancellation()
-                var fields: [String: Any] = [
-                    "query": lookupKey,
-                    "limit": 1
-                ]
-                if let dictionaryID {
-                    fields["dictionaryID"] = dictionaryID
-                }
-                let operation = dictionaryID == nil ? "lookupAll" : "lookup"
-                let value = try await self.request(operation: operation, fields: fields)
-                let entries = try await Self.decodeInBackground([StudyMateDictionaryLookup].self, from: value)
+                let entries = try await self.lookupDefinitions(
+                    query: lookupKey,
+                    limit: 1,
+                    dictionaryID: dictionaryID
+                )
                 guard !Task.isCancelled,
                       self.prefetchGeneration == generation,
                       !self.isBusy else { return }
@@ -839,6 +1065,103 @@ public final class DictionaryEngine: ObservableObject {
             dictionaryID: deferred.dictionaryID,
             includeDetails: deferred.includeDetails,
             immediate: true
+        )
+    }
+
+    /// Loads the installed package list only when a lookup arrives before the
+    /// dictionary window's initial refresh has completed. This keeps the
+    /// settings model authoritative without making the first query depend on
+    /// timing between two independent tasks.
+    private func installedDictionariesForLookup() async throws -> [StudyMateDictionarySummary] {
+        if dictionaries.isEmpty, !isBusy {
+            let value = try await request(operation: "list")
+            let updated = try await Self.decodeInBackground(
+                [StudyMateDictionarySummary].self,
+                from: value
+            )
+            guard !Task.isCancelled else { return [] }
+            dictionaries = updated
+            dictionarySourceSettings.synchronize(with: updated)
+        }
+        return dictionarySourceSettings.orderedDictionaries(from: dictionaries)
+    }
+
+    private func lookupDictionaries(
+        dictionaryID: String?
+    ) async throws -> [StudyMateDictionarySummary] {
+        let installed = try await installedDictionariesForLookup()
+        guard let dictionaryID else { return installed.filter { dictionarySourceSettings.isEnabled($0.id) } }
+        guard dictionarySourceSettings.isEnabled(dictionaryID) else { return [] }
+        return installed.filter { $0.id == dictionaryID }
+    }
+
+    /// The Rust helper performs every MDX/MDD lookup using its native
+    /// random-access reader. The enabled IDs are sent in one request so the
+    /// helper can walk them in the exact user-defined order without adding a
+    /// JSONL round trip for every dictionary.
+    private func lookupKeys(
+        query: String,
+        limit: Int,
+        dictionaryID: String?
+    ) async throws -> [StudyMateDictionarySearchHit] {
+        let candidates = try await lookupDictionaries(dictionaryID: dictionaryID)
+        guard !candidates.isEmpty else { return [] }
+
+        try Task.checkCancellation()
+        let fields: [String: Any]
+        let operation: String
+        if let dictionaryID {
+            operation = "lookupKeys"
+            fields = [
+                "dictionaryID": dictionaryID,
+                "query": query,
+                "limit": limit
+            ]
+        } else {
+            operation = "lookupAllKeys"
+            fields = [
+                "query": query,
+                "limit": limit,
+                "dictionaryIDs": candidates.map(\.id)
+            ]
+        }
+        let value = try await request(operation: operation, fields: fields)
+        return try await Self.decodeInBackground(
+            [StudyMateDictionarySearchHit].self,
+            from: value
+        )
+    }
+
+    private func lookupDefinitions(
+        query: String,
+        limit: Int,
+        dictionaryID: String?
+    ) async throws -> [StudyMateDictionaryLookup] {
+        let candidates = try await lookupDictionaries(dictionaryID: dictionaryID)
+        guard !candidates.isEmpty else { return [] }
+
+        try Task.checkCancellation()
+        let fields: [String: Any]
+        let operation: String
+        if let dictionaryID {
+            operation = "lookup"
+            fields = [
+                "dictionaryID": dictionaryID,
+                "query": query,
+                "limit": limit
+            ]
+        } else {
+            operation = "lookupAll"
+            fields = [
+                "query": query,
+                "limit": limit,
+                "dictionaryIDs": candidates.map(\.id)
+            ]
+        }
+        let value = try await request(operation: operation, fields: fields)
+        return try await Self.decodeInBackground(
+            [StudyMateDictionaryLookup].self,
+            from: value
         )
     }
 
@@ -916,7 +1239,9 @@ public final class DictionaryEngine: ObservableObject {
                     if let value = try? await self.request(operation: "list"),
                        let updated = try? await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value) {
                         self.dictionaries = updated
+                        self.dictionarySourceSettings.synchronize(with: updated)
                     }
+                    self.dictionarySourceSettings.remove(dictionaryID: id)
                     throw StudyMateDictionaryError(message: LanguageManager.shared.text(
                         "未找到要删除的词典。",
                         "The dictionary to delete could not be found."
@@ -928,6 +1253,7 @@ public final class DictionaryEngine: ObservableObject {
                 // the just-deleted row must not remain visible as if it were
                 // still usable.
                 self.dictionaries.removeAll { $0.id == id }
+                self.dictionarySourceSettings.remove(dictionaryID: id)
 
                 let value = try await self.request(operation: "list")
                 guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
@@ -935,6 +1261,7 @@ public final class DictionaryEngine: ObservableObject {
                 guard !Task.isCancelled, self.dictionaryMutationGeneration == generation else { return }
 
                 self.dictionaries = updated
+                self.dictionarySourceSettings.synchronize(with: updated)
                 self.searchResults.removeAll { $0.dictionaryID == id }
                 self.isBusy = false
                 self.progressPhase = nil
@@ -1018,13 +1345,14 @@ public final class DictionaryEngine: ObservableObject {
 
                 self.dictionaries.append(result.dictionary)
                 self.dictionaries.sort(by: Self.dictionaryPrioritySort)
+                self.dictionarySourceSettings.synchronize(with: self.dictionaries)
                 self.progress = 1.0
                 self.progressPhase = nil
                 self.isBusy = false
                 self.lastError = nil
                 self.retryDeferredSearchIfNeeded()
                 self.showNotification(
-                    LanguageManager.shared.text("已成功导入词典“\(result.dictionary.title)”", "Imported dictionary “\(result.dictionary.title)”")
+                    LanguageManager.shared.text("已成功导入词典“\(result.dictionary.displayName)”", "Imported dictionary “\(result.dictionary.displayName)”")
                 )
             } catch {
                 guard self.dictionaryMutationGeneration == generation else { return }
@@ -1096,13 +1424,14 @@ public final class DictionaryEngine: ObservableObject {
     /// visible priority order. A missing audio file in the first dictionary
     /// must not hide a matching pronunciation in a later dictionary.
     public func firstDictionaryPronunciationURL(for word: String) async throws -> URL? {
-        var candidates = dictionaries
-        if candidates.isEmpty, !isBusy {
+        var candidates = enabledDictionaries
+        if dictionaries.isEmpty, !isBusy {
             let value = try await request(operation: "list")
             let summaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
             guard !Task.isCancelled else { return nil }
             dictionaries = summaries
-            candidates = summaries
+            dictionarySourceSettings.synchronize(with: summaries)
+            candidates = enabledDictionaries
         }
 
         let audioCandidates = candidates.filter { $0.resourceCount > 0 }
@@ -1129,13 +1458,14 @@ public final class DictionaryEngine: ObservableObject {
     /// transferred as raw bytes and has no filename extension for the native
     /// audio decoder to inspect.
     public func firstDictionaryPronunciation(for word: String) async throws -> (data: Data, mimeType: String?)? {
-        var candidates = dictionaries
-        if candidates.isEmpty, !isBusy {
+        var candidates = enabledDictionaries
+        if dictionaries.isEmpty, !isBusy {
             let value = try await request(operation: "list")
             let summaries = try await Self.decodeInBackground([StudyMateDictionarySummary].self, from: value)
             guard !Task.isCancelled else { return nil }
             dictionaries = summaries
-            candidates = summaries
+            dictionarySourceSettings.synchronize(with: summaries)
+            candidates = enabledDictionaries
         }
 
         // Fast-path: 仅探测包含实际资源（resourceCount > 0）的词典，跳过纯文本词典，避免串行无意义 IPC 延迟

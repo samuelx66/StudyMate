@@ -23,6 +23,17 @@ fn path_field(value: &Value, name: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(string_field(value, name)?))
 }
 
+fn dictionary_ids_field(value: &Value) -> Option<Vec<String>> {
+    value.get("dictionaryIDs").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    })
+}
+
 fn handle(
     value: &Value,
     stdout: &mut impl Write,
@@ -54,9 +65,16 @@ fn handle(
             let root = path_field(value, "root")?;
             let query = string_field(value, "query")?;
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
-            Ok(serde_json::to_value(
-                query_cache.lookup_all(&root, &query, limit)?,
-            )?)
+            let result = match dictionary_ids_field(value) {
+                Some(dictionary_ids) => query_cache.lookup_all_with_ids(
+                    &root,
+                    &query,
+                    limit,
+                    &dictionary_ids,
+                )?,
+                None => query_cache.lookup_all(&root, &query, limit)?,
+            };
+            Ok(serde_json::to_value(result)?)
         }
         "lookupKeys" => {
             let root = path_field(value, "root")?;
@@ -71,9 +89,16 @@ fn handle(
             let root = path_field(value, "root")?;
             let query = string_field(value, "query")?;
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
-            Ok(serde_json::to_value(
-                query_cache.lookup_all_keys(&root, &query, limit)?,
-            )?)
+            let result = match dictionary_ids_field(value) {
+                Some(dictionary_ids) => query_cache.lookup_all_keys_with_ids(
+                    &root,
+                    &query,
+                    limit,
+                    &dictionary_ids,
+                )?,
+                None => query_cache.lookup_all_keys(&root, &query, limit)?,
+            };
+            Ok(serde_json::to_value(result)?)
         }
         "resource" => {
             let root = path_field(value, "root")?;

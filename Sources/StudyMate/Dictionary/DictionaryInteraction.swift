@@ -362,7 +362,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         }
         var names: [String] = []
         var seen = Set<String>()
-        for title in DictionaryEngine.shared.searchResults.map(\.dictionaryTitle) {
+        for title in DictionaryEngine.shared.searchResults.map(\.displayName) {
             let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
             names.append(trimmed)

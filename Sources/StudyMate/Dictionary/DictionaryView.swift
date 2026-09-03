@@ -63,6 +63,713 @@ private struct DictionaryDefinitionSkeleton: View {
     }
 }
 
+/// Native dictionary-source management view. The list is intentionally backed
+/// by the installed summaries rather than a second copy of dictionary
+/// metadata, so importing or deleting a package is reflected immediately.
+@MainActor
+struct DictionarySourceSettingsView: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject var settings: DictionarySourceSettings
+    let dictionaries: [StudyMateDictionarySummary]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(lang.text("词典", "Dictionaries"))
+                .font(.headline)
+
+            Text(lang.text(
+                "勾选要使用的词典，并将参考源拖移成你喜欢的顺序。上面的词典优先用于查词和发音。",
+                "Choose the dictionaries to use, then drag them into your preferred order. Dictionaries higher in the list are preferred for lookup and pronunciation."
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if dictionaries.isEmpty {
+                ContentUnavailableView(
+                    lang.text("还没有词典", "No dictionaries"),
+                    systemImage: "books.vertical"
+                )
+                .frame(maxWidth: .infinity, minHeight: 180)
+            } else {
+                DictionarySourceSettingsTableRepresentable(
+                    settings: settings,
+                    dictionaries: dictionaries,
+                    dictionaryColumnTitle: lang.text("词典", "Dictionary"),
+                    actionsColumnTitle: lang.text("操作", "Actions")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 420)
+        .onAppear {
+            settings.synchronize(with: dictionaries)
+        }
+    }
+}
+
+private final class DictionarySettingsTableView: NSTableView {
+    override func keyDown(with event: NSEvent) {
+        // Return 键 (36) 或 Enter (76) 快捷触发重命名选中的词典（符合 macOS 原生 HIG 习惯）
+        if (event.keyCode == 36 || event.keyCode == 76),
+           selectedRow >= 0,
+           let coordinator = delegate as? DictionarySourceSettingsTableRepresentable.Coordinator {
+            coordinator.beginRenameSelectedRow()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
+    let settings: DictionarySourceSettings
+    let dictionaries: [StudyMateDictionarySummary]
+    let dictionaryColumnTitle: String
+    let actionsColumnTitle: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            settings: settings,
+            dictionaries: dictionaries,
+            dictionaryColumnTitle: dictionaryColumnTitle,
+            actionsColumnTitle: actionsColumnTitle
+        )
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let tableView = DictionarySettingsTableView()
+        tableView.headerView = NSTableHeaderView()
+        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.gridStyleMask = []
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
+        tableView.rowSizeStyle = .medium
+        tableView.selectionHighlightStyle = .regular
+        tableView.allowsEmptySelection = true
+        tableView.allowsMultipleSelection = false
+        tableView.draggingDestinationFeedbackStyle = .gap
+        tableView.registerForDraggedTypes([.string])
+        tableView.setDraggingSourceOperationMask(.move, forLocal: true)
+
+        let dictionaryColumn = NSTableColumn(
+            identifier: NSUserInterfaceItemIdentifier(Coordinator.dictionaryColumnIdentifier)
+        )
+        dictionaryColumn.title = dictionaryColumnTitle
+        dictionaryColumn.minWidth = 300
+        dictionaryColumn.width = 410
+        dictionaryColumn.resizingMask = .autoresizingMask
+
+        let actionsColumn = NSTableColumn(
+            identifier: NSUserInterfaceItemIdentifier(Coordinator.actionsColumnIdentifier)
+        )
+        actionsColumn.title = actionsColumnTitle
+        actionsColumn.minWidth = 48
+        actionsColumn.maxWidth = 64
+        actionsColumn.width = 54
+        actionsColumn.resizingMask = .userResizingMask
+
+        tableView.addTableColumn(dictionaryColumn)
+        tableView.addTableColumn(actionsColumn)
+
+        let coordinator = context.coordinator
+        coordinator.tableView = tableView
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        tableView.target = coordinator
+        tableView.doubleAction = #selector(Coordinator.tableDoubleClick(_:))
+
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.documentView = tableView
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.update(
+            settings: settings,
+            dictionaries: dictionaries,
+            dictionaryColumnTitle: dictionaryColumnTitle,
+            actionsColumnTitle: actionsColumnTitle
+        )
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+        static let dictionaryColumnIdentifier = "dictionary"
+        static let actionsColumnIdentifier = "actions"
+
+        private var settings: DictionarySourceSettings
+        private var dictionaries: [StudyMateDictionarySummary]
+        private var dictionaryColumnTitle: String
+        private var actionsColumnTitle: String
+        weak var tableView: NSTableView?
+        private var renamingDictionaryID: String?
+        private weak var editingField: NSTextField?
+
+        init(
+            settings: DictionarySourceSettings,
+            dictionaries: [StudyMateDictionarySummary],
+            dictionaryColumnTitle: String,
+            actionsColumnTitle: String
+        ) {
+            self.settings = settings
+            self.dictionaries = dictionaries
+            self.dictionaryColumnTitle = dictionaryColumnTitle
+            self.actionsColumnTitle = actionsColumnTitle
+            super.init()
+        }
+
+        var orderedDictionaries: [StudyMateDictionarySummary] {
+            settings.orderedDictionaries(from: dictionaries)
+        }
+
+        func update(
+            settings: DictionarySourceSettings,
+            dictionaries: [StudyMateDictionarySummary],
+            dictionaryColumnTitle: String,
+            actionsColumnTitle: String
+        ) {
+            self.settings = settings
+            self.dictionaries = dictionaries
+            self.dictionaryColumnTitle = dictionaryColumnTitle
+            self.actionsColumnTitle = actionsColumnTitle
+            guard let tableView else { return }
+            if let dictionaryColumn = tableView.tableColumn(
+                withIdentifier: NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier)
+            ) {
+                dictionaryColumn.title = dictionaryColumnTitle
+            }
+            if let actionsColumn = tableView.tableColumn(
+                withIdentifier: NSUserInterfaceItemIdentifier(Self.actionsColumnIdentifier)
+            ) {
+                actionsColumn.title = actionsColumnTitle
+            }
+            // 如果用户正在重命名编辑中，避免全量 reloadData 打断正在编辑的输入框与焦点
+            if renamingDictionaryID != nil {
+                return
+            }
+            let selectedID = selectedDictionaryID
+            tableView.reloadData()
+            if let selectedID,
+               let row = orderedDictionaries.firstIndex(where: { $0.id == selectedID }) {
+                tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+        }
+
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            orderedDictionaries.count
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            viewFor tableColumn: NSTableColumn?,
+            row: Int
+        ) -> NSView? {
+            guard orderedDictionaries.indices.contains(row),
+                  let identifier = tableColumn?.identifier.rawValue else {
+                return nil
+            }
+            let dictionary = orderedDictionaries[row]
+            if identifier == Self.dictionaryColumnIdentifier {
+                let cell = (tableView.makeView(
+                    withIdentifier: NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier),
+                    owner: self
+                ) as? DictionarySourceNameCellView) ?? DictionarySourceNameCellView()
+                cell.identifier = NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier)
+                cell.configure(
+                    dictionaryID: dictionary.id,
+                    displayName: dictionary.displayName,
+                    isEnabled: settings.isEnabled(dictionary.id),
+                    isEditing: renamingDictionaryID == dictionary.id
+                )
+                cell.checkboxButton.target = self
+                cell.checkboxButton.action = #selector(toggleDictionary(_:))
+                cell.nameField.delegate = self
+                cell.nameField.target = self
+                cell.nameField.action = #selector(commitRenameFromField(_:))
+                cell.nameField.onDoubleClick = { [weak self] in
+                    self?.beginRename(dictionaryID: dictionary.id)
+                }
+                return cell
+            }
+
+            let cell = (tableView.makeView(
+                withIdentifier: NSUserInterfaceItemIdentifier(Self.actionsColumnIdentifier),
+                owner: self
+            ) as? DictionarySourceActionCellView) ?? DictionarySourceActionCellView()
+            cell.identifier = NSUserInterfaceItemIdentifier(Self.actionsColumnIdentifier)
+            cell.configure(dictionaryID: dictionary.id)
+            cell.actionButton.target = self
+            cell.actionButton.action = #selector(showDictionaryActions(_:))
+            return cell
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            pasteboardWriterForRow row: Int
+        ) -> NSPasteboardWriting? {
+            guard orderedDictionaries.indices.contains(row) else { return nil }
+            let item = NSPasteboardItem()
+            item.setString(orderedDictionaries[row].id, forType: .string)
+            return item
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            validateDrop draggingInfo: NSDraggingInfo,
+            proposedRow row: Int,
+            proposedDropOperation dropOperation: NSTableView.DropOperation
+        ) -> NSDragOperation {
+            guard let draggedID = draggingInfo.draggingPasteboard.string(forType: .string),
+                  orderedDictionaries.contains(where: { $0.id == draggedID }) else {
+                return []
+            }
+            let clampedRow = max(0, min(row, orderedDictionaries.count))
+            tableView.setDropRow(clampedRow, dropOperation: .above)
+            return .move
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            acceptDrop draggingInfo: NSDraggingInfo,
+            row: Int,
+            dropOperation: NSTableView.DropOperation
+        ) -> Bool {
+            guard let draggedID = draggingInfo.draggingPasteboard.string(forType: .string) else {
+                return false
+            }
+            var orderedIDs = orderedDictionaries.map(\.id)
+            guard let sourceIndex = orderedIDs.firstIndex(of: draggedID) else { return false }
+
+            var destination = max(0, min(row, orderedIDs.count))
+            orderedIDs.remove(at: sourceIndex)
+            if sourceIndex < destination {
+                destination -= 1
+            }
+            destination = max(0, min(destination, orderedIDs.count))
+            orderedIDs.insert(draggedID, at: destination)
+
+            settings.setOrder(orderedIDs)
+            tableView.reloadData()
+            tableView.selectRowIndexes(
+                IndexSet(integer: destination),
+                byExtendingSelection: false
+            )
+            return true
+        }
+
+        @objc func tableDoubleClick(_ sender: Any?) {
+            guard let tableView,
+                  tableView.clickedRow >= 0,
+                  tableView.clickedColumn == tableView.column(
+                    withIdentifier: NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier)
+                  ) else {
+                return
+            }
+            let row = tableView.clickedRow
+            guard orderedDictionaries.indices.contains(row) else { return }
+            beginRename(dictionaryID: orderedDictionaries[row].id)
+        }
+
+        func beginRenameSelectedRow() {
+            guard let tableView,
+                  tableView.selectedRow >= 0,
+                  orderedDictionaries.indices.contains(tableView.selectedRow) else { return }
+            beginRename(dictionaryID: orderedDictionaries[tableView.selectedRow].id)
+        }
+
+        @objc private func toggleDictionary(_ sender: NSButton) {
+            guard let dictionaryID = sender.identifier?.rawValue else { return }
+            settings.setEnabled(sender.state == .on, for: dictionaryID)
+            if let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) {
+                tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+            }
+        }
+
+        @objc private func showDictionaryActions(_ sender: NSButton) {
+            guard let dictionaryID = sender.identifier?.rawValue,
+                  let dictionary = dictionaries.first(where: { $0.id == dictionaryID }) else {
+                return
+            }
+            select(dictionaryID: dictionaryID)
+
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+
+            let renameItem = NSMenuItem(
+                title: LanguageManager.shared.text("重命名…", "Rename…"),
+                action: #selector(renameFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            renameItem.target = self
+            renameItem.representedObject = dictionaryID
+            menu.addItem(renameItem)
+
+            if settings.hasCustomDisplayName(for: dictionaryID) {
+                let restoreItem = NSMenuItem(
+                    title: LanguageManager.shared.text("恢复原名", "Restore Original Name"),
+                    action: #selector(restoreNameFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                restoreItem.target = self
+                restoreItem.representedObject = dictionaryID
+                menu.addItem(restoreItem)
+            }
+
+            let location = NSPoint(x: sender.bounds.minX, y: sender.bounds.minY)
+            menu.popUp(positioning: nil, at: location, in: sender)
+        }
+
+        @objc private func renameFromMenu(_ sender: NSMenuItem) {
+            guard let dictionaryID = sender.representedObject as? String else { return }
+            beginRename(dictionaryID: dictionaryID)
+        }
+
+        @objc private func restoreNameFromMenu(_ sender: NSMenuItem) {
+            guard let dictionaryID = sender.representedObject as? String else { return }
+            cancelRename()
+            settings.setDisplayName(nil, for: dictionaryID)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已恢复词典原名", "Restored original dictionary name")
+            )
+            if let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) {
+                tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+                tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            } else {
+                tableView?.reloadData()
+            }
+        }
+
+        @objc private func commitRenameFromField(_ sender: NSTextField) {
+            commitRename(value: sender.stringValue)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard renamingDictionaryID != nil else { return }
+            let value: String
+            if let fieldEditor = obj.userInfo?["NSFieldEditor"] as? NSTextView {
+                value = fieldEditor.string
+            } else if let textField = obj.object as? NSTextField {
+                value = textField.stringValue
+            } else {
+                value = currentEditingValue()
+            }
+            commitRename(value: value)
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                cancelRename()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                commitRename(value: textView.string)
+                return true
+            }
+            return false
+        }
+
+        private var selectedDictionaryID: String? {
+            guard let row = tableView?.selectedRow,
+                  orderedDictionaries.indices.contains(row) else {
+                return nil
+            }
+            return orderedDictionaries[row].id
+        }
+
+        private func select(dictionaryID: String) {
+            guard let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) else { return }
+            tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+
+        private func currentEditingValue() -> String {
+            if let window = tableView?.window,
+               let fieldEditor = window.firstResponder as? NSTextView {
+                return fieldEditor.string
+            }
+            return editingField?.stringValue ?? ""
+        }
+
+        private func beginRename(dictionaryID: String) {
+            guard let tableView,
+                  let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) else {
+                return
+            }
+            if let current = renamingDictionaryID, current != dictionaryID {
+                commitRename(value: currentEditingValue())
+            }
+            select(dictionaryID: dictionaryID)
+            renamingDictionaryID = dictionaryID
+
+            let nameColumn = tableView.column(
+                withIdentifier: NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier)
+            )
+            guard nameColumn >= 0 else { return }
+
+            tableView.scrollRowToVisible(row)
+
+            guard let cell = tableView.view(
+                atColumn: nameColumn,
+                row: row,
+                makeIfNecessary: true
+            ) as? DictionarySourceNameCellView else { return }
+
+            cell.beginEditing()
+            self.editingField = cell.nameField
+
+            // 立即聚焦并选中全部文本，0 延迟、0 闪烁，原生 120Hz 响应
+            if let window = tableView.window {
+                window.makeFirstResponder(cell.nameField)
+                cell.nameField.selectText(nil)
+            } else {
+                DispatchQueue.main.async { [weak self, weak cell] in
+                    guard let self, self.renamingDictionaryID == dictionaryID, let cell else { return }
+                    cell.nameField.window?.makeFirstResponder(cell.nameField)
+                    cell.nameField.selectText(nil)
+                }
+            }
+        }
+
+        private func commitRename(value: String) {
+            guard let dictionaryID = renamingDictionaryID else { return }
+            renamingDictionaryID = nil
+
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let editingField {
+                editingField.delegate = nil
+                editingField.resignFirstResponder()
+                if let cell = editingField.superview as? DictionarySourceNameCellView {
+                    cell.endEditing()
+                }
+            }
+            editingField = nil
+
+            let currentDisplayName = settings.displayName(for: dictionaryID, fallback: "")
+            if !trimmed.isEmpty && trimmed != currentDisplayName {
+                settings.setDisplayName(trimmed, for: dictionaryID)
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已重命名为“\(trimmed)”", "Renamed to “\(trimmed)”")
+                )
+            } else if trimmed.isEmpty && settings.hasCustomDisplayName(for: dictionaryID) {
+                settings.setDisplayName(nil, for: dictionaryID)
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已恢复词典原名", "Restored original dictionary name")
+                )
+            }
+
+            // 单行局部刷新，避免整表重建与滚动条跳动
+            if let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) {
+                tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+                tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            } else {
+                tableView?.reloadData()
+            }
+        }
+
+        private func cancelRename() {
+            guard let dictionaryID = renamingDictionaryID else { return }
+            renamingDictionaryID = nil
+
+            if let editingField {
+                editingField.delegate = nil
+                editingField.resignFirstResponder()
+                if let cell = editingField.superview as? DictionarySourceNameCellView {
+                    cell.endEditing()
+                }
+            }
+            editingField = nil
+
+            if let row = orderedDictionaries.firstIndex(where: { $0.id == dictionaryID }) {
+                tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+                tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+        }
+    }
+}
+
+private final class DictionaryCheckboxButton: NSButton {
+    override func mouseDragged(with event: NSEvent) {
+        // A checkbox click is a toggle action, never a dictionary reorder
+        // gesture. Let the surrounding NSTableView handle drags from all
+        // other cells.
+    }
+}
+
+private final class DictionarySourceNameCellView: NSTableCellView {
+    let checkboxButton: DictionaryCheckboxButton
+    let nameField: DictionarySourceNameTextField
+
+    override init(frame frameRect: NSRect) {
+        checkboxButton = DictionaryCheckboxButton(frame: .zero)
+        nameField = DictionarySourceNameTextField(labelWithString: "")
+        super.init(frame: frameRect)
+        self.textField = nameField
+
+        checkboxButton.setButtonType(.switch)
+        checkboxButton.title = ""
+        checkboxButton.controlSize = .small
+        checkboxButton.setContentHuggingPriority(.required, for: .horizontal)
+        checkboxButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        nameField.lineBreakMode = .byTruncatingTail
+        nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        checkboxButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(checkboxButton)
+        addSubview(nameField)
+        NSLayoutConstraint.activate([
+            checkboxButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            checkboxButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameField.leadingAnchor.constraint(equalTo: checkboxButton.trailingAnchor, constant: 8),
+            nameField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            nameField.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func beginEditing() {
+        nameField.isEditable = true
+        nameField.isSelectable = true
+        nameField.cell?.isEditable = true
+        nameField.cell?.isSelectable = true
+        nameField.isBezeled = true
+        nameField.bezelStyle = .squareBezel
+        nameField.drawsBackground = true
+        nameField.focusRingType = .exterior
+        nameField.refusesFirstResponder = false
+        nameField.backgroundColor = .controlBackgroundColor
+    }
+
+    func endEditing() {
+        nameField.isEditable = false
+        nameField.isSelectable = false
+        nameField.cell?.isEditable = false
+        nameField.cell?.isSelectable = false
+        nameField.isBezeled = false
+        nameField.drawsBackground = false
+        nameField.focusRingType = .none
+        nameField.refusesFirstResponder = true
+    }
+
+    func configure(
+        dictionaryID: String,
+        displayName: String,
+        isEnabled: Bool,
+        isEditing: Bool
+    ) {
+        checkboxButton.identifier = NSUserInterfaceItemIdentifier(dictionaryID)
+        checkboxButton.state = isEnabled ? .on : .off
+        nameField.identifier = NSUserInterfaceItemIdentifier(dictionaryID)
+        nameField.stringValue = displayName
+        nameField.alignment = .left
+        if isEditing {
+            beginEditing()
+        } else {
+            endEditing()
+        }
+    }
+}
+
+private final class DictionarySourceNameTextField: NSTextField {
+    var onDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if !isEditable {
+            if event.clickCount == 2 {
+                onDoubleClick?()
+                return
+            }
+            super.mouseDown(with: event)
+            if let cell = superview as? NSTableCellView,
+               let table = cell.enclosingScrollView?.documentView as? NSTableView ?? cell.superview as? NSTableView {
+                let row = table.row(for: cell)
+                if row >= 0 && table.selectedRow != row {
+                    table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                }
+            }
+            return
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+private final class DictionarySourceActionCellView: NSTableCellView {
+    let actionButton: NSButton
+
+    override init(frame frameRect: NSRect) {
+        actionButton = NSButton(frame: .zero)
+        super.init(frame: frameRect)
+
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        actionButton.isBordered = false
+        actionButton.bezelStyle = .recessed
+        actionButton.imagePosition = .imageOnly
+        actionButton.imageScaling = .scaleProportionallyDown
+        actionButton.image = NSImage(
+            systemSymbolName: "ellipsis",
+            accessibilityDescription: LanguageManager.shared.text("词典操作", "Dictionary actions")
+        )
+        actionButton.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: 13,
+            weight: .medium
+        )
+        actionButton.toolTip = LanguageManager.shared.text("词典操作", "Dictionary actions")
+        addSubview(actionButton)
+        NSLayoutConstraint.activate([
+            actionButton.centerXAnchor.constraint(equalTo: centerXAnchor),
+            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionButton.widthAnchor.constraint(equalToConstant: 30),
+            actionButton.heightAnchor.constraint(equalToConstant: 24)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(dictionaryID: String) {
+        actionButton.identifier = NSUserInterfaceItemIdentifier(dictionaryID)
+    }
+}
+
+/// Standalone settings window for dictionary sources. It shares the same
+/// settings object and list view as the dictionary workspace, so opening it
+/// before the main dictionary window still loads the current package list.
+@MainActor
+public struct DictionarySourceSettingsWindowView: View {
+    @ObservedObject private var engine = DictionaryEngine.shared
+    @ObservedObject private var settings = DictionarySourceSettings.shared
+
+    public init() {}
+
+    public var body: some View {
+        DictionarySourceSettingsView(
+            settings: settings,
+            dictionaries: engine.dictionaries
+        )
+        .task {
+            engine.refresh()
+        }
+        .onChange(of: engine.dictionaries) { _, newDictionaries in
+            settings.synchronize(with: newDictionaries)
+        }
+    }
+}
+
 /// 释义详情展示面板 (Definition Content View)
 @MainActor
 private struct DictionaryDefinitionPane: View {
@@ -131,6 +838,12 @@ private struct DictionaryDefinitionPane: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if engine.isSearching || engine.isLoadingDefinition {
+                // The previous candidates may remain visible while a new
+                // query is running, but their details have already been
+                // invalidated. Do not show that intermediate state as a
+                // missing definition.
+                DictionaryDefinitionSkeleton()
             } else if engine.searchHits.isEmpty {
                 if engine.isSearching || engine.isLoadingDefinition {
                     DictionaryDefinitionSkeleton()
@@ -176,6 +889,8 @@ private struct DictionaryDefinitionPane: View {
 public struct DictionaryView: View {
     @StateObject private var engine: DictionaryEngine
     @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
+    @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var selectedDictionaryID: String?
     @State private var selectedResultID: String?
@@ -214,7 +929,11 @@ public struct DictionaryView: View {
 
     private var activeSelectedDictionary: StudyMateDictionarySummary? {
         guard let selectedDictionaryID else { return nil }
-        return engine.dictionaries.first { $0.id == selectedDictionaryID }
+        return engine.enabledDictionaries.first { $0.id == selectedDictionaryID }
+    }
+
+    private var enabledDictionaries: [StudyMateDictionarySummary] {
+        dictionarySourceSettings.enabledDictionaries(from: engine.dictionaries)
     }
 
     private var subtitleText: String {
@@ -314,6 +1033,18 @@ public struct DictionaryView: View {
                         }
                         .help(lang.text("放大释义文字", "Increase definition text size"))
                     }
+                    .controlGroupStyle(.navigation)
+                }
+
+                // 词典启用与优先级设置
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        openWindow(id: "dictionary-settings")
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel(lang.text("词典设置", "Dictionary settings"))
+                    .help(lang.text("设置词典启用状态和排列顺序", "Configure dictionary enablement and order"))
                 }
 
                 // 词典管理菜单
@@ -327,7 +1058,7 @@ public struct DictionaryView: View {
                             Button(role: .destructive) {
                                 dictionaryPendingDeletion = activeSelectedDictionary
                             } label: {
-                                Label(lang.text("删除“\(activeSelectedDictionary.title)”", "Delete “\(activeSelectedDictionary.title)”"), systemImage: "trash")
+                                Label(lang.text("删除“\(activeSelectedDictionary.displayName)”", "Delete “\(activeSelectedDictionary.displayName)”"), systemImage: "trash")
                             }
                             .disabled(engine.isBusy)
                         }
@@ -345,9 +1076,11 @@ public struct DictionaryView: View {
             )
             .onSubmit(of: .search) {
                 recordQuery(query)
+                selectedResultID = nil
                 engine.search(
                     query: query,
                     dictionaryID: selectedDictionaryID,
+                    includeDetails: true,
                     immediate: true
                 )
             }
@@ -370,8 +1103,8 @@ public struct DictionaryView: View {
             }
         } message: { dict in
             Text(lang.text(
-                "确定要从 StudyMate 中删除词典“\(dict.title)”吗？此操作无法撤销。",
-                "Are you sure you want to delete “\(dict.title)” from StudyMate? This action cannot be undone."
+                "确定要从 StudyMate 中删除词典“\(dict.displayName)”吗？此操作无法撤销。",
+                "Are you sure you want to delete “\(dict.displayName)” from StudyMate? This action cannot be undone."
             ))
         }
         .task {
@@ -385,9 +1118,25 @@ public struct DictionaryView: View {
             applyRequestedLookup(pending)
         }
         .onChange(of: engine.dictionaries) { _, newDicts in
+            dictionarySourceSettings.synchronize(with: newDicts)
             if let sel = selectedDictionaryID, !newDicts.contains(where: { $0.id == sel }) {
                 selectedDictionaryID = nil
             }
+        }
+        .onChange(of: dictionarySourceSettings.revision) { _, _ in
+            let scopedDictionaryID = selectedDictionaryID.flatMap {
+                dictionarySourceSettings.isEnabled($0) ? $0 : nil
+            }
+            if scopedDictionaryID != selectedDictionaryID {
+                selectedDictionaryID = scopedDictionaryID
+            }
+            selectedResultID = nil
+            engine.clearSearch()
+            engine.search(
+                query: query,
+                dictionaryID: scopedDictionaryID,
+                immediate: true
+            )
         }
         .onChange(of: engine.searchHits) { _, _ in
             synchronizeSelectedCandidate()
@@ -463,7 +1212,7 @@ public struct DictionaryView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if selectedDictionaryID == nil {
-                        Text(item.dictionaryTitle)
+                        Text(item.displayName)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -481,21 +1230,21 @@ public struct DictionaryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
                     tabItem(id: nil, title: lang.text("全部", "All"))
-                    ForEach(Array(engine.dictionaries.prefix(8))) { dictionary in
-                        tabItem(id: dictionary.id, title: dictionary.title)
+                    ForEach(Array(enabledDictionaries.prefix(8))) { dictionary in
+                        tabItem(id: dictionary.id, title: dictionary.displayName)
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 7)
             }
 
-            if engine.dictionaries.count > 8 {
+            if enabledDictionaries.count > 8 {
                 Menu {
-                    ForEach(Array(engine.dictionaries.dropFirst(8))) { dictionary in
+                    ForEach(Array(enabledDictionaries.dropFirst(8))) { dictionary in
                         Button {
                             selectedDictionaryID = dictionary.id
                         } label: {
-                            Label(dictionary.title, systemImage: selectedDictionaryID == dictionary.id ? "checkmark" : "book.closed")
+                            Label(dictionary.displayName, systemImage: selectedDictionaryID == dictionary.id ? "checkmark" : "book.closed")
                         }
                     }
                 } label: {
@@ -649,7 +1398,10 @@ public struct DictionaryView: View {
         let selectedCandidateIsInScope = selectedCandidate.map {
             selectedDictionaryID == nil || $0.dictionaryID == selectedDictionaryID
         } ?? false
-        if !selectedCandidateIsInScope {
+        // Keep the selection synchronized with the candidate resolved for the
+        // current query. Otherwise an old selected key can filter out the new
+        // definition and produce a false “no definition” state.
+        if !selectedCandidateIsInScope || selectedResultID != candidate.id {
             selectedResultID = candidate.id
         }
     }

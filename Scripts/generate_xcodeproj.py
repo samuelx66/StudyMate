@@ -414,7 +414,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = {marketing_version};
+\t\t\t\tMARKETING_VERSION = "{marketing_version}";
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -438,7 +438,7 @@ pbxproj_content = f"""// !$*UTF8*$!
 \t\t\t\t\t"$(inherited)",
 \t\t\t\t\t"@executable_path/../Frameworks",
 \t\t\t\t);
-\t\t\t\tMARKETING_VERSION = {marketing_version};
+\t\t\t\tMARKETING_VERSION = "{marketing_version}";
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
