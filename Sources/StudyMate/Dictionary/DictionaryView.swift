@@ -85,6 +85,29 @@ struct DictionarySourceSettingsView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
+            HStack(spacing: 8) {
+                Text(lang.text("查词界面词语解释使用词典：", "Dictionary for definition lookup interface:"))
+                    .font(.subheadline)
+
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { settings.lookupScopeDictionaryID ?? "" },
+                        set: { settings.setLookupScopeDictionaryID($0.isEmpty ? nil : $0) }
+                    )
+                ) {
+                    Text(lang.text("全部", "All")).tag("")
+                    ForEach(settings.orderedDictionaries(from: dictionaries)) { dict in
+                        Text(dict.displayName).tag(dict.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .accessibilityLabel(lang.text("查词界面词语解释使用词典", "Dictionary for definition lookup interface"))
+                .frame(minWidth: 160)
+            }
+            .padding(.top, 2)
+
             if dictionaries.isEmpty {
                 ContentUnavailableView(
                     lang.text("还没有词典", "No dictionaries"),

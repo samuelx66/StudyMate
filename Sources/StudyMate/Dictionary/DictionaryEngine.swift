@@ -207,10 +207,13 @@ public final class DictionarySourceSettings: ObservableObject {
     public static let orderUserDefaultsKey = "StudyMate.DictionarySourceOrder"
     public static let enabledUserDefaultsKey = "StudyMate.EnabledDictionaryIDs"
     public static let displayNamesUserDefaultsKey = "StudyMate.DictionaryDisplayNames"
+    public static let lookupScopeDictionaryIDUserDefaultsKey = "StudyMate.LookupScopeDictionaryID"
 
     @Published public private(set) var orderedDictionaryIDs: [String]
     @Published public private(set) var enabledDictionaryIDs: Set<String>
     @Published public private(set) var customDisplayNames: [String: String]
+    /// 选词查词界面限定使用的词典 ID，nil 表示“全部”（默认值）
+    @Published public private(set) var lookupScopeDictionaryID: String?
     /// A lightweight lifecycle signal for views that need to refresh the
     /// current query after a toggle or a reorder.
     @Published public private(set) var revision: UInt64 = 0
@@ -227,6 +230,7 @@ public final class DictionarySourceSettings: ObservableObject {
             defaults.stringArray(forKey: Self.enabledUserDefaultsKey) ?? []
         )
         customDisplayNames = (defaults.dictionary(forKey: Self.displayNamesUserDefaultsKey) as? [String: String]) ?? [:]
+        lookupScopeDictionaryID = defaults.string(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
     }
 
     /// Reconciles persisted choices with the installed packages. New
@@ -269,6 +273,10 @@ public final class DictionarySourceSettings: ObservableObject {
         let enabledChanged = reconciledEnabled != enabledDictionaryIDs
         let reconciledDisplayNames = customDisplayNames.filter { installedSet.contains($0.key) }
         let displayNamesChanged = reconciledDisplayNames != customDisplayNames
+        if let currentScope = lookupScopeDictionaryID, !installedSet.contains(currentScope) {
+            lookupScopeDictionaryID = nil
+            defaults.removeObject(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+        }
         guard orderChanged || enabledChanged || displayNamesChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) else {
             return
         }
@@ -379,8 +387,24 @@ public final class DictionarySourceSettings: ObservableObject {
         revision &+= 1
     }
 
+    public func setLookupScopeDictionaryID(_ id: String?) {
+        let normalized = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effective = (normalized?.isEmpty == false) ? normalized : nil
+        guard effective != lookupScopeDictionaryID else { return }
+        lookupScopeDictionaryID = effective
+        if let effective {
+            defaults.set(effective, forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+        }
+    }
+
     public func remove(dictionaryID: String) {
         guard !dictionaryID.isEmpty else { return }
+        if lookupScopeDictionaryID == dictionaryID {
+            lookupScopeDictionaryID = nil
+            defaults.removeObject(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+        }
         let updatedOrder = orderedDictionaryIDs.filter { $0 != dictionaryID }
         var updatedEnabled = enabledDictionaryIDs
         updatedEnabled.remove(dictionaryID)

@@ -211,7 +211,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             anchorScreenPoint = NSEvent.mouseLocation
         }
         // 静默预取释义，用户移动鼠标点击“查词”时实现 0ms 秒开
-        DictionaryEngine.shared.prefetchDefinition(for: value)
+        let targetDictionaryID = DictionarySourceSettings.shared.lookupScopeDictionaryID
+        DictionaryEngine.shared.prefetchDefinition(for: value, dictionaryID: targetDictionaryID)
     }
 
     public func clearSelection() {
@@ -258,7 +259,13 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         guard let selectedText else { return }
         pausePlaybackForDictionaryInteractionIfNeeded()
         DictionaryEngine.shared.clearSearch()
-        DictionaryEngine.shared.search(query: selectedText, includeDetails: true, immediate: true)
+        let targetDictionaryID = DictionarySourceSettings.shared.lookupScopeDictionaryID
+        DictionaryEngine.shared.search(
+            query: selectedText,
+            dictionaryID: targetDictionaryID,
+            includeDetails: true,
+            immediate: true
+        )
         showNativePopover()
     }
 
@@ -288,7 +295,13 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             onLookupWord: { [weak self] word in
                 guard let self else { return }
                 self.updateSelection(text: word, context: self.contextText)
-                DictionaryEngine.shared.search(query: word, includeDetails: true, immediate: true)
+                let targetDictionaryID = DictionarySourceSettings.shared.lookupScopeDictionaryID
+                DictionaryEngine.shared.search(
+                    query: word,
+                    dictionaryID: targetDictionaryID,
+                    includeDetails: true,
+                    immediate: true
+                )
             },
             onPronounce: { [weak self] word in self?.speakPreferred(word) },
             onToggleVocabulary: { [weak self] word in
@@ -1407,6 +1420,14 @@ private struct DictionaryLookupPopoverContent: View {
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
     @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
+    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
+
+    private var displayedEntries: [StudyMateDictionaryLookup] {
+        if let scopeID = dictionarySourceSettings.lookupScopeDictionaryID, !scopeID.isEmpty {
+            return engine.searchResults.filter { $0.dictionaryID == scopeID }
+        }
+        return engine.searchResults
+    }
 
     init(
         query: String,
@@ -1467,7 +1488,7 @@ private struct DictionaryLookupPopoverContent: View {
 
             Divider()
 
-            if (engine.isSearching || engine.isLoadingDefinition || engine.isBusy) && engine.searchResults.isEmpty {
+            if (engine.isSearching || engine.isLoadingDefinition || engine.isBusy) && displayedEntries.isEmpty {
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(0..<5, id: \.self) { index in
                         RoundedRectangle(cornerRadius: 4)
@@ -1480,13 +1501,13 @@ private struct DictionaryLookupPopoverContent: View {
                 }
                 .redacted(reason: .placeholder)
                 .padding(.vertical, 8)
-            } else if engine.searchResults.isEmpty {
+            } else if displayedEntries.isEmpty {
                 Text(lang.text("未找到释义", "No definition found"))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             } else {
                 DictionaryHTMLView(
-                    entries: engine.searchResults,
+                    entries: displayedEntries,
                     isCompact: true,
                     // Keep the popover on the same WebKit/MDX execution path
                     // as the full dictionary pane so fold controls and
