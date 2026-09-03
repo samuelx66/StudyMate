@@ -1406,6 +1406,7 @@ private struct DictionaryLookupPopoverContent: View {
     @ObservedObject private var engine = DictionaryEngine.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
+    @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
 
     init(
         query: String,
@@ -1491,6 +1492,7 @@ private struct DictionaryLookupPopoverContent: View {
                     // as the full dictionary pane so fold controls and
                     // dictionary-provided interactions behave consistently.
                     allowsJavaScript: true,
+                    adaptsToSystemAppearance: dictionaryAppearanceSettings.adaptsToSystemAppearance,
                     onLookupWord: { word in
                         displayedQuery = word
                         onLookupWord(word)

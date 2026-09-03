@@ -3,11 +3,59 @@ import Foundation
 import WebKit
 import AppKit
 
+/// Stores the render-time dictionary appearance preference.
+///
+/// The preference deliberately lives outside the import pipeline. Imported
+/// MDX/MDD files remain byte-for-byte untouched; the WebKit document decides
+/// whether to add StudyMate's compatibility layers each time it is rendered.
+public final class DictionaryAppearanceSettings: ObservableObject {
+    public static let shared = DictionaryAppearanceSettings()
+    public static let userDefaultsKey = "StudyMate.DictionaryAdaptToSystemAppearance"
+    public static let defaultValue = true
+
+    @Published public private(set) var adaptsToSystemAppearance: Bool
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.adaptsToSystemAppearance = defaults.object(forKey: Self.userDefaultsKey) as? Bool
+            ?? Self.defaultValue
+    }
+
+    public func setAdaptToSystemAppearance(_ enabled: Bool) {
+        guard adaptsToSystemAppearance != enabled else { return }
+        adaptsToSystemAppearance = enabled
+        defaults.set(enabled, forKey: Self.userDefaultsKey)
+    }
+
+    /// Used by representable initializers that may be created outside a
+    /// SwiftUI observation cycle, such as an AppKit-hosted popover.
+    public static func storedValue(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: userDefaultsKey) as? Bool ?? defaultValue
+    }
+}
+
 /// Formats MDX dictionary lookup entries into clean, adaptive HTML documents
 /// tailored for either compact popover presentation or full-window reading.
+private final class DictionaryBodyMarkupCacheValue: NSObject {
+    let contentHTML: String
+    let stylesheetHTML: String
+    let deferredScriptHTML: String
+
+    init(contentHTML: String, stylesheetHTML: String, deferredScriptHTML: String) {
+        self.contentHTML = contentHTML
+        self.stylesheetHTML = stylesheetHTML
+        self.deferredScriptHTML = deferredScriptHTML
+    }
+
+    var bodyHTML: String {
+        contentHTML + deferredScriptHTML
+    }
+}
+
 public enum DictionaryHTMLFormatter {
-    private static let bodyCache: NSCache<NSString, NSString> = {
-        let cache = NSCache<NSString, NSString>()
+    private static let bodyMarkupCache: NSCache<NSString, DictionaryBodyMarkupCacheValue> = {
+        let cache = NSCache<NSString, DictionaryBodyMarkupCacheValue>()
         cache.countLimit = 8
         cache.totalCostLimit = 8 * 1024 * 1024
         return cache
@@ -22,9 +70,17 @@ public enum DictionaryHTMLFormatter {
     public static func composeHTML(
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool,
-        textScale: CGFloat = 1.0
+        textScale: CGFloat = 1.0,
+        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
+        userCSS: String? = nil
     ) -> String {
-        let cacheKey = markupCacheKey(entries: entries, isCompact: isCompact, textScale: textScale)
+        let cacheKey = markupCacheKey(
+            entries: entries,
+            isCompact: isCompact,
+            textScale: textScale,
+            adaptsToSystemAppearance: adaptsToSystemAppearance,
+            userCSS: userCSS
+        )
         if let cached = documentCache.object(forKey: cacheKey as NSString) {
             return cached as String
         }
@@ -41,39 +97,139 @@ public enum DictionaryHTMLFormatter {
             }
         }
         let customCSSText = customCSSBlocks.joined(separator: "\n\n")
-        let entriesHTML = composeBodyHTML(entries: entries, isCompact: isCompact)
+        let bodyMarkup = composeBodyMarkup(entries: entries, isCompact: isCompact)
+        let entriesHTML = bodyMarkup.contentHTML
+        let dictionarySpecificCSSText = adaptsToSystemAppearance
+            ? dictionarySpecificCSS(for: entries)
+            : ""
+        let userCSSText = adaptsToSystemAppearance
+            ? userCSS?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            : ""
+        let appearanceMeta = adaptsToSystemAppearance
+            ? "<meta name=\"color-scheme\" content=\"light dark\">"
+            : ""
+        let injectedThemeCSS = adaptsToSystemAppearance ? """
+        <style id="studymate-system-theme-css">
+        /* System theme layer: follows the macOS appearance through WebKit's
+           semantic system colors. The native SwiftUI/AppKit container owns
+           the actual page background. */
+        :root {
+            color-scheme: light dark;
+            --bg-color: transparent;
+            --text-color: CanvasText;
+            --secondary-text: GrayText;
+            --link-color: LinkText;
+            --badge-bg: color-mix(in srgb, CanvasText 8%, transparent);
+            --badge-text: GrayText;
+            --divider-color: color-mix(in srgb, CanvasText 18%, transparent);
+            --selection-bg: Highlight;
+            --surface-color: color-mix(in srgb, CanvasText 6%, transparent);
+            --strong-text-color: CanvasText;
+            --pronunciation-color: LinkText;
+            --studymate-control-selected: Highlight;
+            --studymate-control-selected-text: HighlightText;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { color-scheme: dark; }
+        }
+        @media (prefers-color-scheme: light) {
+            :root { color-scheme: light; }
+        }
+        html,
+        body {
+            /* The native SwiftUI window owns the page background. */
+            background-color: transparent !important;
+            color: var(--text-color);
+        }
+        body {
+            color: var(--text-color);
+        }
+        .dict-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--badge-text);
+            background: var(--badge-bg);
+            padding: 2px 7px;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            letter-spacing: 0.2px;
+        }
+        .dict-divider {
+            border: none;
+            border-top: 1px solid var(--divider-color);
+            margin: \(entrySpacing) 0;
+        }
+        ::selection {
+            background: var(--selection-bg);
+            color: HighlightText;
+        }
+        </style>
+        <style id="studymate-auto-color-correction-css">
+        /*
+         Automatic compatibility layer for legacy MDX packages. It does not
+         rewrite the vendor CSS; it only provides a last-resort semantic
+         palette for common neutral content and system-like controls.
+         Dictionary and user layers below can refine or override it.
+        */
+        @media (prefers-color-scheme: dark) {
+            html,
+            body {
+                color: var(--text-color) !important;
+            }
+            body :where(.entry-body, .entry-body p, .entry-body li,
+                .entry-body dd, .entry-body dt, .entry-body td,
+                .entry-body th, .entry-body figcaption, .entry-body blockquote,
+                .entry-body pre, .entry-body code) {
+                color: var(--text-color) !important;
+            }
+            body :where(.entry-body a) {
+                color: var(--link-color) !important;
+            }
+            body :where(.entry-body [style*="color: #000"],
+                .entry-body [style*="color:#000"],
+                .entry-body [style*="color: black"],
+                .entry-body [style*="color:black"],
+                .entry-body [style*="color: #282828"],
+                .entry-body [style*="color:#282828"]) {
+                color: var(--text-color) !important;
+            }
+            body :where(.entry-body [style*="background: #fff"],
+                .entry-body [style*="background:#fff"],
+                .entry-body [style*="background: white"],
+                .entry-body [style*="background:white"],
+                .entry-body [style*="background-color: #fff"],
+                .entry-body [style*="background-color:#fff"]) {
+                background-color: var(--surface-color) !important;
+            }
+            body :where(.entry-body hr, .entry-body table,
+                .entry-body td, .entry-body th, .entry-body fieldset) {
+                border-color: var(--divider-color) !important;
+            }
+            body :where(.entry-body .panel, .entry-body .card,
+                .entry-body .box, .entry-body .section,
+                .entry-body .block, .entry-body [class*="Panel"],
+                .entry-body [class*="panel"]) {
+                background-color: var(--surface-color) !important;
+            }
+            body :where(.entry-body input, .entry-body select,
+                .entry-body textarea, .entry-body button) {
+                color-scheme: dark;
+            }
+        }
+        </style>
+        \(dictionarySpecificCSSText.isEmpty ? "" : "<style id=\"studymate-dictionary-specific-css\" type=\"text/css\">\n/* Dictionary-specific compatibility layer */\n\(dictionarySpecificCSSText)\n</style>")
+        \(userCSSText.isEmpty ? "" : "<style id=\"studymate-user-css\" type=\"text/css\">\n/* User CSS */\n\(userCSSText)\n</style>")
+        """ : ""
 
         let document = """
         <!DOCTYPE html>
-        <html>
+        <html data-studymate-adapt-to-system-appearance="\(adaptsToSystemAppearance ? "true" : "false")">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-        :root {
-            --bg-color: transparent;
-            --text-color: #1c1c1e;
-            --secondary-text: #6e6e73;
-            --link-color: #0066cc;
-            --badge-bg: rgba(0, 0, 0, 0.06);
-            --badge-text: #48484a;
-            --divider-color: rgba(0, 0, 0, 0.08);
-            --selection-bg: rgba(0, 122, 255, 0.25);
-        }
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --text-color: #f2f2f7;
-                --secondary-text: #98989d;
-                --link-color: #2997ff;
-                --badge-bg: rgba(255, 255, 255, 0.1);
-                --badge-text: #d1d1d6;
-                --divider-color: rgba(255, 255, 255, 0.12);
-                --selection-bg: rgba(10, 132, 255, 0.35);
-            }
-            body {
-                color: var(--text-color);
-            }
-        }
+        \(appearanceMeta)
+        <style id="studymate-layout-css">
         * {
             box-sizing: border-box;
         }
@@ -96,30 +252,14 @@ public enum DictionaryHTMLFormatter {
         .dict-entry {
             margin-bottom: \(entrySpacing);
         }
-        .dict-badge {
-            display: inline-block;
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--badge-text);
-            background: var(--badge-bg);
-            padding: 2px 7px;
-            border-radius: 4px;
-            margin-bottom: 8px;
-            letter-spacing: 0.2px;
-        }
-        .dict-divider {
-            border: none;
-            border-top: 1px solid var(--divider-color);
-            margin: \(entrySpacing) 0;
-        }
-        ::selection {
-            background: var(--selection-bg);
-        }
         </style>
-        \(customCSSText.isEmpty ? "" : "<style type=\"text/css\">\n/* MDX Native CSS */\n\(customCSSText)\n</style>")
+        \(bodyMarkup.stylesheetHTML)
+        \(customCSSText.isEmpty ? "" : "<style id=\"studymate-mdx-raw-css\" type=\"text/css\">\n/* MDX Original CSS: preserved verbatim */\n\(customCSSText)\n</style>")
+        \(injectedThemeCSS)
         </head>
         <body>
         \(entriesHTML)
+        \(bodyMarkup.deferredScriptHTML)
         </body>
         </html>
         """
@@ -144,17 +284,95 @@ public enum DictionaryHTMLFormatter {
     /// included, so selecting another key can update only the body.
     public static func shellSignature(
         entries: [StudyMateDictionaryLookup],
-        isCompact: Bool
+        isCompact: Bool,
+        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
+        userCSS: String? = nil
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(isCompact)
+        hasher.combine(adaptsToSystemAppearance)
         hasher.combine(isCompact ? "1.45" : "1.6")
         hasher.combine(isCompact ? "14px" : "22px")
         hasher.combine(isCompact ? "4px 8px 12px 8px" : "16px 20px")
         for css in entries.compactMap(\.css) {
             hasher.combine(css)
         }
+        if adaptsToSystemAppearance {
+            hasher.combine(dictionarySpecificCSS(for: entries))
+            hasher.combine(userCSS ?? "")
+        }
         return hasher.finalize()
+    }
+
+    /// Compatibility rules for dictionary families whose vendor CSS predates
+    /// macOS dark appearance. These rules are kept outside the MDX package so
+    /// the source archive remains untouched and can still be re-imported.
+    private static func dictionarySpecificCSS(for entries: [StudyMateDictionaryLookup]) -> String {
+        let fingerprints = entries.map {
+            ($0.dictionaryID + " " + $0.dictionaryTitle).lowercased()
+        }
+        var blocks: [String] = []
+
+        if fingerprints.contains(where: { $0.contains("oald") || $0.contains("oxford") }) {
+            blocks.append("""
+            @media (prefers-color-scheme: dark) {
+                .entry-body :where(.wordlist_h2, .OALD9_entry h1, .OALD9_entry h2) {
+                    color: var(--text-color) !important;
+                }
+                .entry-body :where(.ColloPanel, .ThesPanel, .top-container,
+                    .wordlist_about_callout_text, .grey-grad, .idsym-g,
+                    .ui-grad dt, .z_idsym) {
+                    color: var(--text-color) !important;
+                    background-color: var(--surface-color) !important;
+                    border-color: var(--divider-color) !important;
+                    box-shadow: none !important;
+                }
+                .entry-body :where(.CorpusHeader, .ColloHeader) {
+                    color: HighlightText !important;
+                    background-color: LinkText !important;
+                }
+            }
+            """)
+        }
+
+        if fingerprints.contains(where: { $0.contains("ldoce") || $0.contains("longman") }) {
+            blocks.append("""
+            @media (prefers-color-scheme: dark) {
+                .entry-body :where(.topic_intro, .assets_intro, .asset_intro) {
+                    color: HighlightText !important;
+                    border-color: var(--divider-color) !important;
+                    background-color: LinkText !important;
+                }
+                .entry-body :where(.ldoceEntry .Thesref,
+                    .ldoceEntry .Ref, .ldoceEntry .Gramref) {
+                    color: var(--link-color) !important;
+                }
+            }
+            """)
+        }
+
+        if fingerprints.contains(where: {
+            $0.contains("merriam") || $0.contains("webster") || $0.contains("mwa")
+        }) {
+            blocks.append("""
+            @media (prefers-color-scheme: dark) {
+                .entry-body :where(.hw_d, .entry_v2 .hw_d) {
+                    color: var(--text-color) !important;
+                    background-color: var(--surface-color) !important;
+                    border-color: var(--divider-color) !important;
+                }
+                .entry-body :where(.hw_txt, .entry_v2 .hw_txt) {
+                    color: var(--link-color) !important;
+                }
+                .entry-body :where(.pron_w, .hpron_word, .v_label,
+                    .i_label, .pva, .fl) {
+                    color: var(--secondary-text) !important;
+                }
+            }
+            """)
+        }
+
+        return blocks.joined(separator: "\n")
     }
 
     /// Body-only markup used for fast selection changes. The document shell
@@ -164,11 +382,19 @@ public enum DictionaryHTMLFormatter {
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool
     ) -> String {
+        composeBodyMarkup(entries: entries, isCompact: isCompact).bodyHTML
+    }
+
+    private static func composeBodyMarkup(
+        entries: [StudyMateDictionaryLookup],
+        isCompact: Bool
+    ) -> DictionaryBodyMarkupCacheValue {
         let cacheKey = markupCacheKey(entries: entries, isCompact: isCompact, textScale: 1.0)
-        if let cached = bodyCache.object(forKey: cacheKey as NSString) {
-            return cached as String
+        if let cached = bodyMarkupCache.object(forKey: cacheKey as NSString) {
+            return cached
         }
         var deferredScripts: [String] = []
+        var stylesheetTags: [String] = []
         let bodyEntries = entries.map { entry -> String in
             let badgeHTML = entries.count > 1
                 ? "<div class=\"dict-badge\">\(escapeHTML(entry.dictionaryTitle))</div>"
@@ -185,25 +411,38 @@ public enum DictionaryHTMLFormatter {
             // while `.lm5ppbody` and its foldable sections do not exist yet.
             // Keep the vendor-provided script order, but execute all scripts
             // after every selected entry has been parsed.
-            let extracted = extractScriptTags(from: formattedContent)
-            deferredScripts.append(contentsOf: extracted.scripts)
+            let scriptExtraction = extractScriptTags(from: formattedContent)
+            let stylesheetExtraction = extractStylesheetTags(from: scriptExtraction.html)
+            deferredScripts.append(contentsOf: scriptExtraction.scripts)
+            stylesheetTags.append(contentsOf: stylesheetExtraction.stylesheets)
             return """
             <div class="dict-entry" data-dict-id="\(escapeHTML(entry.dictionaryID))">
                 \(badgeHTML)
                 <div class="entry-body">
-                    \(extracted.html)
+                    \(stylesheetExtraction.html)
                 </div>
             </div>
             """
         }.joined(separator: "\n<hr class=\"dict-divider\">\n")
+        let stylesheetHTML = deduplicateStylesheetTags(stylesheetTags).joined(separator: "\n")
         // A combined lookup can contain the same vendor bundle once per
         // dictionary entry. Executing that bundle repeatedly replaces event
         // handlers and can make fold controls appear to do nothing. Keep
         // inline scripts in their original order, but execute each external
         // bundle only at its first occurrence.
-        let body = bodyEntries + deduplicateDeferredScripts(deferredScripts).joined()
-        bodyCache.setObject(body as NSString, forKey: cacheKey as NSString, cost: body.utf8.count)
-        return body
+        let deferredScriptHTML = deduplicateDeferredScripts(deferredScripts).joined()
+        let body = bodyEntries + deferredScriptHTML
+        let cached = DictionaryBodyMarkupCacheValue(
+            contentHTML: bodyEntries,
+            stylesheetHTML: stylesheetHTML,
+            deferredScriptHTML: deferredScriptHTML
+        )
+        bodyMarkupCache.setObject(
+            cached,
+            forKey: cacheKey as NSString,
+            cost: body.utf8.count + stylesheetHTML.utf8.count
+        )
+        return cached
     }
 
     private static func deduplicateDeferredScripts(_ scripts: [String]) -> [String] {
@@ -229,14 +468,97 @@ public enum DictionaryHTMLFormatter {
         return source.isEmpty ? nil : source
     }
 
+    private struct StylesheetExtraction {
+        let html: String
+        let stylesheets: [String]
+    }
+
+    /// Stylesheet links are metadata, not entry content. Move them into the
+    /// document head before the selected dictionary CSS is emitted. MDX
+    /// packages frequently link a base stylesheet from MDD (for example
+    /// `LM5style.css`) while also providing an external same-stem CSS file.
+    /// Keeping the link in the body made that MDD stylesheet load later and
+    /// silently override the user's same-stem CSS. Head ordering restores the
+    /// intended priority without using broad `!important` rules.
+    private static func extractStylesheetTags(from html: String) -> StylesheetExtraction {
+        let pattern = #"(?is)<link\b[^>]*>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return StylesheetExtraction(html: html, stylesheets: [])
+        }
+        let source = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else {
+            return StylesheetExtraction(html: html, stylesheets: [])
+        }
+
+        var content = html
+        var stylesheets: [String] = []
+        for match in matches.reversed() {
+            let tag = source.substring(with: match.range)
+            guard isStylesheetLink(tag) else { continue }
+            stylesheets.insert(tag, at: 0)
+            guard let range = Range(match.range, in: content) else { continue }
+            content.removeSubrange(range)
+        }
+        return StylesheetExtraction(html: content, stylesheets: stylesheets)
+    }
+
+    private static func isStylesheetLink(_ tag: String) -> Bool {
+        let patterns = [
+            #"(?is)\brel\s*=\s*[\"']([^\"']+)[\"']"#,
+            #"(?is)\brel\s*=\s*([^\s>]+)"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                    in: tag,
+                    range: NSRange(location: 0, length: (tag as NSString).length)
+                  ),
+                  match.numberOfRanges > 1 else { continue }
+            let relation = (tag as NSString).substring(with: match.range(at: 1))
+            if relation
+                .split(whereSeparator: { $0.isWhitespace })
+                .contains(where: { $0.caseInsensitiveCompare("stylesheet") == .orderedSame }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func stylesheetSource(from tag: String) -> String? {
+        let pattern = #"(?is)\bhref\s*=\s*[\"']([^\"']+)[\"']"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: tag,
+                range: NSRange(location: 0, length: (tag as NSString).length)
+              ),
+              match.numberOfRanges > 1 else { return nil }
+        let source = (tag as NSString).substring(with: match.range(at: 1))
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return source.isEmpty ? nil : source
+    }
+
+    private static func deduplicateStylesheetTags(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        return tags.filter { tag in
+            let key = stylesheetSource(from: tag) ?? tag
+            return seen.insert(key).inserted
+        }
+    }
+
     private static func markupCacheKey(
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool,
-        textScale: CGFloat
+        textScale: CGFloat,
+        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
+        userCSS: String? = nil
     ) -> String {
         var hasher = Hasher()
         hasher.combine(isCompact)
         hasher.combine(Double(textScale))
+        hasher.combine(adaptsToSystemAppearance)
+        hasher.combine(userCSS ?? "")
         for entry in entries {
             hasher.combine(entry.key)
             hasher.combine(entry.text)
@@ -671,6 +993,12 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     /// entry scripts and use the same native resource/audio bridge.
     public let allowsJavaScript: Bool
     public let textScale: CGFloat
+    /// Optional application/user overrides. This layer is emitted after the
+    /// MDX, automatic correction, and dictionary-specific layers.
+    public let userCSS: String?
+    /// Controls whether StudyMate adds its system-appearance compatibility
+    /// layers. When disabled, only the original MDX CSS is loaded.
+    public let adaptsToSystemAppearance: Bool
     /// Resource hosts referenced by the currently rendered entries. Limiting
     /// the bridge to these IDs prevents a dictionary script from probing every
     /// installed package while still allowing “All dictionaries” definitions
@@ -686,18 +1014,25 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
+        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
+        userCSS: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
         onPlayDictionaryAudio: ((String, String) -> Void)? = nil
     ) {
-        self.html = html
-        self.bodyHTML = DictionaryHTMLView.extractBodyHTML(from: html)
+        let renderedHTML = adaptsToSystemAppearance
+            ? DictionaryHTMLView.injectUserCSS(userCSS, into: html)
+            : html
+        self.html = renderedHTML
+        self.bodyHTML = DictionaryHTMLView.extractBodyHTML(from: renderedHTML)
         self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
-        self.shellSignature = DictionaryHTMLView.signature(DictionaryHTMLView.extractDocumentShell(from: html))
+        self.shellSignature = DictionaryHTMLView.signature(DictionaryHTMLView.extractDocumentShell(from: renderedHTML))
         self.baseURL = baseURL
         self.isCompact = isCompact
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
+        self.userCSS = userCSS
+        self.adaptsToSystemAppearance = adaptsToSystemAppearance
         if let host = baseURL?.host, baseURL?.scheme?.lowercased() == "studymate-resource" {
             self.resourceDictionaryIDs = [host]
         } else {
@@ -714,6 +1049,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
+        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
+        userCSS: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
         onPlayDictionaryAudio: ((String, String) -> Void)? = nil
@@ -728,13 +1065,26 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             return DictionaryEngine.shared.resourcesURL(for: entry.dictionaryID)
         }
         self.bodyHTML = DictionaryHTMLFormatter.composeBodyHTML(entries: entries, isCompact: isCompact)
-        self.html = DictionaryHTMLFormatter.composeHTML(entries: entries, isCompact: isCompact, textScale: textScale)
+        self.html = DictionaryHTMLFormatter.composeHTML(
+            entries: entries,
+            isCompact: isCompact,
+            textScale: textScale,
+            adaptsToSystemAppearance: adaptsToSystemAppearance,
+            userCSS: userCSS
+        )
         self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
-        self.shellSignature = DictionaryHTMLFormatter.shellSignature(entries: entries, isCompact: isCompact)
+        self.shellSignature = DictionaryHTMLFormatter.shellSignature(
+            entries: entries,
+            isCompact: isCompact,
+            adaptsToSystemAppearance: adaptsToSystemAppearance,
+            userCSS: userCSS
+        )
         self.baseURL = resolvedBaseURL
         self.isCompact = isCompact
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
+        self.userCSS = userCSS
+        self.adaptsToSystemAppearance = adaptsToSystemAppearance
         self.resourceDictionaryIDs = Set(entries.map(\.dictionaryID))
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
@@ -756,6 +1106,18 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var hasher = Hasher()
         hasher.combine(value)
         return hasher.finalize()
+    }
+
+    private static func injectUserCSS(_ userCSS: String?, into html: String) -> String {
+        guard let userCSS,
+              !userCSS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return html
+        }
+        let style = "<style id=\"studymate-user-css\" type=\"text/css\">\n/* User CSS */\n\(userCSS)\n</style>\n"
+        if let headEnd = html.range(of: "</head>", options: .caseInsensitive) {
+            return String(html[..<headEnd.lowerBound]) + style + String(html[headEnd.lowerBound...])
+        }
+        return html + style
     }
 
     /// Returns the document shell with body contents removed. This lets the
@@ -781,6 +1143,13 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         config.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         config.preferences.javaScriptCanOpenWindowsAutomatically = allowsJavaScript
         if allowsJavaScript {
+            config.userContentController.addUserScript(
+                WKUserScript(
+                    source: Self.appearanceCompatibilityScript,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+            )
             // Some legacy MDX packages ship a small controller script whose
             // URL cannot be loaded by WebKit because the resource response is
             // rejected. Keep common fold/toggle controls usable in that case,
@@ -872,6 +1241,35 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         }
     }
 
+    /// Mirrors the WebKit appearance into a stable attribute for dictionary
+    /// scripts that need to redraw canvas/SVG controls when macOS changes
+    /// between Light and Dark. CSS itself still follows the media query, so
+    /// this bridge is only needed by script-driven content.
+    private static let appearanceCompatibilityScript = """
+    (function() {
+        var root = document.documentElement;
+        if (!root || root.getAttribute("data-studymate-adapt-to-system-appearance") !== "true") {
+            return;
+        }
+        var media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+        if (!media) { return; }
+        var applyAppearance = function() {
+            var dark = media.matches;
+            document.documentElement.dataset.studymateAppearance = dark ? "dark" : "light";
+            document.documentElement.style.colorScheme = dark ? "dark" : "light";
+            window.dispatchEvent(new CustomEvent("studymateappearancechange", {
+                detail: { dark: dark }
+            }));
+        };
+        applyAppearance();
+        if (media.addEventListener) {
+            media.addEventListener("change", applyAppearance);
+        } else if (media.addListener) {
+            media.addListener(applyAppearance);
+        }
+    })();
+    """
+
     private static let detailInteractionCompatibilityScript = """
     (function() {
         if (typeof window.toggle_active !== "function") {
@@ -919,7 +1317,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 var entry = document.getElementById(target.id.substring(4));
                 if (entry) {
                     entry.style.display = "block";
-                    target.style.backgroundColor = "#4577bf";
+                    target.style.backgroundColor = "var(--studymate-control-selected, Highlight)";
                 }
                 for (var j = 0; j < control.children.length; j += 1) {
                     if (control.children[j] !== target) {

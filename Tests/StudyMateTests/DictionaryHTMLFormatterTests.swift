@@ -20,6 +20,114 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains("sound://audio/cat.mp3#studymate-dictionary=fixture"))
     }
 
+    func testSameStemExternalCSSComesAfterLinkedMDDStylesheets() throws {
+        let entry = StudyMateDictionaryLookup(
+            key: "theme",
+            text: #"<link href="LM5style.css" rel="stylesheet" type="text/css"><div class="fixture">theme</div>"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            css: ".fixture { color: red; background: red; }"
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(entries: [entry], isCompact: false)
+        let linkedStylesheet = try XCTUnwrap(html.range(of: #"<link href="LM5style.css" rel="stylesheet" type="text/css">"#))
+        let rawStylesheet = try XCTUnwrap(html.range(of: "studymate-mdx-raw-css"))
+        let headEnd = try XCTUnwrap(html.range(of: "</head>"))
+        let body = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+
+        XCTAssertLessThan(linkedStylesheet.lowerBound, rawStylesheet.lowerBound)
+        XCTAssertLessThan(rawStylesheet.lowerBound, headEnd.lowerBound)
+        XCTAssertFalse(body.contains("LM5style.css"))
+    }
+
+    func testThemeLayersFollowOriginalDictionaryCSSAndUserCSS() throws {
+        let entry = StudyMateDictionaryLookup(
+            key: "theme",
+            text: #"<div class="fixture">theme</div>"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            css: ".fixture { color: #000; background: #fff; }"
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(
+            entries: [entry],
+            isCompact: false,
+            userCSS: ".fixture { color: hotpink; }"
+        )
+
+        let raw = try XCTUnwrap(html.range(of: "studymate-mdx-raw-css"))
+        let theme = try XCTUnwrap(html.range(of: "studymate-system-theme-css"))
+        let correction = try XCTUnwrap(html.range(of: "studymate-auto-color-correction-css"))
+        let user = try XCTUnwrap(html.range(of: "studymate-user-css"))
+
+        XCTAssertLessThan(raw.lowerBound, theme.lowerBound)
+        XCTAssertLessThan(theme.lowerBound, correction.lowerBound)
+        XCTAssertLessThan(correction.lowerBound, user.lowerBound)
+        XCTAssertTrue(html.contains(#"<meta name="color-scheme" content="light dark">"#))
+        XCTAssertTrue(html.contains("@media (prefers-color-scheme: dark)"))
+        XCTAssertTrue(html.contains(".fixture { color: #000; background: #fff; }"))
+        XCTAssertTrue(html.contains(".fixture { color: hotpink; }"))
+    }
+
+    func testKnownDictionaryGetsSpecificDarkModeCompatibilityLayer() {
+        let entry = StudyMateDictionaryLookup(
+            key: "word",
+            text: "word",
+            dictionaryID: "oald9-fixture",
+            dictionaryTitle: "Oxford Advanced Learner's Dictionary"
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(entries: [entry], isCompact: false)
+
+        XCTAssertTrue(html.contains("studymate-dictionary-specific-css"))
+        XCTAssertTrue(html.contains(".ColloPanel"))
+        XCTAssertTrue(html.contains("--surface-color"))
+    }
+
+    func testDisabledAppearanceUsesOnlyOriginalDictionaryCSS() {
+        let entry = StudyMateDictionaryLookup(
+            key: "theme",
+            text: #"<div class="fixture">theme</div>"#,
+            dictionaryID: "oald9-fixture",
+            dictionaryTitle: "Oxford Advanced Learner's Dictionary",
+            css: ".fixture { color: #000; background: #fff; }"
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(
+            entries: [entry],
+            isCompact: false,
+            adaptsToSystemAppearance: false,
+            userCSS: ".fixture { color: hotpink; }"
+        )
+
+        XCTAssertTrue(html.contains("studymate-mdx-raw-css"))
+        XCTAssertTrue(html.contains(".fixture { color: #000; background: #fff; }"))
+        XCTAssertTrue(html.contains(#"data-studymate-adapt-to-system-appearance="false""#))
+        XCTAssertFalse(html.contains("studymate-system-theme-css"))
+        XCTAssertFalse(html.contains("studymate-auto-color-correction-css"))
+        XCTAssertFalse(html.contains("studymate-dictionary-specific-css"))
+        XCTAssertFalse(html.contains("studymate-user-css"))
+        XCTAssertFalse(html.contains(#"<meta name="color-scheme" content="light dark">"#))
+    }
+
+    func testDictionaryAppearanceSettingPersistsWithoutTouchingImportedFiles() {
+        let suiteName = "StudyMate.DictionaryAppearanceSettingsTests.\(UUID().uuidString)"
+        let defaults = try! XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let settings = DictionaryAppearanceSettings(defaults: defaults)
+        XCTAssertTrue(settings.adaptsToSystemAppearance)
+
+        settings.setAdaptToSystemAppearance(false)
+        XCTAssertFalse(settings.adaptsToSystemAppearance)
+        XCTAssertFalse(DictionaryAppearanceSettings.storedValue(defaults: defaults))
+
+        settings.setAdaptToSystemAppearance(true)
+        XCTAssertTrue(DictionaryAppearanceSettings.storedValue(defaults: defaults))
+    }
+
     func testScriptsAreDeferredUntilEntryMarkupExists() throws {
         let entry = StudyMateDictionaryLookup(
             key: "food",
@@ -105,12 +213,13 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
             resourceRoot: root.path
         )
 
-        let html = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+        let body = DictionaryHTMLFormatter.composeBodyHTML(entries: [entry], isCompact: false)
+        let html = DictionaryHTMLFormatter.composeHTML(entries: [entry], isCompact: false)
 
-        XCTAssertTrue(html.contains(#"href="another-word""#))
+        XCTAssertTrue(body.contains(#"href="another-word""#))
         XCTAssertTrue(html.contains("file:///tmp/StudyMate%20Dictionary/resources/theme.css"))
-        XCTAssertTrue(html.contains("file:///tmp/StudyMate%20Dictionary/resources/icons/test.png"))
-        XCTAssertFalse(html.contains("resources/another-word"))
+        XCTAssertTrue(body.contains("file:///tmp/StudyMate%20Dictionary/resources/icons/test.png"))
+        XCTAssertFalse(body.contains("resources/another-word"))
     }
 
     func testTextFormatEscapesMarkupInsteadOfTreatingItAsHTML() {

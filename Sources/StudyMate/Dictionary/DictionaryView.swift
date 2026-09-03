@@ -68,6 +68,7 @@ private struct DictionaryDefinitionSkeleton: View {
 private struct DictionaryDefinitionPane: View {
     @ObservedObject var engine: DictionaryEngine
     @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
     let query: String
     let selectedResultID: String?
     let selectedDictionaryID: String?
@@ -154,6 +155,7 @@ private struct DictionaryDefinitionPane: View {
                     isCompact: false,
                     allowsJavaScript: true,
                     textScale: textScale,
+                    adaptsToSystemAppearance: dictionaryAppearanceSettings.adaptsToSystemAppearance,
                     onLookupWord: onLookupWord,
                     onPlayAudio: onPlayAudio,
                     onPlayDictionaryAudio: { dictionaryID, key in

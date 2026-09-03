@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PACKAGE_VERSION: u32 = 4;
+const MAX_EMBEDDED_MDX_ASSET_REFERENCES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictionaryManifest {
@@ -2243,6 +2244,52 @@ impl NativeDictionaryFile {
         Ok(result)
     }
 
+    /// Some MDX packages store large inline assets as separate hidden MDX
+    /// records.  LDOCE5++ is one example: an image link has
+    /// `src="ldoce4188jpg"`, while the `ldoce4188jpg` record contains a
+    /// hidden element whose `src` is a `data:image/...;base64,...` URL.  A
+    /// browser-oriented MDict reader keeps that record in the same DOM so
+    /// dictionary JavaScript can resolve it with `document.getElementById`.
+    ///
+    /// Resolve only the small set of bare `src` references in the selected
+    /// record and only append records that are demonstrably inline data
+    /// assets.  This preserves on-demand reading: normal MDD paths, external
+    /// URLs, and dictionary navigation links do not trigger extra MDX reads.
+    fn hydrate_embedded_mdx_assets(&mut self, record: &str) -> Result<String> {
+        let references = embedded_mdx_asset_references(record);
+        if references.is_empty() {
+            return Ok(record.to_owned());
+        }
+
+        let mut hydrated = record.to_owned();
+        let mut seen = HashSet::new();
+        for reference in references
+            .into_iter()
+            .take(MAX_EMBEDDED_MDX_ASSET_REFERENCES)
+        {
+            let normalized_reference =
+                normalize_search_key(&reference, self.header.key_case_sensitive);
+            if normalized_reference.is_empty() || !seen.insert(normalized_reference) {
+                continue;
+            }
+
+            let candidates = self.exact_records(&reference, 8)?;
+            let Some((_, _, _, asset_record)) =
+                candidates.into_iter().find(|(_, _, raw, candidate)| {
+                    normalize_search_key(&raw.key, self.header.key_case_sensitive)
+                        == normalize_search_key(&reference, self.header.key_case_sensitive)
+                        && is_inline_data_asset_record(&reference, candidate)
+                })
+            else {
+                continue;
+            };
+
+            hydrated.push('\n');
+            hydrated.push_str(&asset_record);
+        }
+        Ok(hydrated)
+    }
+
     fn resolve_link(&mut self, record: &str, visited: &mut HashSet<String>) -> Result<String> {
         let original = record.to_owned();
         let mut current = original.clone();
@@ -2553,18 +2600,21 @@ impl NativeDictionary {
         let records = self.mdx.lookup_records(query, limit)?;
         let css = self.css.clone();
         let id = self.manifest.id.clone();
-        Ok(records
+        records
             .into_iter()
-            .map(|(raw, text)| LookupEntry {
-                key: raw.key,
-                text,
-                dictionary_id: id.clone(),
-                dictionary_title: self.manifest.title.clone(),
-                format: self.manifest.format.clone(),
-                css: css.clone(),
-                resource_root: Some(resource_root(&id)),
+            .map(|(raw, text)| {
+                let text = self.mdx.hydrate_embedded_mdx_assets(&text)?;
+                Ok(LookupEntry {
+                    key: raw.key,
+                    text,
+                    dictionary_id: id.clone(),
+                    dictionary_title: self.manifest.title.clone(),
+                    format: self.manifest.format.clone(),
+                    css: css.clone(),
+                    resource_root: Some(resource_root(&id)),
+                })
             })
-            .collect())
+            .collect::<Result<Vec<_>>>()
     }
 
     fn resource_data(&mut self, key: &str) -> Result<Option<ResourceDataResult>> {
@@ -2876,6 +2926,122 @@ pub fn resource_data(
     let (package, manifest) = open_manifest(root, dictionary_id)?;
     let mut dictionary = NativeDictionary::open(package, manifest)?;
     dictionary.resource_data(key)
+}
+
+/// Extract values for a simple HTML attribute without normalizing or parsing
+/// the rest of the dictionary markup.  MDX records are often deliberately
+/// loose HTML, so this accepts both quoted and unquoted attributes and all
+/// common ASCII attribute-name casing.
+fn html_attribute_values(html: &str, attribute: &str) -> Vec<String> {
+    let lower_html = html.to_ascii_lowercase();
+    let lower_attribute = attribute.to_ascii_lowercase();
+    let lower_bytes = lower_html.as_bytes();
+    let attribute_bytes = lower_attribute.as_bytes();
+    let mut values = Vec::new();
+    let mut cursor = 0;
+
+    while cursor + attribute_bytes.len() <= lower_bytes.len() {
+        let Some(relative) = lower_html[cursor..].find(&lower_attribute) else {
+            break;
+        };
+        let start = cursor + relative;
+        let preceded_by_name_character =
+            start > 0 && is_html_attribute_name_character(lower_bytes[start - 1]);
+        let follows_name_character = start + attribute_bytes.len() < lower_bytes.len()
+            && is_html_attribute_name_character(lower_bytes[start + attribute_bytes.len()]);
+        if preceded_by_name_character || follows_name_character {
+            cursor = start + attribute_bytes.len();
+            continue;
+        }
+
+        let mut value_start = start + attribute_bytes.len();
+        while value_start < lower_bytes.len() && lower_bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        if value_start >= lower_bytes.len() || lower_bytes[value_start] != b'=' {
+            cursor = start + attribute_bytes.len();
+            continue;
+        }
+
+        value_start += 1;
+        while value_start < lower_bytes.len() && lower_bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        if value_start >= lower_bytes.len() {
+            break;
+        }
+        let quote =
+            matches!(lower_bytes[value_start], b'\'' | b'"').then_some(lower_bytes[value_start]);
+        let content_start = if quote.is_some() {
+            value_start + 1
+        } else {
+            value_start
+        };
+        let mut content_end = content_start;
+        while content_end < lower_bytes.len() {
+            let byte = lower_bytes[content_end];
+            if quote == Some(byte)
+                || (quote.is_none() && (byte.is_ascii_whitespace() || byte == b'>' || byte == b'/'))
+            {
+                break;
+            }
+            content_end += 1;
+        }
+        if content_end > content_start {
+            values.push(html[content_start..content_end].to_owned());
+        }
+        cursor = content_end.saturating_add(1);
+    }
+    values
+}
+
+fn is_html_attribute_name_character(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
+}
+
+/// Return bare local names that can refer to an auxiliary MDX record.  A
+/// slash-containing value is left to the MDD/resource bridge; resolving it as
+/// an MDX key would add unnecessary block reads for ordinary media paths.
+fn embedded_mdx_asset_references(record: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    for raw in html_attribute_values(record, "src") {
+        let decoded = decode_xml_entities(&raw);
+        let value = decoded.trim();
+        let lower = value.to_ascii_lowercase();
+        if value.is_empty()
+            || value.contains('/')
+            || value.contains('\\')
+            || value.starts_with('#')
+            || lower.starts_with("data:")
+            || lower.starts_with("javascript:")
+            || lower.starts_with("about:")
+            || lower.starts_with("blob:")
+            || lower.starts_with("mailto:")
+            || lower.starts_with("//")
+            || lower.contains("://")
+        {
+            continue;
+        }
+        let value = value.split(['?', '#']).next().unwrap_or(value).trim();
+        if !value.is_empty() && !references.iter().any(|item| item == value) {
+            references.push(value.to_owned());
+        }
+    }
+    references
+}
+
+fn is_inline_data_asset_record(reference: &str, record: &str) -> bool {
+    let lower = record.to_ascii_lowercase();
+    let has_inline_data = lower.contains("data:image/")
+        || lower.contains("data:audio/")
+        || lower.contains("data:video/")
+        || lower.contains("data:font/");
+    if !has_inline_data {
+        return false;
+    }
+    html_attribute_values(record, "id")
+        .into_iter()
+        .any(|id| id.eq_ignore_ascii_case(reference))
 }
 
 const AUDIO_EXTENSIONS: [&str; 10] = [
@@ -3357,6 +3523,42 @@ mod tests {
             .lookup_keys(&package_root, "fixture", "Relate", 10)
             .unwrap();
         assert_eq!(upper.first().map(|hit| hit.key.as_str()), Some("Relate"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hydrates_inline_data_asset_records_referenced_by_definition() {
+        let root = std::env::temp_dir().join(format!(
+            "studymate-dict-inline-asset-{}-{}",
+            std::process::id(),
+            now_seconds()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mdx = root.join("fixture.mdx");
+        fs::write(
+            &mdx,
+            mdx_text_fixture(&[
+                (
+                    "apple",
+                    r#"<a class="ldoce-show-image" href="javascript:void(0)" src="ldoce4188jpg">FRUIT 1</a>"#,
+                ),
+                (
+                    "ldoce4188jpg",
+                    r#"<span id="ldoce4188jpg" style="display:none" src="data:image/jpeg;base64,AAAA"></span>"#,
+                ),
+            ]),
+        )
+        .unwrap();
+        let package_root = root.join("Dictionaries");
+        import_fixture(&package_root, &mdx, "fixture");
+
+        let entry = lookup(&package_root, "fixture", "apple", 1).unwrap();
+        assert_eq!(entry.len(), 1);
+        assert!(entry[0].text.contains("id=\"ldoce4188jpg\""));
+        assert!(entry[0]
+            .text
+            .contains("src=\"data:image/jpeg;base64,AAAA\""));
+
         fs::remove_dir_all(root).unwrap();
     }
 

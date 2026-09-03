@@ -2,6 +2,7 @@ import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
+    case dictionary
     case playback
     case segmentation
     case translation
@@ -20,6 +21,7 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject var modelManager = WhisperModelManager.shared
     @ObservedObject var translationSettings = TranslationSettings.shared
+    @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
 
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = false
     @State private var selectedSection: SettingsSection = .general
@@ -103,6 +105,8 @@ public struct IntensiveSettingsPopover: View {
         switch section {
         case .general:
             generalSettings
+        case .dictionary:
+            dictionarySettings
         case .playback:
             playbackSettings
         case .segmentation:
@@ -152,6 +156,38 @@ public struct IntensiveSettingsPopover: View {
             settingsNote(lang.text(
                 "播放列表、断句列表、波形图和字幕编辑区仍通过主窗口工具栏控制，不在这里重复设置。",
                 "The playlist, sentence list, waveforms, and subtitle editor remain controlled from the main toolbar rather than duplicated here."
+            ))
+        }
+    }
+
+    private var dictionarySettings: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsGroupTitle(
+                lang.text("词典外观", "Dictionary Appearance"),
+                systemImage: "book.closed"
+            )
+
+            Toggle(isOn: Binding(
+                get: { dictionaryAppearanceSettings.adaptsToSystemAppearance },
+                set: { dictionaryAppearanceSettings.setAdaptToSystemAppearance($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text("字典适应系统外观", "Adapt dictionary to system appearance"))
+                        .font(.body.weight(.medium))
+                    Text(lang.text(
+                        "开启后，在词典页面渲染时加入系统外观兼容 CSS，并使用 macOS 语义颜色；关闭后只使用 MDX 自带的 CSS。阅读器背景始终由应用窗口提供。",
+                        "When enabled, dictionary pages receive the system-appearance compatibility CSS and macOS semantic colors at render time. When disabled, only the MDX-provided CSS is used. The reader background always comes from the app window."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+
+            settingsNote(lang.text(
+                "此设置不会修改或重新打包已导入的 MDX/MDD 文件；切换后当前打开的词条会自动重新渲染。",
+                "This setting never changes or repackages imported MDX/MDD files. Open entries are re-rendered automatically after switching it."
             ))
         }
     }
@@ -757,6 +793,8 @@ public struct IntensiveSettingsPopover: View {
         switch section {
         case .general:
             return lang.text("通用与界面", "General & Interface")
+        case .dictionary:
+            return lang.text("词典", "Dictionary")
         case .playback:
             return lang.text("播放与练习", "Playback & Practice")
         case .segmentation:
@@ -772,6 +810,8 @@ public struct IntensiveSettingsPopover: View {
         switch section {
         case .general:
             return lang.text("语言和显示", "Language and display")
+        case .dictionary:
+            return lang.text("外观与渲染", "Appearance and rendering")
         case .playback:
             return lang.text("复读练习", "Repeat practice")
         case .segmentation:
@@ -787,6 +827,8 @@ public struct IntensiveSettingsPopover: View {
         switch section {
         case .general:
             return lang.text("配置应用语言和主窗口的基础显示方式。", "Configure the app language and basic main-window display options.")
+        case .dictionary:
+            return lang.text("控制 MDX 词典是否跟随 macOS 外观，并决定是否启用 StudyMate 的兼容渲染层。", "Control whether MDX dictionaries follow the macOS appearance and whether StudyMate's compatibility rendering layers are enabled.")
         case .playback:
             return lang.text("配置精听练习时的默认筛选行为；播放过程中的即时控制仍在工具栏。", "Configure intensive-practice behavior; immediate playback controls remain in the toolbar.")
         case .segmentation:
@@ -802,6 +844,8 @@ public struct IntensiveSettingsPopover: View {
         switch section {
         case .general:
             return "gearshape"
+        case .dictionary:
+            return "book.closed"
         case .playback:
             return "play.circle"
         case .segmentation:
