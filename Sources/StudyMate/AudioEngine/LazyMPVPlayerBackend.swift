@@ -8,6 +8,7 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
     private var backend: MPVPlayerBackend?
     private var configuredRate: Float = 1
     private var configuredVolume: Float = 1
+    private var automaticallyLoadsSubtitles = true
     private var highFrequencyPresentationEnabled = true
 
     public init() {}
@@ -81,6 +82,11 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
         backend?.setHighFrequencyPresentationEnabled(enabled)
     }
 
+    public func setAutomaticSubtitleLoading(_ enabled: Bool) {
+        automaticallyLoadsSubtitles = enabled
+        backend?.setAutomaticSubtitleLoading(enabled)
+    }
+
     private func resolveBackend() -> MPVPlayerBackend {
         if let backend { return backend }
         let created = MPVPlayerBackend()
@@ -91,6 +97,7 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
         created.onStateChanged = onStateChanged
         created.onFinished = onFinished
         created.onError = onError
+        created.setAutomaticSubtitleLoading(automaticallyLoadsSubtitles)
         created.setHighFrequencyPresentationEnabled(highFrequencyPresentationEnabled)
         backend = created
         return created

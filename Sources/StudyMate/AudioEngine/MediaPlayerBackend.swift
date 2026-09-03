@@ -32,6 +32,10 @@ public protocol MediaPlayerBackend: AnyObject {
     func stop()
     func teardown()
     func setHighFrequencyPresentationEnabled(_ enabled: Bool)
+    /// Controls whether a backend automatically selects subtitle tracks or
+    /// matching external subtitle files. Native backends intentionally ignore
+    /// this because the setting only applies to libmpv.
+    func setAutomaticSubtitleLoading(_ enabled: Bool)
 }
 
 public extension MediaPlayerBackend {
@@ -47,4 +51,6 @@ public extension MediaPlayerBackend {
     }
 
     func setHighFrequencyPresentationEnabled(_ enabled: Bool) {}
+
+    func setAutomaticSubtitleLoading(_ enabled: Bool) {}
 }

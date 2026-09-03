@@ -51,6 +51,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     
     private var mpvHandle: OpaquePointer?
     private var renderContext: OpaquePointer?
+    private var automaticallyLoadsSubtitles = true
     private var pollTimer: Timer?
     private var isSeekingInternal = false
     private var isPollingActive = false
@@ -140,6 +141,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         let path = url.standardizedFileURL.path
         let requestedVolume = volume
         let requestedRate = playbackRate
+        let shouldAutomaticallyLoadSubtitles = automaticallyLoadsSubtitles
         commandQueue.async {
             guard !cancellationToken.isCancelled else { return }
             guard let h = OpaquePointer(bitPattern: handleBits) else {
@@ -147,6 +149,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                 return
             }
 
+            Self.configureSubtitleLoading(shouldAutomaticallyLoadSubtitles, handle: h)
             _ = MPVClient.shared.command(h, args: ["stop"])
             _ = MPVClient.shared.setPropertyString(h, name: "pause", value: "yes")
             let res = MPVClient.shared.command(h, args: ["loadfile", path, "replace"])
@@ -457,6 +460,35 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
 
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
         highFrequencyPresentationEnabled = enabled
+    }
+
+    public func setAutomaticSubtitleLoading(_ enabled: Bool) {
+        automaticallyLoadsSubtitles = enabled
+        guard let handle = mpvHandle else { return }
+
+        let handleBits = UInt(bitPattern: handle)
+        let hasLoadedMedia = loadedURL != nil
+        commandQueue.async {
+            guard let h = OpaquePointer(bitPattern: handleBits) else { return }
+            Self.configureSubtitleLoading(enabled, handle: h)
+            if enabled, hasLoadedMedia {
+                _ = MPVClient.shared.command(h, args: ["rescan-external-files", "reselect"])
+            }
+        }
+    }
+
+    private nonisolated static func configureSubtitleLoading(
+        _ enabled: Bool,
+        handle: OpaquePointer
+    ) {
+        // `sub-auto` controls matching external files (for example a same-name
+        // .ass beside an MKV). `sid` also has to be disabled so an embedded
+        // subtitle track cannot be auto-selected by the container demuxer.
+        let externalMode = enabled ? "exact" : "no"
+        let primaryTrack = enabled ? "auto" : "no"
+        _ = MPVClient.shared.setPropertyString(handle, name: "sub-auto", value: externalMode)
+        _ = MPVClient.shared.setPropertyString(handle, name: "sid", value: primaryTrack)
+        _ = MPVClient.shared.setPropertyString(handle, name: "secondary-sid", value: "no")
     }
     
     deinit {

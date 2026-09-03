@@ -768,6 +768,26 @@ public struct IntensiveSettingsPopover: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Toggle(isOn: Binding(
+                get: { engine.automaticallyLoadsSubtitles },
+                set: { engine.setAutomaticallyLoadsSubtitles($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text(
+                        "扩展解码时自动加载字幕",
+                        "Automatically load subtitles with extended decoding"
+                    ))
+                    Text(lang.text(
+                        "关闭后，libmpv 不会自动加载 MKV 内嵌字幕或同名外部字幕；画面字幕仅由原文和译文开关控制。",
+                        "When disabled, libmpv will not automatically load embedded MKV subtitles or matching external subtitle files. Video subtitles are then controlled only by the original and translation toggles."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+
             Divider()
 
             settingsNote(lang.text(
@@ -836,7 +856,7 @@ public struct IntensiveSettingsPopover: View {
         case .translation:
             return lang.text("管理可复用的翻译服务配置，并在句子列表中手动确认后执行翻译。", "Manage reusable translation profiles and start translation manually after confirmation in the sentence list.")
         case .decoder:
-            return lang.text("选择系统、扩展或智能混合音视频解码引擎。", "Choose the native, extended, or hybrid audio/video decoder.")
+            return lang.text("选择系统、扩展或智能混合音视频解码引擎，并控制扩展解码时的字幕自动加载。", "Choose the native, extended, or hybrid audio/video decoder and control automatic subtitle loading for extended decoding.")
         }
     }
 

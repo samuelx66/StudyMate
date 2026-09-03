@@ -75,6 +75,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         return .hybrid
     }()
 
+    private static let automaticSubtitleLoadingKey = "StudyMate_MPVAutomaticSubtitleLoading"
+
+    /// Whether libmpv should auto-select embedded subtitle tracks and matching
+    /// external subtitle files. Keep this enabled by default to preserve the
+    /// existing playback behavior.
+    @Published public private(set) var automaticallyLoadsSubtitles: Bool = {
+        (UserDefaults.standard.object(forKey: automaticSubtitleLoadingKey) as? Bool) ?? true
+    }()
+
     // MARK: - 智能精听与复读系统状态
     /// 单句定次重复上限 (1, 2, 3, 5, 10，0 表示无限单句重复)
     @Published public var repeatCountLimit: Int = 1
@@ -353,6 +362,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.nativeBackend.playbackRate = self.playbackRate
         self.mpvBackend.volume = self.volume
         self.mpvBackend.playbackRate = self.playbackRate
+        self.mpvBackend.setAutomaticSubtitleLoading(self.automaticallyLoadsSubtitles)
         setupBackendCallbacks(for: nativeBackend)
         setupBackendCallbacks(for: mpvBackend)
         projectFileManager.setErrorHandler { [weak self] message in
@@ -995,6 +1005,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 allowHybridFallback: mode == .hybrid
             )
         }
+    }
+
+    public func setAutomaticallyLoadsSubtitles(_ enabled: Bool) {
+        guard automaticallyLoadsSubtitles != enabled else { return }
+        automaticallyLoadsSubtitles = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.automaticSubtitleLoadingKey)
+        // LazyMPVPlayerBackend retains the preference even before libmpv is
+        // created; if it is active, the currently loaded subtitle is also
+        // hidden or reselected immediately.
+        mpvBackend.setAutomaticSubtitleLoading(enabled)
     }
 
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
