@@ -71,6 +71,7 @@ struct DictionarySourceSettingsView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject var settings: DictionarySourceSettings
     let dictionaries: [StudyMateDictionarySummary]
+    @State private var dictionaryPendingDeletion: StudyMateDictionarySummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -85,29 +86,6 @@ struct DictionarySourceSettingsView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 8) {
-                Text(lang.text("查词界面词语解释使用词典：", "Dictionary for definition lookup interface:"))
-                    .font(.subheadline)
-
-                Picker(
-                    "",
-                    selection: Binding(
-                        get: { settings.lookupScopeDictionaryID ?? "" },
-                        set: { settings.setLookupScopeDictionaryID($0.isEmpty ? nil : $0) }
-                    )
-                ) {
-                    Text(lang.text("全部", "All")).tag("")
-                    ForEach(settings.orderedDictionaries(from: dictionaries)) { dict in
-                        Text(dict.displayName).tag(dict.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .accessibilityLabel(lang.text("查词界面词语解释使用词典", "Dictionary for definition lookup interface"))
-                .frame(minWidth: 160)
-            }
-            .padding(.top, 2)
-
             if dictionaries.isEmpty {
                 ContentUnavailableView(
                     lang.text("还没有词典", "No dictionaries"),
@@ -119,15 +97,46 @@ struct DictionarySourceSettingsView: View {
                     settings: settings,
                     dictionaries: dictionaries,
                     dictionaryColumnTitle: lang.text("词典", "Dictionary"),
-                    actionsColumnTitle: lang.text("操作", "Actions")
+                    actionsColumnTitle: lang.text("操作", "Actions"),
+                    onDeleteDictionary: { dictionary in
+                        dictionaryPendingDeletion = dictionary
+                    }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(16)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 420)
+        .alert(
+            lang.text("确认删除词典？", "Delete Dictionary?"),
+            isPresented: Binding(
+                get: { dictionaryPendingDeletion != nil },
+                set: { if !$0 { dictionaryPendingDeletion = nil } }
+            ),
+            presenting: dictionaryPendingDeletion
+        ) { dict in
+            Button(lang.text("删除", "Delete"), role: .destructive) {
+                confirmDeletion(of: dict.id)
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {
+                dictionaryPendingDeletion = nil
+            }
+        } message: { dict in
+            Text(lang.text(
+                "确定要从 StudyMate 中删除词典“\(dict.displayName)”吗？此操作无法撤销。",
+                "Are you sure you want to delete “\(dict.displayName)” from StudyMate? This action cannot be undone."
+            ))
+        }
         .onAppear {
             settings.synchronize(with: dictionaries)
+        }
+    }
+
+    private func confirmDeletion(of id: String) {
+        dictionaryPendingDeletion = nil
+        Task { @MainActor in
+            await Task.yield()
+            DictionaryEngine.shared.deleteDictionary(id: id)
         }
     }
 }
@@ -141,22 +150,31 @@ private final class DictionarySettingsTableView: NSTableView {
             coordinator.beginRenameSelectedRow()
             return
         }
+        // Delete 键 (51) 或 Forward Delete (117) 快捷触发删除选中的词典
+        if (event.keyCode == 51 || event.keyCode == 117),
+           selectedRow >= 0,
+           let coordinator = delegate as? DictionarySourceSettingsTableRepresentable.Coordinator {
+            coordinator.deleteSelectedRow()
+            return
+        }
         super.keyDown(with: event)
     }
 }
 
-private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
+struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
     let settings: DictionarySourceSettings
     let dictionaries: [StudyMateDictionarySummary]
     let dictionaryColumnTitle: String
     let actionsColumnTitle: String
+    var onDeleteDictionary: ((StudyMateDictionarySummary) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             settings: settings,
             dictionaries: dictionaries,
             dictionaryColumnTitle: dictionaryColumnTitle,
-            actionsColumnTitle: actionsColumnTitle
+            actionsColumnTitle: actionsColumnTitle,
+            onDeleteDictionary: onDeleteDictionary
         )
     }
 
@@ -216,7 +234,8 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
             settings: settings,
             dictionaries: dictionaries,
             dictionaryColumnTitle: dictionaryColumnTitle,
-            actionsColumnTitle: actionsColumnTitle
+            actionsColumnTitle: actionsColumnTitle,
+            onDeleteDictionary: onDeleteDictionary
         )
     }
 
@@ -229,6 +248,7 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
         private var dictionaries: [StudyMateDictionarySummary]
         private var dictionaryColumnTitle: String
         private var actionsColumnTitle: String
+        private var onDeleteDictionary: ((StudyMateDictionarySummary) -> Void)?
         weak var tableView: NSTableView?
         private var renamingDictionaryID: String?
         private weak var editingField: NSTextField?
@@ -237,12 +257,14 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
             settings: DictionarySourceSettings,
             dictionaries: [StudyMateDictionarySummary],
             dictionaryColumnTitle: String,
-            actionsColumnTitle: String
+            actionsColumnTitle: String,
+            onDeleteDictionary: ((StudyMateDictionarySummary) -> Void)? = nil
         ) {
             self.settings = settings
             self.dictionaries = dictionaries
             self.dictionaryColumnTitle = dictionaryColumnTitle
             self.actionsColumnTitle = actionsColumnTitle
+            self.onDeleteDictionary = onDeleteDictionary
             super.init()
         }
 
@@ -254,12 +276,14 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
             settings: DictionarySourceSettings,
             dictionaries: [StudyMateDictionarySummary],
             dictionaryColumnTitle: String,
-            actionsColumnTitle: String
+            actionsColumnTitle: String,
+            onDeleteDictionary: ((StudyMateDictionarySummary) -> Void)? = nil
         ) {
             self.settings = settings
             self.dictionaries = dictionaries
             self.dictionaryColumnTitle = dictionaryColumnTitle
             self.actionsColumnTitle = actionsColumnTitle
+            self.onDeleteDictionary = onDeleteDictionary
             guard let tableView else { return }
             if let dictionaryColumn = tableView.tableColumn(
                 withIdentifier: NSUserInterfaceItemIdentifier(Self.dictionaryColumnIdentifier)
@@ -415,7 +439,7 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
 
         @objc private func showDictionaryActions(_ sender: NSButton) {
             guard let dictionaryID = sender.identifier?.rawValue,
-                  let dictionary = dictionaries.first(where: { $0.id == dictionaryID }) else {
+                  dictionaries.contains(where: { $0.id == dictionaryID }) else {
                 return
             }
             select(dictionaryID: dictionaryID)
@@ -443,8 +467,62 @@ private struct DictionarySourceSettingsTableRepresentable: NSViewRepresentable {
                 menu.addItem(restoreItem)
             }
 
+            menu.addItem(NSMenuItem.separator())
+            let deleteItem = NSMenuItem(
+                title: LanguageManager.shared.text("删除", "Delete"),
+                action: #selector(deleteFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            deleteItem.target = self
+            deleteItem.representedObject = dictionaryID
+            deleteItem.isEnabled = !DictionaryEngine.shared.isBusy
+            menu.addItem(deleteItem)
+
             let location = NSPoint(x: sender.bounds.minX, y: sender.bounds.minY)
             menu.popUp(positioning: nil, at: location, in: sender)
+        }
+
+        @objc private func deleteFromMenu(_ sender: NSMenuItem) {
+            guard let dictionaryID = sender.representedObject as? String,
+                  let dictionary = dictionaries.first(where: { $0.id == dictionaryID }) else {
+                return
+            }
+            triggerDelete(dictionary: dictionary)
+        }
+
+        func deleteSelectedRow() {
+            guard let tableView,
+                  tableView.selectedRow >= 0,
+                  orderedDictionaries.indices.contains(tableView.selectedRow) else {
+                return
+            }
+            triggerDelete(dictionary: orderedDictionaries[tableView.selectedRow])
+        }
+
+        func triggerDelete(dictionary: StudyMateDictionarySummary) {
+            guard !DictionaryEngine.shared.isBusy else { return }
+            if let onDelete = onDeleteDictionary {
+                onDelete(dictionary)
+            } else {
+                guard let window = tableView?.window else {
+                    DictionaryEngine.shared.deleteDictionary(id: dictionary.id)
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = LanguageManager.shared.text("确认删除词典？", "Delete Dictionary?")
+                alert.informativeText = LanguageManager.shared.text(
+                    "确定要从 StudyMate 中删除词典“\(dictionary.displayName)”吗？此操作无法撤销。",
+                    "Are you sure you want to delete “\(dictionary.displayName)” from StudyMate? This action cannot be undone."
+                )
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: LanguageManager.shared.text("删除", "Delete"))
+                alert.addButton(withTitle: LanguageManager.shared.text("取消", "Cancel"))
+                alert.beginSheetModal(for: window) { response in
+                    if response == .alertFirstButtonReturn {
+                        DictionaryEngine.shared.deleteDictionary(id: dictionary.id)
+                    }
+                }
+            }
         }
 
         @objc private func renameFromMenu(_ sender: NSMenuItem) {

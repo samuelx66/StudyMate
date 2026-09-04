@@ -112,4 +112,31 @@ final class DictionarySourceSettingsTests: XCTestCase {
         settings.synchronize(with: [dictionary("dict3")])
         XCTAssertNil(settings.lookupScopeDictionaryID)
     }
+
+    @MainActor
+    func testCoordinatorTriggerDeleteInvokesCallback() {
+        let settings = DictionarySourceSettings(defaults: makeDefaults())
+        let dict1 = dictionary("dict1")
+        let dict2 = dictionary("dict2")
+        let initial = [dict1, dict2]
+        settings.synchronize(with: initial)
+
+        var deletedDictionary: StudyMateDictionarySummary?
+        let coordinator = DictionarySourceSettingsTableRepresentable.Coordinator(
+            settings: settings,
+            dictionaries: initial,
+            dictionaryColumnTitle: "词典",
+            actionsColumnTitle: "操作",
+            onDeleteDictionary: { dict in
+                deletedDictionary = dict
+            }
+        )
+
+        coordinator.triggerDelete(dictionary: dict1)
+        XCTAssertEqual(deletedDictionary?.id, "dict1")
+
+        // 模拟删除后从 settings 中移除
+        settings.remove(dictionaryID: "dict1")
+        XCTAssertEqual(settings.orderedDictionaryIDs, ["dict2"])
+    }
 }

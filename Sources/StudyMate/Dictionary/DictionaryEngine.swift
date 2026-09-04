@@ -1294,12 +1294,16 @@ public final class DictionaryEngine: ObservableObject {
                 self.showNotification(
                     LanguageManager.shared.text("已删除词典", "Dictionary deleted")
                 )
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已删除词典", "Dictionary deleted")
+                )
             } catch {
                 guard self.dictionaryMutationGeneration == generation else { return }
                 self.isBusy = false
                 self.progressPhase = nil
                 self.retryDeferredSearchIfNeeded()
                 self.lastError = error.localizedDescription
+                MainStatusCenter.shared.showError(error.localizedDescription)
             }
         }
     }
