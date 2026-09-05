@@ -50,7 +50,7 @@ final class PlaybackFullTextModeTests: XCTestCase {
         let text = String(repeating: "Long article sentence with words. ", count: 180)
         let range = NSRange(location: 4000, length: 25)
         let paragraph = FullTextParagraphTextView(
-            attributedString: NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 16)]),
+            text: text, font: NSFont.systemFont(ofSize: 16), color: .labelColor,
             ranges: [(id: id, range: range)], followSegmentID: id,
             contextText: nil, onSelect: nil, onDoubleClick: nil
         )
@@ -286,8 +286,8 @@ final class PlaybackFullTextModeTests: XCTestCase {
         let underlineColor = attr.attribute(.underlineColor, at: ranges[1].range.location, effectiveRange: &range2) as? NSColor
 
         XCTAssertEqual(underline2, NSUnderlineStyle.single.rawValue)
-        XCTAssertEqual(underlineColor, targetColor)
-        XCTAssertEqual(attr.attribute(.foregroundColor, at: ranges[1].range.location, effectiveRange: nil) as? NSColor, targetColor)
+        XCTAssertEqual(underlineColor, NSColor.labelColor)
+        XCTAssertEqual(attr.attribute(.foregroundColor, at: ranges[1].range.location, effectiveRange: nil) as? NSColor, NSColor.labelColor)
         XCTAssertEqual(attr.attribute(.foregroundColor, at: ranges[0].range.location, effectiveRange: nil) as? NSColor, targetColor)
     }
 }

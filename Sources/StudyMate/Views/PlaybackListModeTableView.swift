@@ -207,12 +207,13 @@ public struct PlaybackListModeTableView: View {
                     }
                 }
             }
-            .onChange(of: engine.activeSegmentIndex) { _, newIndex in
+            .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
+                let newIndex = engine.activeSegmentIndex
                 guard followState.shouldFollow else { return }
                 guard let newIndex, newIndex >= 0, newIndex < engine.segments.count else { return }
                 let targetID = engine.segments[newIndex].id
                 DispatchQueue.main.async {
-                    guard self.followState.shouldFollow else { return }
+                    guard self.followState.shouldFollow, self.activeSegmentID == targetID else { return }
                     withAnimation(.easeInOut(duration: 0.18)) {
                         proxy.scrollTo(targetID, anchor: nil)
                     }

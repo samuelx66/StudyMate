@@ -63,8 +63,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 当开启此开关时（如填空模式），句后停顿模式在当前句播放结束时暂停并停留在当前句起点，
     /// 不会自动切到下一句，方便用户重听或在该句完成填词输入。
     @Published public var pauseAfterSegmentHoldsCurrentSegment: Bool = false
+    @Published public private(set) var replayRevision = 0
+    private var volumeBeforeMute: Float = 1.0
+
+    public func toggleMute() {
+        volume = volume > 0 ? 0 : volumeBeforeMute
+    }
+
     @Published public var volume: Float = 1.0 {
         didSet {
+            if volume > 0 { volumeBeforeMute = volume }
             activeBackend.volume = volume
         }
     }
@@ -3302,6 +3310,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func repeatCurrentSegment() {
         let targetIndex: Int? = activeSegmentIndex ?? (segments.isEmpty ? nil : 0)
         guard let idx = targetIndex, idx >= 0, idx < segments.count else { return }
+        replayRevision &+= 1
         jumpToSegment(at: idx)
         play()
     }

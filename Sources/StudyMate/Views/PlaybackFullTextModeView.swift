@@ -9,11 +9,21 @@ public struct FullTextParagraph: Identifiable, Equatable {
     public let id: UUID
     public let speakerRole: String?
     public let segments: [SentenceSegment]
+    let contextText: String
+    let originalData: (text: String, ranges: [(id: UUID, range: NSRange)])
+    let translationData: (text: String, ranges: [(id: UUID, range: NSRange)])
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.speakerRole == rhs.speakerRole && lhs.segments == rhs.segments
+    }
 
     public init(id: UUID = UUID(), speakerRole: String?, segments: [SentenceSegment]) {
         self.id = id
         self.speakerRole = speakerRole
         self.segments = segments
+        originalData = FullTextParagraphBuilder.concatenate(segments: segments, useTranslation: false)
+        translationData = FullTextParagraphBuilder.concatenate(segments: segments, useTranslation: true)
+        contextText = [originalData.text, translationData.text].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }
 
@@ -69,13 +79,14 @@ public enum FullTextParagraphBuilder {
         useTranslation: Bool
     ) -> (text: String, ranges: [(id: UUID, range: NSRange)]) {
         var result = ""
+        var utf16Length = 0
         var ranges: [(id: UUID, range: NSRange)] = []
 
         for seg in segments {
             let rawText = useTranslation ? seg.translation : seg.text
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                let loc = (result as NSString).length
+                let loc = utf16Length
                 ranges.append((id: seg.id, range: NSRange(location: loc, length: 0)))
                 continue
             }
@@ -90,14 +101,16 @@ public enum FullTextParagraphBuilder {
                     if !last.isWhitespace && !first.isWhitespace {
                         if !isLastCJK || !isFirstCJK {
                             result.append(" ")
+                            utf16Length += 1
                         }
                     }
                 }
             }
 
-            let startLocation = (result as NSString).length
+            let startLocation = utf16Length
             result.append(trimmed)
-            let length = (trimmed as NSString).length
+            let length = trimmed.utf16.count
+            utf16Length += length
             ranges.append((id: seg.id, range: NSRange(location: startLocation, length: length)))
         }
 
@@ -141,8 +154,8 @@ public enum FullTextParagraphBuilder {
            match.range.location + match.range.length <= (fullText as NSString).length {
             mutableAttr.addAttributes([
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-                .underlineColor: color,
-                .foregroundColor: color
+                .underlineColor: NSColor.labelColor,
+                .foregroundColor: NSColor.labelColor
             ], range: match.range)
         }
 
@@ -162,6 +175,8 @@ public struct PlaybackFullTextModeView: View {
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
 
+    @State private var cachedParagraphs: [FullTextParagraph] = []
+    @State private var bilingualParagraphs: [FullTextParagraph] = []
     @State private var followPlayback: Bool = true
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
@@ -183,7 +198,7 @@ public struct PlaybackFullTextModeView: View {
     }
 
     private var paragraphs: [FullTextParagraph] {
-        FullTextParagraphBuilder.buildParagraphs(from: engine.segments)
+        cachedParagraphs
     }
 
     public var body: some View {
@@ -204,6 +219,14 @@ public struct PlaybackFullTextModeView: View {
             bottomPlaybackControlBar
         }
         .background(StudyMateMediaStyle.windowBackground)
+        .onChange(of: engine.segments, initial: true) { _, segments in
+            cachedParagraphs = FullTextParagraphBuilder.buildParagraphs(from: segments)
+            bilingualParagraphs = cachedParagraphs.flatMap { paragraph in
+                paragraph.segments.enumerated().map { offset, segment in
+                    FullTextParagraph(id: segment.id, speakerRole: offset == 0 ? paragraph.speakerRole : nil, segments: [segment])
+                }
+            }
+        }
     }
 
     // MARK: - 顶部工具与状态栏
@@ -256,45 +279,64 @@ public struct PlaybackFullTextModeView: View {
 
     // MARK: - 全文滚动视窗
 
+    private var isBilingual: Bool {
+        videoSubtitleSettings.isOriginalVisible(for: .fullText) && videoSubtitleSettings.isTranslationVisible(for: .fullText)
+    }
+
     private var articleScrollView: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 20) {
-                Spacer(minLength: 16)
-
-                ForEach(paragraphs) { paragraph in
-                    FullTextParagraphRowView(
-                        paragraph: paragraph,
-                        activeSegmentID: activeSegmentID,
-                        followPlayback: followPlayback,
-                        showOriginal: videoSubtitleSettings.isOriginalVisible(for: .fullText),
-                        showTranslation: videoSubtitleSettings.isTranslationVisible(for: .fullText),
-                        originalFont: videoSubtitleSettings.makeOriginalFont(for: .fullText),
-                        originalColor: videoSubtitleSettings.originalNSColor(for: .fullText),
-                        translationFont: videoSubtitleSettings.makeTranslationFont(for: .fullText),
-                        translationColor: videoSubtitleSettings.translationNSColor(for: .fullText),
-                        language: lang.currentLanguage,
-                        onSelect: { segID in
-                            engine.jumpToSegment(id: segID)
-                        },
-                        onDoubleClick: { segID in
-                            engine.jumpToSegment(id: segID)
-                            engine.play()
-                        }
-                    )
-                    .equatable()
-                    .id(paragraph.id)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                if isBilingual {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        paragraphRows(bilingualParagraphs)
+                    }
+                    .padding(.horizontal, 48)
+                    .padding(.vertical, 24)
+                } else {
+                    VStack(alignment: .leading, spacing: 20) {
+                        paragraphRows(cachedParagraphs)
+                    }
+                    .padding(.horizontal, 48)
+                    .padding(.vertical, 24)
                 }
-
-                Spacer(minLength: 24)
             }
-            .padding(.horizontal, 48)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: FullTextScrollRequest(id: activeSegmentID, enabled: followPlayback, bilingual: isBilingual, count: bilingualParagraphs.count), initial: true) { _, request in
+                guard request.enabled, request.bilingual, let id = request.id else { return }
+                // Materialize an offscreen lazy sentence before native range following.
+                DispatchQueue.main.async {
+                    guard followPlayback, activeSegmentID == id, isBilingual else { return }
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting { followPlayback = false }
+            }
         }
-        .onScrollPhaseChange { _, phase in
-            // Manual scrolling suspends following so the target button restores it
-            // instead of turning an already-enabled flag off. Programmatic scrolls
-            // do not enter the interacting phase.
-            if phase == .interacting { followPlayback = false }
+    }
+
+    private func paragraphRows(_ items: [FullTextParagraph]) -> some View {
+        ForEach(items) { paragraph in
+            FullTextParagraphRowView(
+                paragraph: paragraph,
+                activeSegmentID: paragraph.segments.contains { $0.id == activeSegmentID } ? activeSegmentID : nil,
+                followPlayback: followPlayback,
+                showOriginal: videoSubtitleSettings.isOriginalVisible(for: .fullText),
+                showTranslation: videoSubtitleSettings.isTranslationVisible(for: .fullText),
+                originalFont: videoSubtitleSettings.makeOriginalFont(for: .fullText),
+                originalColor: videoSubtitleSettings.originalNSColor(for: .fullText),
+                translationFont: videoSubtitleSettings.makeTranslationFont(for: .fullText),
+                translationColor: videoSubtitleSettings.translationNSColor(for: .fullText),
+                language: lang.currentLanguage,
+                onSelect: { segID in
+                    engine.jumpToSegment(id: segID)
+                },
+                onDoubleClick: { segID in
+                    engine.jumpToSegment(id: segID)
+                    engine.play()
+                }
+            )
+            .equatable()
+            .id(paragraph.id)
         }
     }
 
@@ -357,15 +399,15 @@ private struct FullTextParagraphRowView: View, Equatable {
     }
 
     private var origData: (text: String, ranges: [(id: UUID, range: NSRange)]) {
-        FullTextParagraphBuilder.concatenate(segments: paragraph.segments, useTranslation: false)
+        paragraph.originalData
     }
 
     private var transData: (text: String, ranges: [(id: UUID, range: NSRange)]) {
-        FullTextParagraphBuilder.concatenate(segments: paragraph.segments, useTranslation: true)
+        paragraph.translationData
     }
 
     private var paragraphContext: String {
-        [origData.text, transData.text].filter { !$0.isEmpty }.joined(separator: "\n")
+        paragraph.contextText
     }
 
     var body: some View {
@@ -421,16 +463,9 @@ private struct FullTextParagraphRowView: View, Equatable {
 
         VStack(alignment: .leading, spacing: 4) {
             if !origTrimmed.isEmpty {
-                let origAttr = FullTextParagraphBuilder.buildAttributedString(
-                    fullText: origTrimmed,
-                    ranges: [(id: seg.id, range: NSRange(location: 0, length: (origTrimmed as NSString).length))],
-                    activeSegmentID: activeSegmentID,
-                    font: originalFont,
-                    color: originalColor,
-                    lineSpacing: 4
-                )
                 FullTextParagraphTextView(
-                    attributedString: origAttr,
+                    text: origTrimmed, font: originalFont, color: originalColor, lineSpacing: 4,
+                    activeSegmentID: activeSegmentID,
                     ranges: [(id: seg.id, range: NSRange(location: 0, length: (origTrimmed as NSString).length))],
                     followSegmentID: followPlayback && isSegActive ? activeSegmentID : nil,
                     contextText: pairContext,
@@ -441,16 +476,9 @@ private struct FullTextParagraphRowView: View, Equatable {
             }
 
             if !transTrimmed.isEmpty {
-                let transAttr = FullTextParagraphBuilder.buildAttributedString(
-                    fullText: transTrimmed,
-                    ranges: [(id: seg.id, range: NSRange(location: 0, length: (transTrimmed as NSString).length))],
-                    activeSegmentID: activeSegmentID,
-                    font: translationFont,
-                    color: translationColor,
-                    lineSpacing: 4
-                )
                 FullTextParagraphTextView(
-                    attributedString: transAttr,
+                    text: transTrimmed, font: translationFont, color: translationColor, lineSpacing: 4,
+                    activeSegmentID: activeSegmentID,
                     ranges: [(id: seg.id, range: NSRange(location: 0, length: (transTrimmed as NSString).length))],
                     followSegmentID: followPlayback && isSegActive && origTrimmed.isEmpty ? activeSegmentID : nil,
                     contextText: pairContext,
@@ -464,17 +492,9 @@ private struct FullTextParagraphRowView: View, Equatable {
     }
 
     private var originalTextView: some View {
-        let attr = FullTextParagraphBuilder.buildAttributedString(
-            fullText: origData.text,
-            ranges: origData.ranges,
-            activeSegmentID: activeSegmentID,
-            font: originalFont,
-            color: originalColor,
-            lineSpacing: 6
-        )
-
         return FullTextParagraphTextView(
-            attributedString: attr,
+            text: origData.text, font: originalFont, color: originalColor, lineSpacing: 6,
+            activeSegmentID: activeSegmentID,
             ranges: origData.ranges,
             followSegmentID: followPlayback ? activeSegmentID : nil,
             contextText: paragraphContext,
@@ -485,17 +505,9 @@ private struct FullTextParagraphRowView: View, Equatable {
     }
 
     private var translationTextView: some View {
-        let attr = FullTextParagraphBuilder.buildAttributedString(
-            fullText: transData.text,
-            ranges: transData.ranges,
-            activeSegmentID: activeSegmentID,
-            font: translationFont,
-            color: translationColor,
-            lineSpacing: 5
-        )
-
         return FullTextParagraphTextView(
-            attributedString: attr,
+            text: transData.text, font: translationFont, color: translationColor, lineSpacing: 5,
+            activeSegmentID: activeSegmentID,
             ranges: transData.ranges,
             followSegmentID: followPlayback && (!showOriginal || !origData.ranges.contains { $0.id == activeSegmentID && $0.range.length > 0 }) ? activeSegmentID : nil,
             contextText: paragraphContext,
@@ -509,7 +521,11 @@ private struct FullTextParagraphRowView: View, Equatable {
 // MARK: - 原生 AppKit 文本渲染视图（支持下划线、整段划词取词与单双击事件）
 
 struct FullTextParagraphTextView: NSViewRepresentable {
-    let attributedString: NSAttributedString
+    let text: String
+    let font: NSFont
+    let color: NSColor
+    var lineSpacing: CGFloat = 6
+    var activeSegmentID: UUID? = nil
     let ranges: [(id: UUID, range: NSRange)]
     let followSegmentID: UUID?
     let contextText: String?
@@ -549,35 +565,37 @@ struct FullTextParagraphTextView: NSViewRepresentable {
         textView.coordinator = context.coordinator
         textView.updateDictionaryLookupContext(contextText)
 
-        let isSameString = (textView.string == attributedString.string)
-        if isSameString {
-            // 纯高亮/属性更新：增量写入 textStorage，不触发全量文本重新排版与尺寸重算 (O(1) 优化)
-            if textView.attributedString() != attributedString {
-                textView.textStorage?.beginEditing()
-                textView.textStorage?.setAttributedString(attributedString)
-                textView.textStorage?.endEditing()
-            }
-        } else {
-            // 文本内容实际发生改变（加载新断句、编辑字幕）：全量更新并重新测量
-            textView.textStorage?.setAttributedString(attributedString)
+        let changed = context.coordinator.renderer.update(
+            textView, text: text, font: font, color: color, lineSpacing: lineSpacing,
+            activeRange: ranges.first { $0.id == activeSegmentID }?.range
+        )
+        if changed {
+            context.coordinator.measuredSize = nil
             textView.invalidateIntrinsicContentSize()
         }
-        textView.updateFollowRange(ranges.first { $0.id == followSegmentID && $0.range.length > 0 }?.range, contentChanged: !isSameString)
+        textView.updateFollowRange(ranges.first { $0.id == followSegmentID && $0.range.length > 0 }?.range, contentChanged: changed)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: FullTextNSTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width.isFinite else {
             return nil
         }
-        let rect = attributedString.boundingRect(
+        if context.coordinator.measuredWidth == width, let size = context.coordinator.measuredSize { return size }
+        let rect = nsView.attributedString().boundingRect(
             with: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             context: nil
         )
-        return CGSize(width: width, height: max(22, ceil(rect.height) + 6))
+        let size = CGSize(width: width, height: max(22, ceil(rect.height) + 6))
+        context.coordinator.measuredWidth = width
+        context.coordinator.measuredSize = size
+        return size
     }
 
     final class Coordinator: NSObject {
+        let renderer = FullTextTextRenderer()
+        var measuredWidth: CGFloat?
+        var measuredSize: CGSize?
         var onSelect: ((UUID) -> Void)?
         var onDoubleClick: ((UUID) -> Void)?
         var ranges: [(id: UUID, range: NSRange)] = []
@@ -701,5 +719,59 @@ class FullTextFollowingTextView: NSTextView {
             rect.size.height = min(rect.height, max(1, scrollView.contentSize.height - 24))
         }
         scrollToVisible(rect.insetBy(dx: 0, dy: -12))
+    }
+}
+
+private struct FullTextScrollRequest: Equatable {
+    let id: UUID?
+    let enabled: Bool
+    let bilingual: Bool
+    let count: Int
+}
+
+/// Keeps the base text intact while moving only the two affected highlight ranges.
+final class FullTextTextRenderer {
+    private var text: String?
+    private var font: NSFont?
+    private var color: NSColor?
+    private var lineSpacing: CGFloat?
+    private var highlightedRange: NSRange?
+
+    @discardableResult
+    func update(_ view: NSTextView, text: String, font: NSFont, color: NSColor,
+                lineSpacing: CGFloat, activeRange: NSRange?) -> Bool {
+        guard let storage = view.textStorage else { return false }
+        let baseChanged = self.text != text || self.font != font || self.color != color || self.lineSpacing != lineSpacing
+        storage.beginEditing()
+        defer { storage.endEditing() }
+        if baseChanged {
+            storage.setAttributedString(FullTextParagraphBuilder.buildAttributedString(
+                fullText: text, ranges: [], activeSegmentID: nil, font: font, color: color, lineSpacing: lineSpacing
+            ))
+            self.text = text
+            self.font = font
+            self.color = color
+            self.lineSpacing = lineSpacing
+            highlightedRange = nil
+        }
+        let validRange = activeRange.flatMap { range -> NSRange? in
+            guard range.location >= 0, range.location <= storage.length,
+                  range.length > 0, range.length <= storage.length - range.location else { return nil }
+            return range
+        }
+        if validRange != highlightedRange {
+            if let previous = highlightedRange {
+                storage.removeAttribute(.underlineStyle, range: previous)
+                storage.removeAttribute(.underlineColor, range: previous)
+                storage.addAttribute(.foregroundColor, value: color, range: previous)
+            }
+            if let current = validRange {
+                storage.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
+                                       .underlineColor: NSColor.labelColor,
+                                       .foregroundColor: NSColor.labelColor], range: current)
+            }
+            highlightedRange = validRange
+        }
+        return baseChanged
     }
 }

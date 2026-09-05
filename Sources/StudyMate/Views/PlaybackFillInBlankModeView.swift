@@ -233,6 +233,7 @@ public struct PlaybackFillInBlankModeView: View {
                         translationFont: videoSubtitleSettings.makeTranslationFont(for: .fillInBlank),
                         translationColor: videoSubtitleSettings.translationNSColor(for: .fillInBlank),
                         language: lang.currentLanguage,
+                        replayRevision: engine.replayRevision,
                         onReplayAudio: {
                             sentenceAdvanceTask?.cancel()
                             sentenceAdvanceTask = nil
@@ -240,9 +241,13 @@ public struct PlaybackFillInBlankModeView: View {
                         },
                         onSentenceCompleted: {
                             sentenceAdvanceTask?.cancel()
+                            let replayRevision = engine.replayRevision
                             sentenceAdvanceTask = Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                                guard !Task.isCancelled else { return }
+                                guard !Task.isCancelled,
+                                      engine.replayRevision == replayRevision,
+                                      currentSegment?.id == seg.id,
+                                      currentSegment?.text == seg.text else { return }
                                 engine.advanceToNextSentenceAfterCompletion()
                             }
                         }
@@ -250,6 +255,10 @@ public struct PlaybackFillInBlankModeView: View {
                     .id(seg.id)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 48)
+                    .onChange(of: engine.replayRevision) { _, _ in
+                        sentenceAdvanceTask?.cancel()
+                        sentenceAdvanceTask = nil
+                    }
                     .onChange(of: seg.id) { _, _ in
                         sentenceAdvanceTask?.cancel()
                         sentenceAdvanceTask = nil
@@ -319,6 +328,7 @@ public final class WordSlotNSTextField: NSTextField {
 public struct FillInBlankWordSlotField: NSViewRepresentable {
     public let wordIndex: Int
     public let targetWord: String
+    public var draft: String = ""
     public let font: NSFont
     public let textColor: NSColor
     public let isCompleted: Bool
@@ -335,6 +345,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> WordSlotNSTextField {
         let tf = WordSlotNSTextField()
+        tf.identifier = NSUserInterfaceItemIdentifier("fill-word-\(wordIndex)")
         tf.isBordered = false
         tf.drawsBackground = false
         tf.focusRingType = .none
@@ -342,6 +353,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
         tf.maximumNumberOfLines = 1
         tf.usesSingleLineMode = true
         tf.lineBreakMode = .byClipping
+        tf.stringValue = draft
         tf.font = font
         tf.textColor = isCompleted ? NSColor(StudyMateMediaStyle.accent) : textColor
         tf.isEditable = !isCompleted
@@ -367,6 +379,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: WordSlotNSTextField, context: Context) {
+        let wasFocused = context.coordinator.parent.isFocused
         context.coordinator.parent = self
         nsView.font = font
 
@@ -382,6 +395,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
             nsView.isEditable = true
             nsView.isSelectable = true
             if !context.coordinator.isHinting {
+                if nsView.stringValue != draft { nsView.stringValue = draft }
                 nsView.textColor = textColor
             }
 
@@ -390,7 +404,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
                 if let window = nsView.window {
                     let currentFR = window.firstResponder
                     let isAlreadyFR = (currentFR === nsView) || (currentFR === nsView.currentEditor())
-                    if !isAlreadyFR {
+                    if !isAlreadyFR && !wasFocused {
                         DispatchQueue.main.async {
                             if let win = nsView.window,
                                context.coordinator.parent.isFocused && !context.coordinator.parent.isCompleted {
@@ -553,7 +567,7 @@ public struct FillInBlankWordSlotField: NSViewRepresentable {
 
 // MARK: - 单句填空交互卡片
 
-private struct FillInBlankCardView: View {
+struct FillInBlankCardView: View {
     let seg: SentenceSegment
     let showOriginal: Bool
     let showTranslation: Bool
@@ -562,10 +576,12 @@ private struct FillInBlankCardView: View {
     let translationFont: NSFont
     let translationColor: NSColor
     let language: AppLanguage
+    let replayRevision: Int
     let onReplayAudio: () -> Void
     let onSentenceCompleted: () -> Void
 
     @State private var tokens: [FillInBlankToken] = []
+    @State private var drafts: [Int: String] = [:]
     @State private var completedWords: Set<Int> = []
     @State private var isSentenceFinished: Bool = false
     @State private var isSentenceCompletedAndShowingTranslation: Bool = false
@@ -654,8 +670,11 @@ private struct FillInBlankCardView: View {
         .onAppear {
             setupSentence()
         }
-        .onChange(of: seg.id) { _, _ in
-            setupSentence()
+        .onChange(of: seg) { old, new in
+            if old.id != new.id || old.text != new.text { setupSentence() }
+        }
+        .onChange(of: replayRevision) { _, _ in
+            if isSentenceFinished { setupSentence() }
         }
         .onChange(of: showOriginal) { oldVal, newVal in
             if oldVal && !newVal {
@@ -675,6 +694,7 @@ private struct FillInBlankCardView: View {
 
     private func setupSentence() {
         tokens = FillInBlankTokenizer.tokenize(seg.text)
+        drafts = [:]
         completedWords = []
         isSentenceFinished = false
         isSentenceCompletedAndShowingTranslation = false
@@ -715,11 +735,13 @@ private struct FillInBlankCardView: View {
             FillInBlankWordSlotField(
                 wordIndex: wordIndex,
                 targetWord: token.text,
+                draft: drafts[wordIndex, default: ""],
                 font: originalFont,
                 textColor: originalColor,
                 isCompleted: isCompleted,
                 isFocused: isFocused,
                 onInputChanged: { input in
+                    drafts[wordIndex] = input
                     checkWordMatch(wordIndex: wordIndex, input: input, target: token.text)
                 },
                 onBecameFocused: {

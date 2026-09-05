@@ -17,15 +17,15 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertTrue(state.shouldFollow)
     }
 
-    func testManualToggleClearsSuppressionAndRequiresExplicitResume() {
+    func testClickingSuppressedFollowControlRestoresFollowing() {
         var state = SegmentListFollowState()
         state.markUserScroll()
         state.toggle()
-
-        XCTAssertFalse(state.followsPlayback)
+        XCTAssertTrue(state.followsPlayback)
         XCTAssertFalse(state.isUserScrollSuppressed)
+        XCTAssertTrue(state.shouldFollow)
+        state.toggle()
         XCTAssertFalse(state.shouldFollow)
-
         state.toggle()
         XCTAssertTrue(state.shouldFollow)
     }

@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 /// Pure state machine for the list's playback-follow behavior.  Keeping the
 /// suppression rules outside the view makes the user-scroll/programmatic-scroll
 /// boundary deterministic and directly testable without constructing SwiftUI.
+struct FollowScrollTarget: Equatable {
+    let id: UUID?
+    let enabled: Bool
+}
+
 struct SegmentListFollowState: Equatable {
     private(set) var followsPlayback = true
     private(set) var isUserScrollSuppressed = false
@@ -14,10 +19,9 @@ struct SegmentListFollowState: Equatable {
     }
 
     mutating func toggle() {
-        followsPlayback.toggle()
-        if !followsPlayback {
-            isUserScrollSuppressed = false
-        }
+        let shouldEnable = !shouldFollow
+        followsPlayback = shouldEnable
+        isUserScrollSuppressed = false
     }
 
     mutating func markUserScroll() {
@@ -663,7 +667,8 @@ public struct SegmentListView: View {
                         )
                         .equatable()
                     }
-                    .onChange(of: engine.activeSegmentIndex) { _, newIndex in
+                    .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
+                        let newIndex = engine.activeSegmentIndex
                         guard followState.shouldFollow else { return }
                         if let idx = newIndex, idx >= 0, idx < engine.segments.count {
                             let targetId = engine.segments[idx].id

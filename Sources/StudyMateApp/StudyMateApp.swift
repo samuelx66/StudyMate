@@ -294,7 +294,7 @@ struct StudyMateApp: App {
                 .keyboardShortcut("4", modifiers: [.command])
 
                 Button {
-                    engine.volume = engine.volume > 0 ? 0 : 1.0
+                    engine.toggleMute()
                 } label: {
                     Label(
                         languageManager.text("静音 / 取消静音", "Mute / Unmute"),

@@ -118,7 +118,7 @@ public struct FloatingVideoOSDView: View {
             // 8. 音量调节
             HStack(spacing: 4) {
                 Button(action: {
-                    engine.volume = engine.volume > 0 ? 0 : 1.0
+                    engine.toggleMute()
                 }) {
                     Image(systemName: engine.volume == 0 ? "speaker.slash.fill" : (engine.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
                         .font(.system(size: 11, weight: .medium))

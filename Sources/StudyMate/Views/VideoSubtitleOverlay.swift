@@ -215,11 +215,21 @@ public final class VideoSubtitleSettings: ObservableObject {
     }
 
     public func originalNSColor(for mode: PlaybackInterfaceMode = .video) -> NSColor {
-        fontSettings(for: mode).originalNSColor
+        let settings = fontSettings(for: mode)
+        return Self.readingColor(hex: settings.originalColorHex, mode: mode)
     }
 
     public func translationNSColor(for mode: PlaybackInterfaceMode = .video) -> NSColor {
-        fontSettings(for: mode).translationNSColor
+        let settings = fontSettings(for: mode)
+        return Self.readingColor(hex: settings.translationColorHex, mode: mode)
+    }
+
+    /// Legacy video defaults need a semantic foreground on document surfaces.
+    static func readingColor(hex: String, mode: PlaybackInterfaceMode) -> NSColor {
+        if mode != .video && ["#FFFFFF", "#FFE36E"].contains(hex.uppercased()) {
+            return .labelColor
+        }
+        return NSColor(Color(studymateHex: hex))
     }
 
     // MARK: - 视频模式属性快捷代理（向下兼容）
