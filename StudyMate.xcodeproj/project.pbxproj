@@ -52,9 +52,11 @@
 		2B22C4EBF339681E95B2AD85 /* MacOS26MediaStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */; };
 		F70C16B44C3A12B9887C69D4 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A045F47F858B0B31230A056A /* MainContentView.swift */; };
 		674745C6E7846A3714C8FF3B /* MainStatusCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */; };
+		E7CEA2B47807E59303981204 /* PlaybackFillInBlankModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEABD46BE0F52837C599F3E5 /* PlaybackFillInBlankModeView.swift */; };
 		D457EC5D80BACE4CF09B62D4 /* PlaybackFullTextModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14548DF74A3E999F81CF1B11 /* PlaybackFullTextModeView.swift */; };
 		466DDADFD501B61703F8B9C0 /* PlaybackListModeTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1C52FD4347ABC21394BD14 /* PlaybackListModeTableView.swift */; };
 		9434C394DE07FCBAD2B84BEC /* PlaybackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8986BDC806029931A3751EF5 /* PlaybackListView.swift */; };
+		D4AB0DF12B3D81E98F53E7A3 /* PlaybackModeCommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FAACA193142BEF4EED6CE67 /* PlaybackModeCommonComponents.swift */; };
 		5D782790971260482AC9B29A /* PlaybackSentenceModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCAA739781F95A1ADFF663E0 /* PlaybackSentenceModeView.swift */; };
 		EB33A27A786B5358F76160B9 /* PrimaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */; };
 		5F4AF1617BAAA3DB2A5E60FE /* SecondaryWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */; };
@@ -136,9 +138,11 @@
 		B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MacOS26MediaStyle.swift"; sourceTree = "<group>"; };
 		A045F47F858B0B31230A056A /* MainContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MainContentView.swift"; sourceTree = "<group>"; };
 		0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/MainStatusCenter.swift"; sourceTree = "<group>"; };
+		DEABD46BE0F52837C599F3E5 /* PlaybackFillInBlankModeView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackFillInBlankModeView.swift"; sourceTree = "<group>"; };
 		14548DF74A3E999F81CF1B11 /* PlaybackFullTextModeView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackFullTextModeView.swift"; sourceTree = "<group>"; };
 		7C1C52FD4347ABC21394BD14 /* PlaybackListModeTableView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackListModeTableView.swift"; sourceTree = "<group>"; };
 		8986BDC806029931A3751EF5 /* PlaybackListView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackListView.swift"; sourceTree = "<group>"; };
+		8FAACA193142BEF4EED6CE67 /* PlaybackModeCommonComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackModeCommonComponents.swift"; sourceTree = "<group>"; };
 		BCAA739781F95A1ADFF663E0 /* PlaybackSentenceModeView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PlaybackSentenceModeView.swift"; sourceTree = "<group>"; };
 		D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/PrimaryWaveformView.swift"; sourceTree = "<group>"; };
 		0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SecondaryWaveformView.swift"; sourceTree = "<group>"; };
@@ -253,9 +257,11 @@
 				B40FCFA950054241A85823E4 /* MacOS26MediaStyle.swift */,
 				A045F47F858B0B31230A056A /* MainContentView.swift */,
 				0A64BFAD7E188762DC8500F6 /* MainStatusCenter.swift */,
+				DEABD46BE0F52837C599F3E5 /* PlaybackFillInBlankModeView.swift */,
 				14548DF74A3E999F81CF1B11 /* PlaybackFullTextModeView.swift */,
 				7C1C52FD4347ABC21394BD14 /* PlaybackListModeTableView.swift */,
 				8986BDC806029931A3751EF5 /* PlaybackListView.swift */,
+				8FAACA193142BEF4EED6CE67 /* PlaybackModeCommonComponents.swift */,
 				BCAA739781F95A1ADFF663E0 /* PlaybackSentenceModeView.swift */,
 				D6578FB26FE6D525512A4108 /* PrimaryWaveformView.swift */,
 				0F8EBE15C0A9042AE0083C8D /* SecondaryWaveformView.swift */,
@@ -423,9 +429,11 @@
 				2B22C4EBF339681E95B2AD85 /* MacOS26MediaStyle.swift in Sources */,
 				F70C16B44C3A12B9887C69D4 /* MainContentView.swift in Sources */,
 				674745C6E7846A3714C8FF3B /* MainStatusCenter.swift in Sources */,
+				E7CEA2B47807E59303981204 /* PlaybackFillInBlankModeView.swift in Sources */,
 				D457EC5D80BACE4CF09B62D4 /* PlaybackFullTextModeView.swift in Sources */,
 				466DDADFD501B61703F8B9C0 /* PlaybackListModeTableView.swift in Sources */,
 				9434C394DE07FCBAD2B84BEC /* PlaybackListView.swift in Sources */,
+				D4AB0DF12B3D81E98F53E7A3 /* PlaybackModeCommonComponents.swift in Sources */,
 				5D782790971260482AC9B29A /* PlaybackSentenceModeView.swift in Sources */,
 				EB33A27A786B5358F76160B9 /* PrimaryWaveformView.swift in Sources */,
 				5F4AF1617BAAA3DB2A5E60FE /* SecondaryWaveformView.swift in Sources */,
@@ -548,7 +556,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 322;
+				CURRENT_PROJECT_VERSION = 332;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -558,7 +566,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.2.33 dev";
+				MARKETING_VERSION = "1.2.43 dev";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -573,7 +581,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 322;
+				CURRENT_PROJECT_VERSION = 332;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
@@ -582,7 +590,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.2.33 dev";
+				MARKETING_VERSION = "1.2.43 dev";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;

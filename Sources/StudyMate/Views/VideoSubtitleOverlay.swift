@@ -89,6 +89,59 @@ public final class VideoSubtitleSettings: ObservableObject {
     @Published public var showTranslation: Bool {
         didSet { defaults.set(showTranslation, forKey: Keys.showTranslation) }
     }
+    @Published public var showTranslationInFillInBlank: Bool {
+        didSet { defaults.set(showTranslationInFillInBlank, forKey: Keys.showTranslationInFillInBlank) }
+    }
+
+    @Published public var showOriginalInFillInBlank: Bool = false
+    private var originalPeekTimer: Task<Void, Never>?
+
+    public func isOriginalVisible(for mode: PlaybackInterfaceMode) -> Bool {
+        if mode == .fillInBlank {
+            return showOriginalInFillInBlank
+        }
+        return showOriginal
+    }
+
+    public func toggleOriginal(for mode: PlaybackInterfaceMode) {
+        if mode == .fillInBlank {
+            originalPeekTimer?.cancel()
+            originalPeekTimer = nil
+            showOriginalInFillInBlank.toggle()
+            if showOriginalInFillInBlank {
+                originalPeekTimer = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.showOriginalInFillInBlank = false
+                }
+            }
+        } else {
+            showOriginal.toggle()
+        }
+    }
+
+    public func hideOriginalPeekInFillInBlank() {
+        originalPeekTimer?.cancel()
+        originalPeekTimer = nil
+        if showOriginalInFillInBlank {
+            showOriginalInFillInBlank = false
+        }
+    }
+
+    public func isTranslationVisible(for mode: PlaybackInterfaceMode) -> Bool {
+        if mode == .fillInBlank {
+            return showTranslationInFillInBlank
+        }
+        return showTranslation
+    }
+
+    public func toggleTranslation(for mode: PlaybackInterfaceMode) {
+        if mode == .fillInBlank {
+            showTranslationInFillInBlank.toggle()
+        } else {
+            showTranslation.toggle()
+        }
+    }
 
     // 4 种界面模式的独立字体设置
     @Published public var videoFontSettings: ModeFontSettings {
@@ -102,6 +155,9 @@ public final class VideoSubtitleSettings: ObservableObject {
     }
     @Published public var sentenceFontSettings: ModeFontSettings {
         didSet { persistFontSettings(sentenceFontSettings, mode: .sentence) }
+    }
+    @Published public var fillInBlankFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(fillInBlankFontSettings, mode: .fillInBlank) }
     }
 
     // Normalized coordinates keep the subtitle position stable when the video
@@ -130,6 +186,7 @@ public final class VideoSubtitleSettings: ObservableObject {
         case .list: return listFontSettings
         case .fullText: return fullTextFontSettings
         case .sentence: return sentenceFontSettings
+        case .fillInBlank: return fillInBlankFontSettings
         }
     }
 
@@ -139,6 +196,7 @@ public final class VideoSubtitleSettings: ObservableObject {
         case .list: listFontSettings = newSettings
         case .fullText: fullTextFontSettings = newSettings
         case .sentence: sentenceFontSettings = newSettings
+        case .fillInBlank: fillInBlankFontSettings = newSettings
         }
     }
 
@@ -246,6 +304,7 @@ public final class VideoSubtitleSettings: ObservableObject {
     private init() {
         showOriginal = defaults.object(forKey: Keys.showOriginal) as? Bool ?? true
         showTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
+        showTranslationInFillInBlank = defaults.object(forKey: Keys.showTranslationInFillInBlank) as? Bool ?? false
 
         let systemFamily = NSFont.systemFont(ofSize: 24).familyName ?? "Helvetica"
 
@@ -297,11 +356,24 @@ public final class VideoSubtitleSettings: ObservableObject {
             originalColorHex: "#FFFFFF",
             translationColorHex: "#FFE36E"
         )
+        let defaultFillInBlank = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 24,
+            translationFontSize: 20,
+            originalBold: true,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
 
         videoFontSettings = Self.loadFontSettings(from: defaults, mode: .video, defaultSettings: defaultVideo)
         listFontSettings = Self.loadFontSettings(from: defaults, mode: .list, defaultSettings: defaultList)
         fullTextFontSettings = Self.loadFontSettings(from: defaults, mode: .fullText, defaultSettings: defaultFullText)
         sentenceFontSettings = Self.loadFontSettings(from: defaults, mode: .sentence, defaultSettings: defaultSentence)
+        fillInBlankFontSettings = Self.loadFontSettings(from: defaults, mode: .fillInBlank, defaultSettings: defaultFillInBlank)
 
         originalPositionX = defaults.object(forKey: Keys.originalPositionX) as? Double ?? 0.5
         originalPositionY = defaults.object(forKey: Keys.originalPositionY) as? Double ?? 0.76
@@ -450,6 +522,7 @@ public final class VideoSubtitleSettings: ObservableObject {
     private enum Keys {
         static let showOriginal = "StudyMate.VideoSubtitle.ShowOriginal"
         static let showTranslation = "StudyMate.VideoSubtitle.ShowTranslation"
+        static let showTranslationInFillInBlank = "StudyMate.VideoSubtitle.ShowTranslation.FillInBlank"
         static let originalPositionX = "StudyMate.VideoSubtitle.OriginalPositionX"
         static let originalPositionY = "StudyMate.VideoSubtitle.OriginalPositionY"
         static let translationPositionX = "StudyMate.VideoSubtitle.TranslationPositionX"
@@ -851,7 +924,8 @@ public struct VideoSubtitleFontSettingsPopover: View {
             // 模式选择分段器
             Picker("", selection: $selectedMode) {
                 ForEach(PlaybackInterfaceMode.allCases) { mode in
-                    Text(mode.localized(with: lang)).tag(mode)
+                    Label(mode.localized(with: lang), systemImage: mode.iconName)
+                        .tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -916,7 +990,7 @@ public struct VideoSubtitleFontSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 380)
+        .frame(width: 450)
     }
 
     @ViewBuilder

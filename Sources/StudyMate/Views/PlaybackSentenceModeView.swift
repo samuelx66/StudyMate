@@ -68,8 +68,8 @@ public struct PlaybackSentenceModeView: View {
 
                     PlaybackSentenceCardView(
                         seg: seg,
-                        showOriginal: videoSubtitleSettings.showOriginal,
-                        showTranslation: videoSubtitleSettings.showTranslation,
+                        showOriginal: videoSubtitleSettings.isOriginalVisible(for: .sentence),
+                        showTranslation: videoSubtitleSettings.isTranslationVisible(for: .sentence),
                         originalFont: videoSubtitleSettings.makeOriginalFont(for: .sentence),
                         originalColor: videoSubtitleSettings.originalNSColor(for: .sentence),
                         translationFont: videoSubtitleSettings.makeTranslationFont(for: .sentence),
@@ -97,23 +97,10 @@ public struct PlaybackSentenceModeView: View {
     // MARK: - 底部固定播放控制条
 
     private var bottomPlaybackControlBar: some View {
-        HStack {
-            Spacer()
-            FloatingVideoOSDView(
-                engine: engine,
-                isScrubbing: $isScrubbing,
-                isVolumeScrubbing: $isVolumeScrubbing
-            )
-            .padding(.vertical, 7)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .background(StudyMateMediaStyle.windowBackground)
-        .overlay(
-            Rectangle()
-                .frame(height: 1)
-                .foregroundColor(StudyMateMediaStyle.separator),
-            alignment: .top
+        PlaybackModeBottomBar(
+            engine: engine,
+            isScrubbing: $isScrubbing,
+            isVolumeScrubbing: $isVolumeScrubbing
         )
     }
 

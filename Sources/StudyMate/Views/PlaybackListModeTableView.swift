@@ -92,20 +92,20 @@ public struct PlaybackListModeTableView: View {
             }
 
             // 原文列
-            if videoSubtitleSettings.showOriginal {
+            if videoSubtitleSettings.isOriginalVisible(for: .list) {
                 Text(lang.text("原文", "Original"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
 
-                if videoSubtitleSettings.showTranslation {
+                if videoSubtitleSettings.isTranslationVisible(for: .list) {
                     columnDivider
                 }
             }
 
             // 译文列
-            if videoSubtitleSettings.showTranslation {
+            if videoSubtitleSettings.isTranslationVisible(for: .list) {
                 Text(lang.text("译文", "Translation"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
@@ -114,7 +114,7 @@ public struct PlaybackListModeTableView: View {
             }
 
             // 若原文与译文均隐藏时的提示表头
-            if !videoSubtitleSettings.showOriginal && !videoSubtitleSettings.showTranslation {
+            if !videoSubtitleSettings.isOriginalVisible(for: .list) && !videoSubtitleSettings.isTranslationVisible(for: .list) {
                 Text(lang.text("提示", "Notice"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
@@ -172,8 +172,8 @@ public struct PlaybackListModeTableView: View {
                     segments: engine.segments,
                     activeSegmentID: activeSegmentID,
                     hasSpeakers: hasSpeakers,
-                    showOriginal: videoSubtitleSettings.showOriginal,
-                    showTranslation: videoSubtitleSettings.showTranslation,
+                    showOriginal: videoSubtitleSettings.isOriginalVisible(for: .list),
+                    showTranslation: videoSubtitleSettings.isTranslationVisible(for: .list),
                     originalFont: videoSubtitleSettings.makeOriginalFont(for: .list),
                     originalColor: videoSubtitleSettings.originalNSColor(for: .list),
                     translationFont: videoSubtitleSettings.makeTranslationFont(for: .list),
@@ -213,7 +213,7 @@ public struct PlaybackListModeTableView: View {
                 let targetID = engine.segments[newIndex].id
                 DispatchQueue.main.async {
                     guard self.followState.shouldFollow else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
                         proxy.scrollTo(targetID, anchor: nil)
                     }
                 }
@@ -224,23 +224,10 @@ public struct PlaybackListModeTableView: View {
     // MARK: - 底部固定播放控制条
 
     private var bottomPlaybackControlBar: some View {
-        HStack {
-            Spacer()
-            FloatingVideoOSDView(
-                engine: engine,
-                isScrubbing: $isScrubbing,
-                isVolumeScrubbing: $isVolumeScrubbing
-            )
-            .padding(.vertical, 7)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .background(StudyMateMediaStyle.windowBackground)
-        .overlay(
-            Rectangle()
-                .frame(height: 1)
-                .foregroundColor(StudyMateMediaStyle.separator),
-            alignment: .top
+        PlaybackModeBottomBar(
+            engine: engine,
+            isScrubbing: $isScrubbing,
+            isVolumeScrubbing: $isVolumeScrubbing
         )
     }
 
