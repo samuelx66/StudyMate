@@ -66,6 +66,12 @@ public enum DictionaryHTMLFormatter {
         cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
+    private static let automaticColorCorrectionCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 8
+        cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
 
     public static func composeHTML(
         entries: [StudyMateDictionaryLookup],
@@ -101,6 +107,12 @@ public enum DictionaryHTMLFormatter {
         let entriesHTML = bodyMarkup.contentHTML
         let dictionarySpecificCSSText = adaptsToSystemAppearance
             ? dictionarySpecificCSS(for: entries)
+            : ""
+        let dictionaryDarkCSSText = adaptsToSystemAppearance
+            ? dictionaryDarkCSS(for: entries)
+            : ""
+        let generatedColorCorrectionCSS = adaptsToSystemAppearance
+            ? automaticColorCorrectionCSS(for: customCSSText)
             : ""
         let userCSSText = adaptsToSystemAppearance
             ? userCSS?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -168,8 +180,9 @@ public enum DictionaryHTMLFormatter {
         <style id="studymate-auto-color-correction-css">
         /*
          Automatic compatibility layer for legacy MDX packages. It does not
-         rewrite the vendor CSS; it only provides a last-resort semantic
-         palette for common neutral content and system-like controls.
+         rewrite the vendor CSS; it provides a last-resort semantic palette
+         for common neutral content and generates exact overrides for legacy
+         vendor selectors that hard-code black or gray foreground colors.
          Dictionary and user layers below can refine or override it.
         */
         @media (prefers-color-scheme: dark) {
@@ -217,8 +230,10 @@ public enum DictionaryHTMLFormatter {
                 color-scheme: dark;
             }
         }
+        \(generatedColorCorrectionCSS)
         </style>
         \(dictionarySpecificCSSText.isEmpty ? "" : "<style id=\"studymate-dictionary-specific-css\" type=\"text/css\">\n/* Dictionary-specific compatibility layer */\n\(dictionarySpecificCSSText)\n</style>")
+        \(dictionaryDarkCSSText.isEmpty ? "" : "<style id=\"studymate-dictionary-dark-css\" type=\"text/css\">\n/* Editable per-dictionary dark appearance rules */\n\(dictionaryDarkCSSText)\n</style>")
         \(userCSSText.isEmpty ? "" : "<style id=\"studymate-user-css\" type=\"text/css\">\n/* User CSS */\n\(userCSSText)\n</style>")
         """ : ""
 
@@ -297,8 +312,12 @@ public enum DictionaryHTMLFormatter {
         for css in entries.compactMap(\.css) {
             hasher.combine(css)
         }
+        for css in entries.compactMap(\.darkCSS) {
+            hasher.combine(css)
+        }
         if adaptsToSystemAppearance {
             hasher.combine(dictionarySpecificCSS(for: entries))
+            hasher.combine(dictionaryDarkCSS(for: entries))
             hasher.combine(userCSS ?? "")
         }
         return hasher.finalize()
@@ -373,6 +392,413 @@ public enum DictionaryHTMLFormatter {
         }
 
         return blocks.joined(separator: "\n")
+    }
+
+    /// Loads user-editable per-dictionary rules from the sibling file
+    /// `<mdx stem>.studymate-dark.css`. The Rust reader copies the complete
+    /// MDX directory during import and returns this small file with each
+    /// full definition. Keeping it as a separate layer means turning off the
+    /// appearance setting restores the vendor CSS without repackaging it.
+    private static func dictionaryDarkCSS(for entries: [StudyMateDictionaryLookup]) -> String {
+        var blocks: [String] = []
+        for entry in entries {
+            guard let css = entry.darkCSS else { continue }
+            let trimmed = css.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let rewritten = rewriteCSSResourceReferences(trimmed, resourceRoot: entry.resourceRoot)
+            guard !blocks.contains(rewritten) else { continue }
+            blocks.append("""
+            @media (prefers-color-scheme: dark) {
+                /* \(entry.dictionaryID) */
+                \(rewritten)
+            }
+            """)
+        }
+        return blocks.joined(separator: "\n\n")
+    }
+
+    private struct ParsedCSSRule {
+        let selector: String
+        let declarations: String
+    }
+
+    private struct CSSDeclaration {
+        let property: String
+        let value: String
+    }
+
+    /// Generates narrowly-scoped compatibility overrides from the selected
+    /// vendor CSS. This handles selectors such as `.lm5ppbody { color: #333 }`
+    /// without changing the imported stylesheet or flattening meaningful
+    /// colors such as red labels and blue dictionary headings.
+    private static func automaticColorCorrectionCSS(for vendorCSS: String) -> String {
+        guard !vendorCSS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+        let cacheKey = vendorCSS as NSString
+        if let cached = automaticColorCorrectionCache.object(forKey: cacheKey) {
+            return cached as String
+        }
+
+        var overrides: [String] = []
+        var seen = Set<String>()
+        for rule in parseCSSRules(vendorCSS) {
+            guard let selector = scopedCorrectionSelector(rule.selector) else { continue }
+            var corrected: [String] = []
+            var correctedProperties = Set<String>()
+            for declaration in parseCSSDeclarations(rule.declarations) {
+                let property = declaration.property.lowercased()
+                guard !correctedProperties.contains(property),
+                      let token = darkCorrectionToken(
+                        for: property,
+                        value: declaration.value
+                      ) else {
+                    continue
+                }
+                correctedProperties.insert(property)
+                corrected.append("    \(property): \(token) !important;")
+            }
+            guard !corrected.isEmpty else { continue }
+            let override = """
+            \(selector) {
+            \(corrected.joined(separator: "\n"))
+            }
+            """
+            guard seen.insert(override).inserted else { continue }
+            overrides.append(override)
+            // A malformed or generated vendor stylesheet should never make
+            // the appearance layer unbounded. The first 512 matching rules
+            // cover the common legacy MDX patterns while keeping rendering
+            // work proportional to the document size.
+            if overrides.count >= 512 { break }
+        }
+
+        guard !overrides.isEmpty else {
+            automaticColorCorrectionCache.setObject("" as NSString, forKey: cacheKey)
+            return ""
+        }
+        let result = """
+
+        /* Generated dark overrides for hard-coded neutral vendor colors. */
+        @media (prefers-color-scheme: dark) {
+        \(overrides.joined(separator: "\n"))
+        }
+        """
+        automaticColorCorrectionCache.setObject(
+            result as NSString,
+            forKey: cacheKey,
+            cost: result.utf8.count
+        )
+        return result
+    }
+
+    private static func scopedCorrectionSelector(_ selector: String) -> String? {
+        let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("@") else { return nil }
+        let lowercased = trimmed.lowercased()
+        // Root selectors are handled by the generic system layer. Prefixing
+        // them with `.entry-body` would produce a selector that can never
+        // match, while rewriting them could affect the native document shell.
+        guard lowercased != "html",
+              lowercased != "body",
+              lowercased != ":root",
+              lowercased != "html, body",
+              lowercased != "body, html" else { return nil }
+        return ".entry-body :where(\(trimmed))"
+    }
+
+    private static func darkCorrectionToken(for property: String, value: String) -> String? {
+        let foregroundProperty = property == "color"
+            || property == "-webkit-text-fill-color"
+        let borderProperty = property == "border-color"
+            || (property.hasPrefix("border-") && property.hasSuffix("-color"))
+            || property == "outline-color"
+        guard foregroundProperty || borderProperty else { return nil }
+
+        let normalized = value
+            .replacingOccurrences(of: "!important", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let grayLevel = grayscaleLevel(in: normalized) else { return nil }
+
+        if borderProperty {
+            return grayLevel <= 210 ? "var(--divider-color)" : nil
+        }
+        // Very dark gray is normally the dictionary's primary text color
+        // (for example #333333); medium gray is usually a secondary label.
+        if grayLevel <= 80 {
+            return "var(--text-color)"
+        }
+        if grayLevel <= 200 {
+            return "var(--secondary-text)"
+        }
+        return nil
+    }
+
+    private static func grayscaleLevel(in value: String) -> Int? {
+        switch value {
+        case "black": return 0
+        case "gray", "grey": return 128
+        default: break
+        }
+
+        if let rgbLevel = rgbGrayscaleLevel(in: value) {
+            return rgbLevel
+        }
+        guard value.first == "#" else { return nil }
+        let hex = String(value.dropFirst())
+        guard [3, 4, 6, 8].contains(hex.count) else { return nil }
+        let colorCount = hex.count == 3 || hex.count == 4 ? 3 : 6
+        let characters = Array(hex.prefix(colorCount))
+        let values = characters.map { Int(String($0), radix: 16) }
+        guard values.allSatisfy({ $0 != nil }) else { return nil }
+
+        let channels: [Int]
+        if colorCount == 3 {
+            channels = values.compactMap { value in value.map { $0 * 17 } }
+        } else {
+            guard characters.count == 6 else { return nil }
+            let pairs = stride(from: 0, to: 6, by: 2).map { index in
+                Int(String(characters[index...index + 1]), radix: 16)
+            }
+            guard pairs.allSatisfy({ $0 != nil }) else { return nil }
+            channels = pairs.compactMap { $0 }
+        }
+        guard channels.count == 3,
+              let minimum = channels.min(),
+              let maximum = channels.max(),
+              maximum - minimum <= 2 else { return nil }
+        return channels.reduce(0, +) / channels.count
+    }
+
+    private static func rgbGrayscaleLevel(in value: String) -> Int? {
+        let lowercased = value.lowercased()
+        let prefix: String
+        if lowercased.hasPrefix("rgb(") {
+            prefix = "rgb("
+        } else if lowercased.hasPrefix("rgba(") {
+            prefix = "rgba("
+        } else {
+            return nil
+        }
+        guard value.last == ")",
+              value.count > prefix.count + 1 else { return nil }
+        let start = value.index(value.startIndex, offsetBy: prefix.count)
+        let end = value.index(before: value.endIndex)
+        let components = value[start..<end]
+            .split(whereSeparator: { $0 == "," || $0 == "/" || $0.isWhitespace })
+        let channels = components.prefix(3).compactMap(cssChannelValue)
+        guard components.count >= 3,
+              channels.count == 3,
+              let minimum = channels.min(),
+              let maximum = channels.max(),
+              maximum - minimum <= 2 else {
+            return nil
+        }
+        if components.count >= 4,
+           let alpha = cssAlphaValue(components[3]),
+           alpha < 0.95 {
+            return nil
+        }
+        return channels.reduce(0, +) / channels.count
+    }
+
+    private static func cssChannelValue(_ value: Substring) -> Int? {
+        let string = String(value)
+        if string.hasSuffix("%") {
+            guard let percentage = Double(string.dropLast()), percentage >= 0, percentage <= 100 else {
+                return nil
+            }
+            return Int((percentage * 2.55).rounded())
+        }
+        guard let number = Double(string), number >= 0, number <= 255 else { return nil }
+        return Int(number.rounded())
+    }
+
+    private static func cssAlphaValue(_ value: Substring) -> Double? {
+        let string = String(value)
+        if string.hasSuffix("%") {
+            guard let percentage = Double(string.dropLast()), percentage >= 0, percentage <= 100 else {
+                return nil
+            }
+            return percentage / 100
+        }
+        guard let alpha = Double(string), alpha >= 0, alpha <= 1 else { return nil }
+        return alpha
+    }
+
+    /// A small CSS block scanner. It understands quoted strings, comments and
+    /// nested at-rules, which is enough to inspect ordinary vendor stylesheets
+    /// without adding a CSS parser or loading the whole dictionary package.
+    private static func parseCSSRules(_ css: String) -> [ParsedCSSRule] {
+        var rules: [ParsedCSSRule] = []
+        var segmentStart = css.startIndex
+        var index = css.startIndex
+        var quote: Character?
+        var inComment = false
+
+        while index < css.endIndex {
+            let character = css[index]
+            if inComment {
+                if character == "*" {
+                    let next = css.index(after: index)
+                    if next < css.endIndex, css[next] == "/" {
+                        inComment = false
+                        index = css.index(after: next)
+                        continue
+                    }
+                }
+                index = css.index(after: index)
+                continue
+            }
+            if let activeQuote = quote {
+                if character == "\\" {
+                    let escaped = css.index(after: index)
+                    index = escaped < css.endIndex ? css.index(after: escaped) : escaped
+                    continue
+                }
+                if character == activeQuote {
+                    quote = nil
+                }
+                index = css.index(after: index)
+                continue
+            }
+            if character == "/" {
+                let next = css.index(after: index)
+                if next < css.endIndex, css[next] == "*" {
+                    inComment = true
+                    index = css.index(after: next)
+                    continue
+                }
+            }
+            if character == "\"" || character == "'" {
+                quote = character
+                index = css.index(after: index)
+                continue
+            }
+            if character == "{" {
+                let selector = String(css[segmentStart..<index])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let closing = matchingCSSBrace(in: css, opening: index) {
+                    let contents = String(css[css.index(after: index)..<closing])
+                    if selector.hasPrefix("@") {
+                        rules.append(contentsOf: parseCSSRules(contents))
+                    } else if !selector.isEmpty {
+                        rules.append(ParsedCSSRule(selector: selector, declarations: contents))
+                    }
+                    index = css.index(after: closing)
+                    segmentStart = index
+                    continue
+                }
+            }
+            if character == "}" {
+                segmentStart = css.index(after: index)
+            }
+            index = css.index(after: index)
+        }
+        return rules
+    }
+
+    private static func matchingCSSBrace(in css: String, opening: String.Index) -> String.Index? {
+        var depth = 1
+        var index = css.index(after: opening)
+        var quote: Character?
+        var inComment = false
+
+        while index < css.endIndex {
+            let character = css[index]
+            if inComment {
+                if character == "*" {
+                    let next = css.index(after: index)
+                    if next < css.endIndex, css[next] == "/" {
+                        inComment = false
+                        index = css.index(after: next)
+                        continue
+                    }
+                }
+                index = css.index(after: index)
+                continue
+            }
+            if let activeQuote = quote {
+                if character == "\\" {
+                    let escaped = css.index(after: index)
+                    index = escaped < css.endIndex ? css.index(after: escaped) : escaped
+                    continue
+                }
+                if character == activeQuote {
+                    quote = nil
+                }
+                index = css.index(after: index)
+                continue
+            }
+            if character == "/" {
+                let next = css.index(after: index)
+                if next < css.endIndex, css[next] == "*" {
+                    inComment = true
+                    index = css.index(after: next)
+                    continue
+                }
+            }
+            if character == "\"" || character == "'" {
+                quote = character
+            } else if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 { return index }
+            }
+            index = css.index(after: index)
+        }
+        return nil
+    }
+
+    private static func parseCSSDeclarations(_ block: String) -> [CSSDeclaration] {
+        var statements: [String] = []
+        var start = block.startIndex
+        var index = block.startIndex
+        var quote: Character?
+        var parentheses = 0
+
+        while index < block.endIndex {
+            let character = block[index]
+            if let activeQuote = quote {
+                if character == "\\" {
+                    let escaped = block.index(after: index)
+                    index = escaped < block.endIndex ? block.index(after: escaped) : escaped
+                    continue
+                }
+                if character == activeQuote {
+                    quote = nil
+                }
+            } else if character == "\"" || character == "'" {
+                quote = character
+            } else if character == "(" {
+                parentheses += 1
+            } else if character == ")" {
+                parentheses = max(0, parentheses - 1)
+            } else if character == ";" && parentheses == 0 {
+                statements.append(String(block[start..<index]))
+                start = block.index(after: index)
+            }
+            index = block.index(after: index)
+        }
+        if start < block.endIndex {
+            statements.append(String(block[start..<block.endIndex]))
+        }
+
+        return statements.compactMap { statement in
+            guard let colon = statement.firstIndex(of: ":") else { return nil }
+            let property = statement[..<colon]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let value = statement[statement.index(after: colon)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !property.isEmpty, !value.isEmpty, !property.hasPrefix("--") else {
+                return nil
+            }
+            return CSSDeclaration(property: property, value: value)
+        }
     }
 
     /// Body-only markup used for fast selection changes. The document shell
@@ -567,6 +993,7 @@ public enum DictionaryHTMLFormatter {
             hasher.combine(entry.displayName)
             hasher.combine(entry.format)
             hasher.combine(entry.css)
+            hasher.combine(entry.darkCSS)
             hasher.combine(entry.resourceRoot)
         }
         return String(hasher.finalize())

@@ -219,8 +219,8 @@ public struct IntensiveSettingsPopover: View {
                     Text(lang.text("字典适应系统外观", "Adapt dictionary to system appearance"))
                         .font(.body.weight(.medium))
                     Text(lang.text(
-                        "开启后，在词典页面渲染时加入系统外观兼容 CSS，并使用 macOS 语义颜色；关闭后只使用 MDX 自带的 CSS。阅读器背景始终由应用窗口提供。",
-                        "When enabled, dictionary pages receive the system-appearance compatibility CSS and macOS semantic colors at render time. When disabled, only the MDX-provided CSS is used. The reader background always comes from the app window."
+                        "开启后，在词典页面渲染时加入系统外观兼容 CSS，并使用 macOS 语义颜色；关闭后只使用 MDX 自带的 CSS。每本词典的 source 文件夹中可编辑同名的 .studymate-dark.css。阅读器背景始终由应用窗口提供。",
+                        "When enabled, dictionary pages receive the system-appearance compatibility CSS and macOS semantic colors at render time. When disabled, only the MDX-provided CSS is used. You can edit the matching .studymate-dark.css in each dictionary's source folder. The reader background always comes from the app window."
                     ))
                     .font(.caption)
                     .foregroundColor(.secondary)

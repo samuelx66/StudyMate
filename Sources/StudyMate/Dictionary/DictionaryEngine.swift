@@ -445,6 +445,9 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
     public let format: String
     public let css: String?
     public let resourceRoot: String?
+    /// Optional StudyMate-only dark appearance rules read from the file next
+    /// to the imported MDX source: `<mdx stem>.studymate-dark.css`.
+    public let darkCSS: String?
 
     public var displayName: String {
         DictionarySourceSettings.shared.displayName(for: dictionaryID, fallback: dictionaryTitle)
@@ -459,7 +462,8 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         dictionaryTitle: String,
         format: String = "Html",
         css: String? = nil,
-        resourceRoot: String? = nil
+        resourceRoot: String? = nil,
+        darkCSS: String? = nil
     ) {
         self.key = key
         self.text = text
@@ -468,6 +472,7 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         self.format = format
         self.css = css
         self.resourceRoot = resourceRoot
+        self.darkCSS = darkCSS
     }
 
     enum CodingKeys: String, CodingKey {
@@ -475,6 +480,7 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         case dictionaryID = "dictionary_id"
         case dictionaryTitle = "dictionary_title"
         case resourceRoot = "resource_root"
+        case darkCSS = "dark_css"
     }
 
     public init(from decoder: Decoder) throws {
@@ -486,6 +492,7 @@ public struct StudyMateDictionaryLookup: Codable, Identifiable, Hashable, Sendab
         format = try container.decodeIfPresent(String.self, forKey: .format) ?? "Html"
         css = try container.decodeIfPresent(String.self, forKey: .css)
         resourceRoot = try container.decodeIfPresent(String.self, forKey: .resourceRoot)
+        darkCSS = try container.decodeIfPresent(String.self, forKey: .darkCSS)
     }
 }
 

@@ -73,6 +73,12 @@ pub struct LookupEntry {
     /// in the UI (ids may contain punctuation and unicode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_root: Option<String>,
+    /// Optional StudyMate-only dark appearance rules stored next to the MDX
+    /// source as `<mdx stem>.studymate-dark.css`.  It is deliberately kept
+    /// separate from the vendor CSS so the appearance toggle can disable it
+    /// without changing the imported dictionary files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_css: Option<String>,
 }
 
 /// Lightweight dictionary row used by live search. Full record HTML is
@@ -1534,6 +1540,26 @@ pub fn import_dictionary_with_progress(
     if !source_mdx.is_file() {
         bail!("copied MDX source is missing: {}", source_mdx.display())
     }
+    let stem = source_mdx
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("MDX source has no valid filename stem"))?;
+    let dark_css_path = source_mdx
+        .parent()
+        .unwrap_or(&source_dir)
+        .join(format!("{stem}.studymate-dark.css"));
+    if find_named_asset(
+        dark_css_path.parent().unwrap_or(&source_dir),
+        &format!("{stem}.studymate-dark.css"),
+    )
+    .is_none()
+    {
+        fs::write(
+            &dark_css_path,
+            b"/* StudyMate per-dictionary dark appearance overrides.\n   This file is loaded only when the dictionary appearance setting is enabled.\n   Do not add a prefers-color-scheme wrapper; StudyMate adds it automatically.\n*/\n",
+        )
+        .with_context(|| format!("create dark appearance stylesheet {}", dark_css_path.display()))?;
+    }
 
     if let Some(p) = progress.as_deref_mut() {
         p("正在读取 MDX/MDD 块索引…", 0.45);
@@ -1826,6 +1852,15 @@ fn find_same_stem_asset(source_dir: &Path, stem: &str, extension: &str) -> Optio
             && file_stem.eq_ignore_ascii_case(stem)
             && file_extension.eq_ignore_ascii_case(extension))
         .then_some(path)
+    })
+}
+
+fn find_named_asset(source_dir: &Path, file_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(source_dir).ok()?;
+    entries.flatten().find_map(|entry| {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+        (path.is_file() && name.eq_ignore_ascii_case(file_name)).then_some(path)
     })
 }
 
@@ -2448,6 +2483,7 @@ struct NativeDictionary {
     mdx: NativeDictionaryFile,
     mdds: Vec<NativeDictionaryFile>,
     css: Option<String>,
+    dark_css: Option<String>,
     last_used: u64,
 }
 
@@ -2486,9 +2522,11 @@ impl NativeDictionary {
             mdx,
             mdds,
             css: None,
+            dark_css: None,
             last_used: 0,
         };
         dictionary.css = dictionary.load_css();
+        dictionary.dark_css = dictionary.load_dark_css();
         Ok(dictionary)
     }
 
@@ -2510,6 +2548,18 @@ impl NativeDictionary {
             }
         }
         None
+    }
+
+    fn load_dark_css(&self) -> Option<String> {
+        let stem = self
+            .mdx
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let file_name = format!("{stem}.studymate-dark.css");
+        let path = find_named_asset(&self.source_dir, &file_name)?;
+        fs::read(path).ok().map(|bytes| decode_resource_text(&bytes))
     }
 
     fn preferred_external(&self, key: &str) -> Option<PathBuf> {
@@ -2619,6 +2669,7 @@ impl NativeDictionary {
         let limit = limit.clamp(1, 100);
         let records = self.mdx.lookup_records(query, limit)?;
         let css = self.css.clone();
+        let dark_css = self.dark_css.clone();
         let id = self.manifest.id.clone();
         records
             .into_iter()
@@ -2632,6 +2683,7 @@ impl NativeDictionary {
                     format: self.manifest.format.clone(),
                     css: css.clone(),
                     resource_root: Some(resource_root(&id)),
+                    dark_css: dark_css.clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()
@@ -4376,6 +4428,7 @@ mod tests {
         let result = import_fixture(&package_root, &mdx, "fixture");
         let package = package_root.join("fixture.mabdict");
         assert!(package.join("source/fixture.mdx").is_file());
+        assert!(package.join("source/fixture.studymate-dark.css").is_file());
         assert!(!package.join("Library.sqlite3").exists());
 
         for (key, contents) in [
@@ -4417,6 +4470,11 @@ mod tests {
         fs::write(root.join("FIXTURE.CSS"), b"external-css").unwrap();
         fs::write(root.join("FIXTURE.JS"), b"external-js").unwrap();
         fs::write(
+            root.join("FIXTURE.STUDYMATE-DARK.CSS"),
+            b".fixture { color: CanvasText; }",
+        )
+        .unwrap();
+        fs::write(
             root.join("fixture.mdd"),
             mdd_fixture(&[
                 ("fixture.css", b"package-css"),
@@ -4442,6 +4500,11 @@ mod tests {
             .unwrap();
         assert!(style.contains("external-css"));
         assert!(!style.contains("package-css"));
+        let dark_css = lookup(&package_root, "fixture", "cat", 1).unwrap()[0]
+            .dark_css
+            .clone()
+            .expect("same-stem StudyMate dark CSS should be returned with definitions");
+        assert_eq!(dark_css, ".fixture { color: CanvasText; }");
         fs::remove_dir_all(root).unwrap();
     }
 

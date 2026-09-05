@@ -69,6 +69,58 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains(".fixture { color: hotpink; }"))
     }
 
+    func testEditablePerDictionaryDarkCSSIsLoadedAfterCompatibilityAndBeforeUserCSS() throws {
+        let entry = StudyMateDictionaryLookup(
+            key: "theme",
+            text: #"<div class="fixture">theme</div>"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            css: ".fixture { color: #333333; }",
+            darkCSS: ".fixture { color: CanvasText; background: transparent; }"
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(
+            entries: [entry],
+            isCompact: false,
+            userCSS: ".fixture { color: hotpink; }"
+        )
+
+        let auto = try XCTUnwrap(html.range(of: "studymate-auto-color-correction-css"))
+        let dark = try XCTUnwrap(html.range(of: "studymate-dictionary-dark-css"))
+        let user = try XCTUnwrap(html.range(of: "studymate-user-css"))
+
+        XCTAssertLessThan(auto.lowerBound, dark.lowerBound)
+        XCTAssertLessThan(dark.lowerBound, user.lowerBound)
+        XCTAssertTrue(html.contains("@media (prefers-color-scheme: dark)"))
+        XCTAssertTrue(html.contains("CanvasText; background: transparent;"))
+    }
+
+    func testAutomaticColorCorrectionReversesDarkNeutralVendorColors() {
+        let entry = StudyMateDictionaryLookup(
+            key: "theme",
+            text: #"<div class="fixture">theme</div>"#,
+            dictionaryID: "fixture",
+            dictionaryTitle: "Fixture",
+            css: """
+            .fixture {
+                color: #333333;
+                border-color: #666;
+                background: red;
+            }
+            """
+        )
+
+        let html = DictionaryHTMLFormatter.composeHTML(entries: [entry], isCompact: false)
+        let autoStart = html.range(of: "studymate-auto-color-correction-css")!.upperBound
+        let autoEnd = html.range(of: "</style>", range: autoStart..<html.endIndex)!.lowerBound
+        let generated = String(html[autoStart..<autoEnd])
+
+        XCTAssertTrue(generated.contains(".entry-body :where(.fixture)"))
+        XCTAssertTrue(generated.contains("color: var(--text-color) !important;"))
+        XCTAssertTrue(generated.contains("border-color: var(--divider-color) !important;"))
+        XCTAssertFalse(generated.contains("background: var(--"))
+    }
+
     func testKnownDictionaryGetsSpecificDarkModeCompatibilityLayer() {
         let entry = StudyMateDictionaryLookup(
             key: "word",
@@ -90,7 +142,8 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
             text: #"<div class="fixture">theme</div>"#,
             dictionaryID: "oald9-fixture",
             dictionaryTitle: "Oxford Advanced Learner's Dictionary",
-            css: ".fixture { color: #000; background: #fff; }"
+            css: ".fixture { color: #000; background: #fff; }",
+            darkCSS: ".fixture { color: CanvasText; }"
         )
 
         let html = DictionaryHTMLFormatter.composeHTML(
@@ -106,6 +159,7 @@ final class DictionaryHTMLFormatterTests: XCTestCase {
         XCTAssertFalse(html.contains("studymate-system-theme-css"))
         XCTAssertFalse(html.contains("studymate-auto-color-correction-css"))
         XCTAssertFalse(html.contains("studymate-dictionary-specific-css"))
+        XCTAssertFalse(html.contains("studymate-dictionary-dark-css"))
         XCTAssertFalse(html.contains("studymate-user-css"))
         XCTAssertFalse(html.contains(#"<meta name="color-scheme" content="light dark">"#))
     }
