@@ -1,8 +1,82 @@
 import SwiftUI
 import AppKit
 
-/// 视频播放区双语字幕的显示与位置设置。设置保存在 UserDefaults，
-/// 只影响播放区覆盖层，不会改写断句列表或字幕编辑区的字体。
+/// 单个界面模式（视频/列表/全文/句子）下的字幕字体独立配置
+public struct ModeFontSettings: Codable, Equatable, Sendable {
+    public var originalFontName: String
+    public var translationFontName: String
+    public var originalFontSize: Double
+    public var translationFontSize: Double
+    public var originalBold: Bool
+    public var translationBold: Bool
+    public var originalItalic: Bool
+    public var translationItalic: Bool
+    public var originalColorHex: String
+    public var translationColorHex: String
+
+    public init(
+        originalFontName: String,
+        translationFontName: String,
+        originalFontSize: Double,
+        translationFontSize: Double,
+        originalBold: Bool,
+        translationBold: Bool,
+        originalItalic: Bool,
+        translationItalic: Bool,
+        originalColorHex: String,
+        translationColorHex: String
+    ) {
+        self.originalFontName = originalFontName
+        self.translationFontName = translationFontName
+        self.originalFontSize = min(96.0, max(10.0, originalFontSize))
+        self.translationFontSize = min(96.0, max(10.0, translationFontSize))
+        self.originalBold = originalBold
+        self.translationBold = translationBold
+        self.originalItalic = originalItalic
+        self.translationItalic = translationItalic
+        self.originalColorHex = originalColorHex
+        self.translationColorHex = translationColorHex
+    }
+
+    public var originalColor: Color {
+        get { Color(studymateHex: originalColorHex) }
+        set { originalColorHex = newValue.studymateHex ?? "#FFFFFF" }
+    }
+
+    public var translationColor: Color {
+        get { Color(studymateHex: translationColorHex) }
+        set { translationColorHex = newValue.studymateHex ?? "#FFE36E" }
+    }
+
+    public var originalNSColor: NSColor {
+        NSColor(originalColor)
+    }
+
+    public var translationNSColor: NSColor {
+        NSColor(translationColor)
+    }
+
+    public func makeOriginalFont() -> NSFont {
+        VideoSubtitleSettings.makeFont(
+            name: originalFontName,
+            size: originalFontSize,
+            isBold: originalBold,
+            isItalic: originalItalic
+        )
+    }
+
+    public func makeTranslationFont() -> NSFont {
+        VideoSubtitleSettings.makeFont(
+            name: translationFontName,
+            size: translationFontSize,
+            isBold: translationBold,
+            isItalic: translationItalic
+        )
+    }
+}
+
+/// 媒体播放区双语字幕的显示、位置及各界面模式独立的字体设置。
+/// 设置保存在 UserDefaults，4 种模式（视频/列表/全文/句子）拥有各自独立且隔离的字体配置。
 @MainActor
 public final class VideoSubtitleSettings: ObservableObject {
     public static let shared = VideoSubtitleSettings()
@@ -15,44 +89,75 @@ public final class VideoSubtitleSettings: ObservableObject {
     @Published public var showTranslation: Bool {
         didSet { defaults.set(showTranslation, forKey: Keys.showTranslation) }
     }
+    @Published public var showTranslationInFillInBlank: Bool {
+        didSet { defaults.set(showTranslationInFillInBlank, forKey: Keys.showTranslationInFillInBlank) }
+    }
 
-    @Published public var originalFontName: String {
-        didSet { defaults.set(originalFontName, forKey: Keys.originalFontName) }
+    @Published public var showOriginalInFillInBlank: Bool = false
+    private var originalPeekTimer: Task<Void, Never>?
+
+    public func isOriginalVisible(for mode: PlaybackInterfaceMode) -> Bool {
+        if mode == .fillInBlank {
+            return showOriginalInFillInBlank
+        }
+        return showOriginal
     }
-    @Published public var translationFontName: String {
-        didSet { defaults.set(translationFontName, forKey: Keys.translationFontName) }
-    }
-    @Published public var originalFontSize: Double {
-        didSet {
-            let clamped = min(96.0, max(10.0, originalFontSize))
-            if clamped != originalFontSize { originalFontSize = clamped }
-            defaults.set(clamped, forKey: Keys.originalFontSize)
+
+    public func toggleOriginal(for mode: PlaybackInterfaceMode) {
+        if mode == .fillInBlank {
+            originalPeekTimer?.cancel()
+            originalPeekTimer = nil
+            showOriginalInFillInBlank.toggle()
+            if showOriginalInFillInBlank {
+                originalPeekTimer = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.showOriginalInFillInBlank = false
+                }
+            }
+        } else {
+            showOriginal.toggle()
         }
     }
-    @Published public var translationFontSize: Double {
-        didSet {
-            let clamped = min(96.0, max(10.0, translationFontSize))
-            if clamped != translationFontSize { translationFontSize = clamped }
-            defaults.set(clamped, forKey: Keys.translationFontSize)
+
+    public func hideOriginalPeekInFillInBlank() {
+        originalPeekTimer?.cancel()
+        originalPeekTimer = nil
+        if showOriginalInFillInBlank {
+            showOriginalInFillInBlank = false
         }
     }
-    @Published public var originalBold: Bool {
-        didSet { defaults.set(originalBold, forKey: Keys.originalBold) }
+
+    public func isTranslationVisible(for mode: PlaybackInterfaceMode) -> Bool {
+        if mode == .fillInBlank {
+            return showTranslationInFillInBlank
+        }
+        return showTranslation
     }
-    @Published public var translationBold: Bool {
-        didSet { defaults.set(translationBold, forKey: Keys.translationBold) }
+
+    public func toggleTranslation(for mode: PlaybackInterfaceMode) {
+        if mode == .fillInBlank {
+            showTranslationInFillInBlank.toggle()
+        } else {
+            showTranslation.toggle()
+        }
     }
-    @Published public var originalItalic: Bool {
-        didSet { defaults.set(originalItalic, forKey: Keys.originalItalic) }
+
+    // 4 种界面模式的独立字体设置
+    @Published public var videoFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(videoFontSettings, mode: .video) }
     }
-    @Published public var translationItalic: Bool {
-        didSet { defaults.set(translationItalic, forKey: Keys.translationItalic) }
+    @Published public var listFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(listFontSettings, mode: .list) }
     }
-    @Published public var originalColorHex: String {
-        didSet { defaults.set(originalColorHex, forKey: Keys.originalColor) }
+    @Published public var fullTextFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(fullTextFontSettings, mode: .fullText) }
     }
-    @Published public var translationColorHex: String {
-        didSet { defaults.set(translationColorHex, forKey: Keys.translationColor) }
+    @Published public var sentenceFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(sentenceFontSettings, mode: .sentence) }
+    }
+    @Published public var fillInBlankFontSettings: ModeFontSettings {
+        didSet { persistFontSettings(fillInBlankFontSettings, mode: .fillInBlank) }
     }
 
     // Normalized coordinates keep the subtitle position stable when the video
@@ -73,14 +178,120 @@ public final class VideoSubtitleSettings: ObservableObject {
     public static let availableFontFamilies: [String] =
         NSFontManager.shared.availableFontFamilies.sorted()
 
+    // MARK: - 模式字体存取与更新接口
+
+    public func fontSettings(for mode: PlaybackInterfaceMode) -> ModeFontSettings {
+        switch mode {
+        case .video: return videoFontSettings
+        case .list: return listFontSettings
+        case .fullText: return fullTextFontSettings
+        case .sentence: return sentenceFontSettings
+        case .fillInBlank: return fillInBlankFontSettings
+        }
+    }
+
+    public func setFontSettings(_ newSettings: ModeFontSettings, for mode: PlaybackInterfaceMode) {
+        switch mode {
+        case .video: videoFontSettings = newSettings
+        case .list: listFontSettings = newSettings
+        case .fullText: fullTextFontSettings = newSettings
+        case .sentence: sentenceFontSettings = newSettings
+        case .fillInBlank: fillInBlankFontSettings = newSettings
+        }
+    }
+
+    public func updateFontSettings(for mode: PlaybackInterfaceMode, _ update: (inout ModeFontSettings) -> Void) {
+        var current = fontSettings(for: mode)
+        update(&current)
+        setFontSettings(current, for: mode)
+    }
+
+    public func makeOriginalFont(for mode: PlaybackInterfaceMode = .video) -> NSFont {
+        fontSettings(for: mode).makeOriginalFont()
+    }
+
+    public func makeTranslationFont(for mode: PlaybackInterfaceMode = .video) -> NSFont {
+        fontSettings(for: mode).makeTranslationFont()
+    }
+
+    public func originalNSColor(for mode: PlaybackInterfaceMode = .video) -> NSColor {
+        fontSettings(for: mode).originalNSColor
+    }
+
+    public func translationNSColor(for mode: PlaybackInterfaceMode = .video) -> NSColor {
+        fontSettings(for: mode).translationNSColor
+    }
+
+    // MARK: - 视频模式属性快捷代理（向下兼容）
+
+    public var originalFontName: String {
+        get { videoFontSettings.originalFontName }
+        set { updateFontSettings(for: .video) { $0.originalFontName = newValue } }
+    }
+    public var translationFontName: String {
+        get { videoFontSettings.translationFontName }
+        set { updateFontSettings(for: .video) { $0.translationFontName = newValue } }
+    }
+    public var originalFontSize: Double {
+        get { videoFontSettings.originalFontSize }
+        set { updateFontSettings(for: .video) { $0.originalFontSize = newValue } }
+    }
+    public var translationFontSize: Double {
+        get { videoFontSettings.translationFontSize }
+        set { updateFontSettings(for: .video) { $0.translationFontSize = newValue } }
+    }
+    public var originalBold: Bool {
+        get { videoFontSettings.originalBold }
+        set { updateFontSettings(for: .video) { $0.originalBold = newValue } }
+    }
+    public var translationBold: Bool {
+        get { videoFontSettings.translationBold }
+        set { updateFontSettings(for: .video) { $0.translationBold = newValue } }
+    }
+    public var originalItalic: Bool {
+        get { videoFontSettings.originalItalic }
+        set { updateFontSettings(for: .video) { $0.originalItalic = newValue } }
+    }
+    public var translationItalic: Bool {
+        get { videoFontSettings.translationItalic }
+        set { updateFontSettings(for: .video) { $0.translationItalic = newValue } }
+    }
+    public var originalColorHex: String {
+        get { videoFontSettings.originalColorHex }
+        set { updateFontSettings(for: .video) { $0.originalColorHex = newValue } }
+    }
+    public var translationColorHex: String {
+        get { videoFontSettings.translationColorHex }
+        set { updateFontSettings(for: .video) { $0.translationColorHex = newValue } }
+    }
+
     public var originalColor: Color {
-        get { Color(studymateHex: originalColorHex) }
-        set { originalColorHex = newValue.studymateHex ?? "#FFFFFF" }
+        get { videoFontSettings.originalColor }
+        set { updateFontSettings(for: .video) { $0.originalColor = newValue } }
     }
 
     public var translationColor: Color {
-        get { Color(studymateHex: translationColorHex) }
-        set { translationColorHex = newValue.studymateHex ?? "#FFE36E" }
+        get { videoFontSettings.translationColor }
+        set { updateFontSettings(for: .video) { $0.translationColor = newValue } }
+    }
+
+    public var originalNSColor: NSColor {
+        videoFontSettings.originalNSColor
+    }
+
+    public var translationNSColor: NSColor {
+        videoFontSettings.translationNSColor
+    }
+
+    nonisolated public static func makeFont(name: String, size: Double, isBold: Bool, isItalic: Bool) -> NSFont {
+        let clampedSize = max(10, min(96, size))
+        var descriptor = NSFontDescriptor(name: name, size: clampedSize)
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if isBold { traits.insert(.bold) }
+        if isItalic { traits.insert(.italic) }
+        if !traits.isEmpty { descriptor = descriptor.withSymbolicTraits(traits) }
+        return NSFont(descriptor: descriptor, size: clampedSize)
+            ?? .systemFont(ofSize: clampedSize)
     }
 
     public func resetPositions() {
@@ -93,41 +304,240 @@ public final class VideoSubtitleSettings: ObservableObject {
     private init() {
         showOriginal = defaults.object(forKey: Keys.showOriginal) as? Bool ?? true
         showTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
+        showTranslationInFillInBlank = defaults.object(forKey: Keys.showTranslationInFillInBlank) as? Bool ?? false
 
         let systemFamily = NSFont.systemFont(ofSize: 24).familyName ?? "Helvetica"
-        originalFontName = defaults.string(forKey: Keys.originalFontName) ?? systemFamily
-        translationFontName = defaults.string(forKey: Keys.translationFontName) ?? systemFamily
-        originalFontSize = defaults.object(forKey: Keys.originalFontSize) as? Double ?? 28
-        translationFontSize = defaults.object(forKey: Keys.translationFontSize) as? Double ?? 24
-        originalBold = defaults.object(forKey: Keys.originalBold) as? Bool ?? true
-        translationBold = defaults.object(forKey: Keys.translationBold) as? Bool ?? false
-        originalItalic = defaults.object(forKey: Keys.originalItalic) as? Bool ?? false
-        translationItalic = defaults.object(forKey: Keys.translationItalic) as? Bool ?? false
-        originalColorHex = defaults.string(forKey: Keys.originalColor) ?? "#FFFFFF"
-        translationColorHex = defaults.string(forKey: Keys.translationColor) ?? "#FFE36E"
+
+        let defaultVideo = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 28,
+            translationFontSize: 24,
+            originalBold: true,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
+        let defaultList = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 14,
+            translationFontSize: 13,
+            originalBold: false,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
+        let defaultFullText = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 16,
+            translationFontSize: 14,
+            originalBold: false,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
+        let defaultSentence = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 24,
+            translationFontSize: 20,
+            originalBold: true,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
+        let defaultFillInBlank = ModeFontSettings(
+            originalFontName: systemFamily,
+            translationFontName: systemFamily,
+            originalFontSize: 24,
+            translationFontSize: 20,
+            originalBold: true,
+            translationBold: false,
+            originalItalic: false,
+            translationItalic: false,
+            originalColorHex: "#FFFFFF",
+            translationColorHex: "#FFE36E"
+        )
+
+        videoFontSettings = Self.loadFontSettings(from: defaults, mode: .video, defaultSettings: defaultVideo)
+        listFontSettings = Self.loadFontSettings(from: defaults, mode: .list, defaultSettings: defaultList)
+        fullTextFontSettings = Self.loadFontSettings(from: defaults, mode: .fullText, defaultSettings: defaultFullText)
+        sentenceFontSettings = Self.loadFontSettings(from: defaults, mode: .sentence, defaultSettings: defaultSentence)
+        fillInBlankFontSettings = Self.loadFontSettings(from: defaults, mode: .fillInBlank, defaultSettings: defaultFillInBlank)
+
         originalPositionX = defaults.object(forKey: Keys.originalPositionX) as? Double ?? 0.5
         originalPositionY = defaults.object(forKey: Keys.originalPositionY) as? Double ?? 0.76
         translationPositionX = defaults.object(forKey: Keys.translationPositionX) as? Double ?? 0.5
         translationPositionY = defaults.object(forKey: Keys.translationPositionY) as? Double ?? 0.86
     }
 
+    private static func loadFontSettings(
+        from defaults: UserDefaults,
+        mode: PlaybackInterfaceMode,
+        defaultSettings: ModeFontSettings
+    ) -> ModeFontSettings {
+        let prefix = "StudyMate.FontSettings.\(mode.rawValue)."
+
+        let origName: String
+        if let val = defaults.string(forKey: prefix + "originalFontName") {
+            origName = val
+        } else if mode == .video, let legacy = defaults.string(forKey: Keys.legacyOriginalFontName) {
+            origName = legacy
+        } else {
+            origName = defaultSettings.originalFontName
+        }
+
+        let transName: String
+        if let val = defaults.string(forKey: prefix + "translationFontName") {
+            transName = val
+        } else if mode == .video, let legacy = defaults.string(forKey: Keys.legacyTranslationFontName) {
+            transName = legacy
+        } else {
+            transName = defaultSettings.translationFontName
+        }
+
+        let origSize: Double
+        if let val = defaults.object(forKey: prefix + "originalFontSize") as? Double {
+            origSize = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyOriginalFontSize) as? Double {
+            origSize = legacy
+        } else {
+            origSize = defaultSettings.originalFontSize
+        }
+
+        let transSize: Double
+        if let val = defaults.object(forKey: prefix + "translationFontSize") as? Double {
+            transSize = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyTranslationFontSize) as? Double {
+            transSize = legacy
+        } else {
+            transSize = defaultSettings.translationFontSize
+        }
+
+        let origBold: Bool
+        if let val = defaults.object(forKey: prefix + "originalBold") as? Bool {
+            origBold = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyOriginalBold) as? Bool {
+            origBold = legacy
+        } else {
+            origBold = defaultSettings.originalBold
+        }
+
+        let transBold: Bool
+        if let val = defaults.object(forKey: prefix + "translationBold") as? Bool {
+            transBold = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyTranslationBold) as? Bool {
+            transBold = legacy
+        } else {
+            transBold = defaultSettings.translationBold
+        }
+
+        let origItalic: Bool
+        if let val = defaults.object(forKey: prefix + "originalItalic") as? Bool {
+            origItalic = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyOriginalItalic) as? Bool {
+            origItalic = legacy
+        } else {
+            origItalic = defaultSettings.originalItalic
+        }
+
+        let transItalic: Bool
+        if let val = defaults.object(forKey: prefix + "translationItalic") as? Bool {
+            transItalic = val
+        } else if mode == .video, let legacy = defaults.object(forKey: Keys.legacyTranslationItalic) as? Bool {
+            transItalic = legacy
+        } else {
+            transItalic = defaultSettings.translationItalic
+        }
+
+        let origColor: String
+        if let val = defaults.string(forKey: prefix + "originalColor") {
+            origColor = val
+        } else if mode == .video, let legacy = defaults.string(forKey: Keys.legacyOriginalColor) {
+            origColor = legacy
+        } else {
+            origColor = defaultSettings.originalColorHex
+        }
+
+        let transColor: String
+        if let val = defaults.string(forKey: prefix + "translationColor") {
+            transColor = val
+        } else if mode == .video, let legacy = defaults.string(forKey: Keys.legacyTranslationColor) {
+            transColor = legacy
+        } else {
+            transColor = defaultSettings.translationColorHex
+        }
+
+        return ModeFontSettings(
+            originalFontName: origName,
+            translationFontName: transName,
+            originalFontSize: origSize,
+            translationFontSize: transSize,
+            originalBold: origBold,
+            translationBold: transBold,
+            originalItalic: origItalic,
+            translationItalic: transItalic,
+            originalColorHex: origColor,
+            translationColorHex: transColor
+        )
+    }
+
+    private func persistFontSettings(_ settings: ModeFontSettings, mode: PlaybackInterfaceMode) {
+        let prefix = "StudyMate.FontSettings.\(mode.rawValue)."
+        defaults.set(settings.originalFontName, forKey: prefix + "originalFontName")
+        defaults.set(settings.translationFontName, forKey: prefix + "translationFontName")
+        defaults.set(settings.originalFontSize, forKey: prefix + "originalFontSize")
+        defaults.set(settings.translationFontSize, forKey: prefix + "translationFontSize")
+        defaults.set(settings.originalBold, forKey: prefix + "originalBold")
+        defaults.set(settings.translationBold, forKey: prefix + "translationBold")
+        defaults.set(settings.originalItalic, forKey: prefix + "originalItalic")
+        defaults.set(settings.translationItalic, forKey: prefix + "translationItalic")
+        defaults.set(settings.originalColorHex, forKey: prefix + "originalColor")
+        defaults.set(settings.translationColorHex, forKey: prefix + "translationColor")
+
+        if mode == .video {
+            defaults.set(settings.originalFontName, forKey: Keys.legacyOriginalFontName)
+            defaults.set(settings.translationFontName, forKey: Keys.legacyTranslationFontName)
+            defaults.set(settings.originalFontSize, forKey: Keys.legacyOriginalFontSize)
+            defaults.set(settings.translationFontSize, forKey: Keys.legacyTranslationFontSize)
+            defaults.set(settings.originalBold, forKey: Keys.legacyOriginalBold)
+            defaults.set(settings.translationBold, forKey: Keys.legacyTranslationBold)
+            defaults.set(settings.originalItalic, forKey: Keys.legacyOriginalItalic)
+            defaults.set(settings.translationItalic, forKey: Keys.legacyTranslationItalic)
+            defaults.set(settings.originalColorHex, forKey: Keys.legacyOriginalColor)
+            defaults.set(settings.translationColorHex, forKey: Keys.legacyTranslationColor)
+        }
+    }
+
     private enum Keys {
         static let showOriginal = "StudyMate.VideoSubtitle.ShowOriginal"
         static let showTranslation = "StudyMate.VideoSubtitle.ShowTranslation"
-        static let originalFontName = "StudyMate.VideoSubtitle.OriginalFontName"
-        static let translationFontName = "StudyMate.VideoSubtitle.TranslationFontName"
-        static let originalFontSize = "StudyMate.VideoSubtitle.OriginalFontSize"
-        static let translationFontSize = "StudyMate.VideoSubtitle.TranslationFontSize"
-        static let originalBold = "StudyMate.VideoSubtitle.OriginalBold"
-        static let translationBold = "StudyMate.VideoSubtitle.TranslationBold"
-        static let originalItalic = "StudyMate.VideoSubtitle.OriginalItalic"
-        static let translationItalic = "StudyMate.VideoSubtitle.TranslationItalic"
-        static let originalColor = "StudyMate.VideoSubtitle.OriginalColor"
-        static let translationColor = "StudyMate.VideoSubtitle.TranslationColor"
+        static let showTranslationInFillInBlank = "StudyMate.VideoSubtitle.ShowTranslation.FillInBlank"
         static let originalPositionX = "StudyMate.VideoSubtitle.OriginalPositionX"
         static let originalPositionY = "StudyMate.VideoSubtitle.OriginalPositionY"
         static let translationPositionX = "StudyMate.VideoSubtitle.TranslationPositionX"
         static let translationPositionY = "StudyMate.VideoSubtitle.TranslationPositionY"
+
+        static let legacyOriginalFontName = "StudyMate.VideoSubtitle.OriginalFontName"
+        static let legacyTranslationFontName = "StudyMate.VideoSubtitle.TranslationFontName"
+        static let legacyOriginalFontSize = "StudyMate.VideoSubtitle.OriginalFontSize"
+        static let legacyTranslationFontSize = "StudyMate.VideoSubtitle.TranslationFontSize"
+        static let legacyOriginalBold = "StudyMate.VideoSubtitle.OriginalBold"
+        static let legacyTranslationBold = "StudyMate.VideoSubtitle.TranslationBold"
+        static let legacyOriginalItalic = "StudyMate.VideoSubtitle.OriginalItalic"
+        static let legacyTranslationItalic = "StudyMate.VideoSubtitle.TranslationItalic"
+        static let legacyOriginalColor = "StudyMate.VideoSubtitle.OriginalColor"
+        static let legacyTranslationColor = "StudyMate.VideoSubtitle.TranslationColor"
     }
 }
 
@@ -496,26 +906,51 @@ public struct VideoSubtitleOverlay: View {
 }
 
 /// 工具栏“字体设置”按钮打开的紧凑配置面板。
+/// 支持对视频模式、列表模式、全文模式、句子模式 4 种界面模式的字体独立调优。
 public struct VideoSubtitleFontSettingsPopover: View {
     @ObservedObject private var settings = VideoSubtitleSettings.shared
     @ObservedObject private var lang = LanguageManager.shared
+    @State private var selectedMode: PlaybackInterfaceMode
 
-    public init() {}
+    public init(initialMode: PlaybackInterfaceMode = .video) {
+        _selectedMode = State(initialValue: initialMode)
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(lang.text("播放区字幕字体设置", "Subtitle Font Settings"))
                 .font(.headline)
 
+            // 模式选择分段器
+            Picker("", selection: $selectedMode) {
+                ForEach(PlaybackInterfaceMode.allCases) { mode in
+                    Label(mode.localized(with: lang), systemImage: mode.iconName)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
             subtitleGroup(
                 title: lang.text("原文", "Original"),
-                fontName: $settings.originalFontName,
-                fontSize: $settings.originalFontSize,
-                bold: $settings.originalBold,
-                italic: $settings.originalItalic,
+                fontName: Binding(
+                    get: { settings.fontSettings(for: selectedMode).originalFontName },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalFontName = val } }
+                ),
+                fontSize: Binding(
+                    get: { settings.fontSettings(for: selectedMode).originalFontSize },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalFontSize = val } }
+                ),
+                bold: Binding(
+                    get: { settings.fontSettings(for: selectedMode).originalBold },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalBold = val } }
+                ),
+                italic: Binding(
+                    get: { settings.fontSettings(for: selectedMode).originalItalic },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalItalic = val } }
+                ),
                 color: Binding(
-                    get: { settings.originalColor },
-                    set: { settings.originalColor = $0 }
+                    get: { settings.fontSettings(for: selectedMode).originalColor },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalColor = val } }
                 )
             )
 
@@ -523,25 +958,39 @@ public struct VideoSubtitleFontSettingsPopover: View {
 
             subtitleGroup(
                 title: lang.text("译文", "Translation"),
-                fontName: $settings.translationFontName,
-                fontSize: $settings.translationFontSize,
-                bold: $settings.translationBold,
-                italic: $settings.translationItalic,
+                fontName: Binding(
+                    get: { settings.fontSettings(for: selectedMode).translationFontName },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationFontName = val } }
+                ),
+                fontSize: Binding(
+                    get: { settings.fontSettings(for: selectedMode).translationFontSize },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationFontSize = val } }
+                ),
+                bold: Binding(
+                    get: { settings.fontSettings(for: selectedMode).translationBold },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationBold = val } }
+                ),
+                italic: Binding(
+                    get: { settings.fontSettings(for: selectedMode).translationItalic },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationItalic = val } }
+                ),
                 color: Binding(
-                    get: { settings.translationColor },
-                    set: { settings.translationColor = $0 }
+                    get: { settings.fontSettings(for: selectedMode).translationColor },
+                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationColor = val } }
                 )
             )
 
-            HStack {
-                Spacer()
-                Button(lang.text("重置字幕位置", "Reset subtitle positions")) {
-                    settings.resetPositions()
+            if selectedMode == .video {
+                HStack {
+                    Spacer()
+                    Button(lang.text("重置字幕位置", "Reset subtitle positions")) {
+                        settings.resetPositions()
+                    }
                 }
             }
         }
         .padding(16)
-        .frame(width: 370)
+        .frame(width: 450)
     }
 
     @ViewBuilder
@@ -587,7 +1036,7 @@ public struct VideoSubtitleFontSettingsPopover: View {
     }
 }
 
-private extension Color {
+extension Color {
     init(studymateHex hex: String) {
         let normalized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "#", with: "")

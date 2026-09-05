@@ -102,6 +102,7 @@ struct StudyMateApp: App {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("StudyMate.ShowStatusBar") private var showStatusBar = false
+    @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
 
     /// PlaybackEngine is intentionally resolved only when a media window or a
     /// playback command is used.  Keeping it out of @StateObject here avoids
@@ -205,6 +206,24 @@ struct StudyMateApp: App {
                             Image(systemName: "checkmark")
                         }
                     }
+                }
+
+                Menu {
+                    ForEach(PlaybackInterfaceMode.allCases) { mode in
+                        Button {
+                            playbackInterfaceMode = mode
+                        } label: {
+                            HStack {
+                                Label(mode.localized(with: languageManager), systemImage: mode.iconName)
+                                if playbackInterfaceMode == mode {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(languageManager.text("界面模式", "Interface Mode"), systemImage: playbackInterfaceMode.iconName)
                 }
 
                 Menu {

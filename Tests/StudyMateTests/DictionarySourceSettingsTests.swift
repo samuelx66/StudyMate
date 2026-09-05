@@ -70,4 +70,73 @@ final class DictionarySourceSettingsTests: XCTestCase {
         XCTAssertEqual(settings.orderedDictionaryIDs, ["first"])
         XCTAssertEqual(settings.enabledDictionaryIDs, ["first"])
     }
+
+    func testLookupScopeDefaultsToNilAndPersistsID() {
+        let defaults = makeDefaults()
+        let settings = DictionarySourceSettings(defaults: defaults)
+        let initial = [dictionary("dict1"), dictionary("dict2")]
+        settings.synchronize(with: initial)
+
+        // 默认值应为 nil（代表“全部”）
+        XCTAssertNil(settings.lookupScopeDictionaryID)
+
+        // 设置为特定词典
+        settings.setLookupScopeDictionaryID("dict1")
+        XCTAssertEqual(settings.lookupScopeDictionaryID, "dict1")
+
+        // 重启后应从 UserDefaults 恢复
+        let reloaded = DictionarySourceSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.lookupScopeDictionaryID, "dict1")
+
+        // 切换回全部 (nil 或空字符串)
+        settings.setLookupScopeDictionaryID(nil)
+        XCTAssertNil(settings.lookupScopeDictionaryID)
+        let reloadedAfterClear = DictionarySourceSettings(defaults: defaults)
+        XCTAssertNil(reloadedAfterClear.lookupScopeDictionaryID)
+    }
+
+    func testRemovedDictionaryResetsLookupScopeToNil() {
+        let defaults = makeDefaults()
+        let settings = DictionarySourceSettings(defaults: defaults)
+        let initial = [dictionary("dict1"), dictionary("dict2")]
+        settings.synchronize(with: initial)
+        settings.setLookupScopeDictionaryID("dict2")
+        XCTAssertEqual(settings.lookupScopeDictionaryID, "dict2")
+
+        // 移除词典 dict2 时，查词范围自动回退到 nil（全部）
+        settings.remove(dictionaryID: "dict2")
+        XCTAssertNil(settings.lookupScopeDictionaryID)
+
+        // 同步中若所选词典已不在列表中，自动回退到 nil（全部）
+        settings.setLookupScopeDictionaryID("dict1")
+        settings.synchronize(with: [dictionary("dict3")])
+        XCTAssertNil(settings.lookupScopeDictionaryID)
+    }
+
+    @MainActor
+    func testCoordinatorTriggerDeleteInvokesCallback() {
+        let settings = DictionarySourceSettings(defaults: makeDefaults())
+        let dict1 = dictionary("dict1")
+        let dict2 = dictionary("dict2")
+        let initial = [dict1, dict2]
+        settings.synchronize(with: initial)
+
+        var deletedDictionary: StudyMateDictionarySummary?
+        let coordinator = DictionarySourceSettingsTableRepresentable.Coordinator(
+            settings: settings,
+            dictionaries: initial,
+            dictionaryColumnTitle: "词典",
+            actionsColumnTitle: "操作",
+            onDeleteDictionary: { dict in
+                deletedDictionary = dict
+            }
+        )
+
+        coordinator.triggerDelete(dictionary: dict1)
+        XCTAssertEqual(deletedDictionary?.id, "dict1")
+
+        // 模拟删除后从 settings 中移除
+        settings.remove(dictionaryID: "dict1")
+        XCTAssertEqual(settings.orderedDictionaryIDs, ["dict2"])
+    }
 }

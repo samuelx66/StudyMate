@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import StudyMateKit
 
@@ -259,4 +260,105 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertNil(coordinator.anchorScreenRect)
         XCTAssertNil(coordinator.anchorScreenPoint)
     }
+
+    func testCompiledVocabularyFilterMatchesWordsAccurately() {
+        let words: Set<String> = ["blender", "return", "look up", "搅拌机", "don't"]
+        let filter = CompiledVocabularyFilter(words: words)
+
+        // 1. 英文单词完全匹配
+        let s1 = SentenceSegment(index: 1, startTime: 0, endTime: 1, text: "She decided to return the blender.")
+        XCTAssertTrue(filter.matches(segment: s1))
+
+        // 2. 单词不匹配（避免“cat”命中“caterpillar”等子串误判）
+        let filterCat = CompiledVocabularyFilter(words: ["cat"])
+        let sCatWrong = SentenceSegment(index: 2, startTime: 0, endTime: 1, text: "The caterpillar is climbing.")
+        XCTAssertFalse(filterCat.matches(segment: sCatWrong))
+        let sCatRight = SentenceSegment(index: 3, startTime: 0, endTime: 1, text: "The cat is climbing.")
+        XCTAssertTrue(filterCat.matches(segment: sCatRight))
+
+        // 3. 中文生词匹配
+        let sChinese = SentenceSegment(index: 4, startTime: 0, endTime: 1, text: "She bought a machine", translation: "她买了搅拌机")
+        XCTAssertTrue(filter.matches(segment: sChinese))
+
+        // 4. 短语匹配
+        let sPhrase = SentenceSegment(index: 5, startTime: 0, endTime: 1, text: "Please look up the word.")
+        XCTAssertTrue(filter.matches(segment: sPhrase))
+
+        // 5. 标点与缩写词
+        let sApostrophe = SentenceSegment(index: 6, startTime: 0, endTime: 1, text: "I don't know.")
+        XCTAssertTrue(filter.matches(segment: sApostrophe))
+
+        // 6. 空生词过滤器不匹配任何内容
+        let emptyFilter = CompiledVocabularyFilter(words: [])
+        XCTAssertFalse(emptyFilter.matches(segment: s1))
+    }
+
+    func testSentenceFiltersMatchVocabularyNotebook() {
+        let matchingSegment = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 5,
+            text: "she decided to return the blender she",
+            translation: "她决定把半年前买的搅拌机退掉"
+        )
+        let nonMatchingSegment = SentenceSegment(
+            index: 2,
+            startTime: 0,
+            endTime: 5,
+            text: "the weather is great today",
+            translation: "今天天气很好"
+        )
+
+        var criteria = SegmentListFilterCriteria()
+        criteria.requiresVocabularyNotebook = true
+        criteria.compiledVocabularyFilter = CompiledVocabularyFilter(words: ["blender", "apple"])
+
+        XCTAssertTrue(criteria.matches(matchingSegment))
+        XCTAssertFalse(criteria.matches(nonMatchingSegment))
+
+        // 与其它筛选条件组合
+        criteria.requiresBookmark = true
+        XCTAssertFalse(criteria.matches(matchingSegment)) // 未加星标
+
+        let bookmarked = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 5,
+            text: "she decided to return the blender she",
+            isBookmarked: true
+        )
+        XCTAssertTrue(criteria.matches(bookmarked))
+    }
+
+    func testDictionarySelectableTextSizeThatFitsCalculatesMultilineHeight() {
+        let longSentence = "It's an album of pictures of the United States, the cities, the special places, and the people."
+        let font = NSFont.systemFont(ofSize: 14)
+
+        // 宽屏单行
+        let wideSize = DictionarySelectableText.calculateFittingSize(
+            text: longSentence,
+            font: font,
+            proposedWidth: 1200
+        )
+
+        // 窄屏自动换行（2-3行）
+        let narrowSize = DictionarySelectableText.calculateFittingSize(
+            text: longSentence,
+            font: font,
+            proposedWidth: 250
+        )
+
+        // 自动换行后的高度必须严格大于单行高度，确保保留足够的行高不发生遮挡
+        XCTAssertGreaterThan(narrowSize.height, wideSize.height)
+        XCTAssertGreaterThanOrEqual(narrowSize.height, wideSize.height * 1.8)
+
+        // 空文本返回安全单行高度
+        let emptySize = DictionarySelectableText.calculateFittingSize(
+            text: "",
+            font: font,
+            proposedWidth: 300
+        )
+        XCTAssertGreaterThan(emptySize.height, 0)
+    }
 }
+

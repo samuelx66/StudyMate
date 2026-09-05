@@ -60,6 +60,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
     @Published public var loopMode: PlaybackLoopMode = .normal
+    /// 当开启此开关时（如填空模式），句后停顿模式在当前句播放结束时暂停并停留在当前句起点，
+    /// 不会自动切到下一句，方便用户重听或在该句完成填词输入。
+    @Published public var pauseAfterSegmentHoldsCurrentSegment: Bool = false
     @Published public var volume: Float = 1.0 {
         didSet {
             activeBackend.volume = volume
@@ -73,6 +76,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return mode
         }
         return .hybrid
+    }()
+
+    private static let automaticSubtitleLoadingKey = "StudyMate_MPVAutomaticSubtitleLoading"
+
+    /// Whether libmpv should auto-select embedded subtitle tracks and matching
+    /// external subtitle files. Keep this enabled by default to preserve the
+    /// existing playback behavior.
+    @Published public private(set) var automaticallyLoadsSubtitles: Bool = {
+        (UserDefaults.standard.object(forKey: automaticSubtitleLoadingKey) as? Bool) ?? true
     }()
 
     // MARK: - 智能精听与复读系统状态
@@ -283,6 +295,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 在用户明确执行新的播放/Seek/选句操作前，冻结波形相关的播放状态，
     /// 避免主波形跟随到尾部或次波形被切换到错误的断句。
     private var isWaveformFrozenAtNaturalEnd = false
+    private var hasEndedAfterLastSegment = false
     private var pendingResumeTime: Double = 0
     private var pendingResumePlayback = false
     private var previewEndTime: Double?
@@ -353,6 +366,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.nativeBackend.playbackRate = self.playbackRate
         self.mpvBackend.volume = self.volume
         self.mpvBackend.playbackRate = self.playbackRate
+        self.mpvBackend.setAutomaticSubtitleLoading(self.automaticallyLoadsSubtitles)
         setupBackendCallbacks(for: nativeBackend)
         setupBackendCallbacks(for: mpvBackend)
         projectFileManager.setErrorHandler { [weak self] message in
@@ -459,6 +473,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     if finalSegmentEnd > 0,
                        max(self.currentTime, backendTime) >= finalSegmentEnd - 0.05 {
                         self.isWaveformFrozenAtNaturalEnd = true
+                        self.hasEndedAfterLastSegment = true
                     }
                 }
             }
@@ -997,6 +1012,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    public func setAutomaticallyLoadsSubtitles(_ enabled: Bool) {
+        guard automaticallyLoadsSubtitles != enabled else { return }
+        automaticallyLoadsSubtitles = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.automaticSubtitleLoadingKey)
+        // LazyMPVPlayerBackend retains the preference even before libmpv is
+        // created; if it is active, the currently loaded subtitle is also
+        // hidden or reselected immediately.
+        mpvBackend.setAutomaticSubtitleLoading(enabled)
+    }
+
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
         highFrequencyPresentationEnabled = enabled
         applyPresentationRefreshPolicy()
@@ -1214,6 +1239,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         activeSegmentIndex = nil
         lastSecondarySegmentId = nil
         isWaveformFrozenAtNaturalEnd = false
+        hasEndedAfterLastSegment = false
         waveformData = .empty
         isExtractingWaveform = false
         waveformExtractionProgress = 0
@@ -2362,6 +2388,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         isWaveformFrozenAtNaturalEnd = false
         previewEndTime = nil
 
+        let shouldRestartFromBeginning = (loopMode == .normal || loopMode == .pauseAfterSegment) && (
+            hasEndedAfterLastSegment || (
+                !isPlaying &&
+                !segments.isEmpty &&
+                currentTime >= ((onlyPlayBookmarked ? segments.last(where: { $0.isBookmarked })?.endTime : segments.last?.endTime) ?? .infinity) - 0.05
+            )
+        )
+        if shouldRestartFromBeginning {
+            hasEndedAfterLastSegment = false
+            let firstIndex = onlyPlayBookmarked ? segments.firstIndex(where: { $0.isBookmarked }) : (segments.isEmpty ? nil : 0)
+            if let firstIdx = firstIndex {
+                resetPrimaryViewportForLoopRestart()
+                wantsPlayback = true
+                jumpToSegment(at: firstIdx)
+                beginPlayback()
+                return
+            }
+        }
+
         if isShadowingPaused && shadowingCountdownRemaining > 0 {
             resumeShadowingPause()
             return
@@ -2415,6 +2460,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func stop() {
         cancelShadowingPause()
         pause()
+        hasEndedAfterLastSegment = false
         previewEndTime = nil
         seek(to: 0.0)
     }
@@ -2423,6 +2469,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
         cancelShadowingPause()
         isWaveformFrozenAtNaturalEnd = false
+        hasEndedAfterLastSegment = false
         explicitSegmentSelection = nil
         completedPreviewSegmentID = nil
         previewSegmentID = nil
@@ -2842,9 +2889,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         if loopMode == .pauseAfterSegment {
             pause()
-            if let nextIdx = targetIndex {
+            if pauseAfterSegmentHoldsCurrentSegment {
+                jumpToSegment(at: currentIndex)
+            } else if let nextIdx = targetIndex {
                 jumpToSegment(at: nextIdx)
             } else {
+                hasEndedAfterLastSegment = true
                 seek(to: segments[currentIndex].endTime)
             }
             return
@@ -2903,6 +2953,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         } else {
             if loopMode == .normal {
+                hasEndedAfterLastSegment = true
                 finishPlaybackAtNaturalEnd()
             } else {
                 pause()
@@ -2917,6 +2968,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // 在暂停后端之前设置冻结标记，因为部分后端会从 pause() 同步发出
         // 一次状态或时间回调。
         isWaveformFrozenAtNaturalEnd = true
+        hasEndedAfterLastSegment = true
         shadowingTask?.cancel()
         isShadowingPaused = false
         pendingResumePlayback = false
@@ -3145,6 +3197,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         completedPreviewSegmentID = nil
         previewSegmentID = nil
         isWaveformFrozenAtNaturalEnd = false
+        hasEndedAfterLastSegment = false
         let seg = segments[index]
         let resumeAfterNaturalEnd = canResumePlaybackFromSegmentSelection
         if resumeAfterNaturalEnd {
@@ -3215,14 +3268,42 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         jumpToSegment(at: targetIndex)
     }
 
-    public func repeatCurrentSegment() {
-        guard let idx = activeSegmentIndex, idx >= 0, idx < segments.count else { return }
-        currentRepeatCount = 1
-        seek(to: segments[idx].startTime) {
-            Task { @MainActor [weak self] in
-                self?.play()
+    /// 在填空模式等场景下，整句完成时前进到下一句并自动播放一次
+    @discardableResult
+    public func advanceToNextSentenceAfterCompletion() -> Bool {
+        guard !segments.isEmpty else { return false }
+        let current = activeSegmentIndex ?? 0
+        var targetIndex: Int?
+        if onlyPlayBookmarked {
+            var index = current + 1
+            while index < segments.count {
+                if segments[index].isBookmarked {
+                    targetIndex = index
+                    break
+                }
+                index += 1
             }
+        } else {
+            targetIndex = current + 1 < segments.count ? current + 1 : nil
         }
+
+        if let nextIdx = targetIndex {
+            jumpToSegment(at: nextIdx)
+            play()
+            return true
+        } else {
+            hasEndedAfterLastSegment = true
+            pause()
+            seek(to: segments[current].endTime)
+            return false
+        }
+    }
+
+    public func repeatCurrentSegment() {
+        let targetIndex: Int? = activeSegmentIndex ?? (segments.isEmpty ? nil : 0)
+        guard let idx = targetIndex, idx >= 0, idx < segments.count else { return }
+        jumpToSegment(at: idx)
+        play()
     }
 
     public func toggleBookmark(for segmentId: UUID) {

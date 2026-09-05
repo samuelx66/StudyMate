@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct VocabularyNotebookView: View {
     @ObservedObject var manager: VocabularyNotebookManager
@@ -222,6 +223,33 @@ public struct VocabularyNotebookView: View {
                     .width(min: 100, ideal: 150)
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
+                .contextMenu(forSelectionType: UUID.self) { selectedIDs in
+                    if !selectedIDs.isEmpty {
+                        Button {
+                            exportEntries(ids: selectedIDs)
+                        } label: {
+                            Label(
+                                lang.text("导出所选（\(selectedIDs.count) 项）...", "Export Selected (\(selectedIDs.count) items)..."),
+                                systemImage: "square.and.arrow.up"
+                            )
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            deleteEntries(ids: selectedIDs)
+                        } label: {
+                            Label(
+                                lang.text("删除所选（\(selectedIDs.count) 项）", "Delete Selected (\(selectedIDs.count) items)"),
+                                systemImage: "trash"
+                            )
+                        }
+                    } else {
+                        Button {
+                            exportEntries(ids: nil)
+                        } label: {
+                            Label(lang.text("导出生词本...", "Export Vocabulary Notebook..."), systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
                 .disabled(manager.isWorking)
             }
 
@@ -257,6 +285,17 @@ public struct VocabularyNotebookView: View {
         }
         .navigationTitle(manager.currentNotebook?.name ?? lang.text("生词本", "Vocabulary"))
         .searchable(text: $searchText, placement: .toolbar, prompt: lang.text("搜索单词", "Search words"))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    exportEntries(ids: selectedVisibleIDs.isEmpty ? nil : selectedVisibleIDs)
+                } label: {
+                    Label(lang.text("导出", "Export"), systemImage: "square.and.arrow.up")
+                }
+                .disabled(manager.isWorking || manager.entries.isEmpty)
+                .help(lang.text("导出生词本为纯文本文件 (.txt)", "Export vocabulary notebook as plain text (.txt)"))
+            }
+        }
     }
 
     private var filterBar: some View {
@@ -331,6 +370,44 @@ public struct VocabularyNotebookView: View {
                 .disabled(manager.isWorking || manager.notebooks.count < 2)
             }
 
+            if !manager.entries.isEmpty {
+                if !selectedVisibleIDs.isEmpty {
+                    Menu {
+                        Button {
+                            exportEntries(ids: selectedVisibleIDs)
+                        } label: {
+                            Label(
+                                lang.text("导出所选（\(selectedVisibleIDs.count) 项）...", "Export Selected (\(selectedVisibleIDs.count) items)..."),
+                                systemImage: "checkmark.circle"
+                            )
+                        }
+
+                        Button {
+                            exportEntries(ids: nil)
+                        } label: {
+                            Label(
+                                lang.text("导出全部（\(manager.entries.count) 项）...", "Export All (\(manager.entries.count) items)..."),
+                                systemImage: "doc.on.doc"
+                            )
+                        }
+                    } label: {
+                        Label(
+                            lang.text("导出（\(selectedVisibleIDs.count)）", "Export (\(selectedVisibleIDs.count))"),
+                            systemImage: "square.and.arrow.up"
+                        )
+                    }
+                    .disabled(manager.isWorking)
+                } else {
+                    Button {
+                        exportEntries(ids: nil)
+                    } label: {
+                        Label(lang.text("导出", "Export"), systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(manager.isWorking)
+                    .help(lang.text("导出生词本为纯文本文件 (.txt)", "Export vocabulary notebook as plain text (.txt)"))
+                }
+            }
+
             Spacer(minLength: 0)
         }
         .controlSize(.small)
@@ -355,13 +432,52 @@ public struct VocabularyNotebookView: View {
     }
 
     private func deleteSelectedEntries() {
-        let ids = selectedVisibleIDs
+        deleteEntries(ids: selectedVisibleIDs)
+    }
+
+    private func deleteEntries(ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         Task {
             do {
                 _ = try await manager.deleteEntries(ids: ids)
                 selectedEntryIDs.subtract(ids)
             } catch { }
+        }
+    }
+
+    private func exportEntries(ids: Set<UUID>? = nil) {
+        let targetEntries: [VocabularyWordEntry]
+        let defaultFilenameSuffix: String
+        if let ids, !ids.isEmpty {
+            targetEntries = manager.entries.filter { ids.contains($0.id) }
+            defaultFilenameSuffix = "-已选生词"
+        } else {
+            targetEntries = manager.entries
+            defaultFilenameSuffix = ""
+        }
+        guard !targetEntries.isEmpty else { return }
+
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.plainText]
+        let baseName = manager.currentNotebook?.name ?? lang.text("生词本", "Vocabulary")
+        panel.nameFieldStringValue = "\(baseName)\(defaultFilenameSuffix).txt"
+        panel.message = lang.text(
+            "导出生词本记录为纯文本文件（每行：单词、原文例句、译文例句、来源，以制表符分隔）",
+            "Export vocabulary records to plain text (each line: word, original example, translated example, source, tab-separated)"
+        )
+        panel.prompt = lang.text("导出", "Export")
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        Task {
+            do {
+                _ = try await manager.exportToPlainText(
+                    entries: targetEntries,
+                    destinationURL: destinationURL,
+                    sourceResolver: { displaySource($0) }
+                )
+            } catch {}
         }
     }
 

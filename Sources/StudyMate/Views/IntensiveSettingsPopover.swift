@@ -22,6 +22,8 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject var modelManager = WhisperModelManager.shared
     @ObservedObject var translationSettings = TranslationSettings.shared
     @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
+    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
+    @ObservedObject private var dictionaryEngine = DictionaryEngine.shared
 
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = false
     @State private var selectedSection: SettingsSection = .general
@@ -86,6 +88,8 @@ public struct IntensiveSettingsPopover: View {
         .frame(minWidth: 880, idealWidth: 960, minHeight: 640, idealHeight: 720)
         .onAppear {
             translationAPIKey = translationSettings.apiKey()
+            dictionaryEngine.refresh()
+            dictionarySourceSettings.synchronize(with: dictionaryEngine.dictionaries)
         }
         .onChange(of: translationSettings.selectedServiceID) { _, _ in
             translationAPIKey = translationSettings.apiKey()
@@ -162,6 +166,46 @@ public struct IntensiveSettingsPopover: View {
 
     private var dictionarySettings: some View {
         VStack(alignment: .leading, spacing: 18) {
+            settingsGroupTitle(
+                lang.text("查词与解释", "Lookup & Definitions"),
+                systemImage: "character.book.closed"
+            )
+
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text("查词界面词语解释使用词典", "Dictionary for definition lookup interface"))
+                        .font(.body.weight(.medium))
+                    Text(lang.text(
+                        "双击选中单词弹出操作栏并点击查词后，弹出的查词界面所使用的词典。选择某一本词典时只显示该词典的解释；选择“全部”时显示所有已启用词典的解释。",
+                        "The dictionary used when clicking Look Up after selecting a word. Choosing a specific dictionary displays only its definitions; choosing “All” displays definitions from all enabled dictionaries."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 16)
+
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { dictionarySourceSettings.lookupScopeDictionaryID ?? "" },
+                        set: { dictionarySourceSettings.setLookupScopeDictionaryID($0.isEmpty ? nil : $0) }
+                    )
+                ) {
+                    Text(lang.text("全部", "All")).tag("")
+                    ForEach(dictionarySourceSettings.orderedDictionaries(from: dictionaryEngine.dictionaries)) { dict in
+                        Text(dict.displayName).tag(dict.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .accessibilityLabel(lang.text("查词界面词语解释使用词典", "Dictionary for definition lookup interface"))
+                .frame(minWidth: 160)
+            }
+
+            Divider()
+
             settingsGroupTitle(
                 lang.text("词典外观", "Dictionary Appearance"),
                 systemImage: "book.closed"
@@ -768,6 +812,26 @@ public struct IntensiveSettingsPopover: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Toggle(isOn: Binding(
+                get: { engine.automaticallyLoadsSubtitles },
+                set: { engine.setAutomaticallyLoadsSubtitles($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text(
+                        "扩展解码时自动加载字幕",
+                        "Automatically load subtitles with extended decoding"
+                    ))
+                    Text(lang.text(
+                        "关闭后，libmpv 不会自动加载 MKV 内嵌字幕或同名外部字幕；画面字幕仅由原文和译文开关控制。",
+                        "When disabled, libmpv will not automatically load embedded MKV subtitles or matching external subtitle files. Video subtitles are then controlled only by the original and translation toggles."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+
             Divider()
 
             settingsNote(lang.text(
@@ -811,7 +875,7 @@ public struct IntensiveSettingsPopover: View {
         case .general:
             return lang.text("语言和显示", "Language and display")
         case .dictionary:
-            return lang.text("外观与渲染", "Appearance and rendering")
+            return lang.text("查词与外观渲染", "Lookup and appearance")
         case .playback:
             return lang.text("复读练习", "Repeat practice")
         case .segmentation:
@@ -828,7 +892,7 @@ public struct IntensiveSettingsPopover: View {
         case .general:
             return lang.text("配置应用语言和主窗口的基础显示方式。", "Configure the app language and basic main-window display options.")
         case .dictionary:
-            return lang.text("控制 MDX 词典是否跟随 macOS 外观，并决定是否启用 StudyMate 的兼容渲染层。", "Control whether MDX dictionaries follow the macOS appearance and whether StudyMate's compatibility rendering layers are enabled.")
+            return lang.text("配置查词界面优先词典，并控制 MDX 词典外观跟随与兼容渲染层。", "Configure the preferred dictionary for lookup interfaces and control MDX appearance and compatibility rendering layers.")
         case .playback:
             return lang.text("配置精听练习时的默认筛选行为；播放过程中的即时控制仍在工具栏。", "Configure intensive-practice behavior; immediate playback controls remain in the toolbar.")
         case .segmentation:
@@ -836,7 +900,7 @@ public struct IntensiveSettingsPopover: View {
         case .translation:
             return lang.text("管理可复用的翻译服务配置，并在句子列表中手动确认后执行翻译。", "Manage reusable translation profiles and start translation manually after confirmation in the sentence list.")
         case .decoder:
-            return lang.text("选择系统、扩展或智能混合音视频解码引擎。", "Choose the native, extended, or hybrid audio/video decoder.")
+            return lang.text("选择系统、扩展或智能混合音视频解码引擎，并控制扩展解码时的字幕自动加载。", "Choose the native, extended, or hybrid audio/video decoder and control automatic subtitle loading for extended decoding.")
         }
     }
 

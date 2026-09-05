@@ -1953,4 +1953,158 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.currentRepeatCount, 2)
         XCTAssertEqual(engine.activeSegmentIndex, 0)
     }
+
+    func testNormalLoopModeRestartsFromBeginningWhenPlayClickedAfterLastSegment() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+
+        // 播放到达最后一句末尾，连续播放停止
+        native.emitTime(8.0)
+        await Task.yield()
+
+        XCTAssertFalse(engine.isPlaying)
+
+        // 此时点击播放按钮，应从第一句（索引 0）开始重新播放
+        engine.play()
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(native.currentTime, 0.0, accuracy: 0.01)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testPauseAfterSegmentModeRestartsFromBeginningWhenPlayClickedAfterLastSegment() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .pauseAfterSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+
+        // 句后停顿模式到达最后一句末尾后停止
+        native.emitTime(8.0)
+        await Task.yield()
+
+        XCTAssertFalse(engine.isPlaying)
+
+        // 此时点击播放按钮，应从第一句重新开始
+        engine.play()
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(native.currentTime, 0.0, accuracy: 0.01)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testRestartFromBeginningRespectsOnlyPlayBookmarked() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        var seg0 = SentenceSegment(index: 1, startTime: 0, endTime: 3)
+        seg0.isBookmarked = false
+        var seg1 = SentenceSegment(index: 2, startTime: 4, endTime: 7)
+        seg1.isBookmarked = true
+        var seg2 = SentenceSegment(index: 3, startTime: 8, endTime: 11)
+        seg2.isBookmarked = true
+        engine.segments = [seg0, seg1, seg2]
+        engine.onlyPlayBookmarked = true
+
+        engine.activeSegmentIndex = 2
+        engine.play()
+        XCTAssertTrue(engine.isPlaying)
+
+        // 播完最后一条书签句
+        native.emitTime(11.0)
+        await Task.yield()
+
+        XCTAssertFalse(engine.isPlaying)
+
+        // 点击播放，应从第一条书签句（索引 1，起始 4.0）开始播放，而不是索引 0
+        engine.play()
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 4.0, accuracy: 0.01)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testManualSegmentSelectionCancelsRestartFromBeginning() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("lesson.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 5, endTime: 8)
+        ]
+        engine.activeSegmentIndex = 1
+        engine.play()
+
+        native.emitTime(8.0)
+        await Task.yield()
+        XCTAssertFalse(engine.isPlaying)
+
+        // 用户主动在列表中点击第 2 句（索引 1）
+        engine.jumpToSegment(at: 1)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // 再次点击播放，应停留在选中的第 2 句并播放，而不是被重置回第 1 句
+        engine.play()
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.currentTime, 5.0, accuracy: 0.01)
+        XCTAssertTrue(engine.isPlaying)
+    }
 }

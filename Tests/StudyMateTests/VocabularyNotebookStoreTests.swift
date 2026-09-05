@@ -180,4 +180,70 @@ final class VocabularyNotebookStoreTests: XCTestCase {
         for _ in 0..<5 { await Task.yield() }
         XCTAssertFalse(manager.isWordSaved("toggleme"))
     }
+
+    func testVocabularyExportFormatterSingleAndBilingualExamples() {
+        // 1. 包含原文和译文的例句（换行分隔）
+        let entry1 = VocabularyWordEntry(
+            word: "apple",
+            exampleSentence: "I have an apple.\n我有一个苹果。",
+            source: "Lesson 1"
+        )
+        let line1 = VocabularyExportFormatter.formatRecord(entry: entry1)
+        XCTAssertEqual(line1, "apple\tI have an apple.\t我有一个苹果。\tLesson 1")
+
+        // 2. 仅有原文例句
+        let entry2 = VocabularyWordEntry(
+            word: "banana",
+            exampleSentence: "This is a banana.",
+            source: "OALD"
+        )
+        let line2 = VocabularyExportFormatter.formatRecord(entry: entry2)
+        XCTAssertEqual(line2, "banana\tThis is a banana.\t\tOALD")
+
+        // 3. 例句为空，来源为空
+        let entry3 = VocabularyWordEntry(
+            word: "cherry",
+            exampleSentence: "",
+            source: ""
+        )
+        let line3 = VocabularyExportFormatter.formatRecord(entry: entry3)
+        XCTAssertEqual(line3, "cherry\t\t\t")
+
+        // 4. 字段内包含制表符和换行符，自动清洗防止破坏结构
+        let entry4 = VocabularyWordEntry(
+            word: "  dragon\tfruit  ",
+            exampleSentence: "First line\tpart1\nSecond line\tpart2",
+            source: "Source\tName"
+        )
+        let line4 = VocabularyExportFormatter.formatRecord(entry: entry4)
+        XCTAssertEqual(line4, "dragon fruit\tFirst line part1\tSecond line part2\tSource Name")
+
+        // 5. 格式化多条为纯文本
+        let multiText = VocabularyExportFormatter.formatPlainText(entries: [entry1, entry2])
+        let expected = "apple\tI have an apple.\t我有一个苹果。\tLesson 1\nbanana\tThis is a banana.\t\tOALD"
+        XCTAssertEqual(multiText, expected)
+    }
+
+    @MainActor
+    func testManagerExportToPlainTextFile() async throws {
+        let suiteName = "StudyMate-VocabularyExportTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = VocabularyNotebookManager(store: store, defaults: defaults)
+        let entries = [
+            VocabularyWordEntry(word: "cat", exampleSentence: "A lovely cat.\n一只可爱的猫。", source: "book"),
+            VocabularyWordEntry(word: "dog", exampleSentence: "Barking dog.", source: "film")
+        ]
+        let fileURL = temporaryDirectory.appendingPathComponent("export_test.txt")
+
+        let count = try await manager.exportToPlainText(entries: entries, destinationURL: fileURL)
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let content = try String(contentsOf: fileURL, encoding: .utf8)
+        let expectedContent = "cat\tA lovely cat.\t一只可爱的猫。\tbook\ndog\tBarking dog.\t\tfilm\n"
+        XCTAssertEqual(content, expectedContent)
+        XCTAssertTrue(manager.statusMessage?.contains("已导出") == true)
+    }
 }
