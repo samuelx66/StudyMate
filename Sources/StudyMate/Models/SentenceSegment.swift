@@ -105,6 +105,19 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
     public var formattedDuration: String {
         String(format: "%.2fs", duration)
     }
+
+    /// 角色/说话人标签（例如 s1, s2 等；重叠时如 s1+s2，轮替时如 s1→s2；无角色时返回空字符串）
+    public var speakerRoleLabel: String {
+        guard !speakerIDs.isEmpty else { return "" }
+        let labels = speakerIDs.map { "s\($0 + 1)" }
+        if isSpeakerOverlap {
+            return labels.joined(separator: "+")
+        }
+        if labels.count > 1 {
+            return labels.joined(separator: "→")
+        }
+        return labels[0]
+    }
     
     public static func formatTimecode(_ seconds: Double) -> String {
         guard !seconds.isNaN && seconds.isFinite && seconds >= 0 else {

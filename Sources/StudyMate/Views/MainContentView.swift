@@ -48,6 +48,7 @@ public struct MainContentView: View {
     @State private var isClosingCurrentMedia: Bool = false
     @State private var isProjectRecoveryDialogPresented: Bool = false
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible: Bool = false
+    @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "studymate_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "studymate_playlist_width") : 360
     private let onWindowDidAppear: () -> Void
     
@@ -144,6 +145,7 @@ public struct MainContentView: View {
             isSubtitleEditVisible: $isSubtitleEditVisible,
             isVideoSubtitleFontSettingsPresented: $isVideoSubtitleFontSettingsPresented,
             isSidebarVisible: $isSidebarVisible,
+            playbackInterfaceMode: $playbackInterfaceMode,
             onOpenLibrary: { openWindow(id: "sentence-library") },
             onOpenVocabulary: { openWindow(id: "vocabulary") },
             onOpenDictionary: {
@@ -170,46 +172,16 @@ public struct MainContentView: View {
 
     private var workspaceContent: some View {
         VStack(spacing: 0) {
-            HSplitView {
-                // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部控制栏）
-                VStack(spacing: 0) {
-                    if isWaveformsVisible {
-                        VStack(spacing: 4) {
-                            PrimaryWaveformView(engine: engine)
-                            SecondaryWaveformView(engine: engine)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.top, 4)
-                        .padding(.bottom, 2)
-                        .studymateContentSurface(cornerRadius: 8)
-                        .transition(Self.slideAndFadeTransition(from: .top))
-                    }
-
-                    VideoPlayerView(engine: engine)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if isSubtitleEditVisible {
-                        SubtitleEditView(engine: engine)
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .bottom).combined(with: .opacity),
-                                removal: .move(edge: .bottom).combined(with: .opacity)
-                            ))
-                    }
-                }
-                .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
-
-                if isSidebarVisible {
-                    SegmentListView(
-                        engine: engine,
-                        suppressToolTips: isPlaylistMounted
-                    )
-                        .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
-                        // 抽屉在屏幕上时不允许下层列表继续响应；关闭抽屉后立即恢复。
-                        .allowsHitTesting(!isPlaylistMounted)
-                        .transition(Self.slideAndFadeTransition(from: .trailing))
-                }
+            switch playbackInterfaceMode {
+            case .video:
+                videoModeWorkspace
+            case .list:
+                listModeWorkspace
+            case .fullText:
+                fullTextModeWorkspace
+            case .sentence:
+                sentenceModeWorkspace
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if shouldShowStatusBar {
                 PlaybackStatusBar(
@@ -227,6 +199,121 @@ public struct MainContentView: View {
                 transaction.animation = nil
             }
         }
+    }
+
+    private var videoModeWorkspace: some View {
+        HSplitView {
+            // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部控制栏）
+            VStack(spacing: 0) {
+                if isWaveformsVisible {
+                    VStack(spacing: 4) {
+                        PrimaryWaveformView(engine: engine)
+                        SecondaryWaveformView(engine: engine)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
+                    .padding(.bottom, 2)
+                    .studymateContentSurface(cornerRadius: 8)
+                    .transition(Self.slideAndFadeTransition(from: .top))
+                }
+
+                VideoPlayerView(engine: engine)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if isSubtitleEditVisible {
+                    SubtitleEditView(engine: engine)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .move(edge: .bottom).combined(with: .opacity)
+                        ))
+                }
+            }
+            .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
+
+            if isSidebarVisible {
+                SegmentListView(
+                    engine: engine,
+                    suppressToolTips: isPlaylistMounted
+                )
+                    .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                    // 抽屉在屏幕上时不允许下层列表继续响应；关闭抽屉后立即恢复。
+                    .allowsHitTesting(!isPlaylistMounted)
+                    .transition(Self.slideAndFadeTransition(from: .trailing))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var listModeWorkspace: some View {
+        VStack(spacing: 0) {
+            if isWaveformsVisible {
+                VStack(spacing: 4) {
+                    PrimaryWaveformView(engine: engine)
+                    SecondaryWaveformView(engine: engine)
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+                .studymateContentSurface(cornerRadius: 8)
+                .transition(Self.slideAndFadeTransition(from: .top))
+            }
+
+            PlaybackListModeTableView(
+                engine: engine,
+                videoSubtitleSettings: videoSubtitleSettings,
+                lang: lang
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var fullTextModeWorkspace: some View {
+        VStack(spacing: 0) {
+            if isWaveformsVisible {
+                VStack(spacing: 4) {
+                    PrimaryWaveformView(engine: engine)
+                    SecondaryWaveformView(engine: engine)
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+                .studymateContentSurface(cornerRadius: 8)
+                .transition(Self.slideAndFadeTransition(from: .top))
+            }
+
+            PlaybackFullTextModeView(
+                engine: engine,
+                videoSubtitleSettings: videoSubtitleSettings,
+                lang: lang
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var sentenceModeWorkspace: some View {
+        VStack(spacing: 0) {
+            if isWaveformsVisible {
+                VStack(spacing: 4) {
+                    PrimaryWaveformView(engine: engine)
+                    SecondaryWaveformView(engine: engine)
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+                .studymateContentSurface(cornerRadius: 8)
+                .transition(Self.slideAndFadeTransition(from: .top))
+            }
+
+            PlaybackSentenceModeView(
+                engine: engine,
+                videoSubtitleSettings: videoSubtitleSettings,
+                lang: lang
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func handleMediaDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -416,6 +503,7 @@ private struct MainWindowToolbar: ToolbarContent {
     @Binding var isSubtitleEditVisible: Bool
     @Binding var isVideoSubtitleFontSettingsPresented: Bool
     @Binding var isSidebarVisible: Bool
+    @Binding var playbackInterfaceMode: PlaybackInterfaceMode
     let onOpenLibrary: () -> Void
     let onOpenVocabulary: () -> Void
     let onOpenDictionary: () -> Void
@@ -558,7 +646,9 @@ private struct MainWindowToolbar: ToolbarContent {
             Button { isVideoSubtitleFontSettingsPresented.toggle() } label: { Image(systemName: "textformat.size") }
                 .help(StudyMateShortcutCatalog.help(lang.text("设置字幕字体", "Set subtitle fonts"), shortcut: .videoSubtitleFontSettings))
                 .keyboardShortcut("f", modifiers: [.command, .option])
-                .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) { VideoSubtitleFontSettingsPopover() }
+                .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) {
+                    VideoSubtitleFontSettingsPopover(initialMode: playbackInterfaceMode)
+                }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -578,6 +668,20 @@ private struct MainWindowToolbar: ToolbarContent {
             .keyboardShortcut("r", modifiers: [.command, .shift])
         }
 
+        ToolbarItem(placement: .primaryAction) {
+            Picker(
+                lang.text("模式", "Mode"),
+                selection: $playbackInterfaceMode
+            ) {
+                ForEach(PlaybackInterfaceMode.allCases) { mode in
+                    Text(mode.localized(with: lang)).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .help(lang.text("选择界面模式：视频模式 / 列表模式 / 全文模式 / 句子模式", "Choose interface mode"))
+        }
+
         ToolbarItemGroup(placement: .primaryAction) {
             Button { withAnimation(.easeInOut(duration: 0.22)) { isWaveformsVisible.toggle() } } label: { Image(systemName: "waveform.path.ecg") }
                 .help(StudyMateShortcutCatalog.help(isWaveformsVisible ? lang.text("隐藏波形图工作区", "Hide waveforms") : lang.text("显示波形图工作区", "Show waveforms"), shortcut: .toggleWaveforms))
@@ -585,12 +689,14 @@ private struct MainWindowToolbar: ToolbarContent {
             Button { withAnimation(.easeInOut(duration: 0.22)) { isSubtitleEditVisible.toggle() } } label: { Image(systemName: "square.and.pencil") }
                 .help(StudyMateShortcutCatalog.help(isSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"), shortcut: .toggleSubtitleEditor))
                 .keyboardShortcut("s", modifiers: [.option])
+                .disabled(playbackInterfaceMode != .video)
             Button(action: onTogglePlaylist) { Image(systemName: "music.note.list") }
                 .help(StudyMateShortcutCatalog.help(lang.text("显示或隐藏播放列表", "Show or hide playlist"), shortcut: .togglePlaylist))
                 .keyboardShortcut("p", modifiers: [.option])
             Button { withAnimation(.easeInOut(duration: 0.22)) { isSidebarVisible.toggle() } } label: { Image(systemName: "sidebar.right") }
                 .help(StudyMateShortcutCatalog.help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"), shortcut: .toggleSegmentList))
                 .keyboardShortcut("l", modifiers: [.option])
+                .disabled(playbackInterfaceMode != .video)
         }
     }
 }

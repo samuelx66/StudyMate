@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import StudyMateKit
 
@@ -328,4 +329,36 @@ final class SegmentListInteractionTests: XCTestCase {
         )
         XCTAssertTrue(criteria.matches(bookmarked))
     }
+
+    func testDictionarySelectableTextSizeThatFitsCalculatesMultilineHeight() {
+        let longSentence = "It's an album of pictures of the United States, the cities, the special places, and the people."
+        let font = NSFont.systemFont(ofSize: 14)
+
+        // 宽屏单行
+        let wideSize = DictionarySelectableText.calculateFittingSize(
+            text: longSentence,
+            font: font,
+            proposedWidth: 1200
+        )
+
+        // 窄屏自动换行（2-3行）
+        let narrowSize = DictionarySelectableText.calculateFittingSize(
+            text: longSentence,
+            font: font,
+            proposedWidth: 250
+        )
+
+        // 自动换行后的高度必须严格大于单行高度，确保保留足够的行高不发生遮挡
+        XCTAssertGreaterThan(narrowSize.height, wideSize.height)
+        XCTAssertGreaterThanOrEqual(narrowSize.height, wideSize.height * 1.8)
+
+        // 空文本返回安全单行高度
+        let emptySize = DictionarySelectableText.calculateFittingSize(
+            text: "",
+            font: font,
+            proposedWidth: 300
+        )
+        XCTAssertGreaterThan(emptySize.height, 0)
+    }
 }
+

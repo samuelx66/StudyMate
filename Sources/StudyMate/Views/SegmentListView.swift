@@ -1466,7 +1466,7 @@ private struct SegmentSegmentationPopoverView: View {
 /// Detects trackpad/mouse scrolling without replacing SwiftUI's ScrollView.
 /// `willStartLiveScroll` is emitted for user scrolling, not for the list's
 /// programmatic `scrollTo`, so playback following can be paused safely.
-private struct ScrollViewInteractionObserver: NSViewRepresentable {
+struct ScrollViewInteractionObserver: NSViewRepresentable {
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
 
@@ -1483,7 +1483,7 @@ private struct ScrollViewInteractionObserver: NSViewRepresentable {
     }
 }
 
-private final class ScrollInteractionNSView: NSView {
+final class ScrollInteractionNSView: NSView {
     var onUserScroll: (() -> Void)?
     var onScrollStateChanged: ((Bool) -> Void)?
     private weak var observedScrollView: NSScrollView?

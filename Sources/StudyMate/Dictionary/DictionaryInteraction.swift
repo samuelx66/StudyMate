@@ -860,6 +860,34 @@ public enum TextDragPhase {
     case ended(translation: CGSize)
 }
 
+public extension NSTextView {
+    /// 注册当前 NSTextView 支持字幕/文章取词，并绑定上下文例句
+    func configureForDictionaryLookup(context: String?) {
+        objc_setAssociatedObject(
+            self,
+            &dictionarySelectableTextMarkerKey,
+            NSNumber(value: true),
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+        objc_setAssociatedObject(
+            self,
+            &dictionaryTextContextAssociationKey,
+            context,
+            .OBJC_ASSOCIATION_COPY_NONATOMIC
+        )
+    }
+
+    /// 更新当前 NSTextView 绑定的查词上下文例句
+    func updateDictionaryLookupContext(_ context: String?) {
+        objc_setAssociatedObject(
+            self,
+            &dictionaryTextContextAssociationKey,
+            context,
+            .OBJC_ASSOCIATION_COPY_NONATOMIC
+        )
+    }
+}
+
 /// 可选择的字幕文本。
 ///
 /// 这里使用原生 NSTextView，并通过轻量子类补充鼠标进入/离开回调与修饰键拖移支持。
@@ -947,7 +975,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         textView.textContainer?.lineFragmentPadding = 0
         textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
+        textView.autoresizingMask = [.width, .height]
         textView.textContainer?.widthTracksTextView = true
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -965,6 +993,60 @@ public struct DictionarySelectableText: NSViewRepresentable {
         return textView
     }
 
+    public static func calculateFittingSize(
+        text: String,
+        font: NSFont,
+        alignment: NSTextAlignment = .left,
+        proposedWidth: CGFloat?
+    ) -> CGSize {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let singleLineHeight = ceil(max(font.pointSize * 1.35, font.ascender - font.descender + font.leading))
+
+        guard let width = proposedWidth, width > 0, width.isFinite else {
+            guard !trimmed.isEmpty else {
+                return CGSize(width: 50, height: singleLineHeight)
+            }
+            let attrString = NSAttributedString(string: trimmed, attributes: [.font: font])
+            let rect = attrString.boundingRect(
+                with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            return CGSize(width: ceil(rect.width), height: max(singleLineHeight, ceil(rect.height) + 6))
+        }
+
+        guard !trimmed.isEmpty else {
+            return CGSize(width: width, height: singleLineHeight)
+        }
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = alignment
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: paragraphStyle
+        ]
+        let attrString = NSAttributedString(string: trimmed, attributes: attributes)
+        let rect = attrString.boundingRect(
+            with: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+
+        let calculatedHeight = max(singleLineHeight, ceil(rect.height) + 6)
+        return CGSize(width: width, height: calculatedHeight)
+    }
+
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        Self.calculateFittingSize(
+            text: text,
+            font: font,
+            alignment: alignment,
+            proposedWidth: proposal.width
+        )
+    }
+
     public func updateNSView(_ textView: NSTextView, context: Context) {
         context.coordinator.onSingleClick = onSingleClick
         context.coordinator.onDoubleClick = onDoubleClick
@@ -977,10 +1059,17 @@ public struct DictionarySelectableText: NSViewRepresentable {
             dictTextView.onOptionDrag = onOptionDrag
         }
 
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+
         if textView.string != text {
             textView.string = text
             textView.toolTip = text
             textView.menu = contextMenu(for: textView)
+            textView.font = font
+            textView.textColor = color
+            textView.alignment = alignment
+            textView.invalidateIntrinsicContentSize()
         } else if textView.menu == nil {
             textView.menu = contextMenu(for: textView)
         } else if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
@@ -996,6 +1085,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         }
         if textView.font != font {
             textView.font = font
+            textView.invalidateIntrinsicContentSize()
         }
         if textView.textColor != color {
             textView.textColor = color
@@ -1051,6 +1141,21 @@ public struct DictionarySelectableText: NSViewRepresentable {
         private var dragStartWindowPoint: NSPoint?
         private var plainMouseDownPoint: NSPoint?
         private var plainMouseDidMove = false
+
+        override var intrinsicContentSize: NSSize {
+            guard let textContainer, let layoutManager else {
+                return super.intrinsicContentSize
+            }
+            layoutManager.ensureLayout(for: textContainer)
+            let usedRect = layoutManager.usedRect(for: textContainer)
+            let singleLine = ceil(max((font?.pointSize ?? 13) * 1.35, (font?.ascender ?? 12) - (font?.descender ?? -3)))
+            return NSSize(width: NSView.noIntrinsicMetric, height: max(singleLine, ceil(usedRect.height) + 6))
+        }
+
+        override func layout() {
+            super.layout()
+            invalidateIntrinsicContentSize()
+        }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
