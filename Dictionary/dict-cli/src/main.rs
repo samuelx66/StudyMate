@@ -118,6 +118,43 @@ fn handle(
             let word = string_field(value, "word")?;
             Ok(serde_json::to_value(find_audio_data(&root, &id, &word)?)?)
         }
+        "ftsStatus" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            Ok(serde_json::to_value(query_cache.fts_status(&root, &id)?)?)
+        }
+        "ftsBuild" => {
+            let root = path_field(value, "root")?;
+            let id = string_field(value, "dictionaryID")?;
+            let req_id = request_id(value);
+            let mut report_progress = |phase: &str, fraction: f64| {
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    json!({"event":"progress","id":req_id,"phase":phase,"fraction":fraction})
+                );
+                let _ = stdout.flush();
+            };
+            let result = query_cache.fts_build(&root, &id, Some(&mut report_progress))?;
+            Ok(serde_json::to_value(result)?)
+        }
+        "ftsSearch" => {
+            let root = path_field(value, "root")?;
+            let query = string_field(value, "query")?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(30) as usize;
+            let result = if let Ok(id) = string_field(value, "dictionaryID") {
+                if !id.is_empty() {
+                    query_cache.fts_search(&root, &id, &query, limit)?
+                } else {
+                    let ids = dictionary_ids_field(value);
+                    query_cache.fts_search_all(&root, &query, limit, ids.as_deref())?
+                }
+            } else {
+                let ids = dictionary_ids_field(value);
+                query_cache.fts_search_all(&root, &query, limit, ids.as_deref())?
+            };
+            Ok(serde_json::to_value(result)?)
+        }
         "import" => {
             let root = path_field(value, "root")?;
             let mdx = path_field(value, "mdxPath")?;

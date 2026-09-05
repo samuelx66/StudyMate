@@ -1006,6 +1006,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     /// installed package while still allowing “All dictionaries” definitions
     /// to use resources from each displayed entry.
     public let resourceDictionaryIDs: Set<String>
+    public let highlightTerm: String?
     public var onLookupWord: ((String) -> Void)?
     public var onPlayAudio: ((String) -> Void)?
     public var onPlayDictionaryAudio: ((String, String) -> Void)?
@@ -1018,6 +1019,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         textScale: CGFloat = 1.0,
         adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil,
+        highlightTerm: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
         onPlayDictionaryAudio: ((String, String) -> Void)? = nil
@@ -1035,6 +1037,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.textScale = textScale
         self.userCSS = userCSS
         self.adaptsToSystemAppearance = adaptsToSystemAppearance
+        self.highlightTerm = highlightTerm
         if let host = baseURL?.host, baseURL?.scheme?.lowercased() == "studymate-resource" {
             self.resourceDictionaryIDs = [host]
         } else {
@@ -1053,6 +1056,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         textScale: CGFloat = 1.0,
         adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil,
+        highlightTerm: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
         onPlayDictionaryAudio: ((String, String) -> Void)? = nil
@@ -1087,6 +1091,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.textScale = textScale
         self.userCSS = userCSS
         self.adaptsToSystemAppearance = adaptsToSystemAppearance
+        self.highlightTerm = highlightTerm
         self.resourceDictionaryIDs = Set(entries.map(\.dictionaryID))
         self.onLookupWord = onLookupWord
         self.onPlayAudio = onPlayAudio
@@ -1185,6 +1190,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         context.coordinator.updateResourceScope(resourceDictionaryIDs)
         context.coordinator.currentAllowsJavaScript = allowsJavaScript
         context.coordinator.currentTextScale = textScale
+        context.coordinator.currentHighlightTerm = highlightTerm
         context.coordinator.hasLoadedDocument = false
         context.coordinator.loadDocument(in: webView, html: html, baseURL: baseURL)
         return webView
@@ -1210,6 +1216,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             context.coordinator.currentBaseURL = baseURL
             context.coordinator.currentAllowsJavaScript = allowsJavaScript
             context.coordinator.currentTextScale = textScale
+            context.coordinator.currentHighlightTerm = highlightTerm
             context.coordinator.hasLoadedDocument = false
             context.coordinator.loadDocument(in: webView, html: html, baseURL: baseURL)
         } else if bodyChanged || scaleChanged {
@@ -1239,6 +1246,13 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                     reloadHTML: html,
                     revision: context.coordinator.updateRevision
                 )
+            }
+        }
+
+        if let term = highlightTerm, !term.isEmpty, context.coordinator.currentHighlightTerm != term {
+            context.coordinator.currentHighlightTerm = term
+            if context.coordinator.hasLoadedDocument {
+                context.coordinator.applyHighlight(in: webView, term: term)
             }
         }
     }
@@ -1347,6 +1361,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         var currentBaseURL: URL?
         var currentAllowsJavaScript = false
         var currentTextScale: CGFloat = 1.0
+        var currentHighlightTerm: String?
         var hasLoadedDocument = false
         var updateRevision: UInt64 = 0
         private var allowedResourceDictionaryIDs: Set<String> = []
@@ -1766,6 +1781,49 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
         public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             hasLoadedDocument = true
+            if let term = parent.highlightTerm, !term.isEmpty {
+                currentHighlightTerm = term
+                applyHighlight(in: webView, term: term)
+            }
+        }
+
+        func applyHighlight(in webView: WKWebView, term: String) {
+            let cleanTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanTerm.isEmpty else { return }
+
+            let escapedTerm = cleanTerm
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "")
+
+            let script = """
+            (function() {
+                var term = "\(escapedTerm)";
+                if (!term) return;
+                if (window.find) {
+                    window.getSelection()?.removeAllRanges();
+                    var found = window.find(term, false, false, true, false, false, false);
+                    if (!found && term.indexOf(" ") > 0) {
+                        var words = term.split(/\\s+/).sort(function(a, b) { return b.length - a.length; });
+                        if (words.length > 0 && words[0].length >= 2) {
+                            found = window.find(words[0], false, false, true, false, false, false);
+                        }
+                    }
+                    if (found) {
+                        var sel = window.getSelection();
+                        if (sel && sel.rangeCount > 0) {
+                            var node = sel.anchorNode;
+                            var el = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
+                            if (el) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }
+                    }
+                }
+            })();
+            """
+            webView.evaluateJavaScript(script, completionHandler: nil)
         }
     }
 }

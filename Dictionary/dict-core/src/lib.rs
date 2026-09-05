@@ -11,6 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use encoding_rs::{BIG5, GBK, UTF_16LE, UTF_8};
 use flate2::read::ZlibDecoder;
 use ripemd::{Digest, Ripemd128};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
@@ -104,6 +105,25 @@ pub struct ResourceDataResult {
     pub data_base64: String,
     pub mime_type: String,
     pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtsSearchResult {
+    pub id: String,
+    pub key: String,
+    pub snippet: String,
+    pub dictionary_id: String,
+    pub dictionary_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_root: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtsStatus {
+    pub dictionary_id: String,
+    pub status: String,
+    pub entry_count: u64,
+    pub indexed_entries: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2905,6 +2925,694 @@ impl DictionaryReaderCache {
         }
         Ok(result)
     }
+
+    pub fn fts_status(&mut self, root: &Path, dictionary_id: &str) -> Result<FtsStatus> {
+        let (package, manifest) = open_manifest(root, dictionary_id)?;
+        get_fts_status(&package, &manifest.id)
+    }
+
+    pub fn fts_build(
+        &mut self,
+        root: &Path,
+        dictionary_id: &str,
+        progress: Option<&mut dyn FnMut(&str, f64)>,
+    ) -> Result<FtsStatus> {
+        let (package, _manifest) = open_manifest(root, dictionary_id)?;
+        build_fts_index(&package, progress)
+    }
+
+    pub fn fts_search(
+        &mut self,
+        root: &Path,
+        dictionary_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<FtsSearchResult>> {
+        let (package, manifest) = open_manifest(root, dictionary_id)?;
+        search_fts(&package, dictionary_id, &manifest.title, query, limit)
+    }
+
+    pub fn fts_search_all(
+        &mut self,
+        root: &Path,
+        query: &str,
+        limit_per_dictionary: usize,
+        dictionary_ids: Option<&[String]>,
+    ) -> Result<Vec<FtsSearchResult>> {
+        let dictionaries = self.list(root)?;
+        let mut results = Vec::new();
+        let target_ids: Vec<String> = match dictionary_ids {
+            Some(ids) => ids.to_vec(),
+            None => dictionaries.into_iter().map(|d| d.id).collect(),
+        };
+
+        const MAX_ALL_FTS_RESULTS: usize = 200;
+        for id in &target_ids {
+            if results.len() >= MAX_ALL_FTS_RESULTS {
+                break;
+            }
+            let remaining = MAX_ALL_FTS_RESULTS - results.len();
+            if let Ok(dict_results) = self.fts_search(root, id, query, limit_per_dictionary.min(remaining)) {
+                results.extend(dict_results);
+            }
+        }
+        Ok(results)
+    }
+}
+
+pub fn strip_html_for_fts(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut chars = html.chars().peekable();
+    let mut in_tag = false;
+    let mut in_script = false;
+    let mut in_style = false;
+    let mut tag_name = String::new();
+    let mut is_closing_tag = false;
+
+    while let Some(c) = chars.next() {
+        if in_tag {
+            if c == '>' {
+                in_tag = false;
+                let lower_tag = tag_name.trim().to_ascii_lowercase();
+                if is_closing_tag {
+                    if lower_tag == "script" {
+                        in_script = false;
+                    } else if lower_tag == "style" {
+                        in_style = false;
+                    }
+                } else {
+                    if lower_tag == "script" || lower_tag.starts_with("script ") {
+                        in_script = true;
+                    } else if lower_tag == "style" || lower_tag.starts_with("style ") {
+                        in_style = true;
+                    }
+                }
+                tag_name.clear();
+                result.push(' ');
+            } else {
+                tag_name.push(c);
+            }
+        } else if in_script || in_style {
+            if c == '<' {
+                if let Some(&next_c) = chars.peek() {
+                    if next_c == '/' {
+                        in_tag = true;
+                        is_closing_tag = true;
+                        chars.next(); // consume '/'
+                        tag_name.clear();
+                    }
+                }
+            }
+        } else if c == '<' {
+            in_tag = true;
+            is_closing_tag = false;
+            tag_name.clear();
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '/' {
+                    is_closing_tag = true;
+                    chars.next(); // consume '/'
+                }
+            }
+        } else if c == '&' {
+            let mut entity = String::new();
+            let mut matched = false;
+            while let Some(&next_c) = chars.peek() {
+                if next_c == ';' {
+                    chars.next(); // consume ';'
+                    matched = true;
+                    break;
+                } else if next_c.is_alphanumeric() || next_c == '#' {
+                    entity.push(chars.next().unwrap());
+                    if entity.len() > 10 {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if matched {
+                match entity.as_str() {
+                    "nbsp" => result.push(' '),
+                    "amp" => result.push('&'),
+                    "lt" => result.push('<'),
+                    "gt" => result.push('>'),
+                    "quot" => result.push('"'),
+                    "apos" => result.push('\''),
+                    "percnt" => result.push('%'),
+                    _ if entity.starts_with('#') => {
+                        let code_str = &entity[1..];
+                        let code = if code_str.starts_with('x') || code_str.starts_with('X') {
+                            u32::from_str_radix(&code_str[1..], 16).ok()
+                        } else {
+                            code_str.parse::<u32>().ok()
+                        };
+                        if let Some(ch) = code.and_then(char::from_u32) {
+                            result.push(ch);
+                        } else {
+                            result.push(' ');
+                        }
+                    }
+                    _ => result.push(' '),
+                }
+            } else {
+                result.push('&');
+                result.push_str(&entity);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    let mut normalized = String::with_capacity(result.len());
+    let mut last_was_space = true;
+    for c in result.chars() {
+        if c.is_whitespace() {
+            if !last_was_space {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            normalized.push(c);
+            last_was_space = false;
+        }
+    }
+    if last_was_space && !normalized.is_empty() {
+        normalized.pop();
+    }
+    normalized
+}
+
+pub fn is_cjk_char(c: char) -> bool {
+    matches!(c,
+        // CJK Unified Ideographs
+        '\u{4E00}'..='\u{9FFF}' |
+        // CJK Unified Ideographs Extension A
+        '\u{3400}'..='\u{4DBF}' |
+        // CJK Unified Ideographs Extension B-I
+        '\u{20000}'..='\u{2A6DF}' |
+        '\u{2A700}'..='\u{2B73F}' |
+        '\u{2B740}'..='\u{2B81F}' |
+        '\u{2B820}'..='\u{2CEAF}' |
+        '\u{2CEB0}'..='\u{2EBEF}' |
+        '\u{30000}'..='\u{3134F}' |
+        '\u{31350}'..='\u{323AF}' |
+        // CJK Compatibility Ideographs
+        '\u{F900}'..='\u{FAFF}' |
+        '\u{2F800}'..='\u{2FA1F}' |
+        // Japanese Hiragana & Katakana
+        '\u{3040}'..='\u{309F}' |
+        '\u{30A0}'..='\u{30FF}' |
+        '\u{31F0}'..='\u{31FF}' |
+        // Korean Hangul Syllables & Jamo
+        '\u{AC00}'..='\u{D7AF}' |
+        '\u{1100}'..='\u{11FF}' |
+        '\u{3130}'..='\u{318F}'
+    )
+}
+
+pub fn is_cjk_punct(c: char) -> bool {
+    matches!(c,
+        '\u{3000}'..='\u{303F}' | // CJK symbols & punctuation (、, 。, 《, 》, etc.)
+        '\u{FF01}'..='\u{FF0F}' | // Fullwidth ASCII punctuation (! to /)
+        '\u{FF1A}'..='\u{FF20}' | // Fullwidth : ; < = > ? @
+        '\u{FF3B}'..='\u{FF40}' | // Fullwidth [ \ ] ^ _ `
+        '\u{FF5B}'..='\u{FF65}' | // Fullwidth { | } ~
+        '\u{2018}'..='\u{201F}' | // Curved quotes (‘ ’ “ ”)
+        '\u{2014}'..='\u{2015}' | // Em dash
+        '\u{2026}'               // Ellipsis …
+    )
+}
+
+pub fn is_cjk_like(c: char) -> bool {
+    is_cjk_char(c) || is_cjk_punct(c)
+}
+
+pub fn tokenize_cjk_for_fts(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut last_was_space = true;
+
+    for c in text.chars() {
+        if is_cjk_char(c) {
+            if !last_was_space {
+                out.push(' ');
+            }
+            out.push(c);
+            out.push(' ');
+            last_was_space = true;
+        } else if c.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(c);
+            last_was_space = false;
+        }
+    }
+
+    if last_was_space && !out.is_empty() {
+        out.pop();
+    }
+    out
+}
+
+pub fn postprocess_snippet(raw: &str) -> String {
+    // 1. Merge adjacent bold tags, e.g. </b><b> or </b> <b>
+    let s = raw.replace("</b> <b>", "").replace("</b><b>", "");
+
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut result = Vec::with_capacity(n);
+
+    let mut i = 0;
+    while i < n {
+        if chars[i] == ' ' {
+            // Find previous non-space, non-tag character
+            let mut prev_char = None;
+            let mut k = result.len() as isize - 1;
+            while k >= 0 {
+                if result[k as usize] == '>' {
+                    // Tag! Find start of tag '<'
+                    let mut tag_start = k;
+                    while tag_start >= 0 && result[tag_start as usize] != '<' {
+                        tag_start -= 1;
+                    }
+                    k = tag_start - 1;
+                    continue;
+                }
+                if result[k as usize] != ' ' {
+                    prev_char = Some(result[k as usize]);
+                    break;
+                }
+                k -= 1;
+            }
+
+            // Find next non-space, non-tag character
+            let mut next_char = None;
+            let mut m = i + 1;
+            while m < n {
+                if chars[m] == '<' {
+                    // Skip tag until '>'
+                    while m < n && chars[m] != '>' {
+                        m += 1;
+                    }
+                    m += 1;
+                    continue;
+                }
+                if chars[m] != ' ' {
+                    next_char = Some(chars[m]);
+                    break;
+                }
+                m += 1;
+            }
+
+            if let (Some(prev), Some(next)) = (prev_char, next_char) {
+                if is_cjk_like(prev) && is_cjk_like(next) {
+                    // Skip this artificial space between CJK characters/punctuation!
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result.into_iter().collect()
+}
+
+pub fn sanitize_fts5_query(query: &str) -> String {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // If the query is already an explicitly quoted phrase by the user
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let clean: String = inner
+            .chars()
+            .filter(|c| !c.is_control() && *c != '"' && *c != '*' && *c != ':')
+            .collect();
+        if clean.is_empty() {
+            return String::new();
+        }
+        let spaced = tokenize_cjk_for_fts(&clean);
+        return format!("\"{}\"", spaced);
+    }
+
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.is_empty() {
+        return String::new();
+    }
+    let mut tokens = Vec::new();
+    for (i, word) in words.iter().enumerate() {
+        let clean: String = word
+            .chars()
+            .filter(|c| !c.is_control() && *c != '"' && *c != '*' && *c != ':')
+            .collect();
+        if clean.is_empty() {
+            continue;
+        }
+
+        let has_cjk = clean.chars().any(is_cjk_char);
+        if has_cjk {
+            // Split into alternating CJK and non-CJK chunks
+            let mut chunks: Vec<(String, bool)> = Vec::new();
+            let mut curr_chunk = String::new();
+            let mut curr_is_cjk: Option<bool> = None;
+
+            for c in clean.chars() {
+                let cjk = is_cjk_char(c);
+                match curr_is_cjk {
+                    None => {
+                        curr_is_cjk = Some(cjk);
+                        curr_chunk.push(c);
+                    }
+                    Some(prev) if prev == cjk => {
+                        curr_chunk.push(c);
+                    }
+                    Some(_) => {
+                        chunks.push((curr_chunk.clone(), curr_is_cjk.unwrap()));
+                        curr_chunk.clear();
+                        curr_chunk.push(c);
+                        curr_is_cjk = Some(cjk);
+                    }
+                }
+            }
+            if !curr_chunk.is_empty() {
+                if let Some(cjk) = curr_is_cjk {
+                    chunks.push((curr_chunk, cjk));
+                }
+            }
+
+            for (chunk_idx, (chunk_str, chunk_is_cjk)) in chunks.iter().enumerate() {
+                let is_last_chunk = (i == words.len() - 1) && (chunk_idx == chunks.len() - 1);
+                if *chunk_is_cjk {
+                    let spaced_chars: Vec<String> =
+                        chunk_str.chars().map(|c| c.to_string()).collect();
+                    tokens.push(format!("\"{}\"", spaced_chars.join(" ")));
+                } else if is_last_chunk
+                    && chunk_str
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '\'' || c == '-')
+                {
+                    tokens.push(format!("\"{}\"*", chunk_str));
+                } else {
+                    tokens.push(format!("\"{}\"", chunk_str));
+                }
+            }
+        } else {
+            let is_last = i == words.len() - 1;
+            if is_last && clean.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '-') {
+                tokens.push(format!("\"{}\"*", clean));
+            } else {
+                tokens.push(format!("\"{}\"", clean));
+            }
+        }
+    }
+    tokens.join(" ")
+}
+
+pub fn get_fts_status(package_dir: &Path, dictionary_id: &str) -> Result<FtsStatus> {
+    let fts_db_path = package_dir.join("fts.db");
+    if !fts_db_path.is_file() {
+        let manifest_path = package_dir.join("manifest.json");
+        let entry_count = if manifest_path.is_file() {
+            fs::read(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<DictionaryManifest>(&bytes).ok())
+                .map(|m| m.entry_count)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let is_building = package_dir.join("fts.db.tmp").is_file();
+        return Ok(FtsStatus {
+            dictionary_id: dictionary_id.to_string(),
+            status: if is_building {
+                "indexing".to_string()
+            } else {
+                "none".to_string()
+            },
+            entry_count,
+            indexed_entries: 0,
+        });
+    }
+
+    let conn = Connection::open_with_flags(
+        &fts_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let version: Option<String> = conn
+        .query_row("SELECT value FROM fts_meta WHERE key = 'version'", [], |row| row.get(0))
+        .ok();
+    let is_outdated = version.as_deref() != Some("2");
+    if is_outdated {
+        return Ok(FtsStatus {
+            dictionary_id: dictionary_id.to_string(),
+            status: "none".to_string(),
+            entry_count: 0,
+            indexed_entries: 0,
+        });
+    }
+
+    let status: Option<String> = conn
+        .query_row("SELECT value FROM fts_meta WHERE key = 'status'", [], |row| row.get(0))
+        .ok();
+    let entry_count: u64 = conn
+        .query_row("SELECT value FROM fts_meta WHERE key = 'entry_count'", [], |row| {
+            let s: String = row.get(0)?;
+            Ok(s.parse::<u64>().unwrap_or(0))
+        })
+        .unwrap_or(0);
+
+    Ok(FtsStatus {
+        dictionary_id: dictionary_id.to_string(),
+        status: status.unwrap_or_else(|| "ready".to_string()),
+        entry_count,
+        indexed_entries: entry_count,
+    })
+}
+
+pub fn build_fts_index(
+    package_dir: &Path,
+    mut progress: Option<&mut dyn FnMut(&str, f64)>,
+) -> Result<FtsStatus> {
+    let manifest_path = package_dir.join("manifest.json");
+    let manifest_bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read manifest {}", manifest_path.display()))?;
+    let manifest: DictionaryManifest = serde_json::from_slice(&manifest_bytes)?;
+    let source_root = package_dir.join("source");
+    let mdx_path = source_root.join(&manifest.source_file);
+    if !mdx_path.is_file() {
+        bail!("dictionary MDX source is missing: {}", mdx_path.display());
+    }
+
+    let fts_db_path = package_dir.join("fts.db");
+    let temp_db_path = package_dir.join("fts.db.tmp");
+    let _ = fs::remove_file(&temp_db_path);
+
+    let encryption_key = manifest
+        .encryption_key
+        .as_deref()
+        .and_then(parse_hex_key)
+        .and_then(|bytes| {
+            (bytes.len() == 16).then(|| {
+                let mut key = [0u8; 16];
+                key.copy_from_slice(&bytes);
+                key
+            })
+        });
+
+    let mut mdx = NativeDictionaryFile::open(&mdx_path, false, encryption_key)?;
+
+    let mut conn = Connection::open(&temp_db_path)?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = OFF;
+         PRAGMA cache_size = -16000;
+         CREATE VIRTUAL TABLE dictionary_fts USING fts5(
+             key,
+             clean_text,
+             tokenize = 'unicode61 remove_diacritics 2'
+         );
+         CREATE TABLE fts_meta(key TEXT PRIMARY KEY, value TEXT);",
+    )?;
+
+    if let Some(ref mut cb) = progress {
+        cb("正在建立全文索引…", 0.0);
+    }
+
+    let total_key_blocks = mdx.key_blocks.len();
+    let estimated_entries = manifest.entry_count.max(1);
+    let mut indexed_count: u64 = 0;
+
+    {
+        let tx = conn.transaction()?;
+        {
+            let mut insert_stmt =
+                tx.prepare("INSERT INTO dictionary_fts(key, clean_text) VALUES (?1, ?2)")?;
+
+            for block_idx in 0..total_key_blocks {
+                let keys = mdx.key_block(block_idx)?;
+                for (key_idx, raw_key) in keys.iter().enumerate() {
+                    let raw_bytes = mdx.record_for_key(block_idx, key_idx, &keys)?;
+                    let record_text = decode_record_text(&raw_bytes, &mdx.header);
+                    let clean = strip_html_for_fts(&record_text);
+                    if !clean.is_empty() {
+                        let indexed_text = tokenize_cjk_for_fts(&clean);
+                        insert_stmt.execute(rusqlite::params![&raw_key.key, &indexed_text])?;
+                    }
+                    indexed_count += 1;
+                }
+
+                if indexed_count % 500 == 0 || block_idx + 1 == total_key_blocks {
+                    if let Some(ref mut cb) = progress {
+                        let fraction =
+                            ((indexed_count as f64) / (estimated_entries as f64)).min(0.99);
+                        cb("正在建立全文索引…", fraction);
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('version', '2')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('status', 'ready')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('entry_count', ?1)",
+        rusqlite::params![indexed_count as i64],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('indexed_at', ?1)",
+        rusqlite::params![now_seconds() as i64],
+    )?;
+
+    drop(conn);
+    fs::rename(&temp_db_path, &fts_db_path)?;
+
+    if let Some(ref mut cb) = progress {
+        cb("全文索引构建完成", 1.0);
+    }
+
+    Ok(FtsStatus {
+        dictionary_id: manifest.id,
+        status: "ready".to_string(),
+        entry_count: manifest.entry_count,
+        indexed_entries: indexed_count,
+    })
+}
+
+pub fn search_fts(
+    package_dir: &Path,
+    dictionary_id: &str,
+    dictionary_title: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<FtsSearchResult>> {
+    let fts_db_path = package_dir.join("fts.db");
+    if !fts_db_path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let sanitized_query = sanitize_fts5_query(query);
+    if sanitized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = Connection::open_with_flags(
+        &fts_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let version: Option<String> = conn
+        .query_row("SELECT value FROM fts_meta WHERE key = 'version'", [], |row| row.get(0))
+        .ok();
+    if version.as_deref() != Some("2") {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT rowid, key, snippet(dictionary_fts, 1, '<b>', '</b>', '...', 15)
+         FROM dictionary_fts
+         WHERE dictionary_fts MATCH ?1
+         ORDER BY rank
+         LIMIT ?2",
+    )?;
+
+    let resource_root = resource_root(dictionary_id);
+
+    let execute_fts = |stmt: &mut rusqlite::Statement, q: &str| -> Vec<FtsSearchResult> {
+        let mut list = Vec::new();
+        if let Ok(rows) = stmt.query_map(rusqlite::params![q, limit as i64], |row| {
+            let rowid: i64 = row.get(0)?;
+            let key: String = row.get(1)?;
+            let raw_snippet: String = row.get(2)?;
+            let snippet = postprocess_snippet(&raw_snippet);
+            Ok(FtsSearchResult {
+                id: format!("{dictionary_id}_{rowid}"),
+                key,
+                snippet,
+                dictionary_id: dictionary_id.to_string(),
+                dictionary_title: dictionary_title.to_string(),
+                resource_root: Some(resource_root.clone()),
+            })
+        }) {
+            for item in rows.flatten() {
+                list.push(item);
+            }
+        }
+        list
+    };
+
+    let hits = execute_fts(&mut stmt, &sanitized_query);
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+
+    let clean_fallback = query.trim().replace('"', "");
+    let fallback_phrase = format!("\"{}\"", tokenize_cjk_for_fts(&clean_fallback));
+    if fallback_phrase != sanitized_query {
+        let fallback_hits = execute_fts(&mut stmt, &fallback_phrase);
+        if !fallback_hits.is_empty() {
+            return Ok(fallback_hits);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+pub fn fts_status(root: &Path, dictionary_id: &str) -> Result<FtsStatus> {
+    let (package, manifest) = open_manifest(root, dictionary_id)?;
+    get_fts_status(&package, &manifest.id)
+}
+
+pub fn fts_build(
+    root: &Path,
+    dictionary_id: &str,
+    progress: Option<&mut dyn FnMut(&str, f64)>,
+) -> Result<FtsStatus> {
+    let (package, _manifest) = open_manifest(root, dictionary_id)?;
+    build_fts_index(&package, progress)
+}
+
+pub fn fts_search(
+    root: &Path,
+    dictionary_id: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<FtsSearchResult>> {
+    let (package, manifest) = open_manifest(root, dictionary_id)?;
+    search_fts(&package, dictionary_id, &manifest.title, query, limit)
 }
 
 pub fn lookup(
@@ -4419,6 +5127,194 @@ mod tests {
             lookup(&package_root, "encrypted-fixture", "cat", 20).unwrap()[0].text,
             "feline"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_strip_html_for_fts() {
+        let html = r#"
+            <style type="text/css">.entry { color: red; }</style>
+            <script>function play() { return 0; }</script>
+            <div class="def">
+                <b>apple</b> [ˈæpl] <i>noun</i>: A round fruit with firm, white flesh and a green, red, or yellow skin.
+                <p>Example: She ate a crisp <b>green apple</b> for lunch.</p>
+                <a href="sound://us_apple.mp3">Pronounce</a>
+            </div>
+        "#;
+        let clean = strip_html_for_fts(html);
+        assert!(!clean.contains("function"));
+        assert!(!clean.contains(".entry"));
+        assert!(!clean.contains("class="));
+        assert!(clean.contains("apple"));
+        assert!(clean.contains("[ˈæpl]"));
+        assert!(clean.contains("noun"));
+        assert!(clean.contains("A round fruit with firm, white flesh"));
+        assert!(clean.contains("She ate a crisp green apple for lunch."));
+        assert!(clean.contains("Pronounce"));
+
+        let entity_html = "It&apos;s 100&percnt; &quot;fresh&quot; &amp; good&nbsp;apples.";
+        let entity_clean = strip_html_for_fts(entity_html);
+        assert_eq!(entity_clean, "It's 100% \"fresh\" & good apples.");
+    }
+
+    #[test]
+    fn test_tokenize_cjk_for_fts() {
+        assert_eq!(tokenize_cjk_for_fts(""), "");
+        assert_eq!(tokenize_cjk_for_fts("apple"), "apple");
+        assert_eq!(tokenize_cjk_for_fts("green apple"), "green apple");
+        assert_eq!(tokenize_cjk_for_fts("苹果"), "苹 果");
+        assert_eq!(tokenize_cjk_for_fts("test化验"), "test 化 验");
+        assert_eq!(
+            tokenize_cjk_for_fts("When can I get my test results? 我什么时候可以拿到化验结果？"),
+            "When can I get my test results? 我 什 么 时 候 可 以 拿 到 化 验 结 果 ？"
+        );
+    }
+
+    #[test]
+    fn test_postprocess_snippet() {
+        let s1 = "When can I get my test results? 我 什 <b>么 时 候 可 以</b> 拿 到 化 验 结 果 ？";
+        assert_eq!(
+            postprocess_snippet(s1),
+            "When can I get my test results? 我什<b>么时候可以</b>拿到化验结果？"
+        );
+
+        let s2 = "...test results? 我 什 么 时 候 可 以 拿 到 <b>化 验</b> 结 果 ？";
+        assert_eq!(
+            postprocess_snippet(s2),
+            "...test results? 我什么时候可以拿到<b>化验</b>结果？"
+        );
+
+        let s3 = "...my <b>test</b> results? 我 什 么 时 候 可 以 拿 到 <b>化 验</b> 结...";
+        assert_eq!(
+            postprocess_snippet(s3),
+            "...my <b>test</b> results? 我什么时候可以拿到<b>化验</b>结..."
+        );
+
+        let s4 = "A round fruit. <b>苹 果</b> 是 一 种 水 果 。";
+        assert_eq!(postprocess_snippet(s4), "A round fruit. <b>苹果</b>是一种水果。");
+
+        let s5 = "A round <b>fruit</b>. 苹 果 是 一 种 <b>水 果</b> 。";
+        assert_eq!(postprocess_snippet(s5), "A round <b>fruit</b>. 苹果是一种<b>水果</b>。");
+
+        let s6 = "cat <b>apple</b> dog";
+        assert_eq!(postprocess_snippet(s6), "cat <b>apple</b> dog");
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query() {
+        assert_eq!(sanitize_fts5_query(""), "");
+        assert_eq!(sanitize_fts5_query("   "), "");
+        assert_eq!(sanitize_fts5_query("apple"), "\"apple\"*");
+        assert_eq!(sanitize_fts5_query("green apple"), "\"green\" \"apple\"*");
+        assert_eq!(sanitize_fts5_query("catch \"off\" guard"), "\"catch\" \"off\" \"guard\"*");
+        assert_eq!(sanitize_fts5_query("出其不意"), "\"出 其 不 意\"");
+        assert_eq!(sanitize_fts5_query("么时候可以"), "\"么 时 候 可 以\"");
+        assert_eq!(sanitize_fts5_query("test 么时候可以"), "\"test\" \"么 时 候 可 以\"");
+        assert_eq!(sanitize_fts5_query("拿到 化验"), "\"拿 到\" \"化 验\"");
+        assert_eq!(sanitize_fts5_query("test化验"), "\"test\" \"化 验\"");
+        assert_eq!(sanitize_fts5_query("\"green apple\""), "\"green apple\"");
+        assert_eq!(sanitize_fts5_query("\"出其不意\""), "\"出 其 不 意\"");
+    }
+
+    #[test]
+    fn test_fts_build_and_search() {
+        let root = std::env::temp_dir().join(format!("studymate-dict-fts-{}", now_seconds()));
+        let source = root.join("fixture.mdx");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, fixture()).unwrap();
+        let package_root = root.join("Dictionaries");
+        let _result = import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("test-dict".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+
+        let status = fts_status(&package_root, "test-dict").unwrap();
+        assert_eq!(status.status, "none");
+
+        let mut progress_events = Vec::new();
+        let build_res = fts_build(&package_root, "test-dict", Some(&mut |phase, fraction| {
+            progress_events.push((phase.to_string(), fraction));
+        }))
+        .unwrap();
+        assert_eq!(build_res.status, "ready");
+        assert!(build_res.indexed_entries > 0);
+        assert!(!progress_events.is_empty());
+
+        let status_after = fts_status(&package_root, "test-dict").unwrap();
+        assert_eq!(status_after.status, "ready");
+
+        let hits = fts_search(&package_root, "test-dict", "feline", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "cat");
+        assert!(hits[0].snippet.contains("<b>feline</b>") || hits[0].snippet.contains("feline"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_chinese_sentence_fts_search() {
+        let root = std::env::temp_dir().join(format!("studymate-dict-fts-zh-{}", now_seconds()));
+        let source = root.join("fixture-zh.mdx");
+        fs::create_dir_all(&root).unwrap();
+
+        let entries = &[
+            ("test", "<div>When can I get my test results? <span class=\"trans\">我什么时候可以拿到化验结果？</span></div>"),
+            ("apple", "<div>A round fruit. <span>苹果是一种美味的水果。</span></div>"),
+            ("cat", "<div>A domesticated feline animal. <span>猫是常见的家养宠物。</span></div>"),
+        ];
+        fs::write(&source, mdx_text_fixture(entries)).unwrap();
+
+        let package_root = root.join("Dictionaries");
+        let _result = import_dictionary(&ImportOptions {
+            root: package_root.clone(),
+            mdx: source,
+            mdd: Vec::new(),
+            id: Some("zh-dict".to_owned()),
+            registration_code: None,
+            user_id: None,
+        })
+        .unwrap();
+
+        let build_res = fts_build(&package_root, "zh-dict", None).unwrap();
+        assert_eq!(build_res.status, "ready");
+
+        // 1. Exact phrase substring search in Chinese example sentence: "么时候可以"
+        let hits = fts_search(&package_root, "zh-dict", "么时候可以", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "test");
+        assert!(hits[0].snippet.contains("<b>么时候可以</b>"));
+        assert!(!hits[0].snippet.contains("么 时 候 可 以")); // spaces must be cleaned up
+
+        // 2. Search keyword "化验"
+        let hits_hy = fts_search(&package_root, "zh-dict", "化验", 10).unwrap();
+        assert_eq!(hits_hy.len(), 1);
+        assert_eq!(hits_hy[0].key, "test");
+        assert!(hits_hy[0].snippet.contains("<b>化验</b>"));
+
+        // 3. Search mixed English and Chinese "test 化验"
+        let hits_mixed = fts_search(&package_root, "zh-dict", "test 化验", 10).unwrap();
+        assert_eq!(hits_mixed.len(), 1);
+        assert_eq!(hits_mixed[0].key, "test");
+        assert!(hits_mixed[0].snippet.contains("<b>化验</b>"));
+        assert!(hits_mixed[0].snippet.contains("<b>test</b>"));
+
+        // 4. Search single Chinese character "猫"
+        let hits_cat = fts_search(&package_root, "zh-dict", "猫", 10).unwrap();
+        assert_eq!(hits_cat.len(), 1);
+        assert_eq!(hits_cat[0].key, "cat");
+        assert!(hits_cat[0].snippet.contains("<b>猫</b>"));
+
+        // 5. Search Chinese term "苹果"
+        let hits_apple = fts_search(&package_root, "zh-dict", "苹果", 10).unwrap();
+        assert_eq!(hits_apple.len(), 1);
+        assert_eq!(hits_apple[0].key, "apple");
+        assert!(hits_apple[0].snippet.contains("<b>苹果</b>"));
+
         fs::remove_dir_all(root).unwrap();
     }
 }

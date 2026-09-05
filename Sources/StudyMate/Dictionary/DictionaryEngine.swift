@@ -518,6 +518,105 @@ public struct StudyMateDictionarySearchHit: Codable, Identifiable, Hashable, Sen
     }
 }
 
+/// 词典搜索范围：查词头（前缀/精确匹配）或查例句与释义（SQLite FTS5 全文检索）
+public enum DictionarySearchScope: String, CaseIterable, Identifiable, Sendable {
+    case headword
+    case fullText
+
+    public var id: String { rawValue }
+}
+
+/// 全文例句/释义检索匹配项
+public struct StudyMateDictionaryFtsHit: Codable, Identifiable, Hashable, Sendable {
+    public let id: String
+    public let key: String
+    public let snippet: String
+    public let dictionaryID: String
+    public let dictionaryTitle: String
+    public let resourceRoot: String?
+
+    public var displayName: String {
+        DictionarySourceSettings.shared.displayName(for: dictionaryID, fallback: dictionaryTitle)
+    }
+
+    /// 将 FTS5 返回的带 <b>...</b> 关键字标记的摘要转换为 SwiftUI AttributedString
+    public var attributedSnippet: AttributedString {
+        var attr = AttributedString()
+        var remaining = snippet[...]
+        while let openRange = remaining.range(of: "<b>") {
+            let prefix = remaining[..<openRange.lowerBound]
+            if !prefix.isEmpty {
+                attr.append(AttributedString(String(prefix)))
+            }
+            let afterOpen = remaining[openRange.upperBound...]
+            if let closeRange = afterOpen.range(of: "</b>") {
+                let boldText = afterOpen[..<closeRange.lowerBound]
+                var boldAttr = AttributedString(String(boldText))
+                boldAttr.inlinePresentationIntent = .stronglyEmphasized
+                attr.append(boldAttr)
+                remaining = afterOpen[closeRange.upperBound...]
+            } else {
+                attr.append(AttributedString(String(afterOpen)))
+                remaining = remaining[remaining.endIndex...]
+                break
+            }
+        }
+        if !remaining.isEmpty {
+            attr.append(AttributedString(String(remaining)))
+        }
+        return attr
+    }
+
+    public init(
+        id: String,
+        key: String,
+        snippet: String,
+        dictionaryID: String,
+        dictionaryTitle: String,
+        resourceRoot: String? = nil
+    ) {
+        self.id = id
+        self.key = key
+        self.snippet = snippet
+        self.dictionaryID = dictionaryID
+        self.dictionaryTitle = dictionaryTitle
+        self.resourceRoot = resourceRoot
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, key, snippet
+        case dictionaryID = "dictionary_id"
+        case dictionaryTitle = "dictionary_title"
+        case resourceRoot = "resource_root"
+    }
+}
+
+/// 词典全文索引构建状态
+public struct StudyMateFtsStatus: Codable, Sendable {
+    public let dictionaryID: String
+    public let status: String
+    public let entryCount: Int
+    public let indexedEntries: Int
+
+    public var isReady: Bool { status == "ready" }
+    public var isIndexing: Bool { status == "indexing" }
+    public var isNone: Bool { status == "none" }
+
+    public init(dictionaryID: String, status: String, entryCount: Int, indexedEntries: Int) {
+        self.dictionaryID = dictionaryID
+        self.status = status
+        self.entryCount = entryCount
+        self.indexedEntries = indexedEntries
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case dictionaryID = "dictionary_id"
+        case entryCount = "entry_count"
+        case indexedEntries = "indexed_entries"
+    }
+}
+
 /// A dictionary resource returned by the native MDX/MDD reader. Embedded MDD
 /// resources are transferred only when requested; `dataBase64` is absent for
 /// metadata-only responses and `path` may be a `studymate-resource://` URL.
@@ -639,6 +738,9 @@ public final class DictionaryEngine: ObservableObject {
 
     @Published public private(set) var dictionaries: [StudyMateDictionarySummary] = []
     @Published public private(set) var searchHits: [StudyMateDictionarySearchHit] = []
+    @Published public var searchScope: DictionarySearchScope = .headword
+    @Published public private(set) var ftsHits: [StudyMateDictionaryFtsHit] = []
+    @Published public private(set) var isBuildingFts: Bool = false
     /// Changes for every completed key search, including a response whose
     /// hits are equal to the previous response. Views use this as the search
     /// lifecycle signal instead of relying only on array equality.
@@ -780,6 +882,7 @@ public final class DictionaryEngine: ObservableObject {
         detailGeneration &+= 1
         deferredSearchAfterBusy = nil
         searchHits = []
+        ftsHits = []
         searchRevision &+= 1
         searchResults = []
         isSearching = false
@@ -798,6 +901,11 @@ public final class DictionaryEngine: ObservableObject {
         includeDetails: Bool = false,
         immediate: Bool = false
     ) {
+        if searchScope == .fullText {
+            searchFullText(query: query, dictionaryID: dictionaryID, immediate: immediate)
+            return
+        }
+
         queryDebounceTask?.cancel()
         searchTask?.cancel()
         detailTask?.cancel()
@@ -810,6 +918,7 @@ public final class DictionaryEngine: ObservableObject {
         guard !lookupQuery.isEmpty else {
             deferredSearchAfterBusy = nil
             searchHits = []
+            ftsHits = []
             searchRevision &+= 1
             searchResults = []
             isSearching = false
@@ -826,6 +935,7 @@ public final class DictionaryEngine: ObservableObject {
                 includeDetails: includeDetails
             )
             searchHits = []
+            ftsHits = []
             searchRevision &+= 1
             searchResults = []
             definitionQuery = nil
@@ -1079,6 +1189,161 @@ public final class DictionaryEngine: ObservableObject {
         prefetchGeneration &+= 1
         prefetchTask?.cancel()
         prefetchTask = nil
+    }
+
+    // MARK: - 全文例句 / 释义检索 (SQLite FTS5)
+
+    /// 查询例句与释义全文检索
+    public func searchFullText(
+        query: String,
+        dictionaryID: String? = nil,
+        immediate: Bool = false
+    ) {
+        queryDebounceTask?.cancel()
+        searchTask?.cancel()
+        detailTask?.cancel()
+        detailTask = nil
+        searchGeneration &+= 1
+        detailGeneration &+= 1
+        let generation = searchGeneration
+        let lookupQuery = Self.canonicalQuery(query)
+
+        guard !lookupQuery.isEmpty else {
+            deferredSearchAfterBusy = nil
+            ftsHits = []
+            searchRevision &+= 1
+            searchResults = []
+            isSearching = false
+            isLoadingDefinition = false
+            definitionQuery = nil
+            lemmaOriginalQuery = nil
+            return
+        }
+
+        if isBusy {
+            ftsHits = []
+            searchRevision &+= 1
+            definitionQuery = nil
+            isSearching = true
+            isLoadingDefinition = false
+            return
+        }
+
+        ftsHits = []
+        isSearching = true
+
+        let runSearch = { [weak self] in
+            guard let self else { return }
+            self.startFullTextSearch(
+                query: lookupQuery,
+                dictionaryID: dictionaryID,
+                generation: generation
+            )
+        }
+
+        if immediate {
+            runSearch()
+        } else {
+            queryDebounceTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                    guard !Task.isCancelled, let _ = self else { return }
+                    runSearch()
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func startFullTextSearch(
+        query: String,
+        dictionaryID: String?,
+        generation: UInt64
+    ) {
+        guard generation == searchGeneration, !isBusy else { return }
+        let enabledIDs = enabledDictionaries.map(\.id)
+
+        searchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                var fields: [String: Any] = [
+                    "query": query,
+                    "limit": 50
+                ]
+                if let dictionaryID, !dictionaryID.isEmpty {
+                    fields["dictionaryID"] = dictionaryID
+                } else if !enabledIDs.isEmpty {
+                    fields["dictionaryIDs"] = enabledIDs
+                }
+
+                let data = try await self.request(operation: "ftsSearch", fields: fields)
+                guard !Task.isCancelled, generation == self.searchGeneration, !self.isBusy else { return }
+                let hits = try await Self.decodeInBackground([StudyMateDictionaryFtsHit].self, from: data)
+
+                self.ftsHits = hits
+                self.searchRevision &+= 1
+                self.isSearching = false
+                self.lastError = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.searchGeneration, !self.isBusy else { return }
+                self.ftsHits = []
+                self.searchRevision &+= 1
+                self.isSearching = false
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// 查询指定词典的全文索引状态
+    public func checkFtsStatus(for dictionaryID: String) async throws -> StudyMateFtsStatus {
+        let data = try await request(operation: "ftsStatus", fields: ["dictionaryID": dictionaryID])
+        return try Self.decode(StudyMateFtsStatus.self, from: data)
+    }
+
+    /// 为指定词典构建 SQLite FTS5 全文索引（异步执行并在状态栏提示结果）
+    public func buildFtsIndex(for dictionaryIDs: [String]) async {
+        guard !isBusy, !dictionaryIDs.isEmpty else { return }
+        invalidateLookupTasks()
+        refreshTask?.cancel()
+        refreshTask = nil
+
+        dictionaryMutationGeneration &+= 1
+        let generation = dictionaryMutationGeneration
+        isBusy = true
+        isBuildingFts = true
+        progress = 0
+        lastError = nil
+
+        defer {
+            if dictionaryMutationGeneration == generation {
+                dictionaryMutationTask = nil
+                activeProgressRequestID = nil
+                isBusy = false
+                isBuildingFts = false
+                progress = nil
+                progressPhase = nil
+            }
+        }
+
+        do {
+            for (index, id) in dictionaryIDs.enumerated() {
+                guard !Task.isCancelled else { break }
+                let dictTitle = dictionaries.first(where: { $0.id == id })?.displayName ?? id
+                progressPhase = LanguageManager.shared.text(
+                    "正在构建“\(dictTitle)”全文索引 (\(index + 1)/\(dictionaryIDs.count))…",
+                    "Building index for “\(dictTitle)” (\(index + 1)/\(dictionaryIDs.count))…"
+                )
+                let _ = try await request(operation: "ftsBuild", fields: ["dictionaryID": id])
+            }
+            showNotification(LanguageManager.shared.text("全文索引构建完成", "Full-text index built"))
+            MainStatusCenter.shared.showSuccess(LanguageManager.shared.text("全文索引构建完成", "Full-text index built"))
+        } catch {
+            lastError = error.localizedDescription
+            MainStatusCenter.shared.showError(error.localizedDescription)
+        }
     }
 
     private func retryDeferredSearchIfNeeded() {
@@ -1633,7 +1898,7 @@ public final class DictionaryEngine: ObservableObject {
         try ensureProcess()
         requestCounter &+= 1
         let id = String(requestCounter)
-        if operation == "import" {
+        if operation == "import" || operation == "ftsBuild" {
             activeProgressRequestID = id
         }
         var object = fields

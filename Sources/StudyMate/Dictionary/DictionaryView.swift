@@ -879,12 +879,25 @@ private struct DictionaryDefinitionPane: View {
     @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
     let query: String
     let selectedResultID: String?
+    let selectedFtsHitID: String?
     let selectedDictionaryID: String?
     @Binding var textScale: CGFloat
     let onLookupWord: (String) -> Void
     let onPlayAudio: (String) -> Void
+    let onBuildFtsIndex: () -> Void
 
     private var selectedEntries: [StudyMateDictionaryLookup] {
+        if engine.searchScope == .fullText {
+            guard let selectedFtsHitID,
+                  let selectedHit = engine.ftsHits.first(where: { $0.id == selectedFtsHitID }),
+                  !selectedHit.key.isEmpty else { return engine.searchResults }
+            let selectedResultKey = selectedHit.key
+            let matches = engine.searchResults.filter {
+                $0.key.compare(selectedResultKey, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }
+            let candidates = matches.isEmpty ? engine.searchResults : matches
+            return candidates.filter { $0.dictionaryID == selectedHit.dictionaryID }
+        }
         guard let selectedResultID,
               let selectedHit = engine.searchHits.first(where: { $0.id == selectedResultID }),
               !selectedHit.key.isEmpty else { return engine.searchResults }
@@ -899,9 +912,13 @@ private struct DictionaryDefinitionPane: View {
         return candidates
     }
 
+    private var isCurrentSearchEmpty: Bool {
+        engine.searchScope == .fullText ? engine.ftsHits.isEmpty : engine.searchHits.isEmpty
+    }
+
     var body: some View {
         Group {
-            if let error = engine.lastError, engine.searchHits.isEmpty, !engine.isBusy, !engine.isSearching {
+            if let error = engine.lastError, isCurrentSearchEmpty, !engine.isBusy, !engine.isSearching {
                 VStack(alignment: .leading, spacing: 10) {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(StudyMateMediaStyle.warning)
@@ -931,10 +948,12 @@ private struct DictionaryDefinitionPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: "book.pages")
+                    Image(systemName: engine.searchScope == .fullText ? "text.magnifyingglass" : "book.pages")
                         .font(.system(size: 40))
                         .foregroundStyle(.tertiary)
-                    Text(lang.text("输入单词开始查询", "Enter a word to search"))
+                    Text(engine.searchScope == .fullText
+                        ? lang.text("输入单词或短语开始搜索例句与释义", "Enter words or phrase to search sentences")
+                        : lang.text("输入单词开始查询", "Enter a word to search"))
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
@@ -945,9 +964,32 @@ private struct DictionaryDefinitionPane: View {
                 // invalidated. Do not show that intermediate state as a
                 // missing definition.
                 DictionaryDefinitionSkeleton()
-            } else if engine.searchHits.isEmpty {
+            } else if isCurrentSearchEmpty {
                 if engine.isSearching || engine.isLoadingDefinition {
                     DictionaryDefinitionSkeleton()
+                } else if engine.searchScope == .fullText {
+                    VStack(spacing: 14) {
+                        Image(systemName: "text.magnifyingglass")
+                            .font(.system(size: 38))
+                            .foregroundStyle(.tertiary)
+                        Text(lang.text("未找到匹配例句或尚未构建全文索引", "No matches found or index not built"))
+                            .font(.headline)
+                        Text(lang.text("若尚未构建例句全文索引，点击下方按钮开始构建（支持包含该词/短语的所有例句毫秒级检索）。", "If you haven't built the sentence full-text index yet, click below to build it for instant search."))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 380)
+
+                        Button {
+                            onBuildFtsIndex()
+                        } label: {
+                            Label(lang.text("构建例句全文索引", "Build Sentence Index"), systemImage: "bolt.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(engine.isBusy)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ContentUnavailableView(lang.text("没有匹配结果", "No matches"), systemImage: "magnifyingglass", description: Text(lang.text("尝试更短的关键词或切换词典。", "Try a shorter query or another dictionary.")))
                 }
@@ -970,6 +1012,7 @@ private struct DictionaryDefinitionPane: View {
                     allowsJavaScript: true,
                     textScale: textScale,
                     adaptsToSystemAppearance: dictionaryAppearanceSettings.adaptsToSystemAppearance,
+                    highlightTerm: engine.searchScope == .fullText ? query : nil,
                     onLookupWord: onLookupWord,
                     onPlayAudio: onPlayAudio,
                     onPlayDictionaryAudio: { dictionaryID, key in
@@ -995,6 +1038,7 @@ public struct DictionaryView: View {
     @State private var query = ""
     @State private var selectedDictionaryID: String?
     @State private var selectedResultID: String?
+    @State private var selectedFtsHitID: String?
     @State private var dictionaryPendingDeletion: StudyMateDictionarySummary?
     @State private var textScale: CGFloat = 1.0
     @State private var queryHistory: [String] = []
@@ -1039,10 +1083,17 @@ public struct DictionaryView: View {
 
     private var subtitleText: String {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return lang.text("查找单词", "Search a word")
+            return engine.searchScope == .fullText
+                ? lang.text("搜索例句与短语", "Search sentences or phrases")
+                : lang.text("查找单词", "Search a word")
         }
         if engine.isSearching {
-            return lang.text("正在查找…", "Searching…")
+            return engine.searchScope == .fullText
+                ? lang.text("正在搜索例句与释义…", "Searching sentences…")
+                : lang.text("正在查找…", "Searching…")
+        }
+        if engine.searchScope == .fullText {
+            return lang.text("找到 \(engine.ftsHits.count) 条例句与释义", "\(engine.ftsHits.count) matches")
         }
         if let original = engine.lemmaOriginalQuery,
            let resolved = engine.definitionQuery,
@@ -1068,6 +1119,7 @@ public struct DictionaryView: View {
                     engine: engine,
                     query: query,
                     selectedResultID: selectedResultID,
+                    selectedFtsHitID: selectedFtsHitID,
                     selectedDictionaryID: selectedDictionaryID,
                     textScale: $textScale,
                     onLookupWord: { word in
@@ -1083,11 +1135,15 @@ public struct DictionaryView: View {
                         if oldQuery.trimmingCharacters(in: .whitespacesAndNewlines)
                             .caseInsensitiveCompare(word.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame {
                             selectedResultID = nil
+                            selectedFtsHitID = nil
                             engine.search(query: word, dictionaryID: selectedDictionaryID, immediate: true)
                         }
                     },
                     onPlayAudio: { audioKey in
                         DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
+                    },
+                    onBuildFtsIndex: {
+                        buildCurrentFtsIndex()
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1154,6 +1210,14 @@ public struct DictionaryView: View {
                         Button(action: importDictionary) {
                             Label(lang.text("导入 MDX/MDD 词典…", "Import MDX/MDD Dictionary…"), systemImage: "plus")
                         }
+                        Divider()
+                        Button {
+                            buildCurrentFtsIndex()
+                        } label: {
+                            Label(lang.text("构建/更新例句全文索引", "Build/Update Sentence Index"), systemImage: "bolt")
+                        }
+                        .disabled(engine.isBusy || engine.dictionaries.isEmpty)
+
                         if let activeSelectedDictionary {
                             Divider()
                             Button(role: .destructive) {
@@ -1173,11 +1237,14 @@ public struct DictionaryView: View {
             .searchable(
                 text: $query,
                 placement: .toolbar,
-                prompt: Text(lang.text("搜索单词或短语", "Search a word or phrase"))
+                prompt: Text(engine.searchScope == .fullText
+                    ? lang.text("搜索例句与短语", "Search sentences or phrases")
+                    : lang.text("搜索单词或短语", "Search a word or phrase"))
             )
             .onSubmit(of: .search) {
                 recordQuery(query)
                 selectedResultID = nil
+                selectedFtsHitID = nil
                 engine.search(
                     query: query,
                     dictionaryID: selectedDictionaryID,
@@ -1232,6 +1299,7 @@ public struct DictionaryView: View {
                 selectedDictionaryID = scopedDictionaryID
             }
             selectedResultID = nil
+            selectedFtsHitID = nil
             engine.clearSearch()
             engine.search(
                 query: query,
@@ -1259,9 +1327,38 @@ public struct DictionaryView: View {
                 dictionaryID: selectedDictionaryID
             )
         }
+        .onChange(of: selectedFtsHitID) { _, newID in
+            guard let newID,
+                  let selected = engine.ftsHits.first(where: { $0.id == newID }) else { return }
+            engine.loadDefinition(
+                for: selected.key,
+                dictionaryID: selected.dictionaryID
+            )
+        }
+        .onChange(of: engine.ftsHits) { _, newHits in
+            if engine.searchScope == .fullText {
+                if let current = selectedFtsHitID, newHits.contains(where: { $0.id == current }) {
+                    return
+                }
+                selectedFtsHitID = newHits.first?.id
+            }
+        }
+        .onChange(of: engine.searchScope) { _, _ in
+            selectedResultID = nil
+            selectedFtsHitID = nil
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                engine.search(
+                    query: query,
+                    dictionaryID: selectedDictionaryID,
+                    includeDetails: true,
+                    immediate: true
+                )
+            }
+        }
         .onChange(of: query) { _, newValue in
             if !isApplyingHistory {
                 selectedResultID = nil
+                selectedFtsHitID = nil
             }
             engine.search(query: newValue, dictionaryID: selectedDictionaryID)
         }
@@ -1271,6 +1368,7 @@ public struct DictionaryView: View {
             // reusing rows from the previous source and only reloading its
             // selected definition.
             selectedResultID = nil
+            selectedFtsHitID = nil
             engine.search(
                 query: query,
                 dictionaryID: selectedDictionaryID,
@@ -1282,9 +1380,31 @@ public struct DictionaryView: View {
         }
     }
 
-    // 1. 原生 Sidebar 词条列表
+    // 1. 原生 Sidebar 词条与例句列表
     @ViewBuilder
     private var sidebarList: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $engine.searchScope) {
+                Text(lang.text("查词头", "Headwords")).tag(DictionarySearchScope.headword)
+                Text(lang.text("查例句/释义", "Sentences")).tag(DictionarySearchScope.fullText)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+
+            Divider()
+
+            if engine.searchScope == .fullText {
+                ftsSidebarContent
+            } else {
+                headwordSidebarContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var headwordSidebarContent: some View {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "character.book.closed")
@@ -1319,6 +1439,67 @@ public struct DictionaryView: View {
                             .lineLimit(1)
                     }
                 }
+                .tag(item.id)
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var ftsSidebarContent: some View {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "text.magnifyingglass")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.tertiary)
+                Text(lang.text("输入短语或单词搜索例句", "Enter phrase to search sentences"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if engine.ftsHits.isEmpty && !engine.isSearching {
+            VStack(spacing: 12) {
+                Image(systemName: "text.badge.magnifyingglass")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.tertiary)
+                Text(lang.text("未找到匹配例句", "No sentence matches found"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Button {
+                    buildCurrentFtsIndex()
+                } label: {
+                    Text(lang.text("构建/更新例句索引", "Build Sentence Index"))
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(engine.isBusy)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(engine.ftsHits, id: \.id, selection: $selectedFtsHitID) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Text(item.key)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if selectedDictionaryID == nil {
+                            Text(item.displayName)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Text(item.attributedSnippet)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                .padding(.vertical, 2)
                 .tag(item.id)
             }
             .listStyle(.sidebar)
@@ -1636,6 +1817,31 @@ public struct DictionaryView: View {
               let number = Int(stem.dropFirst(prefix.count)),
               number >= 0 else { return Int.max }
         return number + 1
+    }
+
+    @MainActor
+    private func buildCurrentFtsIndex() {
+        let targetIDs: [String]
+        if let selectedDictionaryID {
+            targetIDs = [selectedDictionaryID]
+        } else {
+            targetIDs = enabledDictionaries.map(\.id)
+        }
+        guard !targetIDs.isEmpty else { return }
+
+        let dictionaryEngine = engine
+        let currentQuery = query
+        let currentSelectedDictID = selectedDictionaryID
+        Task { @MainActor in
+            await dictionaryEngine.buildFtsIndex(for: targetIDs)
+            if !currentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                dictionaryEngine.search(
+                    query: currentQuery,
+                    dictionaryID: currentSelectedDictID,
+                    immediate: true
+                )
+            }
+        }
     }
 
     @MainActor
