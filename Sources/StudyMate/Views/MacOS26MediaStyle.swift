@@ -14,6 +14,12 @@ enum StudyMateMediaStyle {
     static let success = Color(nsColor: .systemGreen)
     static let warning = Color(nsColor: .systemOrange)
     static let destructive = Color(nsColor: .systemRed)
+
+    // Keep toolbar symbols optically aligned without replacing the native
+    // toolbar hit area or imposing a custom button background.
+    static let toolbarIconPointSize: CGFloat = 15
+    static let toolbarIconFrame: CGFloat = 18
+    static let toolbarValuePointSize: CGFloat = 12
 }
 
 enum StudyMateControlShape {
@@ -138,5 +144,31 @@ extension View {
             .ultraThickMaterial,
             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
+    }
+
+    /// Shared typography for compact toolbar controls that show an icon and
+    /// a numeric/current value (repeat, pause, playback rate).
+    func studymateToolbarValueLabel() -> some View {
+        self.font(
+            .system(
+                size: StudyMateMediaStyle.toolbarValuePointSize,
+                weight: .medium
+            )
+            .monospacedDigit()
+        )
+    }
+}
+
+extension Image {
+    /// Normalizes the visual size and alignment of icon-only toolbar labels.
+    /// The surrounding toolbar continues to provide the native macOS hit area.
+    func studymateToolbarIcon() -> some View {
+        self
+            .font(.system(size: StudyMateMediaStyle.toolbarIconPointSize, weight: .regular))
+            .frame(
+                width: StudyMateMediaStyle.toolbarIconFrame,
+                height: StudyMateMediaStyle.toolbarIconFrame,
+                alignment: .center
+            )
     }
 }

@@ -143,21 +143,44 @@ public final class VideoSubtitleSettings: ObservableObject {
         }
     }
 
-    // 4 种界面模式的独立字体设置
+    // 5 种界面模式的独立字体设置
+    // 预览字号时会暂时跳过持久化，但仍然发布变化让字幕实时更新。
+    private var shouldPersistFontSettings = true
+
     @Published public var videoFontSettings: ModeFontSettings {
-        didSet { persistFontSettings(videoFontSettings, mode: .video) }
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(videoFontSettings, mode: .video)
+            }
+        }
     }
     @Published public var listFontSettings: ModeFontSettings {
-        didSet { persistFontSettings(listFontSettings, mode: .list) }
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(listFontSettings, mode: .list)
+            }
+        }
     }
     @Published public var fullTextFontSettings: ModeFontSettings {
-        didSet { persistFontSettings(fullTextFontSettings, mode: .fullText) }
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(fullTextFontSettings, mode: .fullText)
+            }
+        }
     }
     @Published public var sentenceFontSettings: ModeFontSettings {
-        didSet { persistFontSettings(sentenceFontSettings, mode: .sentence) }
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(sentenceFontSettings, mode: .sentence)
+            }
+        }
     }
     @Published public var fillInBlankFontSettings: ModeFontSettings {
-        didSet { persistFontSettings(fillInBlankFontSettings, mode: .fillInBlank) }
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(fillInBlankFontSettings, mode: .fillInBlank)
+            }
+        }
     }
 
     // Normalized coordinates keep the subtitle position stable when the video
@@ -190,7 +213,16 @@ public final class VideoSubtitleSettings: ObservableObject {
         }
     }
 
-    public func setFontSettings(_ newSettings: ModeFontSettings, for mode: PlaybackInterfaceMode) {
+    /// 更新字体配置；预览更新仍会发布给字幕视图，但不会在每个滑块帧写入 UserDefaults。
+    public func setFontSettings(
+        _ newSettings: ModeFontSettings,
+        for mode: PlaybackInterfaceMode,
+        persist: Bool = true
+    ) {
+        let previousPersistence = shouldPersistFontSettings
+        shouldPersistFontSettings = persist
+        defer { shouldPersistFontSettings = previousPersistence }
+
         switch mode {
         case .video: videoFontSettings = newSettings
         case .list: listFontSettings = newSettings
@@ -226,6 +258,14 @@ public final class VideoSubtitleSettings: ObservableObject {
 
     /// Legacy video defaults need a semantic foreground on document surfaces.
     static func readingColor(hex: String, mode: PlaybackInterfaceMode) -> NSColor {
+        switch hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case StudyMateSubtitleColorToken.label:
+            return .labelColor
+        case StudyMateSubtitleColorToken.secondaryLabel:
+            return .secondaryLabelColor
+        default:
+            break
+        }
         if mode != .video && ["#FFFFFF", "#FFE36E"].contains(hex.uppercased()) {
             return .labelColor
         }
@@ -339,8 +379,8 @@ public final class VideoSubtitleSettings: ObservableObject {
             translationBold: false,
             originalItalic: false,
             translationItalic: false,
-            originalColorHex: "#FFFFFF",
-            translationColorHex: "#FFE36E"
+            originalColorHex: StudyMateSubtitleColorToken.label,
+            translationColorHex: StudyMateSubtitleColorToken.secondaryLabel
         )
         let defaultFullText = ModeFontSettings(
             originalFontName: systemFamily,
@@ -351,8 +391,8 @@ public final class VideoSubtitleSettings: ObservableObject {
             translationBold: false,
             originalItalic: false,
             translationItalic: false,
-            originalColorHex: "#FFFFFF",
-            translationColorHex: "#FFE36E"
+            originalColorHex: StudyMateSubtitleColorToken.label,
+            translationColorHex: StudyMateSubtitleColorToken.secondaryLabel
         )
         let defaultSentence = ModeFontSettings(
             originalFontName: systemFamily,
@@ -363,8 +403,8 @@ public final class VideoSubtitleSettings: ObservableObject {
             translationBold: false,
             originalItalic: false,
             translationItalic: false,
-            originalColorHex: "#FFFFFF",
-            translationColorHex: "#FFE36E"
+            originalColorHex: StudyMateSubtitleColorToken.label,
+            translationColorHex: StudyMateSubtitleColorToken.secondaryLabel
         )
         let defaultFillInBlank = ModeFontSettings(
             originalFontName: systemFamily,
@@ -375,8 +415,8 @@ public final class VideoSubtitleSettings: ObservableObject {
             translationBold: false,
             originalItalic: false,
             translationItalic: false,
-            originalColorHex: "#FFFFFF",
-            translationColorHex: "#FFE36E"
+            originalColorHex: StudyMateSubtitleColorToken.label,
+            translationColorHex: StudyMateSubtitleColorToken.secondaryLabel
         )
 
         videoFontSettings = Self.loadFontSettings(from: defaults, mode: .video, defaultSettings: defaultVideo)
@@ -917,13 +957,21 @@ public struct VideoSubtitleOverlay: View {
 
 /// 工具栏“字体设置”按钮打开的紧凑配置面板。
 /// 支持对视频模式、列表模式、全文模式、句子模式 4 种界面模式的字体独立调优。
+@MainActor
 public struct VideoSubtitleFontSettingsPopover: View {
-    @ObservedObject private var settings = VideoSubtitleSettings.shared
+    // 弹窗使用本地草稿，不订阅整个全局设置对象；这样字幕实时预览仍然生效，
+    // 但字体设置对象的其它变化不会让弹窗整棵视图树重新计算。
+    private let settings: VideoSubtitleSettings
     @ObservedObject private var lang = LanguageManager.shared
     @State private var selectedMode: PlaybackInterfaceMode
+    @State private var draftSettings: ModeFontSettings
+    @State private var isAdjustingFontSize = false
 
     public init(initialMode: PlaybackInterfaceMode = .video) {
+        let settings = VideoSubtitleSettings.shared
+        self.settings = settings
         _selectedMode = State(initialValue: initialMode)
+        _draftSettings = State(initialValue: settings.fontSettings(for: initialMode))
     }
 
     public var body: some View {
@@ -939,29 +987,31 @@ public struct VideoSubtitleFontSettingsPopover: View {
                 }
             }
             .pickerStyle(.segmented)
+            .accessibilityLabel(lang.text("设置界面模式", "Settings interface mode"))
 
             subtitleGroup(
                 title: lang.text("原文", "Original"),
                 fontName: Binding(
-                    get: { settings.fontSettings(for: selectedMode).originalFontName },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalFontName = val } }
+                    get: { draftSettings.originalFontName },
+                    set: { val in updateDraft { $0.originalFontName = val } }
                 ),
                 fontSize: Binding(
-                    get: { settings.fontSettings(for: selectedMode).originalFontSize },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalFontSize = val } }
+                    get: { draftSettings.originalFontSize },
+                    set: { val in updateDraft({ $0.originalFontSize = val }, persist: !isAdjustingFontSize) }
                 ),
                 bold: Binding(
-                    get: { settings.fontSettings(for: selectedMode).originalBold },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalBold = val } }
+                    get: { draftSettings.originalBold },
+                    set: { val in updateDraft { $0.originalBold = val } }
                 ),
                 italic: Binding(
-                    get: { settings.fontSettings(for: selectedMode).originalItalic },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalItalic = val } }
+                    get: { draftSettings.originalItalic },
+                    set: { val in updateDraft { $0.originalItalic = val } }
                 ),
                 color: Binding(
-                    get: { settings.fontSettings(for: selectedMode).originalColor },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.originalColor = val } }
-                )
+                    get: { draftSettings.originalColor },
+                    set: { val in updateDraft { $0.originalColor = val } }
+                ),
+                onFontSizeEditingChanged: handleFontSizeEditingChanged
             )
 
             Divider()
@@ -969,25 +1019,26 @@ public struct VideoSubtitleFontSettingsPopover: View {
             subtitleGroup(
                 title: lang.text("译文", "Translation"),
                 fontName: Binding(
-                    get: { settings.fontSettings(for: selectedMode).translationFontName },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationFontName = val } }
+                    get: { draftSettings.translationFontName },
+                    set: { val in updateDraft { $0.translationFontName = val } }
                 ),
                 fontSize: Binding(
-                    get: { settings.fontSettings(for: selectedMode).translationFontSize },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationFontSize = val } }
+                    get: { draftSettings.translationFontSize },
+                    set: { val in updateDraft({ $0.translationFontSize = val }, persist: !isAdjustingFontSize) }
                 ),
                 bold: Binding(
-                    get: { settings.fontSettings(for: selectedMode).translationBold },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationBold = val } }
+                    get: { draftSettings.translationBold },
+                    set: { val in updateDraft { $0.translationBold = val } }
                 ),
                 italic: Binding(
-                    get: { settings.fontSettings(for: selectedMode).translationItalic },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationItalic = val } }
+                    get: { draftSettings.translationItalic },
+                    set: { val in updateDraft { $0.translationItalic = val } }
                 ),
                 color: Binding(
-                    get: { settings.fontSettings(for: selectedMode).translationColor },
-                    set: { val in settings.updateFontSettings(for: selectedMode) { $0.translationColor = val } }
-                )
+                    get: { draftSettings.translationColor },
+                    set: { val in updateDraft { $0.translationColor = val } }
+                ),
+                onFontSizeEditingChanged: handleFontSizeEditingChanged
             )
 
             if selectedMode == .video {
@@ -1001,6 +1052,35 @@ public struct VideoSubtitleFontSettingsPopover: View {
         }
         .padding(16)
         .frame(width: 450)
+        .onAppear {
+            draftSettings = settings.fontSettings(for: selectedMode)
+        }
+        .onChange(of: selectedMode) { _, newMode in
+            draftSettings = settings.fontSettings(for: newMode)
+        }
+        .onDisappear {
+            if isAdjustingFontSize {
+                settings.setFontSettings(draftSettings, for: selectedMode)
+            }
+        }
+    }
+
+    private func updateDraft(
+        _ update: (inout ModeFontSettings) -> Void,
+        persist: Bool = true
+    ) {
+        var updated = draftSettings
+        update(&updated)
+        draftSettings = updated
+        settings.setFontSettings(updated, for: selectedMode, persist: persist)
+    }
+
+    private func handleFontSizeEditingChanged(_ isEditing: Bool) {
+        isAdjustingFontSize = isEditing
+        if !isEditing {
+            // Slider 拖动期间只更新实时预览；鼠标释放后再持久化一次。
+            settings.setFontSettings(draftSettings, for: selectedMode)
+        }
     }
 
     @ViewBuilder
@@ -1010,7 +1090,8 @@ public struct VideoSubtitleFontSettingsPopover: View {
         fontSize: Binding<Double>,
         bold: Binding<Bool>,
         italic: Binding<Bool>,
-        color: Binding<Color>
+        color: Binding<Color>,
+        onFontSizeEditingChanged: @escaping (Bool) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.subheadline.weight(.semibold))
@@ -1018,19 +1099,14 @@ public struct VideoSubtitleFontSettingsPopover: View {
             HStack {
                 Text(lang.text("字体", "Font"))
                     .frame(width: 48, alignment: .leading)
-                Picker("", selection: fontName) {
-                    ForEach(VideoSubtitleSettings.availableFontFamilies, id: \.self) { family in
-                        Text(family).font(.custom(family, size: 12)).tag(family)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity)
+                SubtitleFontFamilyMenu(selection: fontName)
+                    .frame(maxWidth: .infinity)
             }
 
             HStack {
                 Text(lang.text("大小", "Size"))
                     .frame(width: 48, alignment: .leading)
-                Slider(value: fontSize, in: 10...72, step: 1)
+                Slider(value: fontSize, in: 10...72, step: 1, onEditingChanged: onFontSizeEditingChanged)
                 Text("\(Int(fontSize.wrappedValue))")
                     .monospacedDigit()
                     .frame(width: 28, alignment: .trailing)
@@ -1046,10 +1122,66 @@ public struct VideoSubtitleFontSettingsPopover: View {
     }
 }
 
+/// 字体列表延迟到系统菜单真正展开时构建；菜单项使用系统字体，避免打开设置面板时
+/// 为数百个字体同步创建自定义字体对象。当前选中的字体保留一个轻量预览。
+private struct SubtitleFontFamilyMenu: View {
+    @Binding var selection: String
+    @ObservedObject private var lang = LanguageManager.shared
+
+    var body: some View {
+        Menu {
+            ForEach(VideoSubtitleSettings.availableFontFamilies, id: \.self) { family in
+                Button {
+                    selection = family
+                } label: {
+                    if selection == family {
+                        Label(family, systemImage: "checkmark")
+                    } else {
+                        Text(family)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selection)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 4)
+                Text("Aa")
+                    .font(.custom(selection, size: 12))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(lang.text("字幕字体", "Subtitle font"))
+        .accessibilityValue(selection)
+        .help(lang.text("选择字幕字体", "Choose subtitle font"))
+    }
+}
+
+/// 文本类界面使用语义色，随 macOS 浅色/深色外观自动切换；视频字幕仍保留
+/// 对视频画面更稳定的高对比默认色。
+fileprivate enum StudyMateSubtitleColorToken {
+    static let label = "system.label"
+    static let secondaryLabel = "system.secondaryLabel"
+}
+
 extension Color {
     init(studymateHex hex: String) {
         let normalized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "#", with: "")
+        if normalized.lowercased() == StudyMateSubtitleColorToken.label {
+            self.init(nsColor: .labelColor)
+            return
+        }
+        if normalized.lowercased() == StudyMateSubtitleColorToken.secondaryLabel {
+            self.init(nsColor: .secondaryLabelColor)
+            return
+        }
         var value: UInt64 = 0
         Scanner(string: normalized).scanHexInt64(&value)
         let red = Double((value >> 16) & 0xFF) / 255

@@ -99,10 +99,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 struct StudyMateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
+    @StateObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("StudyMate.ShowStatusBar") private var showStatusBar = false
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
+    @AppStorage("StudyMate.ShowSentenceList") private var showSentenceList = true
+    @AppStorage("StudyMate.ShowWaveforms") private var showWaveforms = true
+    @AppStorage("StudyMate.ShowSubtitleEditor") private var showSubtitleEditor = true
+    @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
 
     /// PlaybackEngine is intentionally resolved only when a media window or a
     /// playback command is used.  Keeping it out of @StateObject here avoids
@@ -174,6 +179,15 @@ struct StudyMateApp: App {
                     openDictionaryAction()
                 }
                 .keyboardShortcut("d", modifiers: [.command, .control])
+
+                Button(languageManager.text("打开句库…", "Open Sentence Library…")) {
+                    openWindow(id: "sentence-library")
+                }
+                .keyboardShortcut("l", modifiers: [.command])
+
+                Button(languageManager.text("打开生词本…", "Open Vocabulary…")) {
+                    openWindow(id: "vocabulary")
+                }
             }
 
             // 文件菜单
@@ -192,7 +206,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil)
             }
 
-            // 显示菜单：控制主窗口底部的紧凑状态栏、书签与全屏。
+            // 显示菜单：集中管理工具栏中的字幕、工作区和界面模式按钮。
             CommandGroup(after: .toolbar) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.22)) {
@@ -224,6 +238,104 @@ struct StudyMateApp: App {
                     }
                 } label: {
                     Label(languageManager.text("界面模式", "Interface Mode"), systemImage: playbackInterfaceMode.iconName)
+                }
+
+                Divider()
+
+                Button {
+                    videoSubtitleSettings.toggleOriginal(for: playbackInterfaceMode)
+                } label: {
+                    HStack {
+                        Text(videoSubtitleSettings.isOriginalVisible(for: playbackInterfaceMode)
+                             ? languageManager.text("隐藏画面原文字幕", "Hide Original Subtitles")
+                             : languageManager.text("显示画面原文字幕", "Show Original Subtitles"))
+                        if videoSubtitleSettings.isOriginalVisible(for: playbackInterfaceMode) {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    videoSubtitleSettings.toggleTranslation(for: playbackInterfaceMode)
+                } label: {
+                    HStack {
+                        Text(videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode)
+                             ? languageManager.text("隐藏画面译文字幕", "Hide Translated Subtitles")
+                             : languageManager.text("显示画面译文字幕", "Show Translated Subtitles"))
+                        if videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button(languageManager.text("字幕字体设置…", "Subtitle Font Settings…")) {
+                    openWindow(id: "subtitle-font-settings")
+                }
+
+                Divider()
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showWaveforms.toggle()
+                    }
+                } label: {
+                    HStack {
+                        Text(showWaveforms
+                             ? languageManager.text("隐藏波形图", "Hide Waveforms")
+                             : languageManager.text("显示波形图", "Show Waveforms"))
+                        if showWaveforms {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showSubtitleEditor.toggle()
+                    }
+                } label: {
+                    HStack {
+                        Text(showSubtitleEditor
+                             ? languageManager.text("隐藏字幕编辑区", "Hide Subtitle Editor")
+                             : languageManager.text("显示字幕编辑区", "Show Subtitle Editor"))
+                        if showSubtitleEditor {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    NotificationCenter.default.post(name: .studyMateTogglePlaylist, object: nil)
+                } label: {
+                    HStack {
+                        Text(showPlaylist
+                             ? languageManager.text("隐藏播放列表", "Hide Playlist")
+                             : languageManager.text("显示播放列表", "Show Playlist"))
+                        if showPlaylist {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showSentenceList.toggle()
+                    }
+                } label: {
+                    HStack {
+                        Text(showSentenceList
+                             ? languageManager.text("隐藏断句列表", "Hide Sentence List")
+                             : languageManager.text("显示断句列表", "Show Sentence List"))
+                        if showSentenceList {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
                 }
 
                 Menu {
@@ -340,6 +452,86 @@ struct StudyMateApp: App {
                     engine.playbackRate = 1.0
                 }
                 .keyboardShortcut("0", modifiers: [.command])
+
+                Divider()
+
+                Menu(languageManager.text("单句复读次数", "Sentence Repeat Count")) {
+                    ForEach([1, 2, 3, 5, 7, 10, 20, 0], id: \.self) { count in
+                        Button {
+                            engine.repeatCountLimit = count
+                            engine.currentRepeatCount = 1
+                        } label: {
+                            let label = count == 0 ? languageManager.text("无限", "Unlimited") : String(count) + "×"
+                            if engine.repeatCountLimit == count {
+                                Label(label, systemImage: "checkmark")
+                            } else {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+
+                Menu(languageManager.text("句末跟读停顿", "Shadowing Pause")) {
+                    Button {
+                        engine.setShadowingPauseRatio(0)
+                    } label: {
+                        if engine.shadowingPauseRatio == 0 && engine.shadowingPauseSeconds == 0 {
+                            Label(languageManager.text("关闭", "Off"), systemImage: "checkmark")
+                        } else {
+                            Text(languageManager.text("关闭", "Off"))
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach([1, 2, 3, 5], id: \.self) { seconds in
+                        Button {
+                            engine.setShadowingPauseSeconds(Double(seconds))
+                        } label: {
+                            if abs(engine.shadowingPauseSeconds - Double(seconds)) < 0.001 {
+                                Label(String(seconds) + "s", systemImage: "checkmark")
+                            } else {
+                                Text(String(seconds) + "s")
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach([0.25, 0.5, 0.75, 1.0, 1.5, 2.0], id: \.self) { ratio in
+                        let label = String(format: "%.2g×", ratio)
+                        Button {
+                            engine.setShadowingPauseRatio(ratio)
+                        } label: {
+                            if engine.shadowingPauseSeconds == 0 && abs(engine.shadowingPauseRatio - ratio) < 0.001 {
+                                Label(label, systemImage: "checkmark")
+                            } else {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+
+                Menu(languageManager.text("播放速度", "Playback Speed")) {
+                    ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
+                        Button {
+                            engine.playbackRate = speed
+                        } label: {
+                            let label = String(format: "%.2fx", speed)
+                            if abs(engine.playbackRate - speed) < 0.01 {
+                                Label(label, systemImage: "checkmark")
+                            } else {
+                                Text(label)
+                            }
+                        }
+                    }
+                    Divider()
+                    Button {
+                        engine.playbackRate = 1.0
+                    } label: {
+                        Label(languageManager.text("恢复原速", "Reset to Original Speed"), systemImage: "arrow.counterclockwise")
+                    }
+                }
             }
             
         }
@@ -353,6 +545,13 @@ struct StudyMateApp: App {
         .defaultSize(width: 960, height: 720)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
+
+        Window(languageManager.text("字幕字体设置", "Subtitle Font Settings"), id: "subtitle-font-settings") {
+            VideoSubtitleFontSettingsPopover(initialMode: playbackInterfaceMode)
+        }
+        .defaultSize(width: 470, height: 520)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentSize)
 
         Window(languageManager.text("句库", "Sentence Library"), id: "sentence-library") {
             // 句库窗口独立按需创建；欢迎页启动时不读取数据库或创建默认句库。
