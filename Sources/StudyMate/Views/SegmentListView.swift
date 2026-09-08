@@ -189,8 +189,8 @@ private struct SegmentFloatingCapsuleView: View {
                         Image(systemName: capsuleInfo.direction == .above ? "arrow.up" : "arrow.down")
                             .font(.system(size: 11, weight: .bold))
                         Text(lang.text(
-                            "\(capsuleInfo.direction == .above ? "↑" : "↓") 返回正在播放句 (#\(capsuleInfo.number))",
-                            "\(capsuleInfo.direction == .above ? "↑" : "↓") Return to active sentence (#\(capsuleInfo.number))"
+                            "返回正在播放句 (#\(capsuleInfo.number))",
+                            "Return to active sentence (#\(capsuleInfo.number))"
                         ))
                         .font(.system(size: 11, weight: .medium))
                     }

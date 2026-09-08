@@ -25,7 +25,7 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
     @ObservedObject private var dictionaryEngine = DictionaryEngine.shared
 
-    @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = false
+    @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = true
     @State private var selectedSection: SettingsSection = .general
     @State private var translationAPIKey = ""
     @State private var showAddTranslationService = false

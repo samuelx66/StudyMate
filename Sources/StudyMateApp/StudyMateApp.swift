@@ -102,7 +102,7 @@ struct StudyMateApp: App {
     @StateObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
-    @AppStorage("StudyMate.ShowStatusBar") private var showStatusBar = false
+    @AppStorage("StudyMate.ShowStatusBar") private var showStatusBar = true
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
     @AppStorage("StudyMate.ShowSentenceList") private var showSentenceList = true
     @AppStorage("StudyMate.ShowWaveforms") private var showWaveforms = true
@@ -119,7 +119,9 @@ struct StudyMateApp: App {
     init() {
         UserDefaults.standard.register(defaults: [
             "NSWindowTabbingShouldShowTabBar": false,
-            "AppleWindowTabbingMode": "manual"
+            "AppleWindowTabbingMode": "manual",
+            "StudyMate.ShowStatusBar": true,
+            "StudyMate.ShowSecondaryWaveform": true
         ])
         NSWindow.allowsAutomaticWindowTabbing = false
     }

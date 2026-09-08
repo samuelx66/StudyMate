@@ -53,7 +53,7 @@ public struct MainContentView: View {
     @State private var isDropTargeted: Bool = false
     @State private var isClosingCurrentMedia: Bool = false
     @State private var isProjectRecoveryDialogPresented: Bool = false
-    @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible: Bool = false
+    @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible: Bool = true
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
     @State private var savedLoopModeBeforeFillInBlank: PlaybackLoopMode? = nil
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "studymate_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "studymate_playlist_width") : 360
@@ -306,6 +306,14 @@ private struct VideoModeWorkspaceView: View {
                         Rectangle()
                             .fill(StudyMateMediaStyle.separator.opacity(0.65))
                             .frame(width: 1)
+                            .allowsHitTesting(false)
+                    }
+                    .onHover { isHovered in
+                        if isHovered {
+                            NSCursor.resizeLeftRight.set()
+                        } else {
+                            NSCursor.arrow.set()
+                        }
                     }
 
                     SegmentListView(
@@ -363,6 +371,7 @@ private final class SegmentListResizeBorderView: NSView {
     var onDragEnded: (() -> Void)?
     private var lastMouseX: CGFloat = 0
     private var isDragging = false
+    private var trackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -374,9 +383,40 @@ private final class SegmentListResizeBorderView: NSView {
         postsFrameChangedNotifications = true
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let options: NSTrackingArea.Options = [
+            .activeAlways,
+            .mouseEnteredAndExited,
+            .cursorUpdate,
+            .inVisibleRect
+        ]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
+        discardCursorRects()
         addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if !isDragging {
+            NSCursor.arrow.set()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -399,6 +439,12 @@ private final class SegmentListResizeBorderView: NSView {
         guard isDragging else { return }
         isDragging = false
         NSCursor.pop()
+        let loc = convert(event.locationInWindow, from: nil)
+        if bounds.contains(loc) {
+            NSCursor.resizeLeftRight.set()
+        } else {
+            NSCursor.arrow.set()
+        }
         onDragEnded?()
     }
 }
