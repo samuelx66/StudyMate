@@ -21,11 +21,69 @@ public struct VideoPlayerView: View {
     @State private var positionOffset: CGSize = .zero
     @State private var controlPanelSize: CGSize = CGSize(width: 572, height: 74)
 
+    // 时间码微调 HUD 状态（触控板双指横滑 Seek）
+    @State private var isSeekingHUDVisible: Bool = false
+    @State private var seekingTargetTime: Double = 0
+    @State private var seekingDeltaSeconds: Double = 0
+    @State private var seekingHUDHideTask: Task<Void, Never>?
+
+    // 音量调节 HUD 状态（触控板双指纵滑调节音量）
+    @State private var isVolumeHUDVisible: Bool = false
+    @State private var currentHUDVolume: Float = 1.0
+    @State private var volumeHUDHideTask: Task<Void, Never>?
+
     private static let controlPanelAutoHideDelay: UInt64 = 10_000_000_000
     private static let controlPanelAnimation = Animation.easeInOut(duration: 0.2)
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
+    }
+
+    private func showSeekingHUD(targetTime: Double, deltaSeconds: Double) {
+        seekingHUDHideTask?.cancel()
+        seekingHUDHideTask = nil
+        seekingTargetTime = targetTime
+        seekingDeltaSeconds = deltaSeconds
+        if !isSeekingHUDVisible {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                isSeekingHUDVisible = true
+            }
+        }
+    }
+
+    private func scheduleHideSeekingHUD() {
+        seekingHUDHideTask?.cancel()
+        seekingHUDHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                isSeekingHUDVisible = false
+            }
+            seekingHUDHideTask = nil
+        }
+    }
+
+    private func showVolumeHUD(volume: Float) {
+        volumeHUDHideTask?.cancel()
+        volumeHUDHideTask = nil
+        currentHUDVolume = volume
+        if !isVolumeHUDVisible {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                isVolumeHUDVisible = true
+            }
+        }
+    }
+
+    private func scheduleHideVolumeHUD() {
+        volumeHUDHideTask?.cancel()
+        volumeHUDHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                isVolumeHUDVisible = false
+            }
+            volumeHUDHideTask = nil
+        }
     }
     
     private var shouldShowOverlay: Bool {
@@ -119,20 +177,9 @@ public struct VideoPlayerView: View {
                     if media.isVideo {
                         // 智能多媒体双引擎硬件加速视频渲染视图（AVFoundation / libmpv 无缝直通）
                         NativeVideoPlayerRepresentable(
-                            playerView: engine.activeBackend.playerView,
-                            onHoverChanged: { hovering in
-                                if hovering {
-                                    handlePointerActivity()
-                                } else {
-                                    handlePointerExit()
-                                }
-                            },
-                            onPointerActivity: handlePointerActivity
+                            playerView: engine.activeBackend.playerView
                         )
                         .id("\(ObjectIdentifier(engine.activeBackend))_\(media.id)")
-                        .onTapGesture {
-                            engine.togglePlayPause()
-                        }
                     } else {
                         // 纯音频模式下的视觉占位
                         AudioVisualPlaceholder(
@@ -140,25 +187,83 @@ public struct VideoPlayerView: View {
                             isPlaying: engine.isPlaying,
                             duration: media.formattedDuration
                         )
-                        .onHover { hovering in
-                            if hovering {
-                                handlePointerActivity()
-                            } else {
-                                handlePointerExit()
-                            }
-                        }
-                        .onTapGesture {
-                            engine.togglePlayPause()
-                        }
                     }
                 } else {
                     // 未打开媒体文件时的空状态
                     EmptyMediaPlaceholder()
                 }
 
-                // 当前断句的原文与译文覆盖层。它独立于播放控制面板，
-                // 两行字幕可分别拖动，位置和字体由工具栏设置持久化管理。
-                VideoSubtitleOverlay(engine: engine)
+                // 触控板原生手势感知与微调层 (双指横滑 Seek + 双指上下滑动调节音量)
+                if engine.currentMedia != nil {
+                    VideoGestureOverlayRepresentable(
+                        engine: engine,
+                        onSeekBegan: {
+                            showSeekingHUD(targetTime: engine.clock.currentTime, deltaSeconds: 0)
+                        },
+                        onSeekChanged: { targetTime, delta in
+                            showSeekingHUD(targetTime: targetTime, deltaSeconds: delta)
+                        },
+                        onSeekEnded: {
+                            scheduleHideSeekingHUD()
+                        },
+                        onVolumeChanged: { newVolume in
+                            showVolumeHUD(volume: newVolume)
+                        },
+                        onVolumeEnded: {
+                            scheduleHideVolumeHUD()
+                        },
+                        onPointerActivity: {
+                            handlePointerActivity()
+                        },
+                        onHoverChanged: { hovering in
+                            if hovering {
+                                handlePointerActivity()
+                            } else {
+                                handlePointerExit()
+                            }
+                        },
+                        onSingleTap: {
+                            engine.togglePlayPause()
+                        }
+                    )
+                }
+
+                // 当前断句的原文与译文覆盖层（支持随底部 OSD 呼出智能上浮避让）
+                VideoSubtitleOverlay(
+                    engine: engine,
+                    isOSDVisible: shouldShowOverlay && abs(positionOffset.height) < 40
+                )
+
+                // 左上角触控板手势微调 HUD 浮层（双指横滑 Seek / 双指纵向滑动调节音量）
+                if isSeekingHUDVisible || isVolumeHUDVisible {
+                    VStack {
+                        HStack {
+                            if isSeekingHUDVisible {
+                                VideoSeekingHUDView(
+                                    targetTime: seekingTargetTime,
+                                    duration: engine.duration,
+                                    deltaSeconds: seekingDeltaSeconds
+                                )
+                                .transition(.asymmetric(
+                                    insertion: .scale(scale: 0.95, anchor: .topLeading).combined(with: .opacity),
+                                    removal: .opacity
+                                ))
+                            } else if isVolumeHUDVisible {
+                                VideoVolumeHUDView(volume: currentHUDVolume)
+                                    .transition(.asymmetric(
+                                        insertion: .scale(scale: 0.95, anchor: .topLeading).combined(with: .opacity),
+                                        removal: .opacity
+                                    ))
+                            }
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                    .padding(.top, 14)
+                    .padding(.leading, 14)
+                    .zIndex(10)
+                    .allowsHitTesting(false)
+                }
 
                 if engine.isMediaLoading {
                     VStack(spacing: 8) {
@@ -190,6 +295,7 @@ public struct VideoPlayerView: View {
                             onDragEnded: { scheduleOverlayAutoHide() }
                         )
                     }
+                    .zIndex(20)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -227,6 +333,10 @@ public struct VideoPlayerView: View {
             pointerActivityMarker.lastActivityUptime = 0
             overlayHideTask?.cancel()
             overlayHideTask = nil
+            seekingHUDHideTask?.cancel()
+            seekingHUDHideTask = nil
+            volumeHUDHideTask?.cancel()
+            volumeHUDHideTask = nil
         }
     }
 }
@@ -504,5 +614,346 @@ struct EmptyMediaPlaceholder: View {
             .foregroundColor(.secondary.opacity(0.8))
         }
         .padding()
+    }
+}
+
+// MARK: - 触控板微调 HUD 浮层
+
+/// 触控板横滑微调 Seek 时间码 HUD（左上角紧凑小长方形）
+struct VideoSeekingHUDView: View {
+    let targetTime: Double
+    let duration: Double
+    let deltaSeconds: Double
+
+    private func formatCompactTimecode(_ seconds: Double) -> String {
+        guard !seconds.isNaN && seconds.isFinite && seconds >= 0 else { return "00:00" }
+        let totalSec = Int(seconds)
+        let s = totalSec % 60
+        let m = (totalSec / 60) % 60
+        let h = totalSec / 3600
+        if duration >= 3600 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        } else {
+            let tenths = Int((seconds - Double(totalSec)) * 10)
+            return String(format: "%02d:%02d.%d", m, s, tenths)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: deltaSeconds >= 0 ? "goforward" : "gobackward")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(StudyMateMediaStyle.accent)
+
+                Text(String(format: "%@%.1fs", deltaSeconds >= 0 ? "+" : "", deltaSeconds))
+                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 6)
+
+                Text("\(formatCompactTimecode(targetTime)) / \(formatCompactTimecode(duration))")
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            // 紧凑进度指示条
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.18))
+                    Capsule()
+                        .fill(StudyMateMediaStyle.accent)
+                        .frame(width: geo.size.width * CGFloat(max(0.0, min(1.0, duration > 0 ? targetTime / duration : 0.0))))
+                }
+            }
+            .frame(height: 2.5)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(width: 172)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: Color.black.opacity(0.28), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+        )
+    }
+}
+
+/// 触控板纵滑音量调节 HUD（左上角紧凑小长方形）
+struct VideoVolumeHUDView: View {
+    let volume: Float
+
+    private var volumeIconName: String {
+        if volume <= 0.001 {
+            return "speaker.slash.fill"
+        } else if volume < 0.33 {
+            return "speaker.wave.1.fill"
+        } else if volume < 0.66 {
+            return "speaker.wave.2.fill"
+        } else {
+            return "speaker.wave.3.fill"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: volumeIconName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(StudyMateMediaStyle.accent)
+                    .frame(width: 14)
+
+                Text("\(Int(round(volume * 100)))%")
+                    .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 4)
+            }
+
+            // 音量进度条
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.18))
+                    Capsule()
+                        .fill(StudyMateMediaStyle.accent)
+                        .frame(width: geo.size.width * CGFloat(max(0.0, min(1.0, volume))))
+                }
+            }
+            .frame(height: 2.5)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(width: 86)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: Color.black.opacity(0.28), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - 触控板原生手势感知与微调层
+
+/// 触控板原生手势与指针感知覆盖层
+struct VideoGestureOverlayRepresentable: NSViewRepresentable {
+    let engine: PlaybackEngine
+    let onSeekBegan: () -> Void
+    let onSeekChanged: (Double, Double) -> Void
+    let onSeekEnded: () -> Void
+    let onVolumeChanged: (Float) -> Void
+    let onVolumeEnded: () -> Void
+    let onPointerActivity: () -> Void
+    let onHoverChanged: (Bool) -> Void
+    let onSingleTap: () -> Void
+
+    func makeNSView(context: Context) -> VideoGestureOverlayView {
+        let view = VideoGestureOverlayView()
+        updateNSView(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ nsView: VideoGestureOverlayView, context: Context) {
+        nsView.engine = engine
+        nsView.onSeekBegan = onSeekBegan
+        nsView.onSeekChanged = onSeekChanged
+        nsView.onSeekEnded = onSeekEnded
+        nsView.onVolumeChanged = onVolumeChanged
+        nsView.onVolumeEnded = onVolumeEnded
+        nsView.onPointerActivity = onPointerActivity
+        nsView.onHoverChanged = onHoverChanged
+        nsView.onSingleTap = onSingleTap
+    }
+}
+
+/// 支持双指横滑微调 Seek、双指纵滑调节音量及指针感知的 NSView
+final class VideoGestureOverlayView: NSView {
+    var engine: PlaybackEngine?
+    var onSeekBegan: (() -> Void)?
+    var onSeekChanged: ((Double, Double) -> Void)?
+    var onSeekEnded: (() -> Void)?
+    var onVolumeChanged: ((Float) -> Void)?
+    var onVolumeEnded: (() -> Void)?
+    var onPointerActivity: (() -> Void)?
+    var onHoverChanged: ((Bool) -> Void)?
+    var onSingleTap: (() -> Void)?
+
+    private enum GestureAxis {
+        case none
+        case seek
+        case volume
+    }
+
+    private var activeAxis: GestureAxis = .none
+    private var accumulatedDeltaX: CGFloat = 0
+    private var accumulatedDeltaY: CGFloat = 0
+    private var seekStartTime: Double = 0
+    private var initialVolume: Float = 1.0
+    private var trackingArea: NSTrackingArea?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupGestures()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupGestures()
+    }
+
+    private func setupGestures() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+
+        let tapGesture = NSClickGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.numberOfClicksRequired = 1
+        addGestureRecognizer(tapGesture)
+    }
+
+    @objc private func handleTap(_ gesture: NSClickGestureRecognizer) {
+        if gesture.state == .ended {
+            onPointerActivity?()
+            onSingleTap?()
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let options: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
+            .mouseMoved,
+            .activeInKeyWindow,
+            .inVisibleRect
+        ]
+        let newTrackingArea = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(newTrackingArea)
+        self.trackingArea = newTrackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChanged?(true)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onPointerActivity?()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChanged?(false)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        onPointerActivity?()
+
+        guard let engine = engine else {
+            super.scrollWheel(with: event)
+            return
+        }
+
+        // 精准触控板双指手势
+        if event.hasPreciseScrollingDeltas {
+            // 忽略惯性滚动阶段，防止手指离开触控板后时间码或音量剧烈飘移
+            if !event.momentumPhase.isEmpty {
+                return
+            }
+
+            switch event.phase {
+            case .began:
+                activeAxis = .none
+                accumulatedDeltaX = 0
+                accumulatedDeltaY = 0
+                seekStartTime = engine.clock.currentTime
+                initialVolume = engine.volume
+
+            case .changed:
+                let dx = event.scrollingDeltaX
+                let dy = event.scrollingDeltaY
+
+                if activeAxis == .none {
+                    accumulatedDeltaX += dx
+                    accumulatedDeltaY += dy
+
+                    let absX = abs(accumulatedDeltaX)
+                    let absY = abs(accumulatedDeltaY)
+
+                    // 阈值判定：一旦锁定主轴，手势期间互不干扰
+                    if absX >= 3.0 && absX > absY {
+                        activeAxis = .seek
+                        engine.beginPreviewSeek()
+                        onSeekBegan?()
+                    } else if absY >= 3.0 && absY > absX {
+                        activeAxis = .volume
+                    }
+                }
+
+                if activeAxis == .seek {
+                    accumulatedDeltaX += dx
+                    // 触控板横滑微调敏感度：时长比例自适应，保证短视频精确到秒/帧，长视频适中
+                    let duration = max(engine.duration, 1.0)
+                    let sensitivity = min(0.25, max(0.05, duration / 1200.0))
+                    let deltaSeconds = Double(accumulatedDeltaX) * sensitivity
+                    let targetTime = min(max(0.0, seekStartTime + deltaSeconds), engine.duration)
+
+                    engine.previewSeek(to: targetTime)
+                    onSeekChanged?(targetTime, deltaSeconds)
+
+                } else if activeAxis == .volume {
+                    accumulatedDeltaY += dy
+                    // 纵向滑动：向上增加音量，向下降低音量
+                    let volumeDelta = Float(accumulatedDeltaY) * 0.0035
+                    let newVolume = min(1.0, max(0.0, initialVolume + volumeDelta))
+                    engine.volume = newVolume
+                    onVolumeChanged?(newVolume)
+                }
+
+            case .ended, .cancelled:
+                if activeAxis == .seek {
+                    let duration = max(engine.duration, 1.0)
+                    let sensitivity = min(0.25, max(0.05, duration / 1200.0))
+                    let deltaSeconds = Double(accumulatedDeltaX) * sensitivity
+                    let targetTime = min(max(0.0, seekStartTime + deltaSeconds), engine.duration)
+
+                    engine.endPreviewSeek()
+                    engine.seek(to: targetTime)
+                    onSeekEnded?()
+                } else if activeAxis == .volume {
+                    onVolumeEnded?()
+                }
+
+                activeAxis = .none
+                accumulatedDeltaX = 0
+                accumulatedDeltaY = 0
+
+            default:
+                break
+            }
+        } else {
+            // 普通滚轮鼠标垂直滚轮微调音量
+            let delta = Float(event.deltaY)
+            if abs(delta) > 0.1 {
+                let step: Float = delta > 0 ? 0.05 : -0.05
+                let newVolume = min(1.0, max(0.0, engine.volume + step))
+                engine.volume = newVolume
+                onVolumeChanged?(newVolume)
+                onVolumeEnded?()
+            }
+        }
     }
 }

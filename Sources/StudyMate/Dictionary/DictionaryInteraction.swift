@@ -993,6 +993,12 @@ public struct DictionarySelectableText: NSViewRepresentable {
         return textView
     }
 
+    private static let fittingSizeCache: NSCache<NSString, NSValue> = {
+        let cache = NSCache<NSString, NSValue>()
+        cache.countLimit = 1500
+        return cache
+    }()
+
     public static func calculateFittingSize(
         text: String,
         font: NSFont,
@@ -1006,17 +1012,29 @@ public struct DictionarySelectableText: NSViewRepresentable {
             guard !trimmed.isEmpty else {
                 return CGSize(width: 50, height: singleLineHeight)
             }
+            let key = "u:\(trimmed.hashValue):\(font.fontName):\(Int(font.pointSize * 10)):\(alignment.rawValue)" as NSString
+            if let cached = fittingSizeCache.object(forKey: key) {
+                return cached.sizeValue
+            }
             let attrString = NSAttributedString(string: trimmed, attributes: [.font: font])
             let rect = attrString.boundingRect(
                 with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 context: nil
             )
-            return CGSize(width: ceil(rect.width), height: max(singleLineHeight, ceil(rect.height) + 6))
+            let result = CGSize(width: ceil(rect.width), height: max(singleLineHeight, ceil(rect.height) + 6))
+            fittingSizeCache.setObject(NSValue(size: result), forKey: key)
+            return result
         }
 
         guard !trimmed.isEmpty else {
             return CGSize(width: width, height: singleLineHeight)
+        }
+
+        let roundedWidth = Int(width)
+        let key = "w:\(roundedWidth):\(trimmed.hashValue):\(font.fontName):\(Int(font.pointSize * 10)):\(alignment.rawValue)" as NSString
+        if let cached = fittingSizeCache.object(forKey: key) {
+            return cached.sizeValue
         }
 
         let paragraphStyle = NSMutableParagraphStyle()
@@ -1029,13 +1047,15 @@ public struct DictionarySelectableText: NSViewRepresentable {
         ]
         let attrString = NSAttributedString(string: trimmed, attributes: attributes)
         let rect = attrString.boundingRect(
-            with: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+            with: CGSize(width: CGFloat(roundedWidth), height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             context: nil
         )
 
         let calculatedHeight = max(singleLineHeight, ceil(rect.height) + 6)
-        return CGSize(width: width, height: calculatedHeight)
+        let result = CGSize(width: width, height: calculatedHeight)
+        fittingSizeCache.setObject(NSValue(size: result), forKey: key)
+        return result
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
@@ -1141,6 +1161,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         private var dragStartWindowPoint: NSPoint?
         private var plainMouseDownPoint: NSPoint?
         private var plainMouseDidMove = false
+        private var lastIntrinsicHeight: CGFloat = 0
 
         override var intrinsicContentSize: NSSize {
             guard let textContainer, let layoutManager else {
@@ -1149,19 +1170,36 @@ public struct DictionarySelectableText: NSViewRepresentable {
             layoutManager.ensureLayout(for: textContainer)
             let usedRect = layoutManager.usedRect(for: textContainer)
             let singleLine = ceil(max((font?.pointSize ?? 13) * 1.35, (font?.ascender ?? 12) - (font?.descender ?? -3)))
-            return NSSize(width: NSView.noIntrinsicMetric, height: max(singleLine, ceil(usedRect.height) + 6))
+            let height = max(singleLine, ceil(usedRect.height) + 6)
+            lastIntrinsicHeight = height
+            return NSSize(width: NSView.noIntrinsicMetric, height: height)
         }
 
         override func layout() {
             super.layout()
-            invalidateIntrinsicContentSize()
+            // 仅当实际换行导致的高度与之前记录的固有高度发生显著变化时，才通知尺寸失效。
+            // 垂直滚动或一般拖拽若高度未变，严禁盲目调用 invalidateIntrinsicContentSize()，
+            // 消除 AppKit 与 SwiftUI 之间的重复布局失效风暴。
+            guard let textContainer, let layoutManager else { return }
+            layoutManager.ensureLayout(for: textContainer)
+            let usedRect = layoutManager.usedRect(for: textContainer)
+            let singleLine = ceil(max((font?.pointSize ?? 13) * 1.35, (font?.ascender ?? 12) - (font?.descender ?? -3)))
+            let currentHeight = max(singleLine, ceil(usedRect.height) + 6)
+            if abs(currentHeight - lastIntrinsicHeight) > 1.0 {
+                lastIntrinsicHeight = currentHeight
+                invalidateIntrinsicContentSize()
+            }
         }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             if let trackingArea {
                 removeTrackingArea(trackingArea)
+                self.trackingArea = nil
             }
+            // 仅当实际挂载了 hover 监听或字幕 option 拖拽手势时才分配 trackingArea。
+            // 断句列表各行无需此类跟踪，避免大量 tracking area 拖垮滚动帧率。
+            guard onHoverChanged != nil || onOptionDrag != nil else { return }
             let area = NSTrackingArea(
                 rect: bounds,
                 options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp, .inVisibleRect],

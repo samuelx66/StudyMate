@@ -17,6 +17,7 @@ public struct DraggableWaveformOverlay: View {
     let onPanViewport: ((Double) -> Void)?
     let onPanViewportBegan: (() -> Void)?
     let onPanViewportEnded: (() -> Void)?
+    let onZoomDelta: ((Double, CGPoint?) -> Void)?
     
     public init(
         engine: PlaybackEngine,
@@ -30,7 +31,8 @@ public struct DraggableWaveformOverlay: View {
         onSelectSegmentForBoundaryDrag: @escaping (UUID) -> Void,
         onPanViewport: ((Double) -> Void)? = nil,
         onPanViewportBegan: (() -> Void)? = nil,
-        onPanViewportEnded: (() -> Void)? = nil
+        onPanViewportEnded: (() -> Void)? = nil,
+        onZoomDelta: ((Double, CGPoint?) -> Void)? = nil
     ) {
         self.engine = engine
         self.viewportStart = viewportStart
@@ -44,6 +46,7 @@ public struct DraggableWaveformOverlay: View {
         self.onPanViewport = onPanViewport
         self.onPanViewportBegan = onPanViewportBegan
         self.onPanViewportEnded = onPanViewportEnded
+        self.onZoomDelta = onZoomDelta
     }
     
     public var body: some View {
@@ -92,6 +95,7 @@ public struct DraggableWaveformOverlay: View {
                 onPanViewport: onPanViewport,
                 onPanViewportBegan: onPanViewportBegan,
                 onPanViewportEnded: onPanViewportEnded,
+                onZoomDelta: onZoomDelta,
                 onSelectSegment: { id in
                     engine.jumpToSegment(id: id)
                 },
@@ -290,6 +294,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
     let onPanViewport: ((Double) -> Void)?
     let onPanViewportBegan: (() -> Void)?
     let onPanViewportEnded: (() -> Void)?
+    let onZoomDelta: ((Double, CGPoint?) -> Void)?
     
     let onSelectSegment: (UUID) -> Void
     let onUpdateStartAnchor: (UUID, Double) -> Void
@@ -321,6 +326,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         view.onPanViewport = onPanViewport
         view.onPanViewportBegan = onPanViewportBegan
         view.onPanViewportEnded = onPanViewportEnded
+        view.onZoomDelta = onZoomDelta
         view.onSelectSegment = onSelectSegment
         view.onUpdateStartAnchor = onUpdateStartAnchor
         view.onUpdateEndAnchor = onUpdateEndAnchor
@@ -345,6 +351,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         var onPanViewport: ((Double) -> Void)?
         var onPanViewportBegan: (() -> Void)?
         var onPanViewportEnded: (() -> Void)?
+        var onZoomDelta: ((Double, CGPoint?) -> Void)?
         
         var onSelectSegment: ((UUID) -> Void)?
         var onUpdateStartAnchor: ((UUID, Double) -> Void)?
@@ -804,6 +811,32 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         public override func mouseExited(with event: NSEvent) {
             if activeDrag == nil {
                 NSCursor.arrow.set()
+            }
+        }
+        
+        // MARK: - 触控板双指捏合与按住 Option 滚轮缩放
+
+        public override func magnify(with event: NSEvent) {
+            let loc = convert(event.locationInWindow, from: nil)
+            let delta = Double(event.magnification)
+            onZoomDelta?(delta, loc)
+        }
+
+        public override func scrollWheel(with event: NSEvent) {
+            if event.modifierFlags.contains(.option) {
+                let loc = convert(event.locationInWindow, from: nil)
+                let delta: Double
+                if event.hasPreciseScrollingDeltas {
+                    if !event.momentumPhase.isEmpty {
+                        return
+                    }
+                    delta = Double(event.scrollingDeltaY) * 0.005
+                } else {
+                    delta = Double(event.deltaY) * 0.08
+                }
+                onZoomDelta?(delta, loc)
+            } else {
+                super.scrollWheel(with: event)
             }
         }
         

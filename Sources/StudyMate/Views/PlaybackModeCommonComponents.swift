@@ -8,17 +8,20 @@ import AppKit
 public struct PlaybackWorkspaceContainer<Content: View>: View {
     @ObservedObject var engine: PlaybackEngine
     let isWaveformsVisible: Bool
+    let isSecondaryWaveformVisible: Bool
     let isSubtitleEditVisible: Bool
     let content: Content
 
     public init(
         engine: PlaybackEngine,
         isWaveformsVisible: Bool,
+        isSecondaryWaveformVisible: Bool = true,
         isSubtitleEditVisible: Bool,
         @ViewBuilder content: () -> Content
     ) {
         self.engine = engine
         self.isWaveformsVisible = isWaveformsVisible
+        self.isSecondaryWaveformVisible = isSecondaryWaveformVisible
         self.isSubtitleEditVisible = isSubtitleEditVisible
         self.content = content()
     }
@@ -27,8 +30,17 @@ public struct PlaybackWorkspaceContainer<Content: View>: View {
         VStack(spacing: 0) {
             if isWaveformsVisible {
                 VStack(spacing: 4) {
-                    PrimaryWaveformView(engine: engine)
-                    SecondaryWaveformView(engine: engine)
+                    PrimaryWaveformView(
+                        engine: engine,
+                        isHeaderVisible: isSecondaryWaveformVisible
+                    )
+                    if isSecondaryWaveformVisible {
+                        SecondaryWaveformView(engine: engine)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .move(edge: .top).combined(with: .opacity)
+                            ))
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, 4)

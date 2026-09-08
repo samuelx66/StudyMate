@@ -15,8 +15,45 @@ public struct MainStatusProgress: Equatable, Sendable {
     }
 }
 
-/// 主窗口共享的短时任务状态。断句导出等不属于 PlaybackEngine 的任务
-/// 也通过这里进入底部状态栏，避免把视图局部状态泄漏到主窗口布局。
+/// 第三层：重要报错与任务中心记录项
+public struct StatusIssueItem: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let timestamp: Date
+    public let message: String
+    public let level: IssueLevel
+    public let actionTitle: String?
+    public let actionKind: IssueActionKind
+
+    public enum IssueLevel: Sendable {
+        case warning
+        case error
+    }
+
+    public enum IssueActionKind: Sendable {
+        case none
+        case projectRecovery
+        case retryAI
+        case retryTranslation
+    }
+
+    public init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        message: String,
+        level: IssueLevel = .warning,
+        actionTitle: String? = nil,
+        actionKind: IssueActionKind = .none
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.message = message
+        self.level = level
+        self.actionTitle = actionTitle
+        self.actionKind = actionKind
+    }
+}
+
+/// 主窗口共享的短时任务状态与问题通知中心。
 @MainActor
 public final class MainStatusCenter: ObservableObject {
     public static let shared = MainStatusCenter()
@@ -24,6 +61,8 @@ public final class MainStatusCenter: ObservableObject {
     @Published public private(set) var progress: MainStatusProgress?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var successMessage: String?
+    @Published public private(set) var issues: [StatusIssueItem] = []
+    @Published public private(set) var lastIssueToken = UUID()
 
     private var progressGeneration = UUID()
     private var successGeneration = UUID()
@@ -51,7 +90,6 @@ public final class MainStatusCenter: ObservableObject {
     public func showSuccess(_ message: String, autoDismissAfter seconds: Double = 3.0) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
-        errorMessage = nil
         let generation = UUID()
         successGeneration = generation
         successMessage = normalized
@@ -71,12 +109,64 @@ public final class MainStatusCenter: ObservableObject {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         progressGeneration = UUID()
         progress = nil
-        successGeneration = UUID()
-        successMessage = nil
         errorMessage = normalized.isEmpty ? nil : normalized
+        if !normalized.isEmpty {
+            recordIssue(message: normalized, level: .error)
+        }
+    }
+
+    @discardableResult
+    public func recordIssue(
+        message: String,
+        level: StatusIssueItem.IssueLevel = .warning,
+        actionTitle: String? = nil,
+        actionKind: StatusIssueItem.IssueActionKind = .none
+    ) -> UUID {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return UUID() }
+
+        // 如果列表中已有完全相同的未解决问题，更新时间戳并置顶
+        if let existingIndex = issues.firstIndex(where: { $0.message == normalized }) {
+            let existing = issues[existingIndex]
+            let updated = StatusIssueItem(
+                id: existing.id,
+                timestamp: Date(),
+                message: normalized,
+                level: level,
+                actionTitle: actionTitle ?? existing.actionTitle,
+                actionKind: actionKind != .none ? actionKind : existing.actionKind
+            )
+            issues.remove(at: existingIndex)
+            issues.insert(updated, at: 0)
+            lastIssueToken = UUID()
+            return existing.id
+        }
+
+        let newIssue = StatusIssueItem(
+            message: normalized,
+            level: level,
+            actionTitle: actionTitle,
+            actionKind: actionKind
+        )
+        issues.insert(newIssue, at: 0)
+        lastIssueToken = UUID()
+        return newIssue.id
+    }
+
+    public func dismissIssue(id: UUID) {
+        issues.removeAll { $0.id == id }
+        if issues.isEmpty {
+            errorMessage = nil
+        }
+    }
+
+    public func clearAllIssues() {
+        issues.removeAll()
+        errorMessage = nil
     }
 
     public func clearError() {
         errorMessage = nil
+        clearAllIssues()
     }
 }

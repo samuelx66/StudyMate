@@ -21,6 +21,7 @@ public enum StudyMateShortcutID: String, CaseIterable, Identifiable, Sendable {
     case videoSubtitleFontSettings
     case togglePlaylist
     case toggleWaveforms
+    case toggleSecondaryWaveform
     case toggleSubtitleEditor
     case toggleSegmentList
     case playPause
@@ -105,6 +106,7 @@ public enum StudyMateShortcutCatalog {
         .init(id: .videoSubtitleFontSettings, chineseName: "设置画面字幕字体", englishName: "Set Subtitle Fonts", keyDisplay: "⌘⌥F"),
         .init(id: .togglePlaylist, chineseName: "显示或隐藏播放列表", englishName: "Show or Hide Playlist", keyDisplay: "⌥P"),
         .init(id: .toggleWaveforms, chineseName: "显示或隐藏波形图", englishName: "Show or Hide Waveforms", keyDisplay: "⌥W"),
+        .init(id: .toggleSecondaryWaveform, chineseName: "显示或隐藏次波形图", englishName: "Show or Hide Secondary Waveform", keyDisplay: "⌥⇧W"),
         .init(id: .toggleSubtitleEditor, chineseName: "显示或隐藏字幕编辑区", englishName: "Show or Hide Subtitle Editor", keyDisplay: "⌥S"),
         .init(id: .toggleSegmentList, chineseName: "显示或隐藏断句列表", englishName: "Show or Hide Sentence List", keyDisplay: "⌥L"),
         .init(id: .toggleFullScreen, chineseName: "进入或退出全屏幕", englishName: "Enter or Exit Full Screen", keyDisplay: "⌃⌘F"),

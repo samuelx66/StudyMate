@@ -106,6 +106,7 @@ struct StudyMateApp: App {
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
     @AppStorage("StudyMate.ShowSentenceList") private var showSentenceList = true
     @AppStorage("StudyMate.ShowWaveforms") private var showWaveforms = true
+    @AppStorage("StudyMate.ShowSecondaryWaveform") private var showSecondaryWaveform = true
     @AppStorage("StudyMate.ShowSubtitleEditor") private var showSubtitleEditor = true
     @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
 
@@ -276,20 +277,43 @@ struct StudyMateApp: App {
 
                 Divider()
 
-                Button {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        showWaveforms.toggle()
-                    }
-                } label: {
-                    HStack {
-                        Text(showWaveforms
-                             ? languageManager.text("隐藏波形图", "Hide Waveforms")
-                             : languageManager.text("显示波形图", "Show Waveforms"))
-                        if showWaveforms {
-                            Spacer()
-                            Image(systemName: "checkmark")
+                Menu {
+                    Button {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            showWaveforms.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text(showWaveforms
+                                 ? languageManager.text("隐藏波形图", "Hide Waveforms")
+                                 : languageManager.text("显示波形图", "Show Waveforms"))
+                            if showWaveforms {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
                         }
                     }
+                    .keyboardShortcut("w", modifiers: [.option])
+
+                    Button {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            showSecondaryWaveform.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text(showSecondaryWaveform
+                                 ? languageManager.text("隐藏次波形图", "Hide Secondary Waveform")
+                                 : languageManager.text("显示次波形图", "Show Secondary Waveform"))
+                            if showSecondaryWaveform {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                    .keyboardShortcut("w", modifiers: [.option, .shift])
+                    .disabled(!showWaveforms)
+                } label: {
+                    Text(languageManager.text("波形图", "Waveforms"))
                 }
 
                 Button {

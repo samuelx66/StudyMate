@@ -931,16 +931,43 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         primaryViewport = (newStart, newEnd)
     }
 
-    /// 主波形图缩放控制
-    public func setPrimaryViewportZoom(zoomLevel: Double) {
+    /// 主波形图缩放控制（支持以特定时间锚点或视口中心平滑展开/收拢）
+    public func setPrimaryViewportZoom(zoomLevel: Double, anchorTime: Double? = nil) {
         guard duration > 0 else { return }
-        let currentCenter = (primaryViewport.start + primaryViewport.end) / 2.0
+        let oldSpan = max(0.001, primaryViewport.end - primaryViewport.start)
         let newSpan = max(3.0, min(duration, 15.0 / zoomLevel))
-        let halfSpan = newSpan / 2.0
-        let idealStart = max(0, currentCenter - halfSpan)
-        let idealEnd = min(duration, idealStart + newSpan)
-        let finalStart = max(0, idealEnd - newSpan)
-        primaryViewport = (finalStart, idealEnd)
+
+        let finalStart: Double
+        let finalEnd: Double
+
+        if let anchor = anchorTime, anchor >= primaryViewport.start && anchor <= primaryViewport.end {
+            // 以光标所在时间点为锚点进行缩放，保持该时间点在视口中的相对比例不变
+            let anchorRatio = (anchor - primaryViewport.start) / oldSpan
+            let proposedStart = anchor - anchorRatio * newSpan
+            if proposedStart < 0 {
+                finalStart = 0
+                finalEnd = min(duration, newSpan)
+            } else if proposedStart + newSpan > duration {
+                finalEnd = duration
+                finalStart = max(0, duration - newSpan)
+            } else {
+                finalStart = proposedStart
+                finalEnd = proposedStart + newSpan
+            }
+        } else {
+            // 视口居中缩放
+            let currentCenter = (primaryViewport.start + primaryViewport.end) / 2.0
+            let halfSpan = newSpan / 2.0
+            let idealStart = max(0, currentCenter - halfSpan)
+            let idealEnd = min(duration, idealStart + newSpan)
+            finalStart = max(0, idealEnd - newSpan)
+            finalEnd = idealEnd
+        }
+        primaryViewport = (finalStart, finalEnd)
+    }
+
+    public func setPrimaryViewport(start: Double, end: Double) {
+        primaryViewport = (start, end)
     }
 
     /// 播放时主波形图自动跟随平移（当游标接近右侧或在视口外时，视口平滑向右推进）

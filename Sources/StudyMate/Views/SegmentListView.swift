@@ -10,6 +10,16 @@ struct FollowScrollTarget: Equatable {
     let enabled: Bool
 }
 
+struct FloatingCapsuleInfo: Equatable {
+    enum Direction: Equatable {
+        case above
+        case below
+    }
+    let id: UUID
+    let number: Int
+    let direction: Direction
+}
+
 struct SegmentListFollowState: Equatable {
     private(set) var followsPlayback = true
     private(set) var isUserScrollSuppressed = false
@@ -30,8 +40,185 @@ struct SegmentListFollowState: Equatable {
     }
 
     mutating func resumeFollowing() {
-        guard followsPlayback else { return }
+        followsPlayback = true
         isUserScrollSuppressed = false
+    }
+}
+
+/// 视口可见性与浮动胶囊状态追踪器。
+/// 独立于 `SegmentListView` 的 `@State`，行进出视口时仅更新内部集合，
+/// 严禁直接触发父级 `SegmentListView` 的全量重绘。
+@MainActor
+final class SegmentViewportTracker: ObservableObject {
+    @Published private(set) var capsuleInfo: FloatingCapsuleInfo? = nil
+    private var visibleIDs = Set<UUID>()
+    private var updateWorkItem: DispatchWorkItem?
+
+    func isVisible(_ id: UUID) -> Bool {
+        visibleIDs.contains(id)
+    }
+
+    func rowAppeared(
+        _ id: UUID,
+        displayedSegments: [SentenceSegment],
+        activeID: UUID?,
+        shouldFollow: Bool
+    ) {
+        visibleIDs.insert(id)
+        scheduleCapsuleUpdate(
+            displayedSegments: displayedSegments,
+            activeID: activeID,
+            shouldFollow: shouldFollow
+        )
+    }
+
+    func rowDisappeared(
+        _ id: UUID,
+        displayedSegments: [SentenceSegment],
+        activeID: UUID?,
+        shouldFollow: Bool
+    ) {
+        visibleIDs.remove(id)
+        scheduleCapsuleUpdate(
+            displayedSegments: displayedSegments,
+            activeID: activeID,
+            shouldFollow: shouldFollow
+        )
+    }
+
+    func prune(validIDs: some Sequence<UUID>) {
+        visibleIDs.formIntersection(validIDs)
+    }
+
+    func updateImmediately(
+        displayedSegments: [SentenceSegment],
+        activeID: UUID?,
+        shouldFollow: Bool
+    ) {
+        updateWorkItem?.cancel()
+        updateWorkItem = nil
+        computeCapsuleInfo(
+            displayedSegments: displayedSegments,
+            activeID: activeID,
+            shouldFollow: shouldFollow
+        )
+    }
+
+    private func scheduleCapsuleUpdate(
+        displayedSegments: [SentenceSegment],
+        activeID: UUID?,
+        shouldFollow: Bool
+    ) {
+        guard updateWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.updateWorkItem = nil
+            self.computeCapsuleInfo(
+                displayedSegments: displayedSegments,
+                activeID: activeID,
+                shouldFollow: shouldFollow
+            )
+        }
+        updateWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func computeCapsuleInfo(
+        displayedSegments: [SentenceSegment],
+        activeID: UUID?,
+        shouldFollow: Bool
+    ) {
+        guard !shouldFollow, let activeID, !visibleIDs.contains(activeID) else {
+            if capsuleInfo != nil { capsuleInfo = nil }
+            return
+        }
+
+        guard let activeIndexInDisplayed = displayedSegments.firstIndex(where: { $0.id == activeID }) else {
+            if capsuleInfo != nil { capsuleInfo = nil }
+            return
+        }
+
+        var minVisible: Int?
+        var maxVisible: Int?
+        for (index, seg) in displayedSegments.enumerated() {
+            if visibleIDs.contains(seg.id) {
+                if minVisible == nil { minVisible = index }
+                maxVisible = index
+            }
+        }
+
+        guard let minIdx = minVisible, let maxIdx = maxVisible else {
+            if capsuleInfo != nil { capsuleInfo = nil }
+            return
+        }
+
+        let seg = displayedSegments[activeIndexInDisplayed]
+        let newInfo: FloatingCapsuleInfo?
+        if activeIndexInDisplayed < minIdx {
+            newInfo = FloatingCapsuleInfo(id: activeID, number: seg.index, direction: .above)
+        } else if activeIndexInDisplayed > maxIdx {
+            newInfo = FloatingCapsuleInfo(id: activeID, number: seg.index, direction: .below)
+        } else {
+            newInfo = nil
+        }
+
+        if capsuleInfo != newInfo {
+            capsuleInfo = newInfo
+        }
+    }
+}
+
+/// 独立的浮动胶囊观察视图，仅在其显示/隐藏或文字变更时局部重绘，
+/// 绝对不让其状态变更污染或触发整个断句列表 ScrollView。
+private struct SegmentFloatingCapsuleView: View {
+    @ObservedObject var tracker: SegmentViewportTracker
+    let onReturn: (UUID) -> Void
+    let lang: LanguageManager
+
+    var body: some View {
+        if let capsuleInfo = tracker.capsuleInfo {
+            VStack {
+                if capsuleInfo.direction == .below {
+                    Spacer()
+                }
+
+                Button {
+                    onReturn(capsuleInfo.id)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: capsuleInfo.direction == .above ? "arrow.up" : "arrow.down")
+                            .font(.system(size: 11, weight: .bold))
+                        Text(lang.text(
+                            "\(capsuleInfo.direction == .above ? "↑" : "↓") 返回正在播放句 (#\(capsuleInfo.number))",
+                            "\(capsuleInfo.direction == .above ? "↑" : "↓") Return to active sentence (#\(capsuleInfo.number))"
+                        ))
+                        .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(StudyMateMediaStyle.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(StudyMateMediaStyle.accent.opacity(0.35), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.18), radius: 6, x: 0, y: 2)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, capsuleInfo.direction == .above ? 8 : 0)
+                .padding(.bottom, capsuleInfo.direction == .below ? 10 : 0)
+                .transition(
+                    capsuleInfo.direction == .above
+                        ? .move(edge: .top).combined(with: .opacity)
+                        : .move(edge: .bottom).combined(with: .opacity)
+                )
+
+                if capsuleInfo.direction == .above {
+                    Spacer()
+                }
+            }
+            .animation(.spring(response: 0.32, dampingFraction: 0.85), value: capsuleInfo)
+        }
     }
 }
 
@@ -125,6 +312,22 @@ struct SegmentListFilterCriteria: Equatable, Sendable {
         requiresVocabularyNotebook ||
         requiresBookmark ||
         requiresIndexRange
+    }
+
+    mutating func reset() {
+        requiresOriginal = false
+        requiresTranslation = false
+        requiresMinimumDuration = false
+        minimumDurationText = "5"
+        requiresWord = false
+        wordText = ""
+        requiresVocabularyNotebook = false
+        selectedVocabularyNotebookID = nil
+        compiledVocabularyFilter = CompiledVocabularyFilter(words: [])
+        requiresBookmark = false
+        requiresIndexRange = false
+        startIndexText = ""
+        endIndexText = ""
     }
 
     func matches(_ segment: SentenceSegment) -> Bool {
@@ -293,7 +496,7 @@ public struct SegmentListView: View {
     @State private var selectedDisplayedCountValue: Int = 0
     @State private var followState = SegmentListFollowState()
     @State private var isUserScrolling = false
-    @State private var scrollSuppressionToken = UUID()
+    @StateObject private var tracker = SegmentViewportTracker()
     @State private var shortcutEditRequest: UUID?
     /// Search filtering is debounced and computed from a value snapshot off
     /// the main actor.  This keeps typing responsive even with thousands of
@@ -357,22 +560,23 @@ public struct SegmentListView: View {
                 Button {
                     showFilterPopover.toggle()
                 } label: {
-                    Image(systemName: filterCriteria.hasActiveFilters
+                    Image(systemName: (filterCriteria.hasActiveFilters || !searchText.isEmpty)
                         ? "line.3.horizontal.decrease.circle.fill"
                         : "line.3.horizontal.decrease.circle")
                         .frame(width: 24, height: 24)
-                        .foregroundColor(filterCriteria.hasActiveFilters ? StudyMateMediaStyle.accent : .secondary)
+                        .foregroundColor((filterCriteria.hasActiveFilters || !searchText.isEmpty) ? StudyMateMediaStyle.accent : .secondary)
                 }
                 .studymateChromeButton(shape: .circle)
                 .focusable(false)
                 .segmentListHelp(StudyMateShortcutCatalog.help(
-                    lang.text("筛选句子", "Filter sentences"),
+                    lang.text("筛选与搜索句子", "Filter and search sentences"),
                     shortcut: .filterSentences
                 ))
                 .keyboardShortcut("l", modifiers: [.command, .shift])
                 .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
                     SegmentFilterPopover(
                         criteria: $filterCriteria,
+                        searchText: $searchText,
                         lang: lang,
                         displayedCount: displayedSegments.count,
                         selectedCount: selectedDisplayedCount,
@@ -553,38 +757,6 @@ public struct SegmentListView: View {
             .padding(.vertical, 8)
             .studymateContentSurface(cornerRadius: 0)
 
-            // 搜索过滤栏
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                    .font(.caption)
-                TextField(lang.text("搜索台词或字幕…", "Search text or subtitles…"), text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.caption)
-                if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption)
-                            .frame(width: 18, height: 18)
-                    }
-                    .studymateChromeButton(shape: .circle)
-                    .segmentListHelp(StudyMateShortcutCatalog.help(
-                        lang.text("清除搜索", "Clear search"),
-                        shortcut: .clearSearch
-                    ))
-                    .keyboardShortcut(.escape)
-                }
-            }
-            .padding(6)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(StudyMateMediaStyle.separator.opacity(0.5), lineWidth: 0.7)
-            )
-            .cornerRadius(6)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-
             Divider()
 
             // 断句列表 (采用高性能 ScrollView + LazyVStack，杜绝 NSTableView 代理重入警告)
@@ -607,78 +779,126 @@ public struct SegmentListView: View {
                 }
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        SegmentListRowsView(
-                            segments: displayedSegments,
-                            activeSegmentID: activeSegmentID,
-                            selectedSegmentIDs: selectedSegmentIDs,
-                            engineIdentity: ObjectIdentifier(engine),
-                            language: lang.currentLanguage,
-                            isScrolling: isUserScrolling,
-                            displayedSegmentsRevision: displayedSegmentsRevision,
-                            selectionRevision: selectionRevision,
-                            onToggleExportSelection: { id in
-                                if selectedSegmentIDs.contains(id) {
-                                    selectedSegmentIDs.remove(id)
-                                } else {
-                                    selectedSegmentIDs.insert(id)
-                                }
-                                updateSelectedDisplayedCount()
-                                selectionRevision &+= 1
-                            },
-                            onSelect: { id in
-                                engine.jumpToSegment(id: id)
-                            },
-                            onToggleBookmark: { id in
-                                engine.toggleBookmark(for: id)
-                            },
-                            onToggleNavigationBookmark: { id in
-                                engine.toggleNavigationBookmark(for: id)
-                            },
-                            onSplit: { id, midpoint in
-                                engine.splitSegment(id: id, at: midpoint)
-                            },
-                            onMergePrevious: { id in
-                                engine.mergeSegmentWithPrevious(id: id)
-                            },
-                            onMergeNext: { id in
-                                engine.mergeSegmentWithNext(id: id)
-                            },
-                            onDelete: { id in
-                                engine.deleteSegment(id: id)
-                            },
-                            onSaveText: { id, originalText, translationText in
-                                engine.updateSegmentText(
-                                    id: id,
-                                    text: originalText,
-                                    translation: translationText
-                                )
-                            },
-                            onUserScroll: {
-                                markUserScroll()
-                            },
-                            onScrollStateChanged: { scrolling in
-                                if isUserScrolling != scrolling {
-                                    isUserScrolling = scrolling
-                                }
-                            },
-                            editRequest: $shortcutEditRequest,
-                            lang: lang
-                        )
-                        .equatable()
-                    }
-                    .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
-                        let newIndex = engine.activeSegmentIndex
-                        guard followState.shouldFollow else { return }
-                        if let idx = newIndex, idx >= 0, idx < engine.segments.count {
-                            let targetId = engine.segments[idx].id
-                            DispatchQueue.main.async {
-                                guard self.followState.shouldFollow else { return }
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    proxy.scrollTo(targetId, anchor: nil)
+                    ZStack(alignment: .center) {
+                        ScrollView {
+                            SegmentListRowsView(
+                                segments: displayedSegments,
+                                activeSegmentID: activeSegmentID,
+                                selectedSegmentIDs: selectedSegmentIDs,
+                                engineIdentity: ObjectIdentifier(engine),
+                                language: lang.currentLanguage,
+                                isScrolling: isUserScrolling,
+                                displayedSegmentsRevision: displayedSegmentsRevision,
+                                selectionRevision: selectionRevision,
+                                onToggleExportSelection: { id in
+                                    if selectedSegmentIDs.contains(id) {
+                                        selectedSegmentIDs.remove(id)
+                                    } else {
+                                        selectedSegmentIDs.insert(id)
+                                    }
+                                    updateSelectedDisplayedCount()
+                                    selectionRevision &+= 1
+                                },
+                                onSelect: { id in
+                                    engine.jumpToSegment(id: id)
+                                },
+                                onToggleBookmark: { id in
+                                    engine.toggleBookmark(for: id)
+                                },
+                                onToggleNavigationBookmark: { id in
+                                    engine.toggleNavigationBookmark(for: id)
+                                },
+                                onSplit: { id, midpoint in
+                                    engine.splitSegment(id: id, at: midpoint)
+                                },
+                                onMergePrevious: { id in
+                                    engine.mergeSegmentWithPrevious(id: id)
+                                },
+                                onMergeNext: { id in
+                                    engine.mergeSegmentWithNext(id: id)
+                                },
+                                onDelete: { id in
+                                    engine.deleteSegment(id: id)
+                                },
+                                onSaveText: { id, originalText, translationText in
+                                    engine.updateSegmentText(
+                                        id: id,
+                                        text: originalText,
+                                        translation: translationText
+                                    )
+                                },
+                                onUserScroll: {
+                                    markUserScroll()
+                                },
+                                onScrollStateChanged: { scrolling in
+                                    if isUserScrolling != scrolling {
+                                        isUserScrolling = scrolling
+                                        if !scrolling {
+                                            if let activeID = activeSegmentID, tracker.isVisible(activeID) {
+                                                followState.resumeFollowing()
+                                            }
+                                        }
+                                    }
+                                },
+                                onSegmentAppear: { id in
+                                    tracker.rowAppeared(
+                                        id,
+                                        displayedSegments: displayedSegments,
+                                        activeID: activeSegmentID,
+                                        shouldFollow: followState.shouldFollow
+                                    )
+                                },
+                                onSegmentDisappear: { id in
+                                    tracker.rowDisappeared(
+                                        id,
+                                        displayedSegments: displayedSegments,
+                                        activeID: activeSegmentID,
+                                        shouldFollow: followState.shouldFollow
+                                    )
+                                },
+                                editRequest: $shortcutEditRequest,
+                                lang: lang
+                            )
+                            .equatable()
+                        }
+                        .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
+                            let newIndex = engine.activeSegmentIndex
+                            guard followState.shouldFollow else { return }
+                            if let idx = newIndex, idx >= 0, idx < engine.segments.count {
+                                let targetId = engine.segments[idx].id
+                                DispatchQueue.main.async {
+                                    guard self.followState.shouldFollow else { return }
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        proxy.scrollTo(targetId, anchor: nil)
+                                    }
                                 }
                             }
                         }
+                        .onChange(of: activeSegmentID) { _, newActiveID in
+                            tracker.updateImmediately(
+                                displayedSegments: displayedSegments,
+                                activeID: newActiveID,
+                                shouldFollow: followState.shouldFollow
+                            )
+                        }
+                        .onChange(of: followState.shouldFollow) { _, shouldFollow in
+                            tracker.updateImmediately(
+                                displayedSegments: displayedSegments,
+                                activeID: activeSegmentID,
+                                shouldFollow: shouldFollow
+                            )
+                        }
+
+                        SegmentFloatingCapsuleView(
+                            tracker: tracker,
+                            onReturn: { targetID in
+                                followState.resumeFollowing()
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    proxy.scrollTo(targetID, anchor: .center)
+                                }
+                            },
+                            lang: lang
+                        )
                     }
                 }
             }
@@ -933,6 +1153,12 @@ public struct SegmentListView: View {
         } else {
             selectedSegmentIDs.formIntersection(result.allIDs)
         }
+        tracker.prune(validIDs: result.allIDs)
+        tracker.updateImmediately(
+            displayedSegments: result.list,
+            activeID: activeSegmentID,
+            shouldFollow: followState.shouldFollow
+        )
         updateSelectedDisplayedCount()
         selectionRevision &+= 1
     }
@@ -971,12 +1197,6 @@ public struct SegmentListView: View {
     private func markUserScroll() {
         guard followState.followsPlayback else { return }
         followState.markUserScroll()
-        let token = UUID()
-        scrollSuppressionToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            guard token == scrollSuppressionToken, followState.followsPlayback else { return }
-            followState.resumeFollowing()
-        }
     }
 
     private var selectedSegments: [SentenceSegment] {
@@ -1133,6 +1353,7 @@ public struct SegmentListView: View {
 
 private struct SegmentFilterPopover: View {
     @Binding var criteria: SegmentListFilterCriteria
+    @Binding var searchText: String
     @ObservedObject var lang: LanguageManager
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
     let displayedCount: Int
@@ -1154,8 +1375,52 @@ private struct SegmentFilterPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(lang.text("句子筛选", "Sentence Filters"))
-                .font(.headline)
+            // 搜索输入栏
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+                TextField(lang.text("搜索台词或字幕…", "Search text or subtitles…"), text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .segmentListHelp(StudyMateShortcutCatalog.help(
+                        lang.text("清除搜索", "Clear search"),
+                        shortcut: .clearSearch
+                    ))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(StudyMateMediaStyle.separator.opacity(0.5), lineWidth: 0.7)
+            )
+
+            HStack {
+                Text(lang.text("句子筛选", "Sentence Filters"))
+                    .font(.headline)
+                Spacer()
+                if criteria.hasActiveFilters || !searchText.isEmpty {
+                    Button(lang.text("重置全部", "Reset All")) {
+                        searchText = ""
+                        criteria.reset()
+                        onVocabularyFilterChanged()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundColor(StudyMateMediaStyle.accent)
+                }
+            }
+            .padding(.top, 2)
 
             Toggle(isOn: $criteria.requiresOriginal) {
                 Text(lang.text("只显示有原文的句子", "Only sentences with original text"))
@@ -1571,11 +1836,6 @@ final class ScrollInteractionNSView: NSView {
     }
 
     private func scheduleLiveScrollReset() {
-        // `didLiveScroll` can be delivered for every trackpad tick.  Keep one
-        // long-lived fallback only for the rare case where AppKit omits the
-        // matching didEnd notification; do not allocate/cancel a work item on
-        // every pixel of a gesture.
-        guard liveScrollResetWorkItem == nil else { return }
         liveScrollResetWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -1584,7 +1844,7 @@ final class ScrollInteractionNSView: NSView {
             self.onScrollStateChanged?(false)
         }
         liveScrollResetWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
     private func removeObservers() {
@@ -1633,6 +1893,8 @@ private struct SegmentListRowsView: View, Equatable {
     let onSaveText: (UUID, String, String) -> Void
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
+    let onSegmentAppear: (UUID) -> Void
+    let onSegmentDisappear: (UUID) -> Void
     @Binding var editRequest: UUID?
     let lang: LanguageManager
 
@@ -1677,6 +1939,12 @@ private struct SegmentListRowsView: View, Equatable {
                 )
                 .equatable()
                 .id(seg.id)
+                .onAppear {
+                    onSegmentAppear(seg.id)
+                }
+                .onDisappear {
+                    onSegmentDisappear(seg.id)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -1968,11 +2236,19 @@ struct SegmentRowView: View, Equatable {
         .contentShape(Rectangle())
         // 行内的复选框和六个操作按钮不能嵌套在父 Button 内；嵌套 Button
         // 会让 AppKit 事件与辅助功能焦点在不同 macOS 版本中不稳定。行本身
-        // 使用明确的点按手势，子控件保持各自独立的点击语义。
         .accessibilityElement(children: .contain)
-        .studymateSelectableRowSurface(isActive: isActive, isHovered: isHovering)
+        .studymateSelectableRowSurface(isActive: isActive, isHovered: isHovering && !isScrolling)
         .onHover { inside in
-            isHovering = inside
+            if isScrolling {
+                isHovering = false
+            } else {
+                isHovering = inside
+            }
+        }
+        .onChange(of: isScrolling) { _, scrolling in
+            if scrolling && isHovering {
+                isHovering = false
+            }
         }
         .onChange(of: editRequest) { _, requestedID in
             guard requestedID == seg.id else { return }

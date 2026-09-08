@@ -604,6 +604,7 @@ private struct DraggableVideoSubtitle: View {
     let text: String
     let containerSize: CGSize
     let context: String?
+    let isOSDVisible: Bool
 
     @State private var dragOffset: CGSize = .zero
     @State private var isHovering = false
@@ -747,6 +748,19 @@ private struct DraggableVideoSubtitle: View {
         )
     }
 
+    /// 当字幕处于画面靠下区域时，检测是否需要动态避让底部 OSD 控制面板
+    private var isBottomSubtitle: Bool {
+        constrainedSavedPosition.y > 0.65
+    }
+
+    /// 当底部 OSD 浮现且当前字幕位于底部时，平滑向上避让 68pt，防止字幕被遮挡
+    private var avoidanceOffset: CGFloat {
+        if isOSDVisible && isBottomSubtitle && !isDragging && !appKitDragActive {
+            return -68
+        }
+        return 0
+    }
+
     private func updateCachedLayout() {
         let font = makeSubtitleFont()
         cachedSubtitleFont = font
@@ -852,7 +866,11 @@ private struct DraggableVideoSubtitle: View {
                     }
                 }
         )
-        .offset(dragOffset)
+        .offset(
+            x: dragOffset.width,
+            y: dragOffset.height + avoidanceOffset
+        )
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: avoidanceOffset)
         .position(
             x: constrainedSavedPosition.x * containerSize.width,
             y: constrainedSavedPosition.y * containerSize.height
@@ -896,13 +914,15 @@ private struct SubtitleLayoutKey: Equatable {
 }
 
 /// 只覆盖视频画面的双语字幕层。时间轴和播放仍由 PlaybackEngine 管理，
-/// 所以字幕会随着当前活动句实时切换。
+/// 所以字幕会随着当前活动句实时切换；支持随底部 OSD 控制面板呼出平滑上浮避让。
 public struct VideoSubtitleOverlay: View {
     @ObservedObject var engine: PlaybackEngine
+    var isOSDVisible: Bool
     @ObservedObject private var settings = VideoSubtitleSettings.shared
 
-    public init(engine: PlaybackEngine) {
+    public init(engine: PlaybackEngine, isOSDVisible: Bool = false) {
         self.engine = engine
+        self.isOSDVisible = isOSDVisible
     }
 
     public var body: some View {
@@ -920,7 +940,8 @@ public struct VideoSubtitleOverlay: View {
                             track: .original,
                             text: segment.text,
                             containerSize: geometry.size,
-                            context: segmentContext(segment)
+                            context: segmentContext(segment),
+                            isOSDVisible: isOSDVisible
                         )
                         .id("\(segment.id)_original")
                         // Keep the original subtitle's move affordance above
@@ -935,7 +956,8 @@ public struct VideoSubtitleOverlay: View {
                             track: .translation,
                             text: segment.translation,
                             containerSize: geometry.size,
-                            context: segmentContext(segment)
+                            context: segmentContext(segment),
+                            isOSDVisible: isOSDVisible
                         )
                         .id("\(segment.id)_translation")
                         .zIndex(1)

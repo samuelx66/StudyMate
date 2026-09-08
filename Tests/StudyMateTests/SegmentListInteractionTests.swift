@@ -40,9 +40,64 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertFalse(state.shouldFollow)
     }
 
+    func testResumeFollowingUnconditionallyRestoresFollowing() {
+        var state = SegmentListFollowState()
+        state.toggle() // disable follow
+        XCTAssertFalse(state.followsPlayback)
+        XCTAssertFalse(state.shouldFollow)
+
+        state.resumeFollowing()
+        XCTAssertTrue(state.followsPlayback)
+        XCTAssertFalse(state.isUserScrollSuppressed)
+        XCTAssertTrue(state.shouldFollow)
+    }
+
+    func testFloatingCapsuleInfoDirectionAndEquality() {
+        let id1 = UUID()
+        let id2 = UUID()
+        let capsule1 = FloatingCapsuleInfo(id: id1, number: 12, direction: .below)
+        let capsule2 = FloatingCapsuleInfo(id: id1, number: 12, direction: .below)
+        let capsuleAbove = FloatingCapsuleInfo(id: id2, number: 5, direction: .above)
+
+        XCTAssertEqual(capsule1, capsule2)
+        XCTAssertNotEqual(capsule1, capsuleAbove)
+        XCTAssertEqual(capsule1.direction, .below)
+        XCTAssertEqual(capsuleAbove.direction, .above)
+        XCTAssertEqual(capsule1.number, 12)
+        XCTAssertEqual(capsuleAbove.number, 5)
+    }
+
+    func testFilterCriteriaResetClearsAllFilters() {
+        var criteria = SegmentListFilterCriteria()
+        criteria.requiresOriginal = true
+        criteria.requiresTranslation = true
+        criteria.requiresMinimumDuration = true
+        criteria.minimumDurationText = "10"
+        criteria.requiresWord = true
+        criteria.wordText = "test"
+        criteria.requiresBookmark = true
+        criteria.requiresIndexRange = true
+        criteria.startIndexText = "2"
+        criteria.endIndexText = "8"
+        XCTAssertTrue(criteria.hasActiveFilters)
+
+        criteria.reset()
+        XCTAssertFalse(criteria.hasActiveFilters)
+        XCTAssertFalse(criteria.requiresOriginal)
+        XCTAssertFalse(criteria.requiresTranslation)
+        XCTAssertFalse(criteria.requiresMinimumDuration)
+        XCTAssertEqual(criteria.minimumDurationText, "5")
+        XCTAssertFalse(criteria.requiresWord)
+        XCTAssertEqual(criteria.wordText, "")
+        XCTAssertFalse(criteria.requiresBookmark)
+        XCTAssertFalse(criteria.requiresIndexRange)
+    }
+
     func testFollowControlUsesValidMacOSSymbols() {
         XCTAssertNotNil(NSImage(systemSymbolName: "arrow.down.to.line", accessibilityDescription: nil))
         XCTAssertNotNil(NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: nil))
+        XCTAssertNotNil(NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil))
+        XCTAssertNotNil(NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil))
     }
 
     func testSentenceFiltersCombineAllEnabledConditions() {

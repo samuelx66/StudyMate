@@ -6,18 +6,21 @@ public struct PrimaryWaveformView: View {
     @ObservedObject var engine: PlaybackEngine
     @ObservedObject private var waveformState: WaveformPresentationState
     @ObservedObject var lang = LanguageManager.shared
+    let isHeaderVisible: Bool
     
     @State private var zoomLevel: Double = 1.0
     
-    public init(engine: PlaybackEngine) {
+    public init(engine: PlaybackEngine, isHeaderVisible: Bool = true) {
         self.engine = engine
         self.waveformState = engine.waveformState
+        self.isHeaderVisible = isHeaderVisible
     }
     
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // 头部标题与控制按钮
-            HStack {
+        VStack(alignment: .leading, spacing: isHeaderVisible ? 4 : 0) {
+            if isHeaderVisible {
+                // 头部标题与控制按钮
+                HStack {
                 Label(lang.localized(.primaryWaveform), systemImage: "waveform.path.ecg")
                     .font(.subheadline.bold())
                     .foregroundColor(.primary)
@@ -73,6 +76,11 @@ public struct PrimaryWaveformView: View {
                 }
             }
             .padding(.horizontal, 6)
+            .transition(.asymmetric(
+                insertion: .move(edge: .top).combined(with: .opacity),
+                removal: .move(edge: .top).combined(with: .opacity)
+            ))
+        }
             
             // 波形图主体区域 (高度 77pt)
             GeometryReader { geometry in
@@ -140,6 +148,17 @@ public struct PrimaryWaveformView: View {
                         },
                         onPanViewportEnded: {
                             engine.endPrimaryViewportPan()
+                        },
+                        onZoomDelta: { delta, loc in
+                            let newZoom = max(0.5, min(4.0, zoomLevel + delta))
+                            guard abs(newZoom - zoomLevel) > 0.001 else { return }
+                            zoomLevel = newZoom
+                            let anchorTime: Double? = {
+                                guard let loc = loc, width > 0 else { return nil }
+                                let ratio = max(0.0, min(1.0, Double(loc.x / width)))
+                                return viewport.start + ratio * (viewport.end - viewport.start)
+                            }()
+                            engine.setPrimaryViewportZoom(zoomLevel: newZoom, anchorTime: anchorTime)
                         }
                     )
                 }
@@ -153,6 +172,10 @@ public struct PrimaryWaveformView: View {
         }
         .padding(4)
         .studymateContentSurface(cornerRadius: 6)
+        .clipped()
+        .onChange(of: engine.currentMedia?.id) { _, _ in
+            zoomLevel = 1.0
+        }
     }
 }
 
