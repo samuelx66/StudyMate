@@ -4,9 +4,9 @@ import XCTest
 
 @MainActor
 final class WaveformInteractionTests: XCTestCase {
-    func testTopBoundaryHitChoosesNearestStartMarker() {
+    func testStartBoundaryHitChoosesNearestLine() {
         let first = SentenceSegment(index: 1, startTime: 1.0, endTime: 2.0)
-        let second = SentenceSegment(index: 2, startTime: 1.2, endTime: 2.2)
+        let second = SentenceSegment(index: 2, startTime: 1.03, endTime: 2.03)
         let view = WaveformInteractionNSViewRepresentable.InteractiveWaveformNSView(
             frame: NSRect(x: 0, y: 0, width: 1_000, height: 80)
         )
@@ -14,13 +14,13 @@ final class WaveformInteractionTests: XCTestCase {
         view.viewportStart = 0
         view.viewportEnd = 10
 
-        // 起点分别在 101pt 和 121pt；118pt 同时命中两条线，但更靠近第二条。
-        XCTAssertEqual(view.handle(at: NSPoint(x: 118, y: 10)), .start(id: second.id))
+        // 起点分别在 101pt 和 104pt；103.5pt 在垂直线中间区域(y=40)，两条线均在 4pt 容差内，更靠近第二条。
+        XCTAssertEqual(view.handle(at: NSPoint(x: 103.5, y: 40)), .start(id: second.id))
     }
 
-    func testBottomBoundaryHitChoosesNearestEndMarker() {
+    func testEndBoundaryHitChoosesNearestLine() {
         let first = SentenceSegment(index: 1, startTime: 0, endTime: 2.0)
-        let second = SentenceSegment(index: 2, startTime: 0.2, endTime: 2.2)
+        let second = SentenceSegment(index: 2, startTime: 0.03, endTime: 2.03)
         let view = WaveformInteractionNSViewRepresentable.InteractiveWaveformNSView(
             frame: NSRect(x: 0, y: 0, width: 1_000, height: 80)
         )
@@ -28,11 +28,11 @@ final class WaveformInteractionTests: XCTestCase {
         view.viewportStart = 0
         view.viewportEnd = 10
 
-        // 终点分别在 199pt 和 219pt；216pt 必须命中距离更近的第二条。
-        XCTAssertEqual(view.handle(at: NSPoint(x: 216, y: 70)), .end(id: second.id))
+        // 终点分别在 199pt 和 202pt；201.5pt 在垂直线中间区域(y=40)，两条线均在 4pt 容差内，更靠近第二条。
+        XCTAssertEqual(view.handle(at: NSPoint(x: 201.5, y: 40)), .end(id: second.id))
     }
 
-    func testMiddleBoundaryHitAllowsSmallTrackpadOffset() {
+    func testBoundaryHitStrictlyOnVerticalLinesAndBadges() {
         let segment = SentenceSegment(index: 1, startTime: 1.0, endTime: 2.0)
         let view = WaveformInteractionNSViewRepresentable.InteractiveWaveformNSView(
             frame: NSRect(x: 0, y: 0, width: 1_000, height: 80)
@@ -41,9 +41,19 @@ final class WaveformInteractionTests: XCTestCase {
         view.viewportStart = 0
         view.viewportEnd = 10
 
-        // 起点在 101pt；中间区域允许触控板有约 15pt 的横向偏差，
-        // 仍应抓到同一条绿线，而不是退化成普通点击选句。
-        XCTAssertEqual(view.handle(at: NSPoint(x: 116, y: 40)), .start(id: segment.id))
+        // 起点标线在 101pt：在垂直标线上(x=103, y=40, 容差<=4pt)可拖移
+        XCTAssertEqual(view.handle(at: NSPoint(x: 103, y: 40)), .start(id: segment.id))
+        // 在绿色起始徽章 >S#1 上(x=122, y=11)可拖移
+        XCTAssertEqual(view.handle(at: NSPoint(x: 122, y: 11)), .start(id: segment.id))
+        // 偏离垂直标线且不在徽章上(x=116, y=40)不可拖移，返回 nil
+        XCTAssertNil(view.handle(at: NSPoint(x: 116, y: 40)))
+
+        // 终点标线在 199pt：在垂直标线上(x=198, y=40)可拖移
+        XCTAssertEqual(view.handle(at: NSPoint(x: 198, y: 40)), .end(id: segment.id))
+        // 在橙色结束徽章 E#1< 上(x=178, y=69)可拖移
+        XCTAssertEqual(view.handle(at: NSPoint(x: 178, y: 69)), .end(id: segment.id))
+        // 偏离终点标线且不在徽章上(x=178, y=40)不可拖移，返回 nil
+        XCTAssertNil(view.handle(at: NSPoint(x: 178, y: 40)))
     }
 
     func testInteractiveWaveformNSViewZoomDeltaCallback() {

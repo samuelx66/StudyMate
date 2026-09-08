@@ -495,6 +495,7 @@ public struct SegmentListView: View {
     @State private var cachedSegmentIDs: Set<UUID> = []
     @State private var selectedDisplayedCountValue: Int = 0
     @State private var followState = SegmentListFollowState()
+    @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
     @State private var isUserScrolling = false
     @StateObject private var tracker = SegmentViewportTracker()
     @State private var shortcutEditRequest: UUID?
@@ -535,6 +536,7 @@ public struct SegmentListView: View {
                 // 播放时自动跟随当前句开关
                 Button(action: {
                     followState.toggle()
+                    segmentFollowsPlayback = followState.followsPlayback
                 }) {
                     Image(systemName: "target")
                         .frame(width: 24, height: 24)
@@ -554,7 +556,6 @@ public struct SegmentListView: View {
                         : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
                     shortcut: .followActiveSentence
                 ))
-                .keyboardShortcut("f", modifiers: [.command, .shift])
 
                 // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
                 Button {
@@ -572,7 +573,6 @@ public struct SegmentListView: View {
                     lang.text("筛选与搜索句子", "Filter and search sentences"),
                     shortcut: .filterSentences
                 ))
-                .keyboardShortcut("l", modifiers: [.command, .shift])
                 .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
                     SegmentFilterPopover(
                         criteria: $filterCriteria,
@@ -606,7 +606,6 @@ public struct SegmentListView: View {
                         || engine.isAutoTranslating
                 )
                 .segmentListHelp(regenerateOriginalHelpText)
-                .keyboardShortcut("t", modifiers: [.command, .shift])
 
                 // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
                 Button {
@@ -625,7 +624,6 @@ public struct SegmentListView: View {
                         : lang.text("请先在设置中启用翻译功能", "Enable translation in Settings first"),
                     shortcut: .translateSentences
                 ))
-                .keyboardShortcut("t", modifiers: [.command])
                 .popover(isPresented: $showTranslationPopover, arrowEdge: .top) {
                     TranslationExecutionSheet(
                         engine: engine,
@@ -651,7 +649,6 @@ public struct SegmentListView: View {
                     lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
                     shortcut: .importSubtitles
                 ))
-                .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 // 将已选断句统一导出为音频和字幕（仅在勾选句子时显示并启用）
                 if !selectedSegmentIDs.isEmpty {
@@ -669,7 +666,6 @@ public struct SegmentListView: View {
                         lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
                         shortcut: .exportMenu
                     ))
-                    .keyboardShortcut("e", modifiers: [.command, .option])
                     .popover(isPresented: $showExportPopover, arrowEdge: .top) {
                         SegmentExportPopoverView(
                             onExportSeparate: {
@@ -701,7 +697,6 @@ public struct SegmentListView: View {
                         : lang.text("将已选句子加入当前句库", "Add selected sentences to the current library"),
                     shortcut: .addToSentenceLibrary
                 ))
-                .keyboardShortcut("a", modifiers: [.command, .option])
                 .popover(isPresented: $showAddToLibraryPopover, arrowEdge: .top) {
                     SegmentAddToLibraryPopoverView(
                         currentLibraryName: libraryManager.currentLibrary?.name ?? lang.text("默认句库", "Default Library"),
@@ -790,6 +785,7 @@ public struct SegmentListView: View {
                                 isScrolling: isUserScrolling,
                                 displayedSegmentsRevision: displayedSegmentsRevision,
                                 selectionRevision: selectionRevision,
+                                totalSegmentsCount: engine.segments.count,
                                 onToggleExportSelection: { id in
                                     if selectedSegmentIDs.contains(id) {
                                         selectedSegmentIDs.remove(id)
@@ -893,6 +889,7 @@ public struct SegmentListView: View {
                             tracker: tracker,
                             onReturn: { targetID in
                                 followState.resumeFollowing()
+                                segmentFollowsPlayback = true
                                 withAnimation(.easeInOut(duration: 0.25)) {
                                     proxy.scrollTo(targetID, anchor: .center)
                                 }
@@ -938,10 +935,23 @@ public struct SegmentListView: View {
                 "Whisper will recognize the existing time ranges again and overwrite original text. Translations, sentence timing, and other sentence data will not change."
             ))
         }
-        .onAppear {
-            updateVocabularyFilterIfNeeded()
-            refreshDisplayedSegments()
+        .onAppear(perform: handleOnAppear)
+        .onChange(of: segmentFollowsPlayback) { _, newValue in
+            handleSegmentFollowsPlaybackChanged(newValue)
         }
+        .modifier(SegmentListNotificationModifier(
+            onFilter: { showFilterPopover.toggle() },
+            onFollow: handleToggleFollowSentenceNotification,
+            onRegenerate: handleRegenerateOriginalNotification,
+            onTranslate: handleTranslateSentencesNotification,
+            onImport: handleImportSubtitlesNotification,
+            onExportSeparate: handleExportSeparateNotification,
+            onExportMerged: handleExportMergedNotification,
+            onAddToLibrary: handleAddToLibraryNotification,
+            onSelectAll: selectDisplayedSegments,
+            onInvertSelection: invertDisplayedSegmentSelection,
+            onEditActive: requestEditActiveSentence
+        ))
         .onChange(of: engine.segments) { _, _ in refreshDisplayedSegments() }
         .onChange(of: searchText) { _, _ in scheduleSearchRefresh() }
         .onChange(of: filterCriteria) { _, _ in
@@ -969,6 +979,84 @@ public struct SegmentListView: View {
         .environment(\.segmentListToolTipsEnabled, !suppressToolTips)
     }
 
+    private func handleOnAppear() {
+        if !segmentFollowsPlayback && followState.followsPlayback {
+            followState.toggle()
+        } else if segmentFollowsPlayback && !followState.followsPlayback {
+            followState.resumeFollowing()
+        }
+        updateVocabularyFilterIfNeeded()
+        refreshDisplayedSegments()
+    }
+
+    private func handleSegmentFollowsPlaybackChanged(_ newValue: Bool) {
+        if newValue && !followState.followsPlayback {
+            followState.resumeFollowing()
+        } else if !newValue && followState.followsPlayback {
+            followState.toggle()
+        }
+    }
+
+    private func handleToggleFollowSentenceNotification(_ notification: Notification) {
+        if let flag = notification.object as? Bool {
+            if flag {
+                followState.resumeFollowing()
+            } else {
+                if followState.followsPlayback {
+                    followState.toggle()
+                }
+            }
+            segmentFollowsPlayback = followState.followsPlayback
+        } else {
+            followState.toggle()
+            segmentFollowsPlayback = followState.followsPlayback
+        }
+    }
+
+    private func handleRegenerateOriginalNotification() {
+        guard engine.currentMedia != nil, !engine.segments.isEmpty,
+              !engine.isAITranscribing, !engine.isAutoTranslating else { return }
+        showRegenerateOriginalConfirmation = true
+    }
+
+    private func handleTranslateSentencesNotification() {
+        guard engine.currentMedia != nil, !engine.segments.isEmpty else { return }
+        showTranslationPopover = true
+    }
+
+    private func handleImportSubtitlesNotification() {
+        guard engine.currentMedia != nil else { return }
+        showImportSheet = true
+    }
+
+    private func handleExportSeparateNotification() {
+        guard engine.currentMedia != nil else { return }
+        if selectedSegments.isEmpty {
+            MainStatusCenter.shared.showSuccess(lang.text("请先勾选要导出的句子", "Please select sentences to export first"))
+        } else {
+            chooseIndividualExportDestination()
+        }
+    }
+
+    private func handleExportMergedNotification() {
+        guard engine.currentMedia != nil else { return }
+        if selectedSegments.isEmpty {
+            MainStatusCenter.shared.showSuccess(lang.text("请先勾选要导出的句子", "Please select sentences to export first"))
+        } else {
+            chooseMergedExportDestination()
+        }
+    }
+
+    private func handleAddToLibraryNotification() {
+        guard engine.currentMedia != nil else { return }
+        if selectedSegments.isEmpty {
+            MainStatusCenter.shared.showSuccess(lang.text("请先勾选要加入句库的句子", "Please select sentences to add to a library first"))
+            showAddToLibraryPopover = true
+        } else {
+            addSelectedSegmentsToLibrary()
+        }
+    }
+
     private var activeSegmentID: UUID? {
         guard let index = engine.activeSegmentIndex,
               engine.segments.indices.contains(index) else { return nil }
@@ -982,27 +1070,6 @@ public struct SegmentListView: View {
 
             Button(action: selectActiveSentence) { EmptyView() }
                 .keyboardShortcut(.return, modifiers: [.command])
-
-            Button(action: toggleActiveDifficultyBookmark) { EmptyView() }
-                .keyboardShortcut("b", modifiers: [.command, .shift])
-
-            Button(action: requestEditActiveSentence) { EmptyView() }
-                .keyboardShortcut("y", modifiers: [.command, .shift])
-
-            Button(action: splitActiveSentence) { EmptyView() }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-
-            Button(action: mergeActiveWithPrevious) { EmptyView() }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-
-            Button(action: mergeActiveWithNext) { EmptyView() }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-
-            Button(action: toggleActiveNavigationBookmark) { EmptyView() }
-                .keyboardShortcut("b", modifiers: [.command])
-
-            Button(action: deleteActiveSentence) { EmptyView() }
-                .keyboardShortcut(.delete, modifiers: [.command])
         }
         .frame(width: 0, height: 0)
         .opacity(0)
@@ -1025,43 +1092,12 @@ public struct SegmentListView: View {
         engine.jumpToSegment(id: id)
     }
 
-    private func toggleActiveDifficultyBookmark() {
-        guard let id = activeSegmentID else { return }
-        engine.toggleBookmark(for: id)
-    }
-
     private func requestEditActiveSentence() {
         guard let id = activeSegmentID else { return }
         shortcutEditRequest = id
         DispatchQueue.main.async {
             if shortcutEditRequest == id { shortcutEditRequest = nil }
         }
-    }
-
-    private func splitActiveSentence() {
-        guard let id = activeSegmentID,
-              let segment = engine.segments.first(where: { $0.id == id }) else { return }
-        engine.splitSegment(id: id, at: (segment.startTime + segment.endTime) / 2.0)
-    }
-
-    private func mergeActiveWithPrevious() {
-        guard let id = activeSegmentID else { return }
-        engine.mergeSegmentWithPrevious(id: id)
-    }
-
-    private func mergeActiveWithNext() {
-        guard let id = activeSegmentID else { return }
-        engine.mergeSegmentWithNext(id: id)
-    }
-
-    private func toggleActiveNavigationBookmark() {
-        guard let id = activeSegmentID else { return }
-        engine.toggleNavigationBookmark(for: id)
-    }
-
-    private func deleteActiveSentence() {
-        guard let id = activeSegmentID else { return }
-        engine.deleteSegment(id: id)
     }
 
     private func updateVocabularyFilterIfNeeded() {
@@ -1351,6 +1387,35 @@ public struct SegmentListView: View {
     }
 }
 
+private struct SegmentListNotificationModifier: ViewModifier {
+    let onFilter: () -> Void
+    let onFollow: (Notification) -> Void
+    let onRegenerate: () -> Void
+    let onTranslate: () -> Void
+    let onImport: () -> Void
+    let onExportSeparate: () -> Void
+    let onExportMerged: () -> Void
+    let onAddToLibrary: () -> Void
+    let onSelectAll: () -> Void
+    let onInvertSelection: () -> Void
+    let onEditActive: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateToggleSentenceFilter)) { _ in onFilter() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateToggleFollowSentence)) { onFollow($0) }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateRegenerateOriginal)) { _ in onRegenerate() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateTranslateSentences)) { _ in onTranslate() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateImportSubtitles)) { _ in onImport() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateExportSeparate)) { _ in onExportSeparate() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateExportMerged)) { _ in onExportMerged() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateAddToLibrary)) { _ in onAddToLibrary() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateSelectAllVisibleSentences)) { _ in onSelectAll() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateInvertVisibleSentenceSelection)) { _ in onInvertSelection() }
+            .onReceive(NotificationCenter.default.publisher(for: .studyMateEditActiveSentence)) { _ in onEditActive() }
+    }
+}
+
 private struct SegmentFilterPopover: View {
     @Binding var criteria: SegmentListFilterCriteria
     @Binding var searchText: String
@@ -1540,7 +1605,6 @@ private struct SegmentFilterPopover: View {
                     action: isAllSelected ? onDeselectAll : onSelectAll
                 )
                 .disabled(displayedCount == 0)
-                .keyboardShortcut("a", modifiers: [.command])
                 .segmentListHelp(StudyMateShortcutCatalog.help(
                     isAllSelected
                         ? lang.text("清除选择", "Clear Selection")
@@ -1549,7 +1613,6 @@ private struct SegmentFilterPopover: View {
                 ))
                 Button(lang.text("反选", "Invert Selection"), action: onInvertSelection)
                     .disabled(displayedCount == 0)
-                    .keyboardShortcut("i", modifiers: [.command, .option])
                     .segmentListHelp(StudyMateShortcutCatalog.help(
                         lang.text("反选", "Invert Selection"),
                         shortcut: .invertVisibleSentenceSelection
@@ -1882,6 +1945,7 @@ private struct SegmentListRowsView: View, Equatable {
     let isScrolling: Bool
     let displayedSegmentsRevision: Int
     let selectionRevision: Int
+    let totalSegmentsCount: Int
     let onToggleExportSelection: (UUID) -> Void
     let onSelect: (UUID) -> Void
     let onToggleBookmark: (UUID) -> Void
@@ -1906,6 +1970,7 @@ private struct SegmentListRowsView: View, Equatable {
                     isActive: activeSegmentID == seg.id,
                     isSelectedForExport: selectedSegmentIDs.contains(seg.id),
                     isScrolling: isScrolling,
+                    totalSegmentsCount: totalSegmentsCount,
                     onToggleExportSelection: {
                         onToggleExportSelection(seg.id)
                     },
@@ -1970,6 +2035,7 @@ extension SegmentListRowsView {
             && lhs.engineIdentity == rhs.engineIdentity
             && lhs.language.rawValue == rhs.language.rawValue
             && lhs.isScrolling == rhs.isScrolling
+            && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
     }
 }
@@ -1980,6 +2046,7 @@ struct SegmentRowView: View, Equatable {
     let isActive: Bool
     let isSelectedForExport: Bool
     let isScrolling: Bool
+    let totalSegmentsCount: Int
     let onToggleExportSelection: () -> Void
     let onSelect: () -> Void
     let onToggleBookmark: () -> Void
@@ -2002,6 +2069,7 @@ struct SegmentRowView: View, Equatable {
             && lhs.isActive == rhs.isActive
             && lhs.isSelectedForExport == rhs.isSelectedForExport
             && lhs.isScrolling == rhs.isScrolling
+            && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
             && lhs.language == rhs.language
     }
@@ -2139,6 +2207,7 @@ struct SegmentRowView: View, Equatable {
                                         lang.localized(.mergeSegment),
                                         shortcut: .mergeNextSentence
                                     ))
+                                    .disabled(seg.index >= totalSegmentsCount)
 
                                     Button(action: onToggleNavigationBookmark) {
                                         Image(systemName: seg.isNavigationBookmarked ? "bookmark.fill" : "bookmark")

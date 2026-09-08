@@ -3567,6 +3567,32 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         mergeSegmentWithPrevious(at: idx)
     }
 
+    public var activeSegment: SentenceSegment? {
+        guard let index = activeSegmentIndex,
+              segments.indices.contains(index) else { return nil }
+        return segments[index]
+    }
+
+    public var canMergeActiveSegmentWithPrevious: Bool {
+        guard let index = activeSegmentIndex,
+              segments.indices.contains(index) else { return false }
+        return index > 0
+    }
+
+    public var canMergeActiveSegmentWithNext: Bool {
+        guard let index = activeSegmentIndex,
+              segments.indices.contains(index) else { return false }
+        return index < segments.count - 1
+    }
+
+    public func canMergeSegmentWithPrevious(at index: Int) -> Bool {
+        segments.indices.contains(index) && index > 0
+    }
+
+    public func canMergeSegmentWithNext(at index: Int) -> Bool {
+        segments.indices.contains(index) && index < segments.count - 1
+    }
+
     /// 删除、拆分或合并后，即使活动句仍然使用同一个 UUID，也必须重新
     /// 计算次波形图视口，因为该句的起止时间可能已经发生变化。
     private func refreshSecondaryViewportAfterSegmentMutation() {

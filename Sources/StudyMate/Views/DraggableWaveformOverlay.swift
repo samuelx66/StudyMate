@@ -544,6 +544,44 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             }
         }
 
+        static func boundaryBadgeSize(for label: String) -> CGSize {
+            let font = NSFont.systemFont(ofSize: 9, weight: .black)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font
+            ]
+            let textSize = (label as NSString).size(withAttributes: attributes)
+            let triangleWidth: CGFloat = 6
+            let spacing: CGFloat = 2
+            let horizontalPadding: CGFloat = 5
+            let verticalPadding: CGFloat = 2
+            return CGSize(
+                width: textSize.width + triangleWidth + spacing + horizontalPadding * 2,
+                height: max(15, textSize.height + verticalPadding * 2)
+            )
+        }
+
+        func startBadgeRect(for segmentIndex: Int, startX: CGFloat) -> CGRect {
+            let size = Self.boundaryBadgeSize(for: "S#\(segmentIndex)")
+            let center = CGPoint(x: startX - 1 + 22, y: 11)
+            return CGRect(
+                x: center.x - size.width / 2,
+                y: center.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        func endBadgeRect(for segmentIndex: Int, endX: CGFloat) -> CGRect {
+            let size = Self.boundaryBadgeSize(for: "E#\(segmentIndex)")
+            let center = CGPoint(x: endX + 1 - 22, y: max(11, bounds.height - 11))
+            return CGRect(
+                x: center.x - size.width / 2,
+                y: center.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            )
+        }
+
         private func drawBoundaryBadge(
             label: String,
             at center: CGPoint,
@@ -560,11 +598,7 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             let triangleWidth: CGFloat = 6
             let spacing: CGFloat = 2
             let horizontalPadding: CGFloat = 5
-            let verticalPadding: CGFloat = 2
-            let badgeSize = CGSize(
-                width: textSize.width + triangleWidth + spacing + horizontalPadding * 2,
-                height: max(15, textSize.height + verticalPadding * 2)
-            )
+            let badgeSize = Self.boundaryBadgeSize(for: label)
             let rect = CGRect(
                 x: center.x - badgeSize.width / 2,
                 y: center.y - badgeSize.height / 2,
@@ -908,68 +942,86 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             let height = bounds.height
             let candidateRange = visibleSegmentRange()
 
-            // 顶部/底部保留更宽的垂直抓取区，避免触控板在徽章边缘丢失
-            // mouseDown；中间区域也放宽，但仍始终选择最近的标线。
-            let edgeZoneHeight = min(30, max(0, height / 2 - 1))
-            let edgeHitTolerance: CGFloat = 30
-            let middleHitTolerance: CGFloat = 18
+            let lineHitTolerance: CGFloat = 4.0
+            let badgeHitMargin: CGFloat = 2.0
 
-            // 1. 顶部区域 -> 优先抓取绿色起始标线 (S#)
-            if loc.y <= edgeZoneHeight {
-                var nearest: (drag: ActiveDrag, distance: CGFloat)?
-                for index in candidateRange {
-                    let seg = segments[index]
-                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
-                    let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
-                    let distance = abs(loc.x - startX)
-                    if distance <= edgeHitTolerance, nearest == nil || distance < nearest!.distance {
-                        nearest = (.start(id: seg.id), distance)
-                    }
-                }
-                if let nearest {
-                    return nearest.drag
-                }
+            struct BadgeHit {
+                let drag: ActiveDrag
+                let distanceToCenter: CGFloat
             }
 
-            // 2. 底部区域 -> 优先抓取橙色结束标线 (E#)
-            if loc.y >= (height - edgeZoneHeight) {
-                var nearest: (drag: ActiveDrag, distance: CGFloat)?
-                for index in candidateRange {
-                    let seg = segments[index]
-                    guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
-                    let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
-                    let distance = abs(loc.x - endX)
-                    if distance <= edgeHitTolerance, nearest == nil || distance < nearest!.distance {
-                        nearest = (.end(id: seg.id), distance)
-                    }
-                }
-                if let nearest {
-                    return nearest.drag
-                }
+            struct LineHit {
+                let drag: ActiveDrag
+                let distanceToLine: CGFloat
+                let isStart: Bool
             }
 
-            // 3. 标线垂直中间区域
-            var nearestMiddle: (drag: ActiveDrag, distance: CGFloat)?
+            var bestBadgeHit: BadgeHit?
+            var lineHits: [LineHit] = []
+
             for index in candidateRange {
                 let seg = segments[index]
                 guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
                 let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
                 let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
+
+                // 1. 检查绿色起始标签（顶部 >S#）
+                let startBadge = startBadgeRect(for: seg.index, startX: startX)
+                if startBadge.insetBy(dx: -badgeHitMargin, dy: -badgeHitMargin).contains(loc) {
+                    let center = CGPoint(x: startBadge.midX, y: startBadge.midY)
+                    let dist = hypot(loc.x - center.x, loc.y - center.y)
+                    if bestBadgeHit == nil || dist < bestBadgeHit!.distanceToCenter {
+                        bestBadgeHit = BadgeHit(drag: .start(id: seg.id), distanceToCenter: dist)
+                    }
+                }
+
+                // 2. 检查橙色结束标签（底部 E#<）
+                let endBadge = endBadgeRect(for: seg.index, endX: endX)
+                if endBadge.insetBy(dx: -badgeHitMargin, dy: -badgeHitMargin).contains(loc) {
+                    let center = CGPoint(x: endBadge.midX, y: endBadge.midY)
+                    let dist = hypot(loc.x - center.x, loc.y - center.y)
+                    if bestBadgeHit == nil || dist < bestBadgeHit!.distanceToCenter {
+                        bestBadgeHit = BadgeHit(drag: .end(id: seg.id), distanceToCenter: dist)
+                    }
+                }
+
+                // 3. 检查绿色垂直标线（严格限制在垂直线两侧各 4pt 宽度）
                 let distStart = abs(loc.x - startX)
+                if distStart <= lineHitTolerance {
+                    lineHits.append(LineHit(drag: .start(id: seg.id), distanceToLine: distStart, isStart: true))
+                }
+
+                // 4. 检查橙色垂直标线（严格限制在垂直线两侧各 4pt 宽度）
                 let distEnd = abs(loc.x - endX)
-                if distStart <= middleHitTolerance,
-                   nearestMiddle == nil || distStart < nearestMiddle!.distance {
-                    nearestMiddle = (.start(id: seg.id), distStart)
+                if distEnd <= lineHitTolerance {
+                    lineHits.append(LineHit(drag: .end(id: seg.id), distanceToLine: distEnd, isStart: false))
                 }
-                if distEnd <= middleHitTolerance,
-                   nearestMiddle == nil || distEnd < nearestMiddle!.distance {
-                    nearestMiddle = (.end(id: seg.id), distEnd)
-                }
-            }
-            if let nearest = nearestMiddle {
-                return nearest.drag
             }
 
+            // 优先响应标签（用户明确抓取 S# 或 E# 徽章）
+            if let bestBadgeHit {
+                return bestBadgeHit.drag
+            }
+
+            // 其次响应垂直标线
+            if !lineHits.isEmpty {
+                lineHits.sort { $0.distanceToLine < $1.distanceToLine }
+                if lineHits.count == 1 {
+                    return lineHits[0].drag
+                }
+                // 若有多条标线命中（如相邻断句起止贴合），距离相差大于 1pt 时取更近者
+                if abs(lineHits[0].distanceToLine - lineHits[1].distanceToLine) > 1.0 {
+                    return lineHits[0].drag
+                }
+                // 距离相近时：上半区点击优先选取起始标线，下半区点击优先选取结束标线
+                let preferStart = loc.y < (height / 2)
+                if let matched = lineHits.first(where: { $0.isStart == preferStart }) {
+                    return matched.drag
+                }
+                return lineHits[0].drag
+            }
+
+            // 其余所有区域均不可拖移
             return nil
         }
 

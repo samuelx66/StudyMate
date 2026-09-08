@@ -5,6 +5,17 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     public static let studyMateCloseCurrentMedia = Notification.Name("StudyMate.CloseCurrentMedia")
     public static let studyMateTogglePlaylist = Notification.Name("StudyMate.TogglePlaylist")
+    public static let studyMateToggleSentenceFilter = Notification.Name("StudyMate.ToggleSentenceFilter")
+    public static let studyMateToggleFollowSentence = Notification.Name("StudyMate.ToggleFollowSentence")
+    public static let studyMateRegenerateOriginal = Notification.Name("StudyMate.RegenerateOriginal")
+    public static let studyMateTranslateSentences = Notification.Name("StudyMate.TranslateSentences")
+    public static let studyMateImportSubtitles = Notification.Name("StudyMate.ImportSubtitles")
+    public static let studyMateExportSeparate = Notification.Name("StudyMate.ExportSeparate")
+    public static let studyMateExportMerged = Notification.Name("StudyMate.ExportMerged")
+    public static let studyMateAddToLibrary = Notification.Name("StudyMate.AddToLibrary")
+    public static let studyMateEditActiveSentence = Notification.Name("StudyMate.EditActiveSentence")
+    public static let studyMateSelectAllVisibleSentences = Notification.Name("StudyMate.SelectAllVisibleSentences")
+    public static let studyMateInvertVisibleSentenceSelection = Notification.Name("StudyMate.InvertVisibleSentenceSelection")
 }
 
 /// 主视窗内容容器（波形图置顶、视频视窗自动扩展占满剩余空间、底部控制栏、可自由调整窗口大小）

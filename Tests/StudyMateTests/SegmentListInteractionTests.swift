@@ -415,5 +415,100 @@ final class SegmentListInteractionTests: XCTestCase {
         )
         XCTAssertGreaterThan(emptySize.height, 0)
     }
+
+    func testSentenceMenuNotificationNamesAreUniqueAndConsistent() {
+        let notifications: [Notification.Name] = [
+            .studyMateToggleSentenceFilter,
+            .studyMateToggleFollowSentence,
+            .studyMateRegenerateOriginal,
+            .studyMateTranslateSentences,
+            .studyMateImportSubtitles,
+            .studyMateExportSeparate,
+            .studyMateExportMerged,
+            .studyMateAddToLibrary,
+            .studyMateEditActiveSentence,
+            .studyMateSelectAllVisibleSentences,
+            .studyMateInvertVisibleSentenceSelection
+        ]
+
+        let names = Set(notifications.map(\.rawValue))
+        XCTAssertEqual(names.count, notifications.count, "All sentence notification names must be unique")
+        for notification in notifications {
+            XCTAssertTrue(notification.rawValue.hasPrefix("StudyMate."), "Notification name should follow StudyMate namespace")
+        }
+    }
+
+    func testSentenceMenuShortcutsAreAllRegisteredInCatalog() {
+        let catalog = StudyMateShortcutCatalog.all
+        let expectedShortcutIDs: [StudyMateShortcutID] = [
+            .fastSegmentation,
+            .intelligentSegmentation,
+            .regenerateOriginalText,
+            .translateSentences,
+            .importSubtitles,
+            .exportSeparate,
+            .exportMerged,
+            .addToSentenceLibrary,
+            .followActiveSentence,
+            .filterSentences,
+            .selectAllVisibleSentences,
+            .invertVisibleSentenceSelection,
+            .editSentence,
+            .splitSentence,
+            .mergePreviousSentence,
+            .mergeNextSentence,
+            .toggleNavigationBookmark,
+            .toggleDifficultyBookmark,
+            .deleteSentence
+        ]
+
+        for id in expectedShortcutIDs {
+            let descriptor = catalog.first(where: { $0.id == id })
+            XCTAssertNotNil(descriptor, "Shortcut ID \(id.rawValue) must exist in catalog")
+            XCTAssertFalse(descriptor?.chineseName.isEmpty ?? true)
+            XCTAssertFalse(descriptor?.englishName.isEmpty ?? true)
+            XCTAssertFalse(descriptor?.keyDisplay.isEmpty ?? true)
+        }
+    }
+
+    @MainActor
+    func testSentenceMergePreviousAndNextValidation() {
+        let engine = makeTestPlaybackEngine()
+        XCTAssertFalse(engine.canMergeActiveSegmentWithPrevious)
+        XCTAssertFalse(engine.canMergeActiveSegmentWithNext)
+
+        let seg1 = SentenceSegment(id: UUID(), index: 1, startTime: 0, endTime: 2, text: "One", translation: "")
+        let seg2 = SentenceSegment(id: UUID(), index: 2, startTime: 2, endTime: 4, text: "Two", translation: "")
+        let seg3 = SentenceSegment(id: UUID(), index: 3, startTime: 4, endTime: 6, text: "Three", translation: "")
+
+        engine.segments = [seg1, seg2, seg3]
+
+        // 没有活动句时，两者均不可用
+        engine.activeSegmentIndex = nil
+        XCTAssertFalse(engine.canMergeActiveSegmentWithPrevious)
+        XCTAssertFalse(engine.canMergeActiveSegmentWithNext)
+
+        // 第一句（index 0）：合并上一句不可用，合并下一句可用
+        engine.activeSegmentIndex = 0
+        XCTAssertFalse(engine.canMergeActiveSegmentWithPrevious, "第一句不可合并上一句")
+        XCTAssertTrue(engine.canMergeActiveSegmentWithNext, "第一句可以合并下一句")
+
+        // 中间句（index 1）：不是第一句也不是最后一句，两者均可用
+        engine.activeSegmentIndex = 1
+        XCTAssertTrue(engine.canMergeActiveSegmentWithPrevious, "中间句可以合并上一句")
+        XCTAssertTrue(engine.canMergeActiveSegmentWithNext, "中间句可以合并下一句")
+
+        // 最后一句（index 2）：合并上一句可用，合并下一句不可用
+        engine.activeSegmentIndex = 2
+        XCTAssertTrue(engine.canMergeActiveSegmentWithPrevious, "最后一句可以合并上一句")
+        XCTAssertFalse(engine.canMergeActiveSegmentWithNext, "最后一句不可合并下一句")
+
+        // 仅有一句时：两者均不可用
+        engine.segments = [seg1]
+        engine.activeSegmentIndex = 0
+        XCTAssertFalse(engine.canMergeActiveSegmentWithPrevious, "单句不可合并上一句")
+        XCTAssertFalse(engine.canMergeActiveSegmentWithNext, "单句不可合并下一句")
+    }
 }
+
 

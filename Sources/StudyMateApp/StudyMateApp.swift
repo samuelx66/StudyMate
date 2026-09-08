@@ -109,19 +109,17 @@ struct StudyMateApp: App {
     @AppStorage("StudyMate.ShowSecondaryWaveform") private var showSecondaryWaveform = true
     @AppStorage("StudyMate.ShowSubtitleEditor") private var showSubtitleEditor = true
     @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
+    @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
 
-    /// PlaybackEngine is intentionally resolved only when a media window or a
-    /// playback command is used.  Keeping it out of @StateObject here avoids
-    /// constructing AVFoundation/libmpv, waveform state and model schedulers
-    /// while the welcome window is the only visible scene.
-    private var engine: PlaybackEngine { PlaybackEngine.shared }
+    @ObservedObject private var engine = PlaybackEngine.shared
     
     init() {
         UserDefaults.standard.register(defaults: [
             "NSWindowTabbingShouldShowTabBar": false,
             "AppleWindowTabbingMode": "manual",
             "StudyMate.ShowStatusBar": true,
-            "StudyMate.ShowSecondaryWaveform": true
+            "StudyMate.ShowSecondaryWaveform": true,
+            "StudyMate.SegmentFollowsPlayback": true
         ])
         NSWindow.allowsAutomaticWindowTabbing = false
     }
@@ -382,6 +380,230 @@ struct StudyMateApp: App {
                 }
             }
             
+            // 断句菜单：集中管理断句模式、生成、翻译、导入导出、句库、跟随、筛选与单句编辑
+            CommandMenu(languageManager.text("断句", "Sentence")) {
+                Menu {
+                    Button {
+                        engine.performSegmentation(mode: .fast)
+                    } label: {
+                        Label(languageManager.text("快速断句", "Fast Segmentation"), systemImage: "bolt.fill")
+                    }
+                    .keyboardShortcut("1", modifiers: [.control, .command])
+                    .disabled(engine.currentMedia == nil || engine.isAITranscribing)
+
+                    Button {
+                        engine.performSegmentation(mode: .intelligent)
+                    } label: {
+                        Label(languageManager.text("智能断句", "Intelligent Segmentation"), systemImage: "wand.and.stars")
+                    }
+                    .keyboardShortcut("2", modifiers: [.control, .command])
+                    .disabled(engine.currentMedia == nil || engine.isAITranscribing)
+                } label: {
+                    Label(languageManager.text("断句模式", "Segmentation Mode"), systemImage: "scissors")
+                }
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateRegenerateOriginal, object: nil)
+                } label: {
+                    Label(languageManager.text("重新生成原文…", "Regenerate Original Text…"), systemImage: "waveform.and.mic")
+                }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateTranslateSentences, object: nil)
+                } label: {
+                    Label(languageManager.text("翻译句子…", "Translate Sentences…"), systemImage: "translate")
+                }
+                .keyboardShortcut("t", modifiers: [.command])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateImportSubtitles, object: nil)
+                } label: {
+                    Label(languageManager.text("导入字幕…", "Import Subtitles…"), systemImage: "arrow.down.doc")
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(engine.currentMedia == nil)
+
+                Menu {
+                    Button {
+                        ensureSentenceListVisible()
+                        NotificationCenter.default.post(name: .studyMateExportSeparate, object: nil)
+                    } label: {
+                        Label(languageManager.text("逐句导出 M4A 与 LRC/SRT…", "Export Separate M4A and LRC/SRT…"), systemImage: "doc.on.doc")
+                    }
+                    .keyboardShortcut("e", modifiers: [.command])
+                    .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                    Button {
+                        ensureSentenceListVisible()
+                        NotificationCenter.default.post(name: .studyMateExportMerged, object: nil)
+                    } label: {
+                        Label(languageManager.text("合并导出 M4A 与 LRC/SRT…", "Export Merged M4A and LRC/SRT…"), systemImage: "rectangle.stack")
+                    }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+                } label: {
+                    Label(languageManager.text("导出已选句子", "Export Selected Sentences"), systemImage: "square.and.arrow.up")
+                }
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateAddToLibrary, object: nil)
+                } label: {
+                    Label(languageManager.text("加入句库", "Add to Sentence Library"), systemImage: "text.badge.plus")
+                }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Divider()
+
+                Button {
+                    segmentFollowsPlayback.toggle()
+                    NotificationCenter.default.post(name: .studyMateToggleFollowSentence, object: segmentFollowsPlayback)
+                } label: {
+                    HStack {
+                        Text(languageManager.text("播放时自动跟随当前句", "Follow Active Sentence During Playback"))
+                        if segmentFollowsPlayback {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateToggleSentenceFilter, object: nil)
+                } label: {
+                    Label(languageManager.text("筛选与搜索句子…", "Filter and Search Sentences…"), systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateSelectAllVisibleSentences, object: nil)
+                } label: {
+                    Label(languageManager.text("全选当前显示句子", "Select All Visible Sentences"), systemImage: "checkmark.circle")
+                }
+                .keyboardShortcut("a", modifiers: [.command])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateInvertVisibleSentenceSelection, object: nil)
+                } label: {
+                    Label(languageManager.text("反选当前显示句子", "Invert Visible Sentence Selection"), systemImage: "arrow.2.squarepath")
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
+
+                Divider()
+
+                Button {
+                    ensureSentenceListVisible()
+                    NotificationCenter.default.post(name: .studyMateEditActiveSentence, object: nil)
+                } label: {
+                    Label(languageManager.text("编辑当前句原文和译文…", "Edit Current Sentence…"), systemImage: "pencil")
+                }
+                .keyboardShortcut("y", modifiers: [.command, .shift])
+                .disabled(activeSegment == nil)
+
+                Button {
+                    if let seg = activeSegment {
+                        engine.splitSegment(id: seg.id, at: (seg.startTime + seg.endTime) / 2.0)
+                        MainStatusCenter.shared.showSuccess(languageManager.text("已拆分当前句", "Current sentence split"))
+                    }
+                } label: {
+                    Label(languageManager.text("拆分当前句", "Split Current Sentence"), systemImage: "scissors")
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(activeSegment == nil)
+
+                Button {
+                    if let seg = activeSegment {
+                        engine.mergeSegmentWithPrevious(id: seg.id)
+                        MainStatusCenter.shared.showSuccess(languageManager.text("已合并上一句", "Merged with previous sentence"))
+                    }
+                } label: {
+                    Label(languageManager.text("合并上一句", "Merge with Previous Sentence"), systemImage: "arrow.up.and.line.horizontal.and.arrow.down")
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(!engine.canMergeActiveSegmentWithPrevious)
+
+                Button {
+                    if let seg = activeSegment {
+                        engine.mergeSegmentWithNext(id: seg.id)
+                        MainStatusCenter.shared.showSuccess(languageManager.text("已合并下一句", "Merged with next sentence"))
+                    }
+                } label: {
+                    Label(languageManager.text("合并下一句", "Merge with Next Sentence"), systemImage: "arrow.down.and.line.horizontal.and.arrow.up")
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(!engine.canMergeActiveSegmentWithNext)
+
+                Divider()
+
+                Button {
+                    if let seg = activeSegment {
+                        let willBeBookmarked = !seg.isNavigationBookmarked
+                        engine.toggleNavigationBookmark(for: seg.id)
+                        MainStatusCenter.shared.showSuccess(
+                            willBeBookmarked
+                                ? languageManager.text("已加入书签", "Bookmark added")
+                                : languageManager.text("已移出书签", "Bookmark removed")
+                        )
+                    }
+                } label: {
+                    Label(
+                        activeSegment?.isNavigationBookmarked == true
+                            ? languageManager.text("移出当前句书签", "Remove Current Sentence Bookmark")
+                            : languageManager.text("加入当前句书签", "Add Current Sentence Bookmark"),
+                        systemImage: activeSegment?.isNavigationBookmarked == true ? "bookmark.fill" : "bookmark"
+                    )
+                }
+                .keyboardShortcut("b", modifiers: [.command])
+                .disabled(activeSegment == nil)
+
+                Button {
+                    if let seg = activeSegment {
+                        let willBeBookmarked = !seg.isBookmarked
+                        engine.toggleBookmark(for: seg.id)
+                        MainStatusCenter.shared.showSuccess(
+                            willBeBookmarked
+                                ? languageManager.text("已标为难句", "Marked as difficult")
+                                : languageManager.text("已取消难句标记", "Removed difficulty mark")
+                        )
+                    }
+                } label: {
+                    Label(
+                        activeSegment?.isBookmarked == true
+                            ? languageManager.text("取消难句星标", "Remove Difficulty Star")
+                            : languageManager.text("标为难句", "Mark as Difficult"),
+                        systemImage: activeSegment?.isBookmarked == true ? "star.fill" : "star"
+                    )
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(activeSegment == nil)
+
+                Button {
+                    if let seg = activeSegment {
+                        engine.deleteSegment(id: seg.id)
+                        MainStatusCenter.shared.showSuccess(languageManager.text("已删除当前句", "Current sentence deleted"))
+                    }
+                } label: {
+                    Label(languageManager.text("删除当前句", "Delete Current Sentence"), systemImage: "trash")
+                }
+                .keyboardShortcut(.delete, modifiers: [.command])
+                .disabled(activeSegment == nil)
+            }
+            
             // 播放与复读控制菜单
             CommandMenu(languageManager.text("播放控制", "Playback")) {
                 Button(engine.isPlaying ? languageManager.localized(.pause) : languageManager.localized(.play)) {
@@ -625,6 +847,18 @@ struct StudyMateApp: App {
 
     private var navigationBookmarks: [SentenceSegment] {
         engine.segments.filter(\.isNavigationBookmarked)
+    }
+
+    private var activeSegment: SentenceSegment? {
+        engine.activeSegment
+    }
+
+    private func ensureSentenceListVisible() {
+        if !showSentenceList {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                showSentenceList = true
+            }
+        }
     }
     
     private func openFileAction() {
