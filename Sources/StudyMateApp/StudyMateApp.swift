@@ -167,8 +167,13 @@ struct StudyMateApp: App {
                 .keyboardShortcut(",", modifiers: [.command])
             }
 
-            // 帮助菜单：打开可搜索的两列快捷键总览窗口。
-            CommandGroup(after: .help) {
+            // 帮助菜单：提供学伴使用帮助手册与快捷键总览窗口。
+            CommandGroup(replacing: .help) {
+                Button(languageManager.text("学伴帮助", "StudyMate Help")) {
+                    openWindow(id: "help-manual")
+                }
+                .keyboardShortcut("?", modifiers: [.command])
+
                 Button(languageManager.text("快捷键…", "Keyboard Shortcuts…")) {
                     openWindow(id: "shortcuts")
                 }
@@ -822,6 +827,15 @@ struct StudyMateApp: App {
             ShortcutHelpView()
         }
         .defaultSize(width: 560, height: 600)
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+
+        // 学伴帮助手册独立窗口
+        Window(languageManager.text("学伴帮助", "StudyMate Help"), id: "help-manual") {
+            StudyMateHelpView()
+                .environmentObject(languageManager)
+        }
+        .defaultSize(width: 880, height: 680)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
 

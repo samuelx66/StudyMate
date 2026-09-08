@@ -21,6 +21,7 @@
 		93FB0CECC49AB89E919D5E95 /* DictionaryHTMLView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */; };
 		6624CEFD49B24EF42DCA8AB9 /* DictionaryInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B88479967E61D4D783BB90 /* DictionaryInteraction.swift */; };
 		CCF631C4B61A3AE195B20135 /* DictionaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED4EE0CC0A120C845DE45235 /* DictionaryView.swift */; };
+		9F2EBC55804A02B79C85D918 /* StudyMateMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D419AC2701FA8BEA9CEA0E4 /* StudyMateMarkdownParser.swift */; };
 		11E16318C10885A095FDC4EA /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */; };
 		1A110B893946A9BE5D064F81 /* DecoderEngineMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */; };
 		58623CE466DCD1805256CC72 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07DF3BAE585FCA56645E214 /* MediaItem.swift */; };
@@ -64,6 +65,7 @@
 		58269748D39A3829B12BC58E /* SentenceLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */; };
 		846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6029D149A5A0818174471465 /* ShortcutCatalog.swift */; };
 		8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */; };
+		BF218AE2CD465CD28DCB8AF6 /* StudyMateHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */; };
 		9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */; };
 		AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */; };
 		FBF7AC50B5EA6E552620B102 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */; };
@@ -107,6 +109,7 @@
 		09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryHTMLView.swift"; sourceTree = "<group>"; };
 		C4B88479967E61D4D783BB90 /* DictionaryInteraction.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryInteraction.swift"; sourceTree = "<group>"; };
 		ED4EE0CC0A120C845DE45235 /* DictionaryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryView.swift"; sourceTree = "<group>"; };
+		1D419AC2701FA8BEA9CEA0E4 /* StudyMateMarkdownParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Help/StudyMateMarkdownParser.swift"; sourceTree = "<group>"; };
 		608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Localization/LanguageManager.swift"; sourceTree = "<group>"; };
 		B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/DecoderEngineMode.swift"; sourceTree = "<group>"; };
 		D07DF3BAE585FCA56645E214 /* MediaItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/MediaItem.swift"; sourceTree = "<group>"; };
@@ -150,6 +153,7 @@
 		B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SentenceLibraryView.swift"; sourceTree = "<group>"; };
 		6029D149A5A0818174471465 /* ShortcutCatalog.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutCatalog.swift"; sourceTree = "<group>"; };
 		FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutHelpView.swift"; sourceTree = "<group>"; };
+		E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/StudyMateHelpView.swift"; sourceTree = "<group>"; };
 		2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
 		F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
 		C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/VideoPlayerView.swift"; sourceTree = "<group>"; };
@@ -226,6 +230,7 @@
 				09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */,
 				C4B88479967E61D4D783BB90 /* DictionaryInteraction.swift */,
 				ED4EE0CC0A120C845DE45235 /* DictionaryView.swift */,
+				1D419AC2701FA8BEA9CEA0E4 /* StudyMateMarkdownParser.swift */,
 				608F46BF66201A0E0F5EEC4D /* LanguageManager.swift */,
 				B060F5F97EF3E07DD0F72A75 /* DecoderEngineMode.swift */,
 				D07DF3BAE585FCA56645E214 /* MediaItem.swift */,
@@ -269,6 +274,7 @@
 				B41FFA6F0C1BAD6CB67864A5 /* SentenceLibraryView.swift */,
 				6029D149A5A0818174471465 /* ShortcutCatalog.swift */,
 				FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */,
+				E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */,
 				2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */,
 				F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */,
 				C4B2F3B006B06078E1C0BE77 /* VideoPlayerView.swift */,
@@ -402,6 +408,7 @@
 				93FB0CECC49AB89E919D5E95 /* DictionaryHTMLView.swift in Sources */,
 				6624CEFD49B24EF42DCA8AB9 /* DictionaryInteraction.swift in Sources */,
 				CCF631C4B61A3AE195B20135 /* DictionaryView.swift in Sources */,
+				9F2EBC55804A02B79C85D918 /* StudyMateMarkdownParser.swift in Sources */,
 				11E16318C10885A095FDC4EA /* LanguageManager.swift in Sources */,
 				1A110B893946A9BE5D064F81 /* DecoderEngineMode.swift in Sources */,
 				58623CE466DCD1805256CC72 /* MediaItem.swift in Sources */,
@@ -441,6 +448,7 @@
 				58269748D39A3829B12BC58E /* SentenceLibraryView.swift in Sources */,
 				846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */,
 				8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */,
+				BF218AE2CD465CD28DCB8AF6 /* StudyMateHelpView.swift in Sources */,
 				9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */,
 				AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */,
 				FBF7AC50B5EA6E552620B102 /* VideoPlayerView.swift in Sources */,
@@ -556,7 +564,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 356;
+				CURRENT_PROJECT_VERSION = 357;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -581,7 +589,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 356;
+				CURRENT_PROJECT_VERSION = 357;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;

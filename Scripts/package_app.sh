@@ -87,6 +87,12 @@ test -d "${MODULE_BUNDLE_DEST}" || {
     exit 1
 }
 
+if [[ -d "${ROOT_DIR}/Documents" ]]; then
+    mkdir -p "${RESOURCES_DIR}/Documents"
+    cp -R "${ROOT_DIR}/Documents/"* "${RESOURCES_DIR}/Documents/"
+    echo "=== 已内置帮助手册文件到 Resources/Documents ==="
+fi
+
 WHISPER_FRAMEWORK="${BUILD_DIR}/whisper.framework"
 [[ -d "${WHISPER_FRAMEWORK}" ]] || {
     echo "未找到进程内 Whisper 运行框架：${WHISPER_FRAMEWORK}" >&2
