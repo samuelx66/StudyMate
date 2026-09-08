@@ -277,7 +277,7 @@ struct StudyMateApp: App {
                 Divider()
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         showWaveforms.toggle()
                     }
                 } label: {
@@ -293,7 +293,7 @@ struct StudyMateApp: App {
                 }
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         showSubtitleEditor.toggle()
                     }
                 } label: {
@@ -323,7 +323,7 @@ struct StudyMateApp: App {
                 }
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         showSentenceList.toggle()
                     }
                 } label: {
@@ -811,8 +811,14 @@ struct WindowAccessor: NSViewRepresentable {
         if window.title != appName { window.title = appName }
         if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
         if window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = false }
-        if window.styleMask.contains(.fullSizeContentView) {
-            window.styleMask.remove(.fullSizeContentView)
+        if window.styleMask.contains(.fullScreen) {
+            if !window.styleMask.contains(.fullSizeContentView) {
+                window.styleMask.insert(.fullSizeContentView)
+            }
+        } else {
+            if window.styleMask.contains(.fullSizeContentView) {
+                window.styleMask.remove(.fullSizeContentView)
+            }
         }
         for style in [NSWindow.StyleMask.titled, .closable, .miniaturizable, .resizable]
             where !window.styleMask.contains(style) {
@@ -902,31 +908,37 @@ final class MainWindowAccessorView: NSView {
                 forName: NSWindow.willStartLiveResizeNotification,
                 object: window,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self, weak window] _ in
+                guard let window, !window.styleMask.contains(.fullScreen) else { return }
                 self?.beginResize()
             },
             center.addObserver(
                 forName: NSWindow.didResizeNotification,
                 object: window,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self, weak window] _ in
                 // Standard title-bar zoom does not consistently emit the live
-                // resize pair on every macOS release.  didResize is therefore
+                // resize pair on every macOS release. didResize is therefore
                 // also treated as resize intent and debounced below.
+                // 在全屏模式下工具栏自动显隐会微调内容安全区，不属于用户拉伸窗口，
+                // 忽略全屏下的 didResize，避免误触发 isWindowResizing 导致动画被置空卡顿。
+                guard let window, !window.styleMask.contains(.fullScreen) else { return }
                 self?.beginResize()
             },
             center.addObserver(
                 forName: NSWindow.didEndLiveResizeNotification,
                 object: window,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self, weak window] _ in
+                guard let window, !window.styleMask.contains(.fullScreen) else { return }
                 self?.scheduleResizeEnd(after: 0.06)
             },
             center.addObserver(
                 forName: NSWindow.didEnterFullScreenNotification,
                 object: window,
                 queue: .main
-            ) { _ in
+            ) { [weak window] _ in
+                WindowAccessor.configureWindow(window)
                 Task { @MainActor in
                     PlaybackEngine.shared.isFullScreen = true
                 }
@@ -935,7 +947,8 @@ final class MainWindowAccessorView: NSView {
                 forName: NSWindow.didExitFullScreenNotification,
                 object: window,
                 queue: .main
-            ) { _ in
+            ) { [weak window] _ in
+                WindowAccessor.configureWindow(window)
                 Task { @MainActor in
                     PlaybackEngine.shared.isFullScreen = false
                 }

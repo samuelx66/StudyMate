@@ -141,8 +141,10 @@ public struct VideoPlayerView: View {
                             duration: media.formattedDuration
                         )
                         .onHover { hovering in
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                isHovering = hovering
+                            if hovering {
+                                handlePointerActivity()
+                            } else {
+                                handlePointerExit()
                             }
                         }
                         .onTapGesture {
@@ -196,14 +198,6 @@ public struct VideoPlayerView: View {
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(StudyMateMediaStyle.separator, lineWidth: 1)
             )
-            .onContinuousHover { phase in
-                switch phase {
-                case .active:
-                    handlePointerActivity()
-                case .ended:
-                    handlePointerExit()
-                }
-            }
             .onPreferenceChange(FloatingOSDSizePreferenceKey.self) { size in
                 guard size.width > 0, size.height > 0 else { return }
                 if controlPanelSize != size {

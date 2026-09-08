@@ -34,6 +34,7 @@ public struct PlaybackWorkspaceContainer<Content: View>: View {
                 .padding(.top, 4)
                 .padding(.bottom, 2)
                 .studymateContentSurface(cornerRadius: 8)
+                .clipped()
                 .transition(.asymmetric(
                     insertion: .move(edge: .top).combined(with: .opacity),
                     removal: .move(edge: .top).combined(with: .opacity)
@@ -45,6 +46,7 @@ public struct PlaybackWorkspaceContainer<Content: View>: View {
 
             if isSubtitleEditVisible {
                 SubtitleEditView(engine: engine)
+                    .clipped()
                     .transition(.asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity),
                         removal: .move(edge: .bottom).combined(with: .opacity)
@@ -52,6 +54,7 @@ public struct PlaybackWorkspaceContainer<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 

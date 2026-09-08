@@ -12,6 +12,8 @@ public struct MainContentView: View {
     /// 播放列表侧拉门平滑物理阻尼动画参数（模拟真实侧拉抽屉滑入门效）
     private static let playlistPanelAnimationDuration: Double = 0.32
     private static let playlistPanelAnimation = Animation.spring(response: 0.34, dampingFraction: 0.85)
+    /// macOS 26 原生工作区面板折叠与展开物理弹簧动画参数（平滑阻尼，避免机械式生硬跳变）
+    static let panelSpringAnimation = Animation.spring(response: 0.32, dampingFraction: 0.86)
 
     private static func slideAndFadeTransition(from edge: Edge) -> AnyTransition {
         .asymmetric(
@@ -54,6 +56,10 @@ public struct MainContentView: View {
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
     @State private var savedLoopModeBeforeFillInBlank: PlaybackLoopMode? = nil
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "studymate_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "studymate_playlist_width") : 360
+    @State private var sidebarWidth: Double = {
+        let saved = UserDefaults.standard.double(forKey: "studymate_sentence_list_width")
+        return (saved >= 260 && saved <= 650) ? saved : 320
+    }()
     private let onWindowDidAppear: () -> Void
     
     public init(onWindowDidAppear: @escaping () -> Void = {}) {
@@ -64,8 +70,13 @@ public struct MainContentView: View {
         workspaceContent
             // 媒体工作区允许自由调整窗口大小，最小尺寸 800×550。
             .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+            // 全屏模式下忽略顶部安全区，工具栏以悬浮浮层形式平滑滑入滑出，避免画面上下跳动
+            .ignoresSafeArea(.container, edges: engine.isFullScreen ? .top : [])
         .background(WindowTextInputFocusDismissalBridge())
-        .animation(.easeInOut(duration: 0.22), value: shouldShowStatusBar)
+        .animation(Self.panelSpringAnimation, value: shouldShowStatusBar)
+        .animation(Self.panelSpringAnimation, value: isWaveformsVisible)
+        .animation(Self.panelSpringAnimation, value: isSubtitleEditVisible)
+        .animation(Self.panelSpringAnimation, value: isSidebarVisible)
         // 播放列表使用窗口内容区最上层浮层：覆盖断句列表，顶部紧贴工具栏。
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleMediaDrop)
         .overlay(dropTargetOverlay)
@@ -230,7 +241,7 @@ public struct MainContentView: View {
     }
 
     private var videoModeWorkspace: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             // 左侧工作主区（顶部双波形图 + 中间自适应音视频视窗 + 底部字幕编辑栏）
             PlaybackWorkspaceContainer(
                 engine: engine,
@@ -239,21 +250,111 @@ public struct MainContentView: View {
             ) {
                 VideoPlayerView(engine: engine)
             }
-            .frame(minWidth: 550, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
+            .frame(minWidth: 420, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
 
             if isSidebarVisible {
-                SegmentListView(
-                    engine: engine,
-                    suppressToolTips: isPlaylistMounted
-                )
-                    .frame(minWidth: 320, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+                HStack(spacing: 0) {
+                    SegmentListResizeBorderRepresentable(
+                        sidebarWidth: $sidebarWidth,
+                        onResizeEnded: {
+                            UserDefaults.standard.set(sidebarWidth, forKey: "studymate_sentence_list_width")
+                        }
+                    )
+                    .frame(width: 6)
+                    .overlay {
+                        Rectangle()
+                            .fill(StudyMateMediaStyle.separator.opacity(0.65))
+                            .frame(width: 1)
+                    }
+
+                    SegmentListView(
+                        engine: engine,
+                        suppressToolTips: isPlaylistMounted
+                    )
+                    .frame(width: max(260, sidebarWidth))
                     // 抽屉在屏幕上时不允许下层列表继续响应；关闭抽屉后立即恢复。
                     .allowsHitTesting(!isPlaylistMounted)
-                    .transition(Self.slideAndFadeTransition(from: .trailing))
+                }
+                .frame(maxHeight: .infinity)
+                .clipped()
+                .transition(Self.slideAndFadeTransition(from: .trailing))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+/// 原生 AppKit 极致丝滑边框拉伸组件（采用 Finder / NSSplitView 同款 modal event tracking loop）
+private struct SegmentListResizeBorderRepresentable: NSViewRepresentable {
+    @Binding var sidebarWidth: Double
+    let onResizeEnded: () -> Void
+
+    func makeNSView(context: Context) -> SegmentListResizeBorderView {
+        let view = SegmentListResizeBorderView()
+        view.onDragDelta = { deltaX in
+            let newWidth = min(max(260, sidebarWidth - Double(deltaX)), 650)
+            if newWidth != sidebarWidth {
+                sidebarWidth = newWidth
+            }
+        }
+        view.onDragEnded = onResizeEnded
+        return view
+    }
+
+    func updateNSView(_ nsView: SegmentListResizeBorderView, context: Context) {
+        nsView.onDragDelta = { deltaX in
+            let newWidth = min(max(260, sidebarWidth - Double(deltaX)), 650)
+            if newWidth != sidebarWidth {
+                sidebarWidth = newWidth
+            }
+        }
+        nsView.onDragEnded = onResizeEnded
+    }
+}
+
+private final class SegmentListResizeBorderView: NSView {
+    var onDragDelta: ((CGFloat) -> Void)?
+    var onDragEnded: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        postsFrameChangedNotifications = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        postsFrameChangedNotifications = true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window = self.window else { return }
+        var lastLocation = NSEvent.mouseLocation
+
+        NSCursor.resizeLeftRight.push()
+        defer { NSCursor.pop() }
+
+        while true {
+            guard let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else {
+                break
+            }
+            if nextEvent.type == .leftMouseUp {
+                onDragEnded?()
+                break
+            }
+            let currentLocation = NSEvent.mouseLocation
+            let deltaX = currentLocation.x - lastLocation.x
+            lastLocation = currentLocation
+
+            if deltaX != 0 {
+                onDragDelta?(deltaX)
+            }
+        }
+    }
+}
 
     private var listModeWorkspace: some View {
         PlaybackWorkspaceContainer(
@@ -743,7 +844,7 @@ private struct MainWindowToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            Button { withAnimation(.easeInOut(duration: 0.22)) { isWaveformsVisible.toggle() } } label: {
+            Button { withAnimation(MainContentView.panelSpringAnimation) { isWaveformsVisible.toggle() } } label: {
                 Image(systemName: "waveform.path.ecg").studymateToolbarIcon()
             }
                 .help(StudyMateShortcutCatalog.help(isWaveformsVisible ? lang.text("隐藏波形图工作区", "Hide waveforms") : lang.text("显示波形图工作区", "Show waveforms"), shortcut: .toggleWaveforms))
@@ -752,7 +853,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityHint(lang.text("切换波形图工作区", "Toggle waveform workspace"))
                 .accessibilityAddTraits(isWaveformsVisible ? .isSelected : [])
                 .keyboardShortcut("w", modifiers: [.option])
-            Button { withAnimation(.easeInOut(duration: 0.22)) { isSubtitleEditVisible.toggle() } } label: {
+            Button { withAnimation(MainContentView.panelSpringAnimation) { isSubtitleEditVisible.toggle() } } label: {
                 Image(systemName: "square.and.pencil").studymateToolbarIcon()
             }
                 .help(StudyMateShortcutCatalog.help(isSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"), shortcut: .toggleSubtitleEditor))
@@ -766,7 +867,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityLabel(lang.text("播放列表", "Playlist"))
                 .accessibilityHint(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
                 .keyboardShortcut("p", modifiers: [.option])
-            Button { withAnimation(.easeInOut(duration: 0.22)) { isSidebarVisible.toggle() } } label: {
+            Button { withAnimation(MainContentView.panelSpringAnimation) { isSidebarVisible.toggle() } } label: {
                 Image(systemName: "sidebar.right").studymateToolbarIcon()
             }
                 .help(StudyMateShortcutCatalog.help(lang.text("显示或隐藏断句列表", "Show or hide sentence list"), shortcut: .toggleSegmentList))
