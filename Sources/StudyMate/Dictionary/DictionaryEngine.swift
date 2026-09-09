@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import OSLog
 import NaturalLanguage
+import UniformTypeIdentifiers
 
 /// macOS 原生自然语言词形还原器，用于在词典查询变形词（如 running、studied、better）未命中时，
 /// 自动分析提取原型（lemma，如 run、study、good）进行无感回退查询。
@@ -208,10 +209,12 @@ public final class DictionarySourceSettings: ObservableObject {
     public static let enabledUserDefaultsKey = "StudyMate.EnabledDictionaryIDs"
     public static let displayNamesUserDefaultsKey = "StudyMate.DictionaryDisplayNames"
     public static let lookupScopeDictionaryIDUserDefaultsKey = "StudyMate.LookupScopeDictionaryID"
+    public static let disabledFtsUserDefaultsKey = "StudyMate.DisabledFtsDictionaryIDs"
 
     @Published public private(set) var orderedDictionaryIDs: [String]
     @Published public private(set) var enabledDictionaryIDs: Set<String>
     @Published public private(set) var customDisplayNames: [String: String]
+    @Published public private(set) var disabledFtsDictionaryIDs: Set<String>
     /// 选词查词界面限定使用的词典 ID，nil 表示“全部”（默认值）
     @Published public private(set) var lookupScopeDictionaryID: String?
     /// A lightweight lifecycle signal for views that need to refresh the
@@ -221,22 +224,88 @@ public final class DictionarySourceSettings: ObservableObject {
     /// restarting the active dictionary query.
     @Published public private(set) var displayNameRevision: UInt64 = 0
 
-    private let defaults: UserDefaults
+    public static func defaultStorage() -> UserDefaults {
+        if let suite = UserDefaults(suiteName: "com.samuel.StudyMateDictionary") {
+            return suite
+        }
+        return .standard
+    }
 
-    public init(defaults: UserDefaults = .standard) {
+    private let defaults: UserDefaults
+    private var activeObserver: NSObjectProtocol?
+
+    public init(defaults: UserDefaults = DictionarySourceSettings.defaultStorage()) {
         self.defaults = defaults
         orderedDictionaryIDs = defaults.stringArray(forKey: Self.orderUserDefaultsKey) ?? []
         enabledDictionaryIDs = Set(
             defaults.stringArray(forKey: Self.enabledUserDefaultsKey) ?? []
         )
         customDisplayNames = (defaults.dictionary(forKey: Self.displayNamesUserDefaultsKey) as? [String: String]) ?? [:]
+        disabledFtsDictionaryIDs = Set(
+            defaults.stringArray(forKey: Self.disabledFtsUserDefaultsKey) ?? []
+        )
         lookupScopeDictionaryID = defaults.string(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reloadFromStorage()
+        }
+    }
+
+    deinit {
+        if let activeObserver {
+            NotificationCenter.default.removeObserver(activeObserver)
+        }
+    }
+
+    public func reloadFromStorage() {
+        defaults.synchronize()
+        let storedOrder = defaults.stringArray(forKey: Self.orderUserDefaultsKey) ?? []
+        let storedEnabled = Set(defaults.stringArray(forKey: Self.enabledUserDefaultsKey) ?? [])
+        let storedNames = (defaults.dictionary(forKey: Self.displayNamesUserDefaultsKey) as? [String: String]) ?? [:]
+        let storedDisabledFts = Set(defaults.stringArray(forKey: Self.disabledFtsUserDefaultsKey) ?? [])
+        let storedScope = defaults.string(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
+
+        var orderChanged = false
+        var displayNamesChanged = false
+
+        if !storedOrder.isEmpty && storedOrder != orderedDictionaryIDs {
+            orderedDictionaryIDs = storedOrder
+            orderChanged = true
+        }
+        if !storedEnabled.isEmpty && storedEnabled != enabledDictionaryIDs {
+            enabledDictionaryIDs = storedEnabled
+            orderChanged = true
+        }
+        if storedNames != customDisplayNames {
+            customDisplayNames = storedNames
+            displayNamesChanged = true
+        }
+        if storedDisabledFts != disabledFtsDictionaryIDs {
+            disabledFtsDictionaryIDs = storedDisabledFts
+            orderChanged = true
+        }
+        if storedScope != lookupScopeDictionaryID {
+            lookupScopeDictionaryID = storedScope
+            orderChanged = true
+        }
+
+        if orderChanged {
+            revision &+= 1
+        }
+        if displayNamesChanged {
+            displayNameRevision &+= 1
+        }
     }
 
     /// Reconciles persisted choices with the installed packages. New
     /// dictionaries are appended and enabled by default; removed packages are
     /// discarded from both persisted collections.
     public func synchronize(with dictionaries: [StudyMateDictionarySummary]) {
+        reloadFromStorage()
         // An empty snapshot can be observed while the helper is still
         // starting. Keep the persisted choices until a real package list is
         // available; successful deletion explicitly removes its ID below.
@@ -273,17 +342,20 @@ public final class DictionarySourceSettings: ObservableObject {
         let enabledChanged = reconciledEnabled != enabledDictionaryIDs
         let reconciledDisplayNames = customDisplayNames.filter { installedSet.contains($0.key) }
         let displayNamesChanged = reconciledDisplayNames != customDisplayNames
+        let reconciledDisabledFts = disabledFtsDictionaryIDs.intersection(installedSet)
+        let disabledFtsChanged = reconciledDisabledFts != disabledFtsDictionaryIDs
         if let currentScope = lookupScopeDictionaryID, !installedSet.contains(currentScope) {
             lookupScopeDictionaryID = nil
             defaults.removeObject(forKey: Self.lookupScopeDictionaryIDUserDefaultsKey)
         }
-        guard orderChanged || enabledChanged || displayNamesChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) else {
+        guard orderChanged || enabledChanged || displayNamesChanged || disabledFtsChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) else {
             return
         }
 
         orderedDictionaryIDs = reconciledOrder
         enabledDictionaryIDs = reconciledEnabled
         customDisplayNames = reconciledDisplayNames
+        disabledFtsDictionaryIDs = reconciledDisabledFts
         persist()
         if orderChanged || enabledChanged || (!installedIDs.isEmpty && !hasStoredEnabledState) {
             revision &+= 1
@@ -399,6 +471,24 @@ public final class DictionarySourceSettings: ObservableObject {
         }
     }
 
+    public func isFtsEnabled(for dictionaryID: String, hasFtsIndex: Bool) -> Bool {
+        hasFtsIndex && !disabledFtsDictionaryIDs.contains(dictionaryID)
+    }
+
+    public func setFtsEnabled(_ enabled: Bool, for dictionaryID: String) {
+        guard !dictionaryID.isEmpty else { return }
+        var updated = disabledFtsDictionaryIDs
+        if enabled {
+            updated.remove(dictionaryID)
+        } else {
+            updated.insert(dictionaryID)
+        }
+        guard updated != disabledFtsDictionaryIDs else { return }
+        disabledFtsDictionaryIDs = updated
+        persist()
+        revision &+= 1
+    }
+
     public func remove(dictionaryID: String) {
         guard !dictionaryID.isEmpty else { return }
         if lookupScopeDictionaryID == dictionaryID {
@@ -410,13 +500,17 @@ public final class DictionarySourceSettings: ObservableObject {
         updatedEnabled.remove(dictionaryID)
         var updatedDisplayNames = customDisplayNames
         updatedDisplayNames.removeValue(forKey: dictionaryID)
+        var updatedDisabledFts = disabledFtsDictionaryIDs
+        updatedDisabledFts.remove(dictionaryID)
         let sourceSettingsChanged = updatedOrder != orderedDictionaryIDs
             || updatedEnabled != enabledDictionaryIDs
+            || updatedDisabledFts != disabledFtsDictionaryIDs
         let displayNameChanged = updatedDisplayNames != customDisplayNames
         guard sourceSettingsChanged || displayNameChanged else { return }
         orderedDictionaryIDs = updatedOrder
         enabledDictionaryIDs = updatedEnabled
         customDisplayNames = updatedDisplayNames
+        disabledFtsDictionaryIDs = updatedDisabledFts
         persist()
         if sourceSettingsChanged {
             revision &+= 1
@@ -433,6 +527,11 @@ public final class DictionarySourceSettings: ObservableObject {
             defaults.removeObject(forKey: Self.displayNamesUserDefaultsKey)
         } else {
             defaults.set(customDisplayNames, forKey: Self.displayNamesUserDefaultsKey)
+        }
+        if disabledFtsDictionaryIDs.isEmpty {
+            defaults.removeObject(forKey: Self.disabledFtsUserDefaultsKey)
+        } else {
+            defaults.set(Array(disabledFtsDictionaryIDs), forKey: Self.disabledFtsUserDefaultsKey)
         }
     }
 }
@@ -836,9 +935,21 @@ public final class DictionaryEngine: ObservableObject {
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
             ).first ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            dictionaryRoot = support
+
+            let standaloneDictionaries = support
+                .appendingPathComponent("StudyMateDictionary", isDirectory: true)
+                .appendingPathComponent("Dictionaries", isDirectory: true)
+            let sharedDictionaries = support
                 .appendingPathComponent("StudyMate", isDirectory: true)
                 .appendingPathComponent("Dictionaries", isDirectory: true)
+
+            if FileManager.default.fileExists(atPath: standaloneDictionaries.path) {
+                dictionaryRoot = standaloneDictionaries
+            } else if FileManager.default.fileExists(atPath: sharedDictionaries.path) {
+                dictionaryRoot = sharedDictionaries
+            } else {
+                dictionaryRoot = standaloneDictionaries
+            }
         }
     }
 
@@ -951,9 +1062,17 @@ public final class DictionaryEngine: ObservableObject {
             lemmaOriginalQuery = nil
             return
         }
+        activeProgressRequestID = nil
+        progress = nil
+        progressPhase = nil
         deferredSearchAfterBusy = nil
         cancelPrefetch()
         lemmaOriginalQuery = nil
+        // Do not keep showing candidates from the previous query while the
+        // serial helper is resolving the new one. The sidebar now presents a
+        // loading state until this request publishes its result.
+        searchHits = []
+        ftsHits = []
 
         if includeDetails {
             searchResults = []
@@ -1217,6 +1336,9 @@ public final class DictionaryEngine: ObservableObject {
 
         guard !lookupQuery.isEmpty else {
             deferredSearchAfterBusy = nil
+            activeProgressRequestID = nil
+            progress = nil
+            progressPhase = nil
             ftsHits = []
             searchRevision &+= 1
             searchResults = []
@@ -1227,15 +1349,47 @@ public final class DictionaryEngine: ObservableObject {
             return
         }
 
-        if isBusy {
+        if Self.shouldSkipShortFullTextQuery(lookupQuery) {
+            deferredSearchAfterBusy = nil
+            activeProgressRequestID = nil
+            progress = nil
+            progressPhase = nil
             ftsHits = []
             searchRevision &+= 1
+            searchResults = []
+            isSearching = false
+            isLoadingDefinition = false
+            definitionQuery = nil
+            lemmaOriginalQuery = nil
+            showNotification(LanguageManager.shared.text(
+                "全文搜索至少输入两个英文或数字字符。",
+                "Enter at least two English or numeric characters for full-text search."
+            ))
+            return
+        }
+
+        if isBusy {
+            // FTS index construction serializes the helper process. Preserve
+            // the latest full-text query just like a headword query so the
+            // search cannot remain in a permanent loading state after the
+            // build finishes.
+            deferredSearchAfterBusy = DeferredDictionarySearch(
+                query: lookupQuery,
+                dictionaryID: dictionaryID,
+                includeDetails: false
+            )
+            ftsHits = []
+            searchRevision &+= 1
+            searchResults = []
             definitionQuery = nil
             isSearching = true
             isLoadingDefinition = false
             return
         }
 
+        activeProgressRequestID = nil
+        progress = nil
+        progressPhase = nil
         ftsHits = []
         isSearching = true
 
@@ -1253,7 +1407,7 @@ public final class DictionaryEngine: ObservableObject {
         } else {
             queryDebounceTask = Task { [weak self] in
                 do {
-                    try await Task.sleep(nanoseconds: 200_000_000)
+                    try await Task.sleep(nanoseconds: 300_000_000)
                     guard !Task.isCancelled, let _ = self else { return }
                     runSearch()
                 } catch {
@@ -1269,7 +1423,25 @@ public final class DictionaryEngine: ObservableObject {
         generation: UInt64
     ) {
         guard generation == searchGeneration, !isBusy else { return }
-        let enabledIDs = enabledDictionaries.map(\.id)
+        let enabledIDs = enabledDictionaries
+            .filter { self.dictionarySourceSettings.isFtsEnabled(for: $0.id, hasFtsIndex: self.hasFtsIndex(for: $0.id)) }
+            .map(\.id)
+        let requestedDictionaryID = dictionaryID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedFtsDictionaryID = requestedDictionaryID.flatMap { id in
+            enabledIDs.contains(id) ? id : nil
+        }
+        // An explicit dictionary scope that has no usable index must stay
+        // empty. Falling back to all dictionaries would show unrelated hits
+        // and would make a disabled/unbuilt index indistinguishable from a
+        // successful search.
+        let targetIDs: [String]
+        if let selectedFtsDictionaryID {
+            targetIDs = [selectedFtsDictionaryID]
+        } else if requestedDictionaryID == nil || requestedDictionaryID?.isEmpty == true {
+            targetIDs = enabledIDs
+        } else {
+            targetIDs = []
+        }
 
         searchTask = Task { [weak self] in
             guard let self else { return }
@@ -1278,10 +1450,12 @@ public final class DictionaryEngine: ObservableObject {
                     "query": query,
                     "limit": 50
                 ]
-                if let dictionaryID, !dictionaryID.isEmpty {
-                    fields["dictionaryID"] = dictionaryID
-                } else if !enabledIDs.isEmpty {
-                    fields["dictionaryIDs"] = enabledIDs
+                if let selectedFtsDictionaryID {
+                    fields["dictionaryID"] = selectedFtsDictionaryID
+                } else {
+                    // Always send the filter, including an empty list. The
+                    // Rust helper treats an omitted list as “all installed”.
+                    fields["dictionaryIDs"] = targetIDs
                 }
 
                 let data = try await self.request(operation: "ftsSearch", fields: fields)
@@ -1302,6 +1476,44 @@ public final class DictionaryEngine: ObservableObject {
                 self.lastError = error.localizedDescription
             }
         }
+    }
+
+    /// 检查指定词典本地是否存在已构建好的 SQLite FTS5 全文索引文件
+    public func hasFtsIndex(for dictionaryID: String) -> Bool {
+        let packageURL = dictionaryRoot.appendingPathComponent("\(dictionaryID).mabdict")
+        let ftsDB = packageURL.appendingPathComponent("fts.db")
+        return FileManager.default.fileExists(atPath: ftsDB.path)
+    }
+
+    /// 移除指定词典的本地 SQLite FTS5 全文索引文件并更新设置
+    @discardableResult
+    public func deleteFtsIndex(for dictionaryID: String) -> Bool {
+        let packageURL = dictionaryRoot.appendingPathComponent("\(dictionaryID).mabdict")
+        let paths = [
+            packageURL.appendingPathComponent("fts.db"),
+            packageURL.appendingPathComponent("fts.db-wal"),
+            packageURL.appendingPathComponent("fts.db-shm")
+        ]
+        var failures: [String] = []
+        for path in paths where FileManager.default.fileExists(atPath: path.path) {
+            do {
+                try FileManager.default.removeItem(at: path)
+            } catch {
+                failures.append("\(path.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        dictionarySourceSettings.setFtsEnabled(false, for: dictionaryID)
+        guard failures.isEmpty else {
+            let message = LanguageManager.shared.text(
+                "全文索引已停用，但清理文件失败：\(failures.joined(separator: "；"))",
+                "Full-text index disabled, but cleanup failed: \(failures.joined(separator: "; "))"
+            )
+            reportError(message)
+            MainStatusCenter.shared.showError(message)
+            return false
+        }
+        lastError = nil
+        return true
     }
 
     /// 查询指定词典的全文索引状态
@@ -1332,6 +1544,7 @@ public final class DictionaryEngine: ObservableObject {
                 isBuildingFts = false
                 progress = nil
                 progressPhase = nil
+                retryDeferredSearchIfNeeded()
             }
         }
 
@@ -1344,6 +1557,7 @@ public final class DictionaryEngine: ObservableObject {
                     "Building index for “\(dictTitle)” (\(index + 1)/\(dictionaryIDs.count))…"
                 )
                 let _ = try await request(operation: "ftsBuild", fields: ["dictionaryID": id])
+                dictionarySourceSettings.setFtsEnabled(true, for: id)
             }
             showNotification(LanguageManager.shared.text("全文索引构建完成", "Full-text index built"))
             MainStatusCenter.shared.showSuccess(LanguageManager.shared.text("全文索引构建完成", "Full-text index built"))
@@ -1471,12 +1685,15 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     @Published public private(set) var statusMessage: String?
+    private var notificationGeneration: UInt64 = 0
 
     public func showNotification(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        notificationGeneration &+= 1
+        let generation = notificationGeneration
         statusMessage = message
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            if self?.statusMessage == message {
+            if self?.notificationGeneration == generation, self?.statusMessage == message {
                 self?.statusMessage = nil
             }
         }
@@ -1578,6 +1795,125 @@ public final class DictionaryEngine: ObservableObject {
                 MainStatusCenter.shared.showError(error.localizedDescription)
             }
         }
+    }
+
+    /// 弹出系统文件选择面板，允许用户选择 MDX 与配套 MDD 导入词典
+    @MainActor
+    public func promptImportDictionary() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "mdx") ?? .data,
+            UTType(filenameExtension: "mdd") ?? .data
+        ]
+        guard panel.runModal() == .OK else { return }
+        let mdxFiles = panel.urls.filter { $0.pathExtension.lowercased() == "mdx" }
+        guard let mdx = mdxFiles.first else {
+            reportError(LanguageManager.shared.text("请选择至少一个 MDX 文件。", "Select at least one MDX file."))
+            return
+        }
+        guard mdxFiles.count == 1 else {
+            reportError(LanguageManager.shared.text(
+                "一次只能导入一个 MDX 文件；可同时选择它配套的多个 MDD 分卷。",
+                "Import one MDX file at a time; you may select all of its MDD volumes together."
+            ))
+            return
+        }
+        let explicitlySelectedMDDs = panel.urls.filter { $0.pathExtension.lowercased() == "mdd" }
+        let discoveredMDDs = matchingMDDs(for: mdx)
+        let mdd = mergeMDDs(explicitlySelectedMDDs, with: discoveredMDDs, for: mdx)
+        importDictionary(mdx: mdx, mdd: mdd)
+    }
+
+    /// 自动发现 MDX 所在目录中匹配的 MDD 资源卷（如 dictionary.mdd, dictionary.1.mdd ...）
+    public func matchingMDDs(for mdx: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let directory = mdx.deletingLastPathComponent()
+        let baseName = mdx.deletingPathExtension().lastPathComponent
+        let lowerBaseName = baseName.lowercased()
+
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return (0...64).compactMap { number in
+                let filename = number == 0
+                    ? "\(baseName).mdd"
+                    : "\(baseName).\(number).mdd"
+                let candidate = directory.appendingPathComponent(filename)
+                return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
+            }
+        }
+
+        let conventionalMatches = urls
+            .compactMap { url -> (url: URL, order: Int)? in
+                guard url.pathExtension.lowercased() == "mdd",
+                      let isRegularFile = try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile,
+                      isRegularFile == true else { return nil }
+                let stem = url.deletingPathExtension().lastPathComponent
+                let lowerStem = stem.lowercased()
+                if lowerStem == lowerBaseName {
+                    return (url, 0)
+                }
+                let prefix = lowerBaseName + "."
+                guard lowerStem.hasPrefix(prefix),
+                      let order = Int(lowerStem.dropFirst(prefix.count)),
+                      order >= 0 else { return nil }
+                return (url, order + 1)
+            }
+            .sorted { lhs, rhs in
+                if lhs.order != rhs.order { return lhs.order < rhs.order }
+                return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
+            }
+            .map { $0.url }
+
+        if !conventionalMatches.isEmpty {
+            return conventionalMatches
+        }
+
+        return urls
+            .filter { $0.pathExtension.lowercased() == "mdd" }
+            .sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+    }
+
+    /// 合并用户显式选择的 MDD 与自动发现的 MDD
+    public func mergeMDDs(_ explicit: [URL], with discovered: [URL], for mdx: URL) -> [URL] {
+        let baseName = mdx.deletingPathExtension().lastPathComponent
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for url in discovered + explicit {
+            guard url.pathExtension.caseInsensitiveCompare("mdd") == .orderedSame else { continue }
+            let identity = url.resolvingSymlinksInPath().standardizedFileURL.path
+            let normalizedIdentity = identity.precomposedStringWithCanonicalMapping.lowercased()
+            guard seen.insert(normalizedIdentity).inserted else { continue }
+            unique.append(url)
+        }
+
+        let lowerBaseName = baseName.lowercased()
+        return unique.sorted { lhs, rhs in
+            let lhsOrder = mddVolumeOrder(lhs, baseName: lowerBaseName)
+            let rhsOrder = mddVolumeOrder(rhs, baseName: lowerBaseName)
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            let comparison = lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent)
+            return comparison == .orderedAscending ||
+                (comparison == .orderedSame && lhs.path < rhs.path)
+        }
+    }
+
+    private func mddVolumeOrder(_ url: URL, baseName: String) -> Int {
+        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        guard !baseName.isEmpty else { return Int.max }
+        if stem == baseName { return 0 }
+        let prefix = baseName + "."
+        guard stem.hasPrefix(prefix),
+              let number = Int(stem.dropFirst(prefix.count)),
+              number >= 0 else { return Int.max }
+        return number + 1
     }
 
     public func importDictionary(
@@ -1703,7 +2039,7 @@ public final class DictionaryEngine: ObservableObject {
             Self.dictionaryEngineLogger.debug("resourceData JSON payload received: \(value.count, privacy: .public) bytes")
             let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
             guard let resource, let encoded = resource.dataBase64,
-                  let data = Data(base64Encoded: encoded), !data.isEmpty else {
+                  let data = await Self.decodeBase64InBackground(encoded), !data.isEmpty else {
                 Self.dictionaryEngineLogger.debug("resourceData response did not contain usable base64 data")
                 return nil
             }
@@ -1724,6 +2060,7 @@ public final class DictionaryEngine: ObservableObject {
     /// visible priority order. A missing audio file in the first dictionary
     /// must not hide a matching pronunciation in a later dictionary.
     public func firstDictionaryPronunciationURL(for word: String) async throws -> URL? {
+        dictionarySourceSettings.reloadFromStorage()
         var candidates = enabledDictionaries
         if dictionaries.isEmpty, !isBusy {
             let value = try await request(operation: "list")
@@ -1758,6 +2095,7 @@ public final class DictionaryEngine: ObservableObject {
     /// transferred as raw bytes and has no filename extension for the native
     /// audio decoder to inspect.
     public func firstDictionaryPronunciation(for word: String) async throws -> (data: Data, mimeType: String?)? {
+        dictionarySourceSettings.reloadFromStorage()
         var candidates = enabledDictionaries
         if dictionaries.isEmpty, !isBusy {
             let value = try await request(operation: "list")
@@ -1782,14 +2120,14 @@ public final class DictionaryEngine: ObservableObject {
                 let resource = try await Self.decodeInBackground(StudyMateDictionaryResource?.self, from: value)
                 guard let resource else { continue }
                 if let encoded = resource.dataBase64,
-                   let data = Data(base64Encoded: encoded), !data.isEmpty {
+                   let data = await Self.decodeBase64InBackground(encoded), !data.isEmpty {
                     return (data, resource.mimeType)
                 }
                 if !resource.path.isEmpty,
                    !resource.path.lowercased().hasPrefix("studymate-resource:") {
                     let url = URL(fileURLWithPath: resource.path)
                     if FileManager.default.isReadableFile(atPath: url.path) {
-                        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                        let data = try await Self.readDataInBackground(from: url)
                         if !data.isEmpty { return (data, resource.mimeType) }
                     }
                 }
@@ -1852,6 +2190,15 @@ public final class DictionaryEngine: ObservableObject {
         return cleaned.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
+    public nonisolated static func shouldSkipShortFullTextQuery(_ value: String) -> Bool {
+        let scalars = Array(value.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars)
+        guard scalars.count == 1 else { return false }
+        let scalar = scalars[0].value
+        return (0x41...0x5A).contains(scalar)
+            || (0x61...0x7A).contains(scalar)
+            || (0x30...0x39).contains(scalar)
+    }
+
     private nonisolated static func dictionaryPrioritySort(
         _ lhs: StudyMateDictionarySummary,
         _ rhs: StudyMateDictionarySummary
@@ -1900,13 +2247,34 @@ public final class DictionaryEngine: ObservableObject {
         }.value
     }
 
+    /// Base64 decoding and local resource reads can be sizeable for embedded
+    /// audio or images. Keep those byte-heavy operations off the main actor;
+    /// the caller still resumes on the main actor before touching UI/audio
+    /// state.
+    private nonisolated static func decodeBase64InBackground(_ encoded: String) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            Data(base64Encoded: encoded)
+        }.value
+    }
+
+    private nonisolated static func readDataInBackground(from url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try Data(contentsOf: url, options: [.mappedIfSafe])
+        }.value
+    }
+
     private func request(operation: String, fields: [String: Any] = [:]) async throws -> Data {
         try Task.checkCancellation()
         try ensureProcess()
         requestCounter &+= 1
         let id = String(requestCounter)
-        if operation == "import" || operation == "ftsBuild" {
+        if operation == "import" || operation == "ftsBuild"
+            || operation == "lookupAll" || operation == "lookupAllKeys" || operation == "ftsSearch" {
             activeProgressRequestID = id
+            if operation == "lookupAll" || operation == "lookupAllKeys" || operation == "ftsSearch" {
+                progress = 0
+                progressPhase = LanguageManager.shared.text("正在搜索词典…", "Searching dictionaries…")
+            }
         }
         var object = fields
         object["id"] = id
@@ -2006,7 +2374,21 @@ public final class DictionaryEngine: ObservableObject {
             Bundle.main.url(forResource: "studymate-dict", withExtension: nil, subdirectory: "Helpers"),
             Bundle.main.resourceURL?.appendingPathComponent("Helpers/studymate-dict"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/studymate-dict"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
             Bundle.main.bundleURL.appendingPathComponent("Helpers/studymate-dict"),
+            URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Embedded/studymate-dict"),
+            URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Embedded/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
+            URL(fileURLWithPath: "/Applications/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Dictionary/target/release/studymate-dict"),
             URL(fileURLWithPath: #filePath)
@@ -2044,6 +2426,11 @@ public final class DictionaryEngine: ObservableObject {
             progressPhase = phase
         case let .response(id, data, errorMessage):
             guard let continuation = pending.removeValue(forKey: id) else { return }
+            if id == activeProgressRequestID {
+                activeProgressRequestID = nil
+                progress = nil
+                progressPhase = nil
+            }
             if let data {
                 continuation.resume(returning: data)
             } else {
@@ -2075,5 +2462,67 @@ public final class DictionaryEngine: ObservableObject {
         input = nil
         output = nil
         responseParser = nil
+    }
+
+    // MARK: - Dictionary Location & Custom Dark CSS
+
+    /// 打开指定词典的所在目录，并确保包含 .studymate-dark.css 文件
+    public func openDictionaryLocation(for dictionaryID: String) {
+        let packageURL = dictionaryRoot.appendingPathComponent("\(dictionaryID).mabdict")
+        let sourceURL = packageURL.appendingPathComponent("source")
+        let targetDirectory = FileManager.default.fileExists(atPath: sourceURL.path) ? sourceURL : packageURL
+
+        guard FileManager.default.fileExists(atPath: targetDirectory.path) else {
+            reportError("未找到词典安装目录。")
+            return
+        }
+
+        let cssFileURL = ensureDarkCSSFileExists(in: targetDirectory, packageURL: packageURL, dictionaryID: dictionaryID)
+
+        if let cssFileURL, FileManager.default.fileExists(atPath: cssFileURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([cssFileURL])
+        } else {
+            NSWorkspace.shared.open(targetDirectory)
+        }
+    }
+
+    /// 检查指定词典目录中是否存在 .studymate-dark.css 文件；若无则自动新建并写入首行注释
+    @discardableResult
+    public func ensureDarkCSSFileExists(
+        in targetDirectory: URL,
+        packageURL: URL,
+        dictionaryID: String
+    ) -> URL? {
+        let fileManager = FileManager.default
+
+        // 1. 检查目录内是否已有任意 .studymate-dark.css 文件
+        if let files = try? fileManager.contentsOfDirectory(atPath: targetDirectory.path) {
+            if let existing = files.first(where: { $0.hasSuffix(".studymate-dark.css") }) {
+                // 已有该文件，不用管了
+                return targetDirectory.appendingPathComponent(existing)
+            }
+        }
+
+        // 2. 确定该词典对应的 stem 名称（优先从 manifest.json 读取 source_file，其次枚举目录内 .mdx，兜底使用 dictionaryID）
+        var stem: String = dictionaryID
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        if let data = try? Data(contentsOf: manifestURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let sourceFile = json["source_file"] as? String {
+            stem = (sourceFile as NSString).deletingPathExtension
+        } else if let files = try? fileManager.contentsOfDirectory(atPath: targetDirectory.path),
+                  let mdxFile = files.first(where: { $0.lowercased().hasSuffix(".mdx") }) {
+            stem = (mdxFile as NSString).deletingPathExtension
+        }
+
+        let cssFileName = "\(stem).studymate-dark.css"
+        let cssFileURL = targetDirectory.appendingPathComponent(cssFileName)
+
+        if !fileManager.fileExists(atPath: cssFileURL.path) {
+            let initialContent = "/* 本文件只能补充夜间模式的显示效果 */\n"
+            try? initialContent.write(to: cssFileURL, atomically: true, encoding: .utf8)
+        }
+
+        return cssFileURL
     }
 }

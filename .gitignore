@@ -23,6 +23,7 @@ Dictionary/target/
 
 # Distribution & Build Outputs
 dist/
+Embedded/
 
 # Logs & Temp
 *.log

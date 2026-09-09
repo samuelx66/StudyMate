@@ -25,9 +25,23 @@ require_tool() {
     }
 }
 
-for tool in swift cargo otool install_name_tool codesign actool ditto lipo; do
+for tool in swift otool install_name_tool codesign actool ditto lipo; do
     require_tool "${tool}"
 done
+
+SYNC_DICT=0
+for arg in "$@"; do
+    case "${arg}" in
+        --sync-dict|--sync|-s)
+            SYNC_DICT=1
+            ;;
+    esac
+done
+
+if [[ "${SYNC_DICT}" -eq 1 ]]; then
+    echo "=== 预处理：同步外部词典应用与核心模块 ==="
+    bash "${ROOT_DIR}/Scripts/sync_dictionary.sh" --build
+fi
 
 echo "=== 0. 同步更新 Xcode 工程配置 ==="
 python3 "${ROOT_DIR}/Scripts/generate_xcodeproj.py"
@@ -46,15 +60,22 @@ mkdir -p "${MACOS_DIR}" "${FRAMEWORKS_DIR}" "${HELPERS_DIR}" "${RESOURCES_DIR}"
 cp "${EXECUTABLE}" "${MACOS_DIR}/${APP_NAME}"
 chmod 755 "${MACOS_DIR}/${APP_NAME}"
 
-echo "=== 2.1 编译并内置词典桥接程序 ==="
-cargo build --manifest-path "${ROOT_DIR}/Dictionary/Cargo.toml" --release --bin studymate-dict
-DICT_HELPER="${ROOT_DIR}/Dictionary/target/release/studymate-dict"
-test -x "${DICT_HELPER}" || {
-    echo "未找到词典桥接程序：${DICT_HELPER}" >&2
-    exit 1
-}
-cp "${DICT_HELPER}" "${HELPERS_DIR}/studymate-dict"
-chmod 755 "${HELPERS_DIR}/studymate-dict"
+echo "=== 2.1 嵌入独立词典应用 (StudyMateDictionary.app) ==="
+if [[ ! -d "${ROOT_DIR}/Embedded/StudyMateDictionary.app" ]]; then
+    echo "正在自动同步外部词典应用..."
+    bash "${ROOT_DIR}/Scripts/sync_dictionary.sh"
+fi
+if [[ -d "${ROOT_DIR}/Embedded/StudyMateDictionary.app" ]]; then
+    APPLICATIONS_DIR="${CONTENTS_DIR}/Applications"
+    mkdir -p "${APPLICATIONS_DIR}"
+    ditto "${ROOT_DIR}/Embedded/StudyMateDictionary.app" "${APPLICATIONS_DIR}/StudyMateDictionary.app"
+    echo "已嵌入词典应用至 ${APPLICATIONS_DIR}/StudyMateDictionary.app"
+fi
+if [[ -f "${ROOT_DIR}/Embedded/studymate-dict" ]]; then
+    cp -f "${ROOT_DIR}/Embedded/studymate-dict" "${HELPERS_DIR}/studymate-dict"
+    chmod 755 "${HELPERS_DIR}/studymate-dict"
+    echo "已安装词典辅助引擎至 ${HELPERS_DIR}/studymate-dict"
+fi
 if ! otool -l "${MACOS_DIR}/${APP_NAME}" | grep -Fq '@executable_path/../Frameworks'; then
     install_name_tool -add_rpath '@executable_path/../Frameworks' "${MACOS_DIR}/${APP_NAME}"
 fi
@@ -280,6 +301,11 @@ while IFS= read -r -d '' helper; do
         codesign "${SIGN_OPTIONS[@]}" "${helper}"
     fi
 done < <(find "${HELPERS_DIR}" -type f -print0)
+if [[ -d "${CONTENTS_DIR}/Applications" ]]; then
+    while IFS= read -r -d '' subapp; do
+        codesign --force --deep "${SIGN_OPTIONS[@]}" "${subapp}"
+    done < <(find "${CONTENTS_DIR}/Applications" -maxdepth 1 -mindepth 1 -name '*.app' -print0)
+fi
 codesign "${SIGN_OPTIONS[@]}" "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 

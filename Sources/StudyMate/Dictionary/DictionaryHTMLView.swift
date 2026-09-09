@@ -3,37 +3,6 @@ import Foundation
 import WebKit
 import AppKit
 
-/// Stores the render-time dictionary appearance preference.
-///
-/// The preference deliberately lives outside the import pipeline. Imported
-/// MDX/MDD files remain byte-for-byte untouched; the WebKit document decides
-/// whether to add StudyMate's compatibility layers each time it is rendered.
-public final class DictionaryAppearanceSettings: ObservableObject {
-    public static let shared = DictionaryAppearanceSettings()
-    public static let userDefaultsKey = "StudyMate.DictionaryAdaptToSystemAppearance"
-    public static let defaultValue = true
-
-    @Published public private(set) var adaptsToSystemAppearance: Bool
-    private let defaults: UserDefaults
-
-    public init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        self.adaptsToSystemAppearance = defaults.object(forKey: Self.userDefaultsKey) as? Bool
-            ?? Self.defaultValue
-    }
-
-    public func setAdaptToSystemAppearance(_ enabled: Bool) {
-        guard adaptsToSystemAppearance != enabled else { return }
-        adaptsToSystemAppearance = enabled
-        defaults.set(enabled, forKey: Self.userDefaultsKey)
-    }
-
-    /// Used by representable initializers that may be created outside a
-    /// SwiftUI observation cycle, such as an AppKit-hosted popover.
-    public static func storedValue(defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: userDefaultsKey) as? Bool ?? defaultValue
-    }
-}
 
 /// Formats MDX dictionary lookup entries into clean, adaptive HTML documents
 /// tailored for either compact popover presentation or full-window reading.
@@ -62,8 +31,14 @@ public enum DictionaryHTMLFormatter {
     }()
     private static let documentCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>()
-        cache.countLimit = 4
-        cache.totalCostLimit = 4 * 1024 * 1024
+        cache.countLimit = 8
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+    private static let templateCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 8
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
     private static let automaticColorCorrectionCache: NSCache<NSString, NSString> = {
@@ -77,20 +52,33 @@ public enum DictionaryHTMLFormatter {
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool,
         textScale: CGFloat = 1.0,
-        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil
     ) -> String {
         let cacheKey = markupCacheKey(
             entries: entries,
             isCompact: isCompact,
             textScale: textScale,
-            adaptsToSystemAppearance: adaptsToSystemAppearance,
             userCSS: userCSS
         )
         if let cached = documentCache.object(forKey: cacheKey as NSString) {
             return cached as String
         }
         let fontSize = scaledFontSize(isCompact: isCompact, textScale: textScale)
+        let tplKey = templateCacheKey(entries: entries, isCompact: isCompact, userCSS: userCSS)
+
+        if let cachedTemplate = templateCache.object(forKey: tplKey as NSString) as String? {
+            let document = cachedTemplate.replacingOccurrences(
+                of: "__STUDYMATE_FONT_SIZE_PLACEHOLDER__",
+                with: fontSize
+            )
+            documentCache.setObject(
+                document as NSString,
+                forKey: cacheKey as NSString,
+                cost: document.utf8.count
+            )
+            return document
+        }
+
         let lineHeight = isCompact ? "1.45" : "1.6"
         let entrySpacing = isCompact ? "14px" : "22px"
         let padding = isCompact ? "4px 8px 12px 8px" : "16px 20px"
@@ -105,22 +93,11 @@ public enum DictionaryHTMLFormatter {
         let customCSSText = customCSSBlocks.joined(separator: "\n\n")
         let bodyMarkup = composeBodyMarkup(entries: entries, isCompact: isCompact)
         let entriesHTML = bodyMarkup.contentHTML
-        let dictionarySpecificCSSText = adaptsToSystemAppearance
-            ? dictionarySpecificCSS(for: entries)
-            : ""
-        let dictionaryDarkCSSText = adaptsToSystemAppearance
-            ? dictionaryDarkCSS(for: entries)
-            : ""
-        let generatedColorCorrectionCSS = adaptsToSystemAppearance
-            ? automaticColorCorrectionCSS(for: customCSSText)
-            : ""
-        let userCSSText = adaptsToSystemAppearance
-            ? userCSS?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            : ""
-        let appearanceMeta = adaptsToSystemAppearance
-            ? "<meta name=\"color-scheme\" content=\"light dark\">"
-            : ""
-        let injectedThemeCSS = adaptsToSystemAppearance ? """
+        let dictionaryDarkCSSText = dictionaryDarkCSS(for: entries)
+        let generatedColorCorrectionCSS = automaticColorCorrectionCSS(for: customCSSText)
+        let userCSSText = userCSS?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let appearanceMeta = "<meta name=\"color-scheme\" content=\"light dark\">"
+        let injectedThemeCSS = """
         <style id="studymate-system-theme-css">
         /* System theme layer: follows the macOS appearance through WebKit's
            semantic system colors. The native SwiftUI/AppKit container owns
@@ -232,14 +209,13 @@ public enum DictionaryHTMLFormatter {
         }
         \(generatedColorCorrectionCSS)
         </style>
-        \(dictionarySpecificCSSText.isEmpty ? "" : "<style id=\"studymate-dictionary-specific-css\" type=\"text/css\">\n/* Dictionary-specific compatibility layer */\n\(dictionarySpecificCSSText)\n</style>")
         \(dictionaryDarkCSSText.isEmpty ? "" : "<style id=\"studymate-dictionary-dark-css\" type=\"text/css\">\n/* Editable per-dictionary dark appearance rules */\n\(dictionaryDarkCSSText)\n</style>")
         \(userCSSText.isEmpty ? "" : "<style id=\"studymate-user-css\" type=\"text/css\">\n/* User CSS */\n\(userCSSText)\n</style>")
-        """ : ""
+        """
 
-        let document = """
+        let template = """
         <!DOCTYPE html>
-        <html data-studymate-adapt-to-system-appearance="\(adaptsToSystemAppearance ? "true" : "false")">
+        <html data-studymate-adapt-to-system-appearance="true">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -253,7 +229,7 @@ public enum DictionaryHTMLFormatter {
             padding: 0;
             background-color: transparent !important;
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", sans-serif;
-            font-size: var(--studymate-font-size, \(fontSize));
+            font-size: var(--studymate-font-size, __STUDYMATE_FONT_SIZE_PLACEHOLDER__);
             line-height: \(lineHeight);
             word-wrap: break-word;
             overflow-wrap: break-word;
@@ -278,6 +254,15 @@ public enum DictionaryHTMLFormatter {
         </body>
         </html>
         """
+        templateCache.setObject(
+            template as NSString,
+            forKey: tplKey as NSString,
+            cost: template.utf8.count
+        )
+        let document = template.replacingOccurrences(
+            of: "__STUDYMATE_FONT_SIZE_PLACEHOLDER__",
+            with: fontSize
+        )
         documentCache.setObject(
             document as NSString,
             forKey: cacheKey as NSString,
@@ -300,12 +285,10 @@ public enum DictionaryHTMLFormatter {
     public static func shellSignature(
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool,
-        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(isCompact)
-        hasher.combine(adaptsToSystemAppearance)
         hasher.combine(isCompact ? "1.45" : "1.6")
         hasher.combine(isCompact ? "14px" : "22px")
         hasher.combine(isCompact ? "4px 8px 12px 8px" : "16px 20px")
@@ -315,83 +298,9 @@ public enum DictionaryHTMLFormatter {
         for css in entries.compactMap(\.darkCSS) {
             hasher.combine(css)
         }
-        if adaptsToSystemAppearance {
-            hasher.combine(dictionarySpecificCSS(for: entries))
-            hasher.combine(dictionaryDarkCSS(for: entries))
-            hasher.combine(userCSS ?? "")
-        }
+        hasher.combine(dictionaryDarkCSS(for: entries))
+        hasher.combine(userCSS ?? "")
         return hasher.finalize()
-    }
-
-    /// Compatibility rules for dictionary families whose vendor CSS predates
-    /// macOS dark appearance. These rules are kept outside the MDX package so
-    /// the source archive remains untouched and can still be re-imported.
-    private static func dictionarySpecificCSS(for entries: [StudyMateDictionaryLookup]) -> String {
-        let fingerprints = entries.map {
-            ($0.dictionaryID + " " + $0.dictionaryTitle).lowercased()
-        }
-        var blocks: [String] = []
-
-        if fingerprints.contains(where: { $0.contains("oald") || $0.contains("oxford") }) {
-            blocks.append("""
-            @media (prefers-color-scheme: dark) {
-                .entry-body :where(.wordlist_h2, .OALD9_entry h1, .OALD9_entry h2) {
-                    color: var(--text-color) !important;
-                }
-                .entry-body :where(.ColloPanel, .ThesPanel, .top-container,
-                    .wordlist_about_callout_text, .grey-grad, .idsym-g,
-                    .ui-grad dt, .z_idsym) {
-                    color: var(--text-color) !important;
-                    background-color: var(--surface-color) !important;
-                    border-color: var(--divider-color) !important;
-                    box-shadow: none !important;
-                }
-                .entry-body :where(.CorpusHeader, .ColloHeader) {
-                    color: HighlightText !important;
-                    background-color: LinkText !important;
-                }
-            }
-            """)
-        }
-
-        if fingerprints.contains(where: { $0.contains("ldoce") || $0.contains("longman") }) {
-            blocks.append("""
-            @media (prefers-color-scheme: dark) {
-                .entry-body :where(.topic_intro, .assets_intro, .asset_intro) {
-                    color: HighlightText !important;
-                    border-color: var(--divider-color) !important;
-                    background-color: LinkText !important;
-                }
-                .entry-body :where(.ldoceEntry .Thesref,
-                    .ldoceEntry .Ref, .ldoceEntry .Gramref) {
-                    color: var(--link-color) !important;
-                }
-            }
-            """)
-        }
-
-        if fingerprints.contains(where: {
-            $0.contains("merriam") || $0.contains("webster") || $0.contains("mwa")
-        }) {
-            blocks.append("""
-            @media (prefers-color-scheme: dark) {
-                .entry-body :where(.hw_d, .entry_v2 .hw_d) {
-                    color: var(--text-color) !important;
-                    background-color: var(--surface-color) !important;
-                    border-color: var(--divider-color) !important;
-                }
-                .entry-body :where(.hw_txt, .entry_v2 .hw_txt) {
-                    color: var(--link-color) !important;
-                }
-                .entry-body :where(.pron_w, .hpron_word, .v_label,
-                    .i_label, .pva, .fl) {
-                    color: var(--secondary-text) !important;
-                }
-            }
-            """)
-        }
-
-        return blocks.joined(separator: "\n")
     }
 
     /// Loads user-editable per-dictionary rules from the sibling file
@@ -977,13 +886,33 @@ public enum DictionaryHTMLFormatter {
         entries: [StudyMateDictionaryLookup],
         isCompact: Bool,
         textScale: CGFloat,
-        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil
     ) -> String {
         var hasher = Hasher()
         hasher.combine(isCompact)
         hasher.combine(Double(textScale))
-        hasher.combine(adaptsToSystemAppearance)
+        hasher.combine(userCSS ?? "")
+        for entry in entries {
+            hasher.combine(entry.key)
+            hasher.combine(entry.text)
+            hasher.combine(entry.dictionaryID)
+            hasher.combine(entry.dictionaryTitle)
+            hasher.combine(entry.displayName)
+            hasher.combine(entry.format)
+            hasher.combine(entry.css)
+            hasher.combine(entry.darkCSS)
+            hasher.combine(entry.resourceRoot)
+        }
+        return String(hasher.finalize())
+    }
+
+    private static func templateCacheKey(
+        entries: [StudyMateDictionaryLookup],
+        isCompact: Bool,
+        userCSS: String? = nil
+    ) -> String {
+        var hasher = Hasher()
+        hasher.combine(isCompact)
         hasher.combine(userCSS ?? "")
         for entry in entries {
             hasher.combine(entry.key)
@@ -1009,7 +938,8 @@ public enum DictionaryHTMLFormatter {
         if !format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("text")
             && trimmed.contains("<") && trimmed.contains(">") {
             let withAudio = rewriteSoundReferences(trimmed, dictionaryID: dictionaryID)
-            return rewriteResourceReferences(withAudio, resourceRoot: resourceRoot)
+            let withDictionaryLinks = rewriteDictionaryEntryReferences(withAudio)
+            return rewriteResourceReferences(withDictionaryLinks, resourceRoot: resourceRoot)
         }
         let paragraphs = trimmed.components(separatedBy: "\n\n")
         if paragraphs.count > 1 {
@@ -1077,6 +1007,34 @@ public enum DictionaryHTMLFormatter {
             if let swiftRange = Range(match.range, in: result) {
                 result.replaceSubrange(swiftRange, with: replacement)
             }
+        }
+        return result
+    }
+
+    /// Encode an initial `@` in MDX entry links before WebKit parses the URL.
+    /// In `entry://@oxford3000`, Foundation/WebKit may treat `@` as the
+    /// user-info separator and deliver only `oxford3000` to the navigation
+    /// delegate. Put the encoded target in the URL path (`entry:///%40...`)
+    /// instead of the host so WebKit cannot reinterpret it as user-info. The
+    /// navigation callback decodes it back to the original MDX key.
+    private static func rewriteDictionaryEntryReferences(_ html: String) -> String {
+        let pattern = #"((?:\bhref\s*=\s*[\"'])(?:entry|lookup):\/\/)@([^\"']+)([\"'])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return html
+        }
+        let source = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return html }
+
+        var result = html
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 4 else { continue }
+            let prefix = source.substring(with: match.range(at: 1))
+            let target = source.substring(with: match.range(at: 2))
+            let quote = source.substring(with: match.range(at: 3))
+            let replacement = prefix + "/%40" + target + quote
+            guard let range = Range(match.range, in: result) else { continue }
+            result.replaceSubrange(range, with: replacement)
         }
         return result
     }
@@ -1229,6 +1187,28 @@ public enum DictionaryHTMLFormatter {
         }
         let rootURL = URL(fileURLWithPath: resourceRoot).absoluteString
         return rootURL.hasSuffix("/") ? rootURL : rootURL + "/"
+    }
+
+    /// Extract the target of an MDX `entry://` or `lookup://` URL without
+    /// letting Foundation reinterpret an initial `@` as URL user-info. OALD9
+    /// uses targets such as `entry://@oxford3000`, where the `@` is part of
+    /// the MDX key and must survive the WebKit navigation boundary.
+    static func dictionaryEntryTarget(from url: URL) -> String? {
+        var rawTarget: String
+        if let separator = url.absoluteString.range(of: "://") {
+            rawTarget = String(url.absoluteString[separator.upperBound...])
+            if let queryStart = rawTarget.firstIndex(of: "?") {
+                rawTarget.removeSubrange(queryStart...)
+            }
+            if let fragmentStart = rawTarget.firstIndex(of: "#") {
+                rawTarget.removeSubrange(fragmentStart...)
+            }
+        } else {
+            rawTarget = url.path.isEmpty ? (url.host ?? "") : url.path
+        }
+        let target = rawTarget.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !target.isEmpty else { return nil }
+        return target.removingPercentEncoding ?? target
     }
 
     private static func escapeHTML(_ string: String) -> String {
@@ -1425,9 +1405,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     /// Optional application/user overrides. This layer is emitted after the
     /// MDX, automatic correction, and dictionary-specific layers.
     public let userCSS: String?
-    /// Controls whether StudyMate adds its system-appearance compatibility
-    /// layers. When disabled, only the original MDX CSS is loaded.
-    public let adaptsToSystemAppearance: Bool
     /// Resource hosts referenced by the currently rendered entries. Limiting
     /// the bridge to these IDs prevents a dictionary script from probing every
     /// installed package while still allowing “All dictionaries” definitions
@@ -1444,16 +1421,13 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
-        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil,
         highlightTerm: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
         onPlayAudio: ((String) -> Void)? = nil,
         onPlayDictionaryAudio: ((String, String) -> Void)? = nil
     ) {
-        let renderedHTML = adaptsToSystemAppearance
-            ? DictionaryHTMLView.injectUserCSS(userCSS, into: html)
-            : html
+        let renderedHTML = DictionaryHTMLView.injectUserCSS(userCSS, into: html)
         self.html = renderedHTML
         self.bodyHTML = DictionaryHTMLView.extractBodyHTML(from: renderedHTML)
         self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
@@ -1463,7 +1437,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
         self.userCSS = userCSS
-        self.adaptsToSystemAppearance = adaptsToSystemAppearance
         self.highlightTerm = highlightTerm
         if let host = baseURL?.host, baseURL?.scheme?.lowercased() == "studymate-resource" {
             self.resourceDictionaryIDs = [host]
@@ -1481,7 +1454,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         isCompact: Bool = false,
         allowsJavaScript: Bool = false,
         textScale: CGFloat = 1.0,
-        adaptsToSystemAppearance: Bool = DictionaryAppearanceSettings.storedValue(),
         userCSS: String? = nil,
         highlightTerm: String? = nil,
         onLookupWord: ((String) -> Void)? = nil,
@@ -1502,14 +1474,12 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             entries: entries,
             isCompact: isCompact,
             textScale: textScale,
-            adaptsToSystemAppearance: adaptsToSystemAppearance,
             userCSS: userCSS
         )
         self.bodySignature = DictionaryHTMLView.signature(self.bodyHTML)
         self.shellSignature = DictionaryHTMLFormatter.shellSignature(
             entries: entries,
             isCompact: isCompact,
-            adaptsToSystemAppearance: adaptsToSystemAppearance,
             userCSS: userCSS
         )
         self.baseURL = resolvedBaseURL
@@ -1517,7 +1487,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         self.allowsJavaScript = allowsJavaScript
         self.textScale = textScale
         self.userCSS = userCSS
-        self.adaptsToSystemAppearance = adaptsToSystemAppearance
         self.highlightTerm = highlightTerm
         self.resourceDictionaryIDs = Set(entries.map(\.dictionaryID))
         self.onLookupWord = onLookupWord
@@ -1572,8 +1541,20 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
-    public func makeNSView(context: Context) -> WKWebView {
+    static func configureDeveloperExtras(in config: WKWebViewConfiguration) {
+        UserDefaults.standard.register(defaults: ["WebKitDeveloperExtras": true])
+        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+    }
+
+    static func configureInspectable(in webView: WKWebView) {
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
+    }
+
+    public func makeNSView(context: Context) -> DictionaryWebContainerView {
         let config = WKWebViewConfiguration()
+        Self.configureDeveloperExtras(in: config)
         config.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         config.preferences.javaScriptCanOpenWindowsAutomatically = allowsJavaScript
         if allowsJavaScript {
@@ -1605,10 +1586,12 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             forURLScheme: "studymate-resource"
         )
         let webView = WKWebView(frame: .zero, configuration: config)
+        Self.configureInspectable(in: webView)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         webView.underPageBackgroundColor = .clear
+        let container = DictionaryWebContainerView(webView: webView)
         context.coordinator.currentHTML = html
         context.coordinator.currentBodyHTML = bodyHTML
         context.coordinator.currentShellSignature = shellSignature
@@ -1620,10 +1603,11 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         context.coordinator.currentHighlightTerm = highlightTerm
         context.coordinator.hasLoadedDocument = false
         context.coordinator.loadDocument(in: webView, html: html, baseURL: baseURL)
-        return webView
+        return container
     }
 
-    public func updateNSView(_ webView: WKWebView, context: Context) {
+    public func updateNSView(_ container: DictionaryWebContainerView, context: Context) {
+        let webView = container.webView
         context.coordinator.parent = self
         context.coordinator.updateResourceScope(resourceDictionaryIDs)
         let baseURLChanged = context.coordinator.currentBaseURL != baseURL
@@ -1772,10 +1756,13 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     })();
     """
 
-    public static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+    public static func dismantleNSView(_ container: DictionaryWebContainerView, coordinator: Coordinator) {
+        let webView = container.webView
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.stopLoading()
+        container.performFind(.hideFindInterface)
+        DictionaryFindCoordinator.shared.unregister(container: container)
         coordinator.removeRenderedDocument()
     }
 
@@ -1986,12 +1973,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             }
 
             if scheme == "entry" || scheme == "lookup" {
-                let word = url.host ?? url.path
-                let cleanWord = word.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                if let decoded = cleanWord.removingPercentEncoding, !decoded.isEmpty {
-                    parent.onLookupWord?(decoded)
-                } else if !cleanWord.isEmpty {
-                    parent.onLookupWord?(cleanWord)
+                if let word = DictionaryHTMLFormatter.dictionaryEntryTarget(from: url) {
+                    parent.onLookupWord?(word)
                 }
                 decisionHandler(.cancel)
                 return
@@ -2186,9 +2169,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
             if scheme == "entry" || scheme == "lookup" {
-                let word = (url.host ?? url.path).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                if let decoded = word.removingPercentEncoding, !decoded.isEmpty {
-                    parent.onLookupWord?(decoded)
+                if let word = DictionaryHTMLFormatter.dictionaryEntryTarget(from: url) {
+                    parent.onLookupWord?(word)
                 }
                 return
             }

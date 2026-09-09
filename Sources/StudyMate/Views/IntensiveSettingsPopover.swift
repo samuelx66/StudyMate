@@ -21,11 +21,11 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject var modelManager = WhisperModelManager.shared
     @ObservedObject var translationSettings = TranslationSettings.shared
-    @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
-    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
-    @ObservedObject private var dictionaryEngine = DictionaryEngine.shared
+    @ObservedObject var dictionarySourceSettings = DictionarySourceSettings.shared
+    @ObservedObject var dictionaryEngine = DictionaryEngine.shared
 
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = true
+    @AppStorage(StudyMateDictionaryBridge.shortcutPreferenceDomainKey) private var createDictionaryShortcutInApplications = false
     @State private var selectedSection: SettingsSection = .general
     @State private var translationAPIKey = ""
     @State private var showAddTranslationService = false
@@ -88,8 +88,6 @@ public struct IntensiveSettingsPopover: View {
         .frame(minWidth: 880, idealWidth: 960, minHeight: 640, idealHeight: 720)
         .onAppear {
             translationAPIKey = translationSettings.apiKey()
-            dictionaryEngine.refresh()
-            dictionarySourceSettings.synchronize(with: dictionaryEngine.dictionaries)
         }
         .onChange(of: translationSettings.selectedServiceID) { _, _ in
             translationAPIKey = translationSettings.apiKey()
@@ -176,8 +174,8 @@ public struct IntensiveSettingsPopover: View {
                     Text(lang.text("查词界面词语解释使用词典", "Dictionary for definition lookup interface"))
                         .font(.body.weight(.medium))
                     Text(lang.text(
-                        "双击选中单词弹出操作栏并点击查词后，弹出的查词界面所使用的词典。选择某一本词典时只显示该词典的解释；选择“全部”时显示所有已启用词典的解释。",
-                        "The dictionary used when clicking Look Up after selecting a word. Choosing a specific dictionary displays only its definitions; choosing “All” displays definitions from all enabled dictionaries."
+                        "双击选中单词弹出操作栏并点击查词后，弹出的查词气泡界面所使用的词典。选择某一本词典时只显示该词典的解释；选择“全部”时显示所有已启用词典的解释。",
+                        "The dictionary used when clicking Look Up in the subtitle action bar. Choosing a specific dictionary displays only its definitions; choosing “All” displays definitions from all enabled dictionaries."
                     ))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -207,32 +205,86 @@ public struct IntensiveSettingsPopover: View {
             Divider()
 
             settingsGroupTitle(
-                lang.text("词典外观", "Dictionary Appearance"),
-                systemImage: "book.closed"
+                lang.text("独立词典应用", "Standalone Dictionary App"),
+                systemImage: "arrow.up.forward.app"
             )
 
             Toggle(isOn: Binding(
-                get: { dictionaryAppearanceSettings.adaptsToSystemAppearance },
-                set: { dictionaryAppearanceSettings.setAdaptToSystemAppearance($0) }
+                get: {
+                    createDictionaryShortcutInApplications
+                },
+                set: { enabled in
+                    createDictionaryShortcutInApplications = enabled
+                    if enabled {
+                        do {
+                            _ = try StudyMateDictionaryBridge.installDictionaryShortcut()
+                            MainStatusCenter.shared.showSuccess(
+                                lang.text("已在“应用程序”中创建学伴词典（支持加入程序坞）", "Created StudyMate Dictionary in Applications (Dock supported)")
+                            )
+                        } catch {
+                            createDictionaryShortcutInApplications = false
+                            MainStatusCenter.shared.showError(
+                                lang.text("创建词典应用失败：\(error.localizedDescription)", "Failed to create dictionary app: \(error.localizedDescription)")
+                            )
+                        }
+                    } else {
+                        do {
+                            try StudyMateDictionaryBridge.removeDictionaryShortcut()
+                            MainStatusCenter.shared.showSuccess(
+                                lang.text("已从“应用程序”中移除学伴词典", "Removed StudyMate Dictionary from Applications")
+                            )
+                        } catch {
+                            createDictionaryShortcutInApplications = true
+                            MainStatusCenter.shared.showError(
+                                lang.text("移除词典应用失败：\(error.localizedDescription)", "Failed to remove dictionary app: \(error.localizedDescription)")
+                            )
+                        }
+                    }
+                }
             )) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(lang.text("字典适应系统外观", "Adapt dictionary to system appearance"))
+                    Text(lang.text("在“应用程序”中创建学伴词典", "Create StudyMate Dictionary in Applications"))
                         .font(.body.weight(.medium))
                     Text(lang.text(
-                        "开启后，在词典页面渲染时加入系统外观兼容 CSS，并使用 macOS 语义颜色；关闭后只使用 MDX 自带的 CSS。每本词典的 source 文件夹中可编辑同名的 .studymate-dark.css。阅读器背景始终由应用窗口提供。",
-                        "When enabled, dictionary pages receive the system-appearance compatibility CSS and macOS semantic colors at render time. When disabled, only the MDX-provided CSS is used. You can edit the matching .studymate-dark.css in each dictionary's source folder. The reader background always comes from the app window."
+                        "开启后在系统“应用程序”中生成学伴词典应用，可直接拖入程序坞（Dock）独立使用；关闭后自动删除。",
+                        "Deploys StudyMate Dictionary in Applications, allowing direct drag-to-Dock and standalone use; deletes it when turned off."
                     ))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .toggleStyle(.switch)
 
-            settingsNote(lang.text(
-                "此设置不会修改或重新打包已导入的 MDX/MDD 文件；切换后当前打开的词条会自动重新渲染。",
-                "This setting never changes or repackages imported MDX/MDD files. Open entries are re-rendered automatically after switching it."
-            ))
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text("打开独立词典", "Open Standalone Dictionary"))
+                        .font(.body.weight(.medium))
+                    Text(lang.text(
+                        "唤起独立的 StudyMate 词典应用进行词典导入、排序、全文搜索及高级排版阅读。",
+                        "Launch the standalone StudyMate Dictionary app to manage dictionaries, reorder, full-text search, and read definitions."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                Button(lang.text("打开词典应用", "Open Dictionary App")) {
+                    StudyMateDictionaryBridge.openDictionary()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .onAppear {
+            let isInstalled = StudyMateDictionaryBridge.isDictionaryShortcutInstalled()
+            createDictionaryShortcutInApplications = isInstalled
+            if !isInstalled && UserDefaults.standard.bool(forKey: StudyMateDictionaryBridge.shortcutPreferenceDomainKey) {
+                UserDefaults.standard.set(false, forKey: StudyMateDictionaryBridge.shortcutPreferenceDomainKey)
+            }
+            dictionarySourceSettings.reloadFromStorage()
+            if dictionaryEngine.dictionaries.isEmpty {
+                dictionaryEngine.refresh()
+            }
         }
     }
 
@@ -875,7 +927,7 @@ public struct IntensiveSettingsPopover: View {
         case .general:
             return lang.text("语言和显示", "Language and display")
         case .dictionary:
-            return lang.text("查词与外观渲染", "Lookup and appearance")
+            return lang.text("查词与解释", "Lookup and definitions")
         case .playback:
             return lang.text("复读练习", "Repeat practice")
         case .segmentation:
@@ -892,7 +944,7 @@ public struct IntensiveSettingsPopover: View {
         case .general:
             return lang.text("配置应用语言和主窗口的基础显示方式。", "Configure the app language and basic main-window display options.")
         case .dictionary:
-            return lang.text("配置查词界面优先词典，并控制 MDX 词典外观跟随与兼容渲染层。", "Configure the preferred dictionary for lookup interfaces and control MDX appearance and compatibility rendering layers.")
+            return lang.text("配置字幕取词气泡弹窗中的优先词典与解释呈现方式。", "Configure the preferred dictionary and definition display in the subtitle lookup popover.")
         case .playback:
             return lang.text("配置精听练习时的默认筛选行为；播放过程中的即时控制仍在工具栏。", "Configure intensive-practice behavior; immediate playback controls remain in the toolbar.")
         case .segmentation:

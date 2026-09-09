@@ -4,8 +4,6 @@ import UniformTypeIdentifiers
 public struct VocabularyNotebookView: View {
     @ObservedObject var manager: VocabularyNotebookManager
     @ObservedObject private var lang = LanguageManager.shared
-    @ObservedObject private var dictionaryEngine = DictionaryEngine.shared
-    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
 
     @State private var searchText = ""
     @State private var dateFilter: SentenceLibraryDateFilter = .all
@@ -34,23 +32,8 @@ public struct VocabularyNotebookView: View {
         Dictionary(uniqueKeysWithValues: manager.entries.enumerated().map { ($1.id, $0 + 1) })
     }
 
-    /// Existing vocabulary rows store the source label rather than a
-    /// dictionary ID. Resolve rows made from known dictionary labels at
-    /// display time so renaming does not require a database migration or
-    /// change the persisted filter value.
     private func displaySource(_ source: String) -> String {
-        _ = dictionarySourceSettings.displayNameRevision
-        let parts = source.components(separatedBy: "、")
-        guard !parts.isEmpty else { return source }
-        let resolved = parts.map { part -> StudyMateDictionarySummary? in
-            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            return dictionaryEngine.dictionaries.first { dictionary in
-                dictionary.title == trimmed || dictionary.displayName == trimmed
-            }
-        }
-        guard resolved.allSatisfy({ $0 != nil }) else { return source }
-        return resolved.compactMap { $0?.displayName }.joined(separator: "、")
+        source
     }
 
     public var body: some View {

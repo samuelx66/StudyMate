@@ -3,35 +3,33 @@ import AppKit
 import AVFoundation
 import OSLog
 
-/// NSTextView 不会把 SwiftUI representable 的附加上下文带回选择通知。
-/// 将上下文绑定在具体文本视图上，拖动选词时仍能在词典弹窗中显示完整字幕上下文。
-private var dictionaryTextContextAssociationKey: UInt8 = 0
-/// Marks the NSTextView instances created by DictionarySelectableText. The
-/// coordinator observes AppKit's global selection notification, so without a
-/// marker a selection in a settings/search field could incorrectly open the
-/// subtitle lookup HUD.
-private var dictionarySelectableTextMarkerKey: UInt8 = 0
+private var subtitleTextContextAssociationKey: UInt8 = 0
+private var subtitleSelectableTextMarkerKey: UInt8 = 0
 
-/// Reports a SwiftUI-hosted control's frame in AppKit's window coordinate
-/// space. `GeometryProxy.frame(in: .global)` uses a different coordinate
-/// system on macOS, which made the global mouse monitor dismiss the action bar
-/// before its own button could receive the click.
-private struct DictionaryActionBarFrameReader: NSViewRepresentable {
+private let subtitleBoundaryPunctuation = CharacterSet(charactersIn: #",.:;!?…"'“”‘’`()[]{}<>«»—–/"#)
+    .union(.whitespacesAndNewlines)
+
+private func cleanSubtitleQueryWord(_ value: String) -> String {
+    value.trimmingCharacters(in: subtitleBoundaryPunctuation)
+}
+
+/// Reports a SwiftUI-hosted control's frame in AppKit's window coordinate space.
+private struct SubtitleActionBarFrameReader: NSViewRepresentable {
     let onChange: (NSRect?) -> Void
 
-    func makeNSView(context: Context) -> DictionaryActionBarFrameReportingView {
-        let view = DictionaryActionBarFrameReportingView()
+    func makeNSView(context: Context) -> SubtitleActionBarFrameReportingView {
+        let view = SubtitleActionBarFrameReportingView()
         view.onChange = onChange
         return view
     }
 
-    func updateNSView(_ nsView: DictionaryActionBarFrameReportingView, context: Context) {
+    func updateNSView(_ nsView: SubtitleActionBarFrameReportingView, context: Context) {
         nsView.onChange = onChange
         nsView.reportFrame()
     }
 }
 
-private final class DictionaryActionBarFrameReportingView: NSView {
+private final class SubtitleActionBarFrameReportingView: NSView {
     var onChange: ((NSRect?) -> Void)?
     private var lastFrame: NSRect?
 
@@ -59,16 +57,15 @@ private final class DictionaryActionBarFrameReportingView: NSView {
     }
 }
 
-/// 统一管理字幕取词状态。这个对象负责选区、浮动操作条和词典弹窗，
-/// 仅通过播放器的弱引用在视频字幕取词期间暂时暂停/恢复，不参与句子选中状态，
-/// 因此点击句子仍然保持原有的播放逻辑。
+/// 统一管理字幕取词状态。负责选区、浮动操作条（查词、发音、生词本）、
+/// 轻量原生气泡查词弹窗（NSPopover），并支持跳转外部独立词典应用。
 @MainActor
-public final class DictionaryInteractionCoordinator: ObservableObject {
-    public static let shared = DictionaryInteractionCoordinator()
+public final class SubtitleSelectionCoordinator: ObservableObject {
+    public static let shared = SubtitleSelectionCoordinator()
 
-    private static let dictionaryAudioLogger = Logger(
+    private static let audioLogger = Logger(
         subsystem: "com.samuel.StudyMate",
-        category: "dictionary-audio"
+        category: "subtitle-audio"
     )
 
     @Published public private(set) var selectedText: String?
@@ -81,9 +78,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     fileprivate weak var activeTextView: NSTextView?
     private weak var playbackEngine: PlaybackEngine?
     private var activePopover: NSPopover?
-    private var popoverDelegate: DictionaryPopoverDelegate?
-    private var pausedPlaybackForDictionaryInteraction = false
-    private var shouldResumePlaybackAfterDictionaryInteraction = false
+    private var popoverDelegate: SubtitlePopoverDelegate?
+    private var pausedPlaybackForInteraction = false
+    private var shouldResumePlaybackAfterInteraction = false
     private let avSynthesizer = AVSpeechSynthesizer()
     private var dictionaryAudioTask: Task<Void, Never>?
     private var dictionaryAudioPlayer: AVAudioPlayer?
@@ -92,10 +89,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
     private var keyDownMonitor: Any?
-    /// Selection notifications arrive for every mouse-moved glyph while a
-    /// phrase is being dragged. Coalesce them to one update per run loop so
-    /// the floating action bar and its geometry are not rebuilt dozens of
-    /// times per second.
     private var selectionUpdateTask: Task<Void, Never>?
     private weak var pendingSelectionTextView: NSTextView?
 
@@ -106,16 +99,24 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let textView = notification.object as? NSTextView,
-                  Self.isDictionarySelectableTextView(textView) else { return }
+                  Self.isSubtitleSelectableTextView(textView) else { return }
             Task { @MainActor [weak self] in
                 guard let self, !self.isLookupPresented else { return }
                 self.scheduleSelectionUpdate(for: textView)
             }
         }
 
-        // SwiftUI 的 Text 选择最终由 NSTextView 承载。鼠标松开时再次读取
-        // 选区，可以覆盖跨行拖选及系统菜单弹出时通知顺序不同的情况。
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            let mouseInWindow = event.locationInWindow
+            let targetWindow = self.activeTextView?.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+            // 鼠标松开若在操作条范围内，属于点击操作条按钮，绝不重算选区与锚点，防止面板跳动
+            if let barFrame = self.actionBarFrameInWindow,
+               event.window === targetWindow || event.window == nil {
+                if barFrame.insetBy(dx: -10, dy: -10).contains(mouseInWindow) {
+                    return event
+                }
+            }
             let screenPoint = event.window?.convertToScreen(NSRect(origin: event.locationInWindow, size: .zero)).origin ?? NSEvent.mouseLocation
             Task { @MainActor [weak self] in
                 guard let self, !self.isLookupPresented else { return }
@@ -126,10 +127,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return event
         }
 
-        // 监控鼠标点击：
-        // 1. 词典气泡弹窗展示时，点击弹窗外部区域自动关闭弹窗。
-        // 2. 仅显示选词浮动操作条（查词 | 发音 | 生词本）时，点击操作条外部区域自动消除操作条。
-        // 在当前事件中同步清掉旧选区，同时允许事件自然穿透分发给被点击的底层控件。
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { @MainActor [weak self] event in
             guard let self else { return event }
             let eventWindow = event.window
@@ -149,8 +146,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                 let targetWindow = self.activeTextView?.window ?? NSApp.keyWindow ?? NSApp.mainWindow
                 if let barFrame = self.actionBarFrameInWindow,
                    eventWindow === targetWindow || eventWindow == nil {
-                    // 预留 6pt 点击容差，避免点在操作条胶囊边缘缝隙时误触关闭
-                    if barFrame.insetBy(dx: -6, dy: -6).contains(mouseInWindow) {
+                    // 预留 10pt 点击容差，避免点在操作条胶囊边缘缝隙时误触关闭
+                    if barFrame.insetBy(dx: -10, dy: -10).contains(mouseInWindow) {
                         return event
                     }
                 }
@@ -161,7 +158,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             return event
         }
 
-        // 按 ESC 键取消选择或关闭取词弹窗
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             if event.keyCode == 53, self.isLookupPresented || self.selectedText != nil {
@@ -179,12 +175,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
         if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
         selectionUpdateTask?.cancel()
-        dictionaryAudioTask?.cancel()
-        dictionaryAudioPlayer?.stop()
     }
 
-    /// 将媒体播放器绑定到取词协调器。协调器只保存弱引用，避免把播放器
-    /// 生命周期耦合到词典窗口；这样视频字幕取词时可以安全地暂停/恢复。
     public func bindPlaybackEngine(_ engine: PlaybackEngine) {
         playbackEngine = engine
     }
@@ -195,7 +187,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         screenPoint: NSPoint? = nil,
         screenRect: NSRect? = nil
     ) {
-        let value = DictionaryEngine.cleanQueryWord(text)
+        let value = cleanSubtitleQueryWord(text)
         guard !value.isEmpty else {
             clearSelection()
             return
@@ -203,14 +195,13 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         selectedText = value
         contextText = context?.trimmingCharacters(in: .whitespacesAndNewlines)
         anchorScreenRect = screenRect
-        if let screenPoint {
-            anchorScreenPoint = screenPoint
-        } else if let screenRect {
+        if let screenRect, screenRect.width > 0, screenRect.height > 0 {
             anchorScreenPoint = NSPoint(x: screenRect.midX, y: screenRect.midY)
+        } else if let screenPoint {
+            anchorScreenPoint = screenPoint
         } else {
             anchorScreenPoint = NSEvent.mouseLocation
         }
-        // 静默预取释义，用户移动鼠标点击“查词”时实现 0ms 秒开
         let targetDictionaryID = DictionarySourceSettings.shared.lookupScopeDictionaryID
         DictionaryEngine.shared.prefetchDefinition(for: value, dictionaryID: targetDictionaryID)
     }
@@ -242,9 +233,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             resumePlaybackIfNeeded()
         }
         if let activeTextView {
-            // NSNotFound is not a valid insertion point for NSTextView and
-            // can make AppKit attempt an invalid layout update on the next
-            // selection event. Collapse to the end of the current string.
             let end = (activeTextView.string as NSString).length
             activeTextView.setSelectedRange(NSRange(location: end, length: 0))
             if activeTextView.window?.firstResponder === activeTextView {
@@ -255,11 +243,13 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         activeTextView = nil
     }
 
+    /// 点击“查词”时调用：在当前选词旁弹出原生轻量气泡弹窗
     public func lookupSelected() {
         guard let selectedText else { return }
-        pausePlaybackForDictionaryInteractionIfNeeded()
-        DictionaryEngine.shared.clearSearch()
+        pausePlaybackForInteractionIfNeeded()
+        DictionarySourceSettings.shared.reloadFromStorage()
         let targetDictionaryID = DictionarySourceSettings.shared.lookupScopeDictionaryID
+        DictionaryEngine.shared.clearSearch()
         DictionaryEngine.shared.search(
             query: selectedText,
             dictionaryID: targetDictionaryID,
@@ -269,15 +259,9 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         showNativePopover()
     }
 
-    /// 视频字幕双击选词时暂停当前媒体。播放前的状态会被记录，
-    /// 供选区操作条或词典气泡消失后恢复；如果双击前本来就是暂停状态，
-    /// 则不会在交互结束后错误地启动播放。
-    public func pausePlaybackForVideoSubtitleSelection() {
-        pausePlaybackForDictionaryInteractionIfNeeded()
-    }
-
     public func showNativePopover() {
         dismissPopover()
+        DictionarySourceSettings.shared.reloadFromStorage()
 
         guard let query = selectedText else { return }
 
@@ -285,7 +269,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         popover.behavior = .applicationDefined
         popover.animates = true
 
-        let delegate = DictionaryPopoverDelegate(coordinator: self)
+        let delegate = SubtitlePopoverDelegate(coordinator: self)
         self.popoverDelegate = delegate
         popover.delegate = delegate
 
@@ -303,14 +287,16 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     immediate: true
                 )
             },
-            onPronounce: { [weak self] word in self?.speakPreferred(word) },
+            onPronounce: { [weak self] word in
+                self?.speakPreferred(word)
+            },
             onToggleVocabulary: { [weak self] word in
                 guard let self else { return }
-                self.updateSelection(text: word, context: self.contextText)
                 self.toggleVocabulary(word: word, exampleSentence: self.contextText ?? "")
             },
             onOpenDictionary: { [weak self] word in
-                self?.openDictionaryWindow(query: word)
+                self?.dismissPopover()
+                StudyMateDictionaryBridge.openDictionary(query: word)
             },
             onDismiss: { [weak self] in
                 self?.dismissPopover()
@@ -323,38 +309,30 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
 
         if let textView = activeTextView, textView.window != nil {
             let range = textView.selectedRange()
-            var targetRect: NSRect = .zero
-            if range.length > 0, range.location != NSNotFound,
-               let layoutManager = textView.layoutManager,
-               let textContainer = textView.textContainer {
-                let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-                var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-                rect.origin.x += textView.textContainerOrigin.x
-                rect.origin.y += textView.textContainerOrigin.y
-                targetRect = rect
+            let rect: NSRect
+            if range.length > 0 {
+                rect = textView.firstRect(forCharacterRange: range, actualRange: nil)
             } else {
-                targetRect = textView.bounds
+                rect = textView.bounds
             }
-
-            let viewHeight = textView.bounds.height
-            // 在 flipped 视图中，Y 从上往下增加；当文字位于视图下半区（>58%）时向上展开（.minY），否则向下展开（.maxY）
-            let preferredEdge: NSRectEdge = textView.isFlipped
-                ? (targetRect.midY > viewHeight * 0.58 ? .minY : .maxY)
-                : (targetRect.midY < viewHeight * 0.42 ? .maxY : .minY)
-            popover.show(relativeTo: targetRect, of: textView, preferredEdge: preferredEdge)
-        } else if let window = NSApp.keyWindow ?? NSApp.mainWindow, let contentView = window.contentView {
-            var targetRect = NSRect(x: contentView.bounds.midX, y: contentView.bounds.midY, width: 1, height: 1)
-            if let screenPoint = anchorScreenPoint {
-                let windowPoint = window.convertPoint(fromScreen: screenPoint)
+            let localRect = textView.window?.convertFromScreen(rect) ?? rect
+            let targetRect = textView.convert(localRect, from: nil)
+            popover.show(relativeTo: targetRect, of: textView, preferredEdge: .maxY)
+        } else if let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
+                  let contentView = window.contentView {
+            let targetRect: NSRect
+            if let anchorScreenPoint {
+                let windowPoint = window.convertPoint(fromScreen: anchorScreenPoint)
                 let pointInView = contentView.convert(windowPoint, from: nil)
                 let safeX = min(max(20, pointInView.x), max(20, contentView.bounds.width - 20))
                 let safeY = min(max(20, pointInView.y), max(20, contentView.bounds.height - 20))
                 targetRect = NSRect(x: safeX, y: safeY, width: 1, height: 1)
+            } else {
+                targetRect = NSRect(x: contentView.bounds.midX, y: contentView.bounds.midY, width: 1, height: 1)
             }
-            let viewHeight = contentView.bounds.height
             let preferredEdge: NSRectEdge = contentView.isFlipped
-                ? (targetRect.midY > viewHeight * 0.58 ? .minY : .maxY)
-                : (targetRect.midY < viewHeight * 0.42 ? .maxY : .minY)
+                ? (targetRect.midY > contentView.bounds.height * 0.58 ? .minY : .maxY)
+                : (targetRect.midY < contentView.bounds.height * 0.42 ? .maxY : .minY)
             popover.show(relativeTo: targetRect, of: contentView, preferredEdge: preferredEdge)
         }
 
@@ -368,21 +346,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         isLookupPresented = true
     }
 
-    private func vocabularySourceName() -> String {
-        if let title = playbackEngine?.currentMedia?.title,
-           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return title
-        }
-        var names: [String] = []
-        var seen = Set<String>()
-        for title in DictionaryEngine.shared.searchResults.map(\.displayName) {
-            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
-            names.append(trimmed)
-        }
-        return names.joined(separator: "、")
-    }
-
     public func dismissPopover() {
         if let popover = activePopover {
             activePopover = nil
@@ -393,10 +356,6 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         isLookupPresented = false
     }
 
-    /// Ignore delayed close callbacks from an older popover. Replacing a
-    /// lookup quickly closes the previous NSPopover asynchronously; without
-    /// identity checking that callback can clear the new selection and close
-    /// the newly presented popover.
     fileprivate func popoverDidClose(_ popover: NSPopover) {
         guard activePopover === popover else { return }
         activePopover = nil
@@ -405,11 +364,14 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         clearSelectionAndDeselect()
     }
 
-    /// Control-Command-D 的统一入口：优先使用选区，没有选区时取光标所在单词。
+    public func pausePlaybackForVideoSubtitleSelection() {
+        pausePlaybackForInteractionIfNeeded()
+    }
+
     public func lookupCurrentSelectionOrWord() {
         guard let textView = currentSelectionTextView,
               textView.window?.isKeyWindow == true else { return }
-        guard Self.isDictionarySelectableTextView(textView) else { return }
+        guard Self.isSubtitleSelectableTextView(textView) else { return }
         let range = textView.selectedRange()
         let length = (textView.string as NSString).length
         guard range.location != NSNotFound,
@@ -458,32 +420,23 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         avSynthesizer.speak(utterance)
     }
 
-    /// Prefer a pronunciation resource from any installed dictionary; use
-    /// AVSpeechSynthesizer only when no matching MDD audio is available.
     public func speakPreferred(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-
-        Self.dictionaryAudioLogger.debug("preferred pronunciation requested for \(trimmed, privacy: .public)")
-
         let generation = beginAudioRequest()
 
         dictionaryAudioTask = Task { [weak self] in
             guard let self else { return }
             do {
                 guard let resource = try await DictionaryEngine.shared.firstDictionaryPronunciation(for: trimmed) else {
-                    Self.dictionaryAudioLogger.debug("no MDD pronunciation found; falling back to system speech")
                     guard !Task.isCancelled, self.audioGeneration == generation else { return }
                     self.speak(trimmed)
                     return
                 }
                 try Task.checkCancellation()
                 guard self.audioGeneration == generation else { return }
-                Self.dictionaryAudioLogger.debug(
-                    "MDD pronunciation loaded: \(resource.data.count, privacy: .public) bytes, MIME \(resource.mimeType ?? "nil", privacy: .public)"
-                )
                 guard !resource.data.isEmpty,
-                      let player = Self.makeDictionaryAudioPlayer(
+                      let player = await Self.makeDictionaryAudioPlayerInBackground(
                           data: resource.data,
                           mimeType: resource.mimeType
                       ) else {
@@ -491,12 +444,10 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     self.speak(trimmed)
                     return
                 }
-                Self.dictionaryAudioLogger.debug("MDD pronunciation player initialized; duration \(player.duration, format: .fixed(precision: 3), privacy: .public)")
                 self.dictionaryAudioPlayer = player
                 player.prepareToPlay()
                 guard self.audioGeneration == generation else { return }
                 let didPlay = player.play()
-                Self.dictionaryAudioLogger.debug("MDD pronunciation play returned \(didPlay, privacy: .public)")
                 guard didPlay else {
                     guard self.audioGeneration == generation else { return }
                     self.speak(trimmed)
@@ -509,35 +460,20 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                Self.dictionaryAudioLogger.error("preferred pronunciation failed: \(error.localizedDescription, privacy: .public)")
                 guard !Task.isCancelled, self.audioGeneration == generation else { return }
                 self.speak(trimmed)
             }
         }
     }
 
-    /// Play an audio record stored in the selected dictionary's MDD package.
-    /// Resource lookup and file reading stay off the main actor; only the
-    /// short AVAudioPlayer setup returns to the UI actor. A missing or
-    /// unsupported record falls back to system pronunciation instead of
-    /// leaving the button unresponsive.
     public func playDictionaryAudio(dictionaryID: String, key: String) {
         let id = dictionaryID.trimmingCharacters(in: .whitespacesAndNewlines)
         let resourceKey = key.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-        let fallbackText: String
-        if let selected = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
-            fallbackText = selected
-        } else {
-            fallbackText = resourceKey
-        }
+        let fallbackText = resourceKey
         guard !id.isEmpty, !resourceKey.isEmpty else {
             speakPreferred(fallbackText)
             return
         }
-
-        Self.dictionaryAudioLogger.debug(
-            "entry pronunciation requested: dictionary \(id, privacy: .public), key \(resourceKey, privacy: .public)"
-        )
 
         let generation = beginAudioRequest()
 
@@ -548,17 +484,13 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     dictionaryID: id,
                     key: resourceKey
                 ), !resource.data.isEmpty else {
-                    Self.dictionaryAudioLogger.debug("entry MDD resource missing; falling back to preferred pronunciation")
                     guard !Task.isCancelled, self.audioGeneration == generation else { return }
                     self.speakPreferred(fallbackText)
                     return
                 }
                 try Task.checkCancellation()
                 guard self.audioGeneration == generation else { return }
-                Self.dictionaryAudioLogger.debug(
-                    "entry MDD resource loaded: \(resource.data.count, privacy: .public) bytes, MIME \(resource.mimeType, privacy: .public)"
-                )
-                guard let player = Self.makeDictionaryAudioPlayer(
+                guard let player = await Self.makeDictionaryAudioPlayerInBackground(
                     data: resource.data,
                     mimeType: resource.mimeType
                 ) else {
@@ -566,12 +498,10 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     self.speakPreferred(fallbackText)
                     return
                 }
-                Self.dictionaryAudioLogger.debug("entry MDD player initialized; duration \(player.duration, format: .fixed(precision: 3), privacy: .public)")
                 self.dictionaryAudioPlayer = player
                 player.prepareToPlay()
                 guard self.audioGeneration == generation else { return }
                 let didPlay = player.play()
-                Self.dictionaryAudioLogger.debug("entry MDD play returned \(didPlay, privacy: .public)")
                 guard didPlay else {
                     guard self.audioGeneration == generation else { return }
                     self.speakPreferred(fallbackText)
@@ -584,18 +514,22 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                Self.dictionaryAudioLogger.error("entry pronunciation failed: \(error.localizedDescription, privacy: .public)")
                 guard !Task.isCancelled, self.audioGeneration == generation else { return }
                 self.speakPreferred(fallbackText)
             }
         }
     }
 
-    /// MDD records are returned as bytes rather than temporary files, so the
-    /// decoder cannot infer the container from a path suffix. Supplying the
-    /// native file type hint keeps raw MPEG/PCM records decodable while still
-    /// falling back to content sniffing for less common dictionary formats.
-    private static func makeDictionaryAudioPlayer(
+    private nonisolated static func makeDictionaryAudioPlayerInBackground(
+        data: Data,
+        mimeType: String?
+    ) async -> AVAudioPlayer? {
+        await Task.detached(priority: .userInitiated) {
+            makeDictionaryAudioPlayer(data: data, mimeType: mimeType)
+        }.value
+    }
+
+    private nonisolated static func makeDictionaryAudioPlayer(
         data: Data,
         mimeType: String?
     ) -> AVAudioPlayer? {
@@ -629,7 +563,8 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     }
 
     public func speakSelected() {
-        let text = selectedText ?? DictionaryEngine.shared.requestedQuery ?? ""
+        guard let text = selectedText, !text.isEmpty else { return }
+        DictionarySourceSettings.shared.reloadFromStorage()
         speakPreferred(text)
     }
 
@@ -643,8 +578,7 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
                     source: source
                 )
             } catch {
-                // VocabularyNotebookManager publishes the failure in the
-                // status bar; the action bar itself should remain lightweight.
+                // 异常统一在状态栏中展示
             }
         }
     }
@@ -654,27 +588,23 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         toggleVocabulary(word: selectedText, exampleSentence: contextText ?? "")
     }
 
+    private func vocabularySourceName() -> String {
+        if let title = playbackEngine?.currentMedia?.title,
+           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title
+        }
+        return ""
+    }
+
     public func openDictionaryWindow(query: String? = nil, postNotification: Bool = true) {
-        let targetQuery = query ?? selectedText ?? DictionaryEngine.shared.requestedQuery ?? ""
-        if !targetQuery.isEmpty {
-            DictionaryEngine.shared.requestLookup(targetQuery)
-        }
-        if postNotification {
-            NotificationCenter.default.post(name: .studyMateOpenDictionaryWindow, object: nil)
-        }
+        let targetQuery = query ?? selectedText ?? ""
         dismissPopover()
-        // The full dictionary window owns the interaction now. Keep playback
-        // paused until that window disappears, matching the popover behavior.
+        StudyMateDictionaryBridge.openDictionary(query: targetQuery.isEmpty ? nil : targetQuery)
         clearSelectionAndDeselect(resumePlayback: false)
     }
 
-    /// Capture the current subtitle selection for the standalone dictionary
-    /// window. The coordinator owns the marker that distinguishes subtitle
-    /// NSTextViews from search fields and editors; keeping this check here
-    /// prevents a toolbar shortcut from accidentally looking up arbitrary
-    /// selected text elsewhere in the app.
     @discardableResult
-    public func captureCurrentSelectionForDictionary() -> Bool {
+    public func captureCurrentSelection() -> Bool {
         guard let textView = currentSelectionTextView else { return false }
         let range = textView.selectedRange()
         let length = (textView.string as NSString).length
@@ -690,36 +620,40 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             guard let word = Self.wordAtCaret(in: textView) else { return false }
             value = word
         }
-        guard !DictionaryEngine.cleanQueryWord(value).isEmpty else { return false }
+        let cleaned = cleanSubtitleQueryWord(value)
+        guard !cleaned.isEmpty else { return false }
         updateSelection(
-            text: value,
-            context: objc_getAssociatedObject(textView, &dictionaryTextContextAssociationKey) as? String,
+            text: cleaned,
+            context: objc_getAssociatedObject(textView, &subtitleTextContextAssociationKey) as? String,
             screenPoint: NSEvent.mouseLocation
         )
-        DictionaryEngine.shared.requestLookup(DictionaryEngine.cleanQueryWord(value))
         return true
     }
 
-    /// Called by the full dictionary window when it is closed.
+    @discardableResult
+    public func captureCurrentSelectionForDictionary() -> Bool {
+        captureCurrentSelection()
+    }
+
     public func dictionaryWindowDidClose() {
         resumePlaybackIfNeeded()
     }
 
-    private func pausePlaybackForDictionaryInteractionIfNeeded() {
+    private func pausePlaybackForInteractionIfNeeded() {
         guard let playbackEngine else { return }
-        if !pausedPlaybackForDictionaryInteraction {
-            shouldResumePlaybackAfterDictionaryInteraction = playbackEngine.isPlaying
-            pausedPlaybackForDictionaryInteraction = true
+        if !pausedPlaybackForInteraction {
+            shouldResumePlaybackAfterInteraction = playbackEngine.isPlaying
+            pausedPlaybackForInteraction = true
         }
         guard playbackEngine.isPlaying else { return }
         playbackEngine.pause()
     }
 
     private func resumePlaybackIfNeeded() {
-        guard pausedPlaybackForDictionaryInteraction else { return }
-        let shouldResume = shouldResumePlaybackAfterDictionaryInteraction
-        pausedPlaybackForDictionaryInteraction = false
-        shouldResumePlaybackAfterDictionaryInteraction = false
+        guard pausedPlaybackForInteraction else { return }
+        let shouldResume = shouldResumePlaybackAfterInteraction
+        pausedPlaybackForInteraction = false
+        shouldResumePlaybackAfterInteraction = false
         guard shouldResume, playbackEngine?.currentMedia != nil else { return }
         playbackEngine?.play()
     }
@@ -727,11 +661,10 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     private func selectionChanged(_ textView: NSTextView?, screenPoint: NSPoint? = nil) {
         guard let textView,
               textView.window?.isKeyWindow == true,
-              Self.isDictionarySelectableTextView(textView) else { return }
+              Self.isSubtitleSelectableTextView(textView) else { return }
         let range = textView.selectedRange()
         guard range.length > 0, range.location != NSNotFound,
               range.location + range.length <= (textView.string as NSString).length else {
-            // 当 Popover 正在展示时，不要因为 TextView 失去焦点或选区重置而关闭 Popover
             if !isLookupPresented && selectedText != nil {
                 clearSelection()
             }
@@ -748,45 +681,38 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
             calculatedScreenPoint = NSPoint(x: firstRect.midX, y: firstRect.midY)
         } else if let layoutManager = textView.layoutManager, let textContainer = textView.textContainer {
             let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            rect.origin.x += textView.textContainerOrigin.x
-            rect.origin.y += textView.textContainerOrigin.y
-            let rectInWindow = textView.convert(rect, to: nil)
+            let rectInView = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
             if let window = textView.window {
-                let rectInScreen = window.convertToScreen(rectInWindow)
-                calculatedScreenRect = rectInScreen
-                calculatedScreenPoint = NSPoint(x: rectInScreen.midX, y: rectInScreen.midY)
+                let rectInWindow = textView.convert(rectInView, to: nil)
+                calculatedScreenRect = window.convertToScreen(rectInWindow)
+                calculatedScreenPoint = NSPoint(x: calculatedScreenRect!.midX, y: calculatedScreenRect!.midY)
             }
         }
 
+        let selected = (textView.string as NSString).substring(with: range)
+        let context = objc_getAssociatedObject(textView, &subtitleTextContextAssociationKey) as? String
         updateSelection(
-            text: (textView.string as NSString).substring(with: range),
-            context: objc_getAssociatedObject(textView, &dictionaryTextContextAssociationKey) as? String,
-            screenPoint: calculatedScreenPoint ?? (screenPoint.flatMap { textView.window?.convertPoint(toScreen: $0) } ?? NSEvent.mouseLocation),
+            text: selected,
+            context: context,
+            screenPoint: calculatedScreenPoint ?? screenPoint,
             screenRect: calculatedScreenRect
         )
     }
 
-    private func scheduleSelectionUpdate(for textView: NSTextView?) {
+    private func scheduleSelectionUpdate(for textView: NSTextView) {
         pendingSelectionTextView = textView
-        selectionUpdateTask?.cancel()
+        guard selectionUpdateTask == nil else { return }
         selectionUpdateTask = Task { @MainActor [weak self] in
-            do {
-                // Keep selection feedback responsive while avoiding layout
-                // work for every intermediate glyph notification.
-                try await Task.sleep(nanoseconds: 16_000_000)
-            } catch {
-                return
-            }
-            guard let self, !Task.isCancelled, !self.isLookupPresented else { return }
-            let pending = self.pendingSelectionTextView
-            self.pendingSelectionTextView = nil
+            await Task.yield()
+            guard let self else { return }
             self.selectionUpdateTask = nil
-            self.selectionChanged(pending)
+            guard let target = self.pendingSelectionTextView else { return }
+            self.pendingSelectionTextView = nil
+            self.selectionChanged(target)
         }
     }
 
-    private func flushSelectionUpdate(for textView: NSTextView, screenPoint: NSPoint) {
+    private func flushSelectionUpdate(for textView: NSTextView, screenPoint: NSPoint? = nil) {
         cancelPendingSelectionUpdate()
         selectionChanged(textView, screenPoint: screenPoint)
     }
@@ -798,26 +724,25 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
     }
 
     private var currentSelectionTextView: NSTextView? {
-        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
-           textView.window?.isKeyWindow == true,
-           Self.isDictionarySelectableTextView(textView) {
-            return textView
+        if let responder = NSApp.keyWindow?.firstResponder as? NSTextView,
+           Self.isSubtitleSelectableTextView(responder) {
+            return responder
         }
-        if let pendingSelectionTextView,
-           pendingSelectionTextView.window?.isKeyWindow == true,
-           Self.isDictionarySelectableTextView(pendingSelectionTextView) {
-            return pendingSelectionTextView
+        if let textView = pendingSelectionTextView,
+           textView.window?.isKeyWindow == true,
+           Self.isSubtitleSelectableTextView(textView) {
+            return textView
         }
         if let activeTextView,
            activeTextView.window?.isKeyWindow == true,
-           Self.isDictionarySelectableTextView(activeTextView) {
+           Self.isSubtitleSelectableTextView(activeTextView) {
             return activeTextView
         }
         return nil
     }
 
-    private nonisolated static func isDictionarySelectableTextView(_ textView: NSTextView) -> Bool {
-        (objc_getAssociatedObject(textView, &dictionarySelectableTextMarkerKey) as? NSNumber)?.boolValue == true
+    private nonisolated static func isSubtitleSelectableTextView(_ textView: NSTextView) -> Bool {
+        (objc_getAssociatedObject(textView, &subtitleSelectableTextMarkerKey) as? NSNumber)?.boolValue == true
     }
 
     private static func wordAtCaret(in textView: NSTextView) -> String? {
@@ -833,26 +758,171 @@ public final class DictionaryInteractionCoordinator: ObservableObject {
         guard wordRange.location != NSNotFound, wordRange.length > 0,
               wordRange.location + wordRange.length <= string.length else { return nil }
         let rawWord = string.substring(with: wordRange)
-        let cleaned = DictionaryEngine.cleanQueryWord(rawWord)
+        let cleaned = cleanSubtitleQueryWord(rawWord)
         return cleaned.isEmpty ? nil : cleaned
     }
+}
 
-    private static func plainText(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
+private final class SubtitlePopoverDelegate: NSObject, NSPopoverDelegate {
+    weak var coordinator: SubtitleSelectionCoordinator?
+
+    init(coordinator: SubtitleSelectionCoordinator) {
+        self.coordinator = coordinator
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover else { return }
+        Task { @MainActor [weak self] in
+            self?.coordinator?.popoverDidClose(popover)
+        }
     }
 }
 
-/// 供媒体窗口和词典窗口共同使用的通知，避免 DictionaryEngine 依赖 SwiftUI 场景。
-public extension Notification.Name {
-    static let studyMateOpenDictionaryWindow = Notification.Name("StudyMate.OpenDictionaryWindow")
+@MainActor
+private struct DictionaryLookupPopoverContent: View {
+    let query: String
+    let context: String?
+    let onLookupWord: (String) -> Void
+    let onPronounce: (String) -> Void
+    let onToggleVocabulary: (String) -> Void
+    let onOpenDictionary: (String) -> Void
+    let onDismiss: () -> Void
+    @State private var displayedQuery: String
+    @ObservedObject private var engine = DictionaryEngine.shared
+    @ObservedObject private var lang = LanguageManager.shared
+    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
+    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
+
+    private var displayedEntries: [StudyMateDictionaryLookup] {
+        if let scopeID = dictionarySourceSettings.lookupScopeDictionaryID, !scopeID.isEmpty {
+            return engine.searchResults.filter { $0.dictionaryID == scopeID }
+        }
+        return engine.searchResults
+    }
+
+    init(
+        query: String,
+        context: String?,
+        onLookupWord: @escaping (String) -> Void,
+        onPronounce: @escaping (String) -> Void,
+        onToggleVocabulary: @escaping (String) -> Void,
+        onOpenDictionary: @escaping (String) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.query = query
+        self.context = context
+        self.onLookupWord = onLookupWord
+        self.onPronounce = onPronounce
+        self.onToggleVocabulary = onToggleVocabulary
+        self.onOpenDictionary = onOpenDictionary
+        self.onDismiss = onDismiss
+        _displayedQuery = State(initialValue: query)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayedQuery)
+                        .font(.title3.weight(.semibold))
+                    if let original = engine.lemmaOriginalQuery,
+                       let resolved = engine.definitionQuery,
+                       resolved.caseInsensitiveCompare(original) != .orderedSame {
+                        Text(lang.text("已还原原型：\(resolved)", "Base form: \(resolved)"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button { onPronounce(displayedQuery) } label: {
+                    Image(systemName: "speaker.wave.2.fill")
+                }
+                .buttonStyle(.borderless)
+                .focusable(false)
+                .accessibilityLabel(lang.text("播放发音", "Pronounce"))
+                .help(lang.text("播放发音", "Pronounce"))
+
+                SubtitleVocabularyActionButton(
+                    title: vocabularyManager.isWordSaved(displayedQuery)
+                        ? lang.text("从生词本移除", "Remove from Vocabulary")
+                        : lang.text("加入生词本", "Add to Vocabulary"),
+                    help: vocabularyManager.isWordSaved(displayedQuery)
+                        ? lang.text("从生词本移除", "Remove from Vocabulary")
+                        : lang.text("加入生词本", "Add to Vocabulary"),
+                    isSaved: vocabularyManager.isWordSaved(displayedQuery),
+                    action: { onToggleVocabulary(displayedQuery) }
+                )
+                .disabled(vocabularyManager.isWorking)
+            }
+
+            Divider()
+
+            if (engine.isSearching || engine.isLoadingDefinition || engine.isBusy) && displayedEntries.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(0..<5, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.primary.opacity(index == 0 ? 0.10 : 0.06))
+                            .frame(maxWidth: index == 2 ? 220 : .infinity, minHeight: 11, maxHeight: 11)
+                    }
+                    Text(lang.text("正在查询词典…", "Looking up dictionaries…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .redacted(reason: .placeholder)
+                .padding(.vertical, 8)
+            } else if displayedEntries.isEmpty {
+                Text(lang.text("未找到释义", "No definition found"))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                DictionaryHTMLView(
+                    entries: displayedEntries,
+                    isCompact: true,
+                    allowsJavaScript: true,
+                    onLookupWord: { word in
+                        displayedQuery = word
+                        onLookupWord(word)
+                    },
+                    onPlayAudio: { audioKey in
+                        SubtitleSelectionCoordinator.shared.speak(audioKey)
+                    },
+                    onPlayDictionaryAudio: { dictID, key in
+                        SubtitleSelectionCoordinator.shared.playDictionaryAudio(dictionaryID: dictID, key: key)
+                    }
+                )
+                .frame(height: 360)
+            }
+
+            if let context, !context.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(lang.text("当前字幕上下文", "Current subtitle context"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(context)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+            }
+
+            Divider()
+            HStack {
+                Button(lang.text("在独立词典中打开", "Open in Standalone Dictionary")) {
+                    onOpenDictionary(displayedQuery)
+                }
+                Spacer()
+                Button(lang.text("关闭", "Close"), action: onDismiss)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(14)
+        .frame(width: 420)
+    }
 }
+
+public typealias DictionaryInteractionCoordinator = SubtitleSelectionCoordinator
 
 public enum TextDragPhase {
     case started
@@ -860,40 +930,46 @@ public enum TextDragPhase {
     case ended(translation: CGSize)
 }
 
+public extension Notification.Name {
+    static let studyMateOpenDictionaryWindow = Notification.Name("StudyMate.OpenDictionaryWindow")
+}
+
 public extension NSTextView {
-    /// 注册当前 NSTextView 支持字幕/文章取词，并绑定上下文例句
-    func configureForDictionaryLookup(context: String?) {
+    func configureForSubtitleLookup(context: String?) {
         objc_setAssociatedObject(
             self,
-            &dictionarySelectableTextMarkerKey,
+            &subtitleSelectableTextMarkerKey,
             NSNumber(value: true),
             .OBJC_ASSOCIATION_RETAIN_NONATOMIC
         )
         objc_setAssociatedObject(
             self,
-            &dictionaryTextContextAssociationKey,
+            &subtitleTextContextAssociationKey,
             context,
             .OBJC_ASSOCIATION_COPY_NONATOMIC
         )
     }
 
-    /// 更新当前 NSTextView 绑定的查词上下文例句
-    func updateDictionaryLookupContext(_ context: String?) {
+    func updateSubtitleLookupContext(_ context: String?) {
         objc_setAssociatedObject(
             self,
-            &dictionaryTextContextAssociationKey,
+            &subtitleTextContextAssociationKey,
             context,
             .OBJC_ASSOCIATION_COPY_NONATOMIC
         )
+    }
+
+    func configureForDictionaryLookup(context: String?) {
+        configureForSubtitleLookup(context: context)
+    }
+
+    func updateDictionaryLookupContext(_ context: String?) {
+        updateSubtitleLookupContext(context)
     }
 }
 
-/// 可选择的字幕文本。
-///
-/// 这里使用原生 NSTextView，并通过轻量子类补充鼠标进入/离开回调与修饰键拖移支持。
-/// 文本容器仍使用 NSTextView(frame:) 创建，保留 AppKit 自带的双击选词、
-/// 拖动选短语和选区通知。按住 Option/Command 拖移时将移动字幕位置，不影响普通文本选区。
-public struct DictionarySelectableText: NSViewRepresentable {
+/// 可选择的字幕文本。使用原生 NSTextView，支持鼠标悬浮回调、修饰键拖移与取词选区。
+public struct SubtitleSelectableText: NSViewRepresentable {
     public let text: String
     public let font: NSFont
     public let color: NSColor
@@ -943,7 +1019,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
             self.onHoverChanged = onHoverChanged
             self.onOptionDrag = onOptionDrag
         }
-
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -956,9 +1031,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSTextView {
-        // Use only NSTextView(frame:), which lets AppKit create its standard
-        // text container safely on all supported macOS versions.
-        let textView = DictionaryTextView(frame: .zero)
+        let textView = SubtitleTextView(frame: .zero)
         textView.onSingleClick = context.coordinator.onSingleClick
         textView.onDoubleClick = context.coordinator.onDoubleClick
         textView.onHoverChanged = context.coordinator.onHoverChanged
@@ -980,12 +1053,9 @@ public struct DictionarySelectableText: NSViewRepresentable {
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        // Keep the global selection observer scoped to the two subtitle
-        // surfaces (sentence rows and video subtitles). Other NSTextViews in
-        // the app, such as search fields and editors, must not trigger lookup.
         objc_setAssociatedObject(
             textView,
-            &dictionarySelectableTextMarkerKey,
+            &subtitleSelectableTextMarkerKey,
             NSNumber(value: true),
             .OBJC_ASSOCIATION_RETAIN_NONATOMIC
         )
@@ -1072,11 +1142,11 @@ public struct DictionarySelectableText: NSViewRepresentable {
         context.coordinator.onDoubleClick = onDoubleClick
         context.coordinator.onHoverChanged = onHoverChanged
         context.coordinator.onOptionDrag = onOptionDrag
-        if let dictTextView = textView as? DictionaryTextView {
-            dictTextView.onSingleClick = onSingleClick
-            dictTextView.onDoubleClick = onDoubleClick
-            dictTextView.onHoverChanged = onHoverChanged
-            dictTextView.onOptionDrag = onOptionDrag
+        if let subTextView = textView as? SubtitleTextView {
+            subTextView.onSingleClick = onSingleClick
+            subTextView.onDoubleClick = onDoubleClick
+            subTextView.onHoverChanged = onHoverChanged
+            subTextView.onOptionDrag = onOptionDrag
         }
 
         textView.textContainerInset = .zero
@@ -1093,10 +1163,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
         } else if textView.menu == nil {
             textView.menu = contextMenu(for: textView)
         } else if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
-            // SwiftUI can update the subtitle context while reusing the same
-            // NSTextView. Refresh the existing target instead of allocating a
-            // new menu on every list redraw, while keeping right-click lookup
-            // context accurate.
             target.text = text
             target.context = self.context
             if let lookupItem = textView.menu?.items.first {
@@ -1115,7 +1181,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         }
         objc_setAssociatedObject(
             textView,
-            &dictionaryTextContextAssociationKey,
+            &subtitleTextContextAssociationKey,
             self.context,
             .OBJC_ASSOCIATION_COPY_NONATOMIC
         )
@@ -1136,7 +1202,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
         let target = ContextMenuTarget(text: text, context: context, textView: textView)
         lookup.target = target
         copy.target = target
-        // NSTextView menus retain their target while the view is alive.
         objc_setAssociatedObject(
             textView,
             &ContextMenuTarget.associationKey,
@@ -1148,10 +1213,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         return menu
     }
 
-    /// NSTextView is hosted by AppKit and can sit above SwiftUI's hit-testing
-    /// layer. Tracking hover directly on the text view makes the move prompt
-    /// reliable for both original and translation subtitles.
-    private final class DictionaryTextView: NSTextView {
+    private final class SubtitleTextView: NSTextView {
         var onSingleClick: (() -> Void)?
         var onDoubleClick: (() -> Void)?
         var onHoverChanged: ((Bool) -> Void)?
@@ -1177,9 +1239,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            // 仅当实际换行导致的高度与之前记录的固有高度发生显著变化时，才通知尺寸失效。
-            // 垂直滚动或一般拖拽若高度未变，严禁盲目调用 invalidateIntrinsicContentSize()，
-            // 消除 AppKit 与 SwiftUI 之间的重复布局失效风暴。
             guard let textContainer, let layoutManager else { return }
             layoutManager.ensureLayout(for: textContainer)
             let usedRect = layoutManager.usedRect(for: textContainer)
@@ -1197,8 +1256,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
                 removeTrackingArea(trackingArea)
                 self.trackingArea = nil
             }
-            // 仅当实际挂载了 hover 监听或字幕 option 拖拽手势时才分配 trackingArea。
-            // 断句列表各行无需此类跟踪，避免大量 tracking area 拖垮滚动帧率。
             guard onHoverChanged != nil || onOptionDrag != nil else { return }
             let area = NSTrackingArea(
                 rect: bounds,
@@ -1248,8 +1305,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
             plainMouseDownPoint = event.locationInWindow
             plainMouseDidMove = false
             if event.clickCount == 2 {
-                // Notify before NSTextView handles the second click so media
-                // pauses at the same time as native word selection begins.
                 onDoubleClick?()
             }
             super.mouseDown(with: event)
@@ -1285,9 +1340,6 @@ public struct DictionarySelectableText: NSViewRepresentable {
                 plainMouseDownPoint = nil
                 plainMouseDidMove = false
             }
-            // NSTextView's native selection remains in charge. Only a
-            // genuine single click (not a phrase drag or the second click of
-            // a double-click word selection) should activate the sentence.
             if event.clickCount == 1, !plainMouseDidMove {
                 onSingleClick?()
             }
@@ -1327,7 +1379,7 @@ public struct DictionarySelectableText: NSViewRepresentable {
         }
 
         @objc func lookup(_ sender: Any?) {
-            let coordinator = DictionaryInteractionCoordinator.shared
+            let coordinator = SubtitleSelectionCoordinator.shared
             coordinator.updateSelection(text: selectedValue, context: context, screenPoint: NSEvent.mouseLocation)
             coordinator.lookupSelected()
         }
@@ -1339,9 +1391,11 @@ public struct DictionarySelectableText: NSViewRepresentable {
     }
 }
 
+public typealias DictionarySelectableText = SubtitleSelectableText
+
 /// 选中文字后的轻量操作条子按钮。
 @MainActor
-private struct DictionaryActionButton: View {
+private struct SubtitleActionButton: View {
     let title: String
     let systemImage: String
     let help: String
@@ -1354,12 +1408,12 @@ private struct DictionaryActionButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 24, height: 22)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.09) : Color.clear)
-            )
-            .contentShape(Rectangle())
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isHovered ? Color.primary.opacity(0.09) : Color.clear)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -1368,10 +1422,8 @@ private struct DictionaryActionButton: View {
     }
 }
 
-/// 生词本按钮使用稳定存在的基础 SF Symbols 组合，避免某些系统符号
-/// 集合中不存在 book.badge.minus 时 Image 退化为空白。
 @MainActor
-private struct VocabularyStateIcon: View {
+private struct SubtitleVocabularyStateIcon: View {
     let isSaved: Bool
 
     var body: some View {
@@ -1389,9 +1441,8 @@ private struct VocabularyStateIcon: View {
     }
 }
 
-/// 选中文字操作条中的生词本切换按钮。
 @MainActor
-private struct DictionaryVocabularyActionButton: View {
+private struct SubtitleVocabularyActionButton: View {
     let title: String
     let help: String
     let isSaved: Bool
@@ -1400,7 +1451,7 @@ private struct DictionaryVocabularyActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            VocabularyStateIcon(isSaved: isSaved)
+            SubtitleVocabularyStateIcon(isSaved: isSaved)
                 .frame(width: 24, height: 22)
                 .padding(.vertical, 4)
                 .background(
@@ -1417,11 +1468,11 @@ private struct DictionaryVocabularyActionButton: View {
     }
 }
 
-/// 选中文字后的 macOS 原生风格轻量浮动操作条。
+/// 选中文字后的 macOS 原生风格轻量浮动操作条（查词、发音、生词本）。
 @MainActor
-public struct DictionarySelectionActionBar: View {
+public struct SubtitleSelectionActionBar: View {
     private let playbackEngine: PlaybackEngine
-    @ObservedObject private var coordinator = DictionaryInteractionCoordinator.shared
+    @ObservedObject private var coordinator = SubtitleSelectionCoordinator.shared
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
 
@@ -1431,7 +1482,7 @@ public struct DictionarySelectionActionBar: View {
 
     public var body: some View {
         HStack(spacing: 3) {
-            DictionaryActionButton(
+            SubtitleActionButton(
                 title: lang.text("查词", "Look up"),
                 systemImage: "book.fill",
                 help: lang.text("在词典气泡中查询此词", "Look up in dictionary popover")
@@ -1442,7 +1493,7 @@ public struct DictionarySelectionActionBar: View {
 
             divider
 
-            DictionaryActionButton(
+            SubtitleActionButton(
                 title: lang.text("播放发音", "Pronounce"),
                 systemImage: "speaker.wave.2.fill",
                 help: lang.text("朗读当前选中文本", "Speak selected text")
@@ -1452,7 +1503,7 @@ public struct DictionarySelectionActionBar: View {
 
             divider
 
-            DictionaryVocabularyActionButton(
+            SubtitleVocabularyActionButton(
                 title: vocabularyManager.isWordSaved(coordinator.selectedText ?? "")
                     ? lang.text("从生词本移除", "Remove from Vocabulary")
                     : lang.text("加入生词本", "Add to Vocabulary"),
@@ -1469,12 +1520,8 @@ public struct DictionarySelectionActionBar: View {
         .padding(.vertical, 3.5)
         .studymateChromeCapsule()
         .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
-        // NSEvent.locationInWindow is in the AppKit window coordinate space;
-        // SwiftUI's .global frame is not. Report the frame from an embedded
-        // NSView so a click on one of these buttons cannot be mistaken for an
-        // outside click that clears the selection first.
         .background(
-            DictionaryActionBarFrameReader { frame in
+            SubtitleActionBarFrameReader { frame in
                 coordinator.actionBarFrameInWindow = frame
             }
         )
@@ -1495,11 +1542,13 @@ public struct DictionarySelectionActionBar: View {
     }
 }
 
+public typealias DictionarySelectionActionBar = SubtitleSelectionActionBar
+
 /// 主媒体窗口中的选区操作条宿主。
 @MainActor
-public struct DictionaryLookupOverlay: View {
+public struct SubtitleLookupOverlay: View {
     private let playbackEngine: PlaybackEngine
-    @ObservedObject private var coordinator = DictionaryInteractionCoordinator.shared
+    @ObservedObject private var coordinator = SubtitleSelectionCoordinator.shared
 
     public init(engine: PlaybackEngine) {
         self.playbackEngine = engine
@@ -1511,7 +1560,7 @@ public struct DictionaryLookupOverlay: View {
                 Color.clear.allowsHitTesting(false)
                 if coordinator.selectedText != nil, !coordinator.isLookupPresented {
                     let pos = actionBarPosition(in: geometry.size)
-                    DictionarySelectionActionBar(playbackEngine: playbackEngine)
+                    SubtitleSelectionActionBar(playbackEngine: playbackEngine)
                         .position(pos)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                         .allowsHitTesting(true)
@@ -1549,183 +1598,4 @@ public struct DictionaryLookupOverlay: View {
     }
 }
 
-@MainActor
-private struct DictionaryLookupPopoverContent: View {
-    let query: String
-    let context: String?
-    let onLookupWord: (String) -> Void
-    let onPronounce: (String) -> Void
-    let onToggleVocabulary: (String) -> Void
-    let onOpenDictionary: (String) -> Void
-    let onDismiss: () -> Void
-    @State private var displayedQuery: String
-    @ObservedObject private var engine = DictionaryEngine.shared
-    @ObservedObject private var lang = LanguageManager.shared
-    @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
-    @ObservedObject private var dictionaryAppearanceSettings = DictionaryAppearanceSettings.shared
-    @ObservedObject private var dictionarySourceSettings = DictionarySourceSettings.shared
-
-    private var displayedEntries: [StudyMateDictionaryLookup] {
-        if let scopeID = dictionarySourceSettings.lookupScopeDictionaryID, !scopeID.isEmpty {
-            return engine.searchResults.filter { $0.dictionaryID == scopeID }
-        }
-        return engine.searchResults
-    }
-
-    init(
-        query: String,
-        context: String?,
-        onLookupWord: @escaping (String) -> Void,
-        onPronounce: @escaping (String) -> Void,
-        onToggleVocabulary: @escaping (String) -> Void,
-        onOpenDictionary: @escaping (String) -> Void,
-        onDismiss: @escaping () -> Void
-    ) {
-        self.query = query
-        self.context = context
-        self.onLookupWord = onLookupWord
-        self.onPronounce = onPronounce
-        self.onToggleVocabulary = onToggleVocabulary
-        self.onOpenDictionary = onOpenDictionary
-        self.onDismiss = onDismiss
-        _displayedQuery = State(initialValue: query)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(displayedQuery)
-                        .font(.title3.weight(.semibold))
-                    if let original = engine.lemmaOriginalQuery,
-                       let resolved = engine.definitionQuery,
-                       resolved.caseInsensitiveCompare(original) != .orderedSame {
-                        Text(lang.text("已还原原型：\(resolved)", "Base form: \(resolved)"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                Button { onPronounce(displayedQuery) } label: {
-                    Image(systemName: "speaker.wave.2.fill")
-                }
-                .buttonStyle(.borderless)
-                .focusable(false)
-                .accessibilityLabel(lang.text("播放发音", "Pronounce"))
-                .help(lang.text("播放发音", "Pronounce"))
-
-                DictionaryVocabularyActionButton(
-                    title:
-                    vocabularyManager.isWordSaved(displayedQuery)
-                        ? lang.text("从生词本移除", "Remove from Vocabulary")
-                        : lang.text("加入生词本", "Add to Vocabulary"),
-                    help:
-                    vocabularyManager.isWordSaved(displayedQuery)
-                        ? lang.text("从生词本移除", "Remove from Vocabulary")
-                        : lang.text("加入生词本", "Add to Vocabulary"),
-                    isSaved: vocabularyManager.isWordSaved(displayedQuery),
-                    action: { onToggleVocabulary(displayedQuery) }
-                )
-                .disabled(vocabularyManager.isWorking)
-            }
-
-            Divider()
-
-            if (engine.isSearching || engine.isLoadingDefinition || engine.isBusy) && displayedEntries.isEmpty {
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(0..<5, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.primary.opacity(index == 0 ? 0.10 : 0.06))
-                            .frame(maxWidth: index == 2 ? 220 : .infinity, minHeight: 11, maxHeight: 11)
-                    }
-                    Text(lang.text("正在查询词典…", "Looking up dictionaries…"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .redacted(reason: .placeholder)
-                .padding(.vertical, 8)
-            } else if displayedEntries.isEmpty {
-                Text(lang.text("未找到释义", "No definition found"))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            } else {
-                DictionaryHTMLView(
-                    entries: displayedEntries,
-                    isCompact: true,
-                    // Keep the popover on the same WebKit/MDX execution path
-                    // as the full dictionary pane so fold controls and
-                    // dictionary-provided interactions behave consistently.
-                    allowsJavaScript: true,
-                    adaptsToSystemAppearance: dictionaryAppearanceSettings.adaptsToSystemAppearance,
-                    onLookupWord: { word in
-                        displayedQuery = word
-                        onLookupWord(word)
-                    },
-                    onPlayAudio: { audioKey in
-                        DictionaryInteractionCoordinator.shared.speakPreferred(audioKey)
-                    },
-                    onPlayDictionaryAudio: { dictionaryID, key in
-                        DictionaryInteractionCoordinator.shared.playDictionaryAudio(
-                            dictionaryID: dictionaryID,
-                            key: key
-                        )
-                    }
-                )
-                .frame(height: 360)
-            }
-
-            if let context, !context.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(lang.text("当前字幕上下文", "Current subtitle context"))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(context)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-            }
-
-            Divider()
-            HStack {
-                Button(lang.text("在词典中打开", "Open in Dictionary")) {
-                    onOpenDictionary(displayedQuery)
-                }
-                Spacer()
-                Button(lang.text("关闭", "Close"), action: onDismiss)
-                    .keyboardShortcut(.cancelAction)
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(14)
-        .frame(width: 420)
-    }
-}
-
-private final class DictionaryPopoverDelegate: NSObject, NSPopoverDelegate {
-    weak var coordinator: DictionaryInteractionCoordinator?
-
-    init(coordinator: DictionaryInteractionCoordinator) {
-        self.coordinator = coordinator
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        guard let popover = notification.object as? NSPopover else { return }
-        Task { @MainActor [weak self] in
-            guard let self, let coordinator = self.coordinator else { return }
-            coordinator.popoverDidClose(popover)
-        }
-    }
-}
-
-private extension NSView {
-    func ancestor(where predicate: (NSView) -> Bool) -> NSView? {
-        var current: NSView? = self
-        while let view = current {
-            if predicate(view) { return view }
-            current = view.superview
-        }
-        return nil
-    }
-}
+public typealias DictionaryLookupOverlay = SubtitleLookupOverlay
