@@ -33,8 +33,8 @@ public struct MainContentView: View {
         )
     }
 
-    @StateObject private var engine = PlaybackEngine.shared
-    @ObservedObject private var waveformState = PlaybackEngine.shared.waveformState
+    private let engine = PlaybackEngine.shared
+    @ObservedObject private var windowPresentationState = PlaybackEngine.shared.windowPresentationState
     @ObservedObject private var lang = LanguageManager.shared
     @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
     @ObservedObject private var libraryStatus = SentenceLibraryStatusCenter.shared
@@ -79,7 +79,7 @@ public struct MainContentView: View {
             // 媒体工作区允许自由调整窗口大小，最小尺寸 800×550。
             .frame(minWidth: 800, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
             // 全屏模式下忽略顶部安全区，工具栏以悬浮浮层形式平滑滑入滑出，避免画面上下跳动
-            .ignoresSafeArea(.container, edges: engine.isFullScreen ? .top : [])
+            .ignoresSafeArea(.container, edges: windowPresentationState.isFullScreen ? .top : [])
         .background(WindowTextInputFocusDismissalBridge())
         .background {
             Button("") {
@@ -92,7 +92,6 @@ public struct MainContentView: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
         }
-        .animation(Self.panelSpringAnimation, value: shouldShowStatusBar)
         .animation(Self.panelSpringAnimation, value: isWaveformsVisible)
         .animation(Self.panelSpringAnimation, value: isSecondaryWaveformVisible)
         .animation(Self.panelSpringAnimation, value: isSubtitleEditVisible)
@@ -111,6 +110,8 @@ public struct MainContentView: View {
             // is reopened.  Reset the one-shot close guard here; otherwise a
             // second “文件 > 关闭” is ignored after the first close cycle.
             isClosingCurrentMedia = false
+            PlaybackWorkspacePreferences.initializeWaveformPreferences()
+            isWaveformsVisible = PlaybackWorkspacePreferences.waveformsVisible(for: playbackInterfaceMode)
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && scenePhase == .active)
             if isPlaylistVisible {
                 // 持久化的布局在窗口恢复时直接进入最终状态，避免每次启动都播放一次抽屉动画。
@@ -139,12 +140,15 @@ public struct MainContentView: View {
             togglePlaylist()
         }
         .onChange(of: isWaveformsVisible) { _, visible in
+            PlaybackWorkspacePreferences.setWaveformsVisible(visible, for: playbackInterfaceMode)
             engine.setHighFrequencyPresentationEnabled(visible && scenePhase == .active)
         }
         .onChange(of: scenePhase) { _, phase in
             engine.setHighFrequencyPresentationEnabled(isWaveformsVisible && phase == .active)
         }
-        .onChange(of: playbackInterfaceMode) { _, newMode in
+        .onChange(of: playbackInterfaceMode) { oldMode, newMode in
+            PlaybackWorkspacePreferences.setWaveformsVisible(isWaveformsVisible, for: oldMode)
+            isWaveformsVisible = PlaybackWorkspacePreferences.waveformsVisible(for: newMode)
             handlePlaybackInterfaceModeChange(to: newMode)
         }
         .onAppear {
@@ -175,26 +179,10 @@ public struct MainContentView: View {
         }
     }
 
-    /// 有后台任务或错误时即使用户关闭了常驻状态栏，也临时显示状态栏，
-    /// 避免进度和错误没有任何可见出口；任务结束/错误关闭后恢复用户的隐藏设置。
-
-    private var shouldShowStatusBar: Bool {
-        isStatusBarVisible
-            || waveformState.isExtracting
-            || engine.isAITranscribing
-            || engine.isAutoTranslating
-            || libraryStatus.isWorking
-            || engine.statusErrorMessage != nil
-            || libraryStatus.errorMessage != nil
-            || statusCenter.progress != nil
-            || statusCenter.errorMessage != nil
-            || statusCenter.successMessage != nil
-            || !statusCenter.issues.isEmpty
-    }
-
     private var windowToolbar: MainWindowToolbar {
         MainWindowToolbar(
             engine: engine,
+            toolbarState: engine.toolbarState,
             lang: lang,
             videoSubtitleSettings: videoSubtitleSettings,
             dictionaryCoordinator: dictionaryCoordinator,
@@ -249,17 +237,15 @@ public struct MainContentView: View {
                 fillInBlankModeWorkspace
             }
 
-            if shouldShowStatusBar {
-                PlaybackStatusBar(
-                    engine: engine,
-                    libraryManager: SentenceLibraryManager.shared,
-                    waveformState: waveformState,
-                    statusCenter: statusCenter,
-                    playbackInterfaceMode: playbackInterfaceMode,
-                    onResolveProjectRecovery: { isProjectRecoveryDialogPresented = true }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            PlaybackStatusBarContainer(
+                engine: engine,
+                isStatusBarVisible: $isStatusBarVisible,
+                libraryStatus: libraryStatus,
+                waveformState: engine.waveformState,
+                statusCenter: statusCenter,
+                playbackInterfaceMode: playbackInterfaceMode,
+                onResolveProjectRecovery: { isProjectRecoveryDialogPresented = true }
+            )
         }
         .transaction { transaction in
             if engine.isWindowResizing {
@@ -529,11 +515,6 @@ extension MainContentView {
             }
             engine.pauseAfterSegmentHoldsCurrentSegment = true
             engine.loopMode = .pauseAfterSegment
-            if engine.currentMedia != nil && !engine.segments.isEmpty {
-                let targetIdx = engine.activeSegmentIndex ?? 0
-                engine.jumpToSegment(at: targetIdx)
-                engine.play()
-            }
         } else {
             engine.pauseAfterSegmentHoldsCurrentSegment = false
             if let prev = savedLoopModeBeforeFillInBlank {
@@ -726,7 +707,8 @@ extension MainContentView {
 /// - 中区（播放调节）：语速、复读、跟读一体化胶囊药丸合集（Liquid Glass Capsule）
 /// - 右区（工作区面板开关与字幕）：字幕控制组（原文/译文/样式）、播放列表、Xcode 风格三段面板切换开关
 private struct MainWindowToolbar: ToolbarContent {
-    @ObservedObject var engine: PlaybackEngine
+    let engine: PlaybackEngine
+    @ObservedObject var toolbarState: PlaybackToolbarState
     @ObservedObject var lang: LanguageManager
     @ObservedObject var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject var dictionaryCoordinator: DictionaryInteractionCoordinator
@@ -755,9 +737,9 @@ private struct MainWindowToolbar: ToolbarContent {
         }
 
         ToolbarItem(placement: .navigation) {
-            ControlGroup {
+            Menu {
                 Button(action: onOpenDictionary) {
-                    Image(systemName: "character.book.closed").studymateToolbarIcon()
+                    Label(lang.text("词典", "Dictionary"), systemImage: "character.book.closed")
                 }
                 .help(StudyMateShortcutCatalog.help(
                     lang.text("打开词典", "Open dictionary"),
@@ -768,21 +750,25 @@ private struct MainWindowToolbar: ToolbarContent {
                 .keyboardShortcut("d", modifiers: [.command, .control])
 
                 Button(action: onOpenLibrary) {
-                    Image(systemName: "books.vertical").studymateToolbarIcon()
+                    Label(lang.text("句库", "Sentence Library"), systemImage: "books.vertical")
                 }
                 .help(StudyMateShortcutCatalog.help(lang.text("打开句库", "Open sentence library"), shortcut: .openSentenceLibrary))
                 .accessibilityLabel(lang.text("打开句库", "Open sentence library"))
                 .keyboardShortcut("l", modifiers: [.command])
 
                 Button(action: onOpenVocabulary) {
-                    Image(systemName: "book.closed").studymateToolbarIcon()
+                    Label(lang.text("生词本", "Vocabulary"), systemImage: "book.closed")
                 }
                 .help(lang.text("打开生词本", "Open vocabulary"))
                 .accessibilityLabel(lang.text("打开生词本", "Open vocabulary"))
+            } label: {
+                Label(lang.text("学习资源", "Resources"), systemImage: "books.vertical")
             }
+            .labelStyle(.titleAndIcon)
+            .accessibilityLabel(lang.text("学习资源", "Learning resources"))
         }
 
-        if let media = engine.currentMedia {
+        if let media = toolbarState.currentMedia {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 5) {
                     Image(systemName: media.isVideo ? "video.fill" : "music.note")
@@ -810,8 +796,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 selection: $playbackInterfaceMode
             ) {
                 ForEach(PlaybackInterfaceMode.allCases) { mode in
-                    Image(systemName: mode.iconName)
-                        .studymateToolbarIcon()
+                    Text(mode.localized(with: lang).replacingOccurrences(of: lang.text("模式", " Mode"), with: ""))
                         .tag(mode)
                         .help(mode.localized(with: lang))
                         .accessibilityLabel(mode.localized(with: lang))
@@ -827,7 +812,7 @@ private struct MainWindowToolbar: ToolbarContent {
 
         // MARK: - 中区：播放调节胶囊药丸合集
         ToolbarItem(placement: .principal) {
-            PlaybackAdjustmentCapsule(engine: engine, lang: lang)
+            PlaybackAdjustmentCapsule(engine: engine, toolbarState: toolbarState, lang: lang)
         }
 
         // MARK: - 右区：工作区面板开关与字幕控制
@@ -916,7 +901,6 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityHint(lang.text("切换波形图工作区", "Toggle waveform workspace"))
                 .accessibilityAddTraits(isWaveformsVisible ? .isSelected : [])
                 .keyboardShortcut("w", modifiers: [.option])
-                .disabled(playbackInterfaceMode != .video)
 
                 Toggle(isOn: Binding(
                     get: { isSubtitleEditVisible },
@@ -963,7 +947,8 @@ private struct MainWindowToolbar: ToolbarContent {
 
 /// 播放调节胶囊药丸合集（语速、复读、跟读）
 private struct PlaybackAdjustmentCapsule: View {
-    @ObservedObject var engine: PlaybackEngine
+    let engine: PlaybackEngine
+    @ObservedObject var toolbarState: PlaybackToolbarState
     @ObservedObject var lang: LanguageManager
 
     private var repeatOptions: [(label: String, count: Int)] {
@@ -980,26 +965,26 @@ private struct PlaybackAdjustmentCapsule: View {
     ]
 
     private var repeatLabel: String {
-        engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)×"
+        toolbarState.repeatCountLimit == 0 ? "∞" : "\(toolbarState.repeatCountLimit)×"
     }
 
     private var pauseLabel: String {
-        if engine.shadowingPauseSeconds > 0 {
-            return "\(Int(engine.shadowingPauseSeconds))s"
+        if toolbarState.shadowingPauseSeconds > 0 {
+            return "\(Int(toolbarState.shadowingPauseSeconds))s"
         }
-        return engine.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", engine.shadowingPauseRatio)
+        return toolbarState.shadowingPauseRatio == 0 ? lang.text("关", "Off") : String(format: "%.2g×", toolbarState.shadowingPauseRatio)
     }
 
     private var isSpeedActive: Bool {
-        abs(engine.playbackRate - 1.0) > 0.001
+        abs(toolbarState.playbackRate - 1.0) > 0.001
     }
 
     private var isRepeatActive: Bool {
-        engine.repeatCountLimit != 1 || engine.loopMode == .singleSegment || engine.loopMode == .all
+        toolbarState.repeatCountLimit != 1 || toolbarState.loopMode == .singleSegment || toolbarState.loopMode == .all
     }
 
     private var isShadowingActive: Bool {
-        engine.shadowingPauseSeconds > 0 || engine.shadowingPauseRatio > 0
+        toolbarState.shadowingPauseSeconds > 0 || toolbarState.shadowingPauseRatio > 0
     }
 
     var body: some View {
@@ -1008,7 +993,7 @@ private struct PlaybackAdjustmentCapsule: View {
             Menu {
                 ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in
                     Button { engine.playbackRate = speed } label: {
-                        if abs(engine.playbackRate - speed) < 0.01 {
+                        if abs(toolbarState.playbackRate - speed) < 0.01 {
                             Label(String(format: "%.2fx", speed), systemImage: "checkmark")
                         } else {
                             Text(String(format: "%.2fx", speed))
@@ -1023,7 +1008,7 @@ private struct PlaybackAdjustmentCapsule: View {
                 HStack(spacing: 3) {
                     Image(systemName: "gauge.with.needle")
                         .font(.system(size: 11, weight: .semibold))
-                    Text(String(format: "%.2fx", engine.playbackRate))
+                    Text(String(format: "%.2fx", toolbarState.playbackRate))
                         .studymateToolbarValueLabel()
                 }
                 .foregroundStyle(isSpeedActive ? StudyMateMediaStyle.accent : Color.primary)
@@ -1033,7 +1018,7 @@ private struct PlaybackAdjustmentCapsule: View {
             .fixedSize()
             .help(StudyMateShortcutCatalog.help(lang.text("调节播放语速", "Playback rate"), shortcut: .playbackRateMenu))
             .accessibilityLabel(lang.text("播放速度", "Playback speed"))
-            .accessibilityValue(String(format: "%.2fx", engine.playbackRate))
+            .accessibilityValue(String(format: "%.2fx", toolbarState.playbackRate))
             .keyboardShortcut("r", modifiers: [.command, .shift])
 
             Divider()
@@ -1046,7 +1031,7 @@ private struct PlaybackAdjustmentCapsule: View {
                     Button {
                         engine.loopMode = .normal
                     } label: {
-                        if engine.loopMode == .normal {
+                        if toolbarState.loopMode == .normal {
                             Label(lang.text("连续播放", "Continuous Play"), systemImage: "checkmark")
                         } else {
                             Label(lang.text("连续播放", "Continuous Play"), systemImage: PlaybackLoopMode.normal.iconName)
@@ -1055,7 +1040,7 @@ private struct PlaybackAdjustmentCapsule: View {
                     Button {
                         engine.loopMode = .singleSegment
                     } label: {
-                        if engine.loopMode == .singleSegment {
+                        if toolbarState.loopMode == .singleSegment {
                             Label(lang.text("单句重复", "Repeat Sentence"), systemImage: "checkmark")
                         } else {
                             Label(lang.text("单句重复", "Repeat Sentence"), systemImage: PlaybackLoopMode.singleSegment.iconName)
@@ -1064,7 +1049,7 @@ private struct PlaybackAdjustmentCapsule: View {
                     Button {
                         engine.loopMode = .all
                     } label: {
-                        if engine.loopMode == .all {
+                        if toolbarState.loopMode == .all {
                             Label(lang.text("全篇循环", "Loop Entire File"), systemImage: "checkmark")
                         } else {
                             Label(lang.text("全篇循环", "Loop Entire File"), systemImage: PlaybackLoopMode.all.iconName)
@@ -1079,11 +1064,11 @@ private struct PlaybackAdjustmentCapsule: View {
                         Button {
                             engine.repeatCountLimit = option.count
                             engine.currentRepeatCount = 1
-                            if option.count != 1 && engine.loopMode == .normal {
+                            if option.count != 1 && toolbarState.loopMode == .normal {
                                 engine.loopMode = .singleSegment
                             }
                         } label: {
-                            if engine.repeatCountLimit == option.count {
+                            if toolbarState.repeatCountLimit == option.count {
                                 Label(option.label, systemImage: "checkmark")
                             } else {
                                 Text(option.label)
@@ -1093,7 +1078,7 @@ private struct PlaybackAdjustmentCapsule: View {
                 }
             } label: {
                 HStack(spacing: 3) {
-                    Image(systemName: engine.loopMode == .singleSegment ? "repeat.1" : (engine.loopMode == .all ? "repeat" : "repeat.circle"))
+                    Image(systemName: toolbarState.loopMode == .singleSegment ? "repeat.1" : (toolbarState.loopMode == .all ? "repeat" : "repeat.circle"))
                         .font(.system(size: 11, weight: .semibold))
                     Text(repeatLabel)
                         .studymateToolbarValueLabel()
@@ -1115,7 +1100,7 @@ private struct PlaybackAdjustmentCapsule: View {
             Menu {
                 Button {
                     engine.setShadowingPauseRatio(0)
-                    if engine.loopMode == .pauseAfterSegment {
+                    if toolbarState.loopMode == .pauseAfterSegment {
                         engine.loopMode = .normal
                     }
                 } label: {
@@ -1132,11 +1117,11 @@ private struct PlaybackAdjustmentCapsule: View {
                     ForEach(shadowingPauseSecondsOptions, id: \.self) { sec in
                         Button {
                             engine.setShadowingPauseSeconds(Double(sec))
-                            if engine.loopMode == .pauseAfterSegment {
+                            if toolbarState.loopMode == .pauseAfterSegment {
                                 engine.loopMode = .normal
                             }
                         } label: {
-                            if isShadowingActive && abs(engine.shadowingPauseSeconds - Double(sec)) < 0.001 {
+                            if isShadowingActive && abs(toolbarState.shadowingPauseSeconds - Double(sec)) < 0.001 {
                                 Label("\(sec)s", systemImage: "checkmark")
                             } else {
                                 Text("\(sec)s")
@@ -1151,11 +1136,11 @@ private struct PlaybackAdjustmentCapsule: View {
                     ForEach(shadowingPauseRatioOptions, id: \.ratio) { option in
                         Button {
                             engine.setShadowingPauseRatio(option.ratio)
-                            if engine.loopMode == .pauseAfterSegment {
+                            if toolbarState.loopMode == .pauseAfterSegment {
                                 engine.loopMode = .normal
                             }
                         } label: {
-                            if isShadowingActive && engine.shadowingPauseSeconds == 0 && abs(engine.shadowingPauseRatio - option.ratio) < 0.001 {
+                            if isShadowingActive && toolbarState.shadowingPauseSeconds == 0 && abs(toolbarState.shadowingPauseRatio - option.ratio) < 0.001 {
                                 Label(option.label, systemImage: "checkmark")
                             } else {
                                 Text(option.label)
@@ -1197,10 +1182,55 @@ private struct PlaybackAdjustmentCapsule: View {
         .frame(width: 1200, height: 800)
 }
 
+/// 状态栏自己观察进度与错误来源，避免这些短时状态变化让主窗口容器和
+/// 原生工具栏一起重算。当前句切换只会更新状态栏内部的局部文本。
+private struct PlaybackStatusBarContainer: View {
+    @ObservedObject var engine: PlaybackEngine
+    @Binding var isStatusBarVisible: Bool
+    @ObservedObject var libraryStatus: SentenceLibraryStatusCenter
+    @ObservedObject var waveformState: WaveformPresentationState
+    @ObservedObject var statusCenter: MainStatusCenter
+    let playbackInterfaceMode: PlaybackInterfaceMode
+    let onResolveProjectRecovery: () -> Void
+
+    private var shouldShowStatusBar: Bool {
+        isStatusBarVisible
+            || waveformState.isExtracting
+            || engine.isAITranscribing
+            || engine.isAutoTranslating
+            || libraryStatus.isWorking
+            || engine.statusErrorMessage != nil
+            || libraryStatus.errorMessage != nil
+            || statusCenter.progress != nil
+            || statusCenter.errorMessage != nil
+            || statusCenter.successMessage != nil
+            || !statusCenter.issues.isEmpty
+    }
+
+    var body: some View {
+        Group {
+            if shouldShowStatusBar {
+                PlaybackStatusBar(
+                    engine: engine,
+                    libraryManager: SentenceLibraryManager.shared,
+                    waveformState: waveformState,
+                    statusCenter: statusCenter,
+                    playbackInterfaceMode: playbackInterfaceMode,
+                    onResolveProjectRecovery: onResolveProjectRecovery
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(MainContentView.panelSpringAnimation, value: shouldShowStatusBar)
+    }
+}
+
 /// 主窗口底部的紧凑播放状态栏；它位于 HSplitView 之后，因此断句列表始终在其上方。
 /// 播放信息靠左，所有进度与错误提示统一靠右显示。
 private struct PlaybackStatusBar: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
+    @ObservedObject private var repeatPresentationState: PlaybackRepeatPresentationState
     @ObservedObject var libraryManager: SentenceLibraryManager
     @ObservedObject var waveformState: WaveformPresentationState
     @ObservedObject var statusCenter: MainStatusCenter
@@ -1208,14 +1238,32 @@ private struct PlaybackStatusBar: View {
     let onResolveProjectRecovery: () -> Void
     @ObservedObject private var lang = LanguageManager.shared
 
+    init(
+        engine: PlaybackEngine,
+        libraryManager: SentenceLibraryManager,
+        waveformState: WaveformPresentationState,
+        statusCenter: MainStatusCenter,
+        playbackInterfaceMode: PlaybackInterfaceMode,
+        onResolveProjectRecovery: @escaping () -> Void
+    ) {
+        self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
+        self._repeatPresentationState = ObservedObject(wrappedValue: engine.repeatPresentationState)
+        self.libraryManager = libraryManager
+        self.waveformState = waveformState
+        self.statusCenter = statusCenter
+        self.playbackInterfaceMode = playbackInterfaceMode
+        self.onResolveProjectRecovery = onResolveProjectRecovery
+    }
+
     private var currentSegmentText: String {
-        let current = engine.activeSegmentIndex.map { $0 + 1 } ?? 0
+        let current = activeSegmentState.index.map { $0 + 1 } ?? 0
         return "\(current)/\(engine.segments.count)"
     }
 
     private var repeatCountText: String {
         let total = engine.repeatCountLimit == 0 ? "∞" : "\(engine.repeatCountLimit)"
-        return "\(engine.currentRepeatCount)/\(total)"
+        return "\(repeatPresentationState.currentRepeatCount)/\(total)"
     }
 
     private var shadowingText: String {
@@ -1678,4 +1726,3 @@ private struct StatusBarIssueRowView: View {
         .padding(.vertical, 8)
     }
 }
-

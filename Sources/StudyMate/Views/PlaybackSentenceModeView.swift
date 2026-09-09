@@ -12,6 +12,7 @@ import SwiftUI
 /// 5. 原文与译文均使用 DictionarySelectableText，完整支持原生取词、查词、发音与加入生词本。
 public struct PlaybackSentenceModeView: View {
     @ObservedObject private var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
 
@@ -24,13 +25,14 @@ public struct PlaybackSentenceModeView: View {
         lang: LanguageManager = .shared
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
     }
 
     /// 当前激活的断句段落；若尚未定位，默认显示第一句
     private var currentSegment: SentenceSegment? {
-        if let index = engine.activeSegmentIndex,
+        if let index = activeSegmentState.index,
            engine.segments.indices.contains(index) {
             return engine.segments[index]
         }
@@ -62,7 +64,7 @@ public struct PlaybackSentenceModeView: View {
     @ViewBuilder
     private func sentenceAreaView(seg: SentenceSegment) -> some View {
         GeometryReader { geo in
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 0) {
                     Spacer(minLength: 20)
 
@@ -91,6 +93,7 @@ public struct PlaybackSentenceModeView: View {
                 }
                 .frame(minWidth: geo.size.width, minHeight: geo.size.height)
             }
+            .id(seg.id)
         }
     }
 

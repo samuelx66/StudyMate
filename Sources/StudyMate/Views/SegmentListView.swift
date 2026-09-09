@@ -460,6 +460,7 @@ private extension View {
 
 public struct SegmentListView: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     /// 播放列表等顶层抽屉展示期间，底层控件不能继续注册说明提示。
     /// AppKit 的 tooltip tracking area 不会自动遵循 SwiftUI 的视觉遮挡层级。
     private let suppressToolTips: Bool
@@ -491,6 +492,7 @@ public struct SegmentListView: View {
     /// playback-count update no longer forces the LazyVStack to rebuild all
     /// visible rows.
     @State private var displayedSegmentsRevision: Int = 0
+    @AppStorage("StudyMate.SegmentListEditingLayout") private var editingLayout = false
     @State private var selectionRevision: Int = 0
     @State private var cachedSegmentIDs: Set<UUID> = []
     @State private var selectedDisplayedCountValue: Int = 0
@@ -507,6 +509,7 @@ public struct SegmentListView: View {
 
     public init(engine: PlaybackEngine, suppressToolTips: Bool = false) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.suppressToolTips = suppressToolTips
     }
 
@@ -532,6 +535,26 @@ public struct SegmentListView: View {
                 }
 
                 Spacer()
+
+                Menu {
+                    Section(lang.text("字幕处理", "Subtitle tools")) {
+                        Button(lang.text("导入字幕…", "Import subtitles…")) { showImportSheet = true }
+                        Button(lang.text("重新生成原文…", "Regenerate original text…")) {
+                            showRegenerateOriginalConfirmation = true
+                        }
+                        .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
+                        .help(regenerateOriginalHelpText)
+                    }
+                    Divider()
+                    Picker(lang.text("列表布局", "List layout"), selection: $editingLayout) {
+                        Text(lang.text("阅读：突出双语内容", "Reading: focus on subtitles")).tag(false)
+                        Text(lang.text("编辑：显示时间与批量操作", "Editing: timing and selection")).tag(true)
+                    }
+                } label: {
+                    Text(editingLayout ? lang.text("编辑", "Editing") : lang.text("阅读", "Reading"))
+                }
+                .fixedSize()
+                .help(lang.text("列表布局与字幕处理", "List layout and subtitle tools"))
 
                 // 播放时自动跟随当前句开关
                 Button(action: {
@@ -589,24 +612,6 @@ public struct SegmentListView: View {
                     )
                 }
 
-                // 按现有时间轴重新运行 Whisper，只覆盖原文；未勾选时处理全部句子。
-                Button {
-                    showRegenerateOriginalConfirmation = true
-                } label: {
-                    Image(systemName: "waveform.and.mic")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .disabled(
-                    engine.currentMedia == nil
-                        || engine.segments.isEmpty
-                        || engine.isAITranscribing
-                        || engine.isAutoTranslating
-                )
-                .segmentListHelp(regenerateOriginalHelpText)
-
                 // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
                 Button {
                     showTranslationPopover = true
@@ -632,23 +637,6 @@ public struct SegmentListView: View {
                         lang: lang
                     )
                 }
-
-                // 导入字幕按钮
-                Button(action: { showImportSheet = true }) {
-                    Image(systemName: "arrow.down.doc")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                        .segmentListHelp(StudyMateShortcutCatalog.help(
-                            lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
-                            shortcut: .importSubtitles
-                        ))
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .segmentListHelp(StudyMateShortcutCatalog.help(
-                    lang.text("导入字幕（SRT / LRC / VTT / ASS / SSA / TXT）", "Import subtitles (SRT / LRC / VTT / ASS / SSA / TXT)"),
-                    shortcut: .importSubtitles
-                ))
 
                 // 将已选断句统一导出为音频和字幕（仅在勾选句子时显示并启用）
                 if !selectedSegmentIDs.isEmpty {
@@ -683,6 +671,7 @@ public struct SegmentListView: View {
 
                 // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
                 Button {
+                    if selectedSegmentIDs.isEmpty { editingLayout = true }
                     showAddToLibraryPopover = true
                 } label: {
                     Image(systemName: "text.badge.plus")
@@ -785,6 +774,7 @@ public struct SegmentListView: View {
                                 isScrolling: isUserScrolling,
                                 displayedSegmentsRevision: displayedSegmentsRevision,
                                 selectionRevision: selectionRevision,
+                                editingLayout: editingLayout,
                                 totalSegmentsCount: engine.segments.count,
                                 onToggleExportSelection: { id in
                                     if selectedSegmentIDs.contains(id) {
@@ -858,7 +848,7 @@ public struct SegmentListView: View {
                             .equatable()
                         }
                         .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
-                            let newIndex = engine.activeSegmentIndex
+                            let newIndex = activeSegmentState.index
                             guard followState.shouldFollow else { return }
                             if let idx = newIndex, idx >= 0, idx < engine.segments.count {
                                 let targetId = engine.segments[idx].id
@@ -1058,7 +1048,7 @@ public struct SegmentListView: View {
     }
 
     private var activeSegmentID: UUID? {
-        guard let index = engine.activeSegmentIndex,
+        guard let index = activeSegmentState.index,
               engine.segments.indices.contains(index) else { return nil }
         return engine.segments[index].id
     }
@@ -1945,6 +1935,7 @@ private struct SegmentListRowsView: View, Equatable {
     let isScrolling: Bool
     let displayedSegmentsRevision: Int
     let selectionRevision: Int
+    let editingLayout: Bool
     let totalSegmentsCount: Int
     let onToggleExportSelection: (UUID) -> Void
     let onSelect: (UUID) -> Void
@@ -1970,6 +1961,7 @@ private struct SegmentListRowsView: View, Equatable {
                     isActive: activeSegmentID == seg.id,
                     isSelectedForExport: selectedSegmentIDs.contains(seg.id),
                     isScrolling: isScrolling,
+                    editingLayout: editingLayout,
                     totalSegmentsCount: totalSegmentsCount,
                     onToggleExportSelection: {
                         onToggleExportSelection(seg.id)
@@ -2035,6 +2027,7 @@ extension SegmentListRowsView {
             && lhs.engineIdentity == rhs.engineIdentity
             && lhs.language.rawValue == rhs.language.rawValue
             && lhs.isScrolling == rhs.isScrolling
+            && lhs.editingLayout == rhs.editingLayout
             && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
     }
@@ -2046,6 +2039,7 @@ struct SegmentRowView: View, Equatable {
     let isActive: Bool
     let isSelectedForExport: Bool
     let isScrolling: Bool
+    var editingLayout: Bool = true
     let totalSegmentsCount: Int
     let onToggleExportSelection: () -> Void
     let onSelect: () -> Void
@@ -2069,6 +2063,7 @@ struct SegmentRowView: View, Equatable {
             && lhs.isActive == rhs.isActive
             && lhs.isSelectedForExport == rhs.isSelectedForExport
             && lhs.isScrolling == rhs.isScrolling
+            && lhs.editingLayout == rhs.editingLayout
             && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
             && lhs.language == rhs.language
@@ -2076,6 +2071,7 @@ struct SegmentRowView: View, Equatable {
 
     var body: some View {
         HStack(spacing: 0) {
+                if editingLayout || isSelectedForExport {
                 Button(action: onToggleExportSelection) {
                     Image(systemName: isSelectedForExport ? "checkmark.square.fill" : "square")
                         .font(.system(size: 12))
@@ -2089,6 +2085,8 @@ struct SegmentRowView: View, Equatable {
                 ))
                 .padding(.leading, 4)
                 .padding(.trailing, 6)
+
+                }
 
                 // 左侧活跃状态指示竖条
                 RoundedRectangle(cornerRadius: 1.5)
@@ -2121,11 +2119,13 @@ struct SegmentRowView: View, Equatable {
                             .foregroundColor(isActive ? .white : .primary)
                             .cornerRadius(3)
 
-                        // 起止时间
+                        // 起止时间只在编辑布局出现。
+                        if editingLayout {
                         Text("\(seg.formattedStartTime) - \(seg.formattedEndTime)")
                             .font(.system(size: 10, weight: isActive ? .bold : .regular).monospacedDigit())
                             .foregroundColor(isActive ? .primary : .secondary)
 
+                        }
                         if !seg.speakerIDs.isEmpty {
                             let speakerLabel: String = {
                                 let ids = seg.speakerIDs.map { String($0 + 1) }
@@ -2149,6 +2149,7 @@ struct SegmentRowView: View, Equatable {
 
                         Spacer()
 
+                        if editingLayout {
                         // 时长
                         Text(seg.formattedDuration)
                             .font(.system(size: 9).monospacedDigit())
@@ -2243,6 +2244,7 @@ struct SegmentRowView: View, Equatable {
                         // the pointer enters or leaves a row.
                         .frame(width: 140, height: 20, alignment: .trailing)
                         .zIndex(3)
+                        }
                     }
 
                     // 第二行：分为两个区域，左边显示原文，右边显示译文
@@ -2279,7 +2281,7 @@ struct SegmentRowView: View, Equatable {
                                     context: [orig, trans].filter { !$0.isEmpty }.joined(separator: "\n"),
                                     onSingleClick: onSelect
                                 )
-                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 42, alignment: .leading)
+                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: editingLayout ? 42 : nil, alignment: .leading)
                             }
 
                             // 右边区域：译文
@@ -2291,7 +2293,7 @@ struct SegmentRowView: View, Equatable {
                                     context: [orig, trans].filter { !$0.isEmpty }.joined(separator: "\n"),
                                     onSingleClick: onSelect
                                 )
-                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 42, alignment: .leading)
+                                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: editingLayout ? 42 : nil, alignment: .leading)
                             }
                         }
                     }

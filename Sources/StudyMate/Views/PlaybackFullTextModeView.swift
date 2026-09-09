@@ -155,6 +155,7 @@ public enum FullTextParagraphBuilder {
             mutableAttr.addAttributes([
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
                 .underlineColor: NSColor.labelColor,
+                                       .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.12),
                 .foregroundColor: NSColor.labelColor
             ], range: match.range)
         }
@@ -172,6 +173,7 @@ public enum FullTextParagraphBuilder {
 /// 完整支持划词查词、双击播放、单击跳转与全套播放循环控制。
 public struct PlaybackFullTextModeView: View {
     @ObservedObject private var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
 
@@ -187,12 +189,13 @@ public struct PlaybackFullTextModeView: View {
         lang: LanguageManager = .shared
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
     }
 
     private var activeSegmentID: UUID? {
-        guard let index = engine.activeSegmentIndex,
+        guard let index = activeSegmentState.index,
               engine.segments.indices.contains(index) else { return nil }
         return engine.segments[index].id
     }
@@ -763,11 +766,13 @@ final class FullTextTextRenderer {
             if let previous = highlightedRange {
                 storage.removeAttribute(.underlineStyle, range: previous)
                 storage.removeAttribute(.underlineColor, range: previous)
+                storage.removeAttribute(.backgroundColor, range: previous)
                 storage.addAttribute(.foregroundColor, value: color, range: previous)
             }
             if let current = validRange {
                 storage.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
                                        .underlineColor: NSColor.labelColor,
+                                       .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.12),
                                        .foregroundColor: NSColor.labelColor], range: current)
             }
             highlightedRange = validRange

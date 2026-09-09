@@ -150,6 +150,7 @@ public struct FillInBlankFlowLayout: Layout {
 
 public struct PlaybackFillInBlankModeView: View {
     @ObservedObject private var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
 
@@ -163,12 +164,13 @@ public struct PlaybackFillInBlankModeView: View {
         lang: LanguageManager = .shared
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
     }
 
     private var currentSegment: SentenceSegment? {
-        if let index = engine.activeSegmentIndex,
+        if let index = activeSegmentState.index,
            engine.segments.indices.contains(index) {
             return engine.segments[index]
         }
@@ -207,12 +209,7 @@ public struct PlaybackFillInBlankModeView: View {
     private func ensureModePlaybackReady() {
         engine.pauseAfterSegmentHoldsCurrentSegment = true
         engine.loopMode = .pauseAfterSegment
-        guard engine.currentMedia != nil, !engine.segments.isEmpty else { return }
-        if !engine.isPlaying {
-            let targetIdx = engine.activeSegmentIndex ?? 0
-            engine.jumpToSegment(at: targetIdx)
-            engine.play()
-        }
+
     }
 
     // MARK: - 填空句子主交互视窗
@@ -223,6 +220,18 @@ public struct PlaybackFillInBlankModeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     Spacer(minLength: 20)
+
+                    HStack(spacing: 12) {
+                        Text(lang.text("听写练习 · 每句结束后暂停", "Dictation · Pauses after each sentence"))
+                            .font(.callout).foregroundStyle(.secondary)
+                        if !engine.isPlaying {
+                            Button(lang.text("开始练习", "Start practice")) {
+                                engine.repeatCurrentSegment()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.bottom, 20)
 
                     FillInBlankCardView(
                         seg: seg,

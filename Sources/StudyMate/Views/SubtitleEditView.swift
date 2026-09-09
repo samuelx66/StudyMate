@@ -4,6 +4,7 @@ import AppKit
 /// 字幕编辑区视图（位于视频画面播放区域与播放控制栏之间，支持双行输入原文与译文，焦点离开时自动保存）
 public struct SubtitleEditView: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject var lang = LanguageManager.shared
     
     enum FocusField: Hashable {
@@ -20,10 +21,11 @@ public struct SubtitleEditView: View {
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
     }
     
     private var activeSegment: SentenceSegment? {
-        guard let idx = engine.activeSegmentIndex, idx >= 0, idx < engine.segments.count else {
+        guard let idx = activeSegmentState.index, idx >= 0, idx < engine.segments.count else {
             return nil
         }
         return engine.segments[idx]
@@ -117,7 +119,7 @@ public struct SubtitleEditView: View {
             saveCurrentSegment()
             loadActiveSegment()
         }
-        .onChange(of: engine.explicitSegmentSelectionRevision) { _, _ in
+        .onChange(of: activeSegmentState.explicitSelectionRevision) { _, _ in
             // An explicit keyboard/list/waveform jump is different from the
             // natural playback clock.  Even when an editor field is focused,
             // commit the old draft and immediately load the newly selected
@@ -190,7 +192,7 @@ public struct SubtitleEditView: View {
         focusedField = nil
         engine.jumpToSegment(at: nextIndex)
         DispatchQueue.main.async {
-            guard engine.activeSegmentIndex == nextIndex,
+            guard activeSegmentState.index == nextIndex,
                   engine.segments.indices.contains(nextIndex),
                   engine.segments[nextIndex].id == nextID else { return }
             loadActiveSegment()

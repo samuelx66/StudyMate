@@ -4,6 +4,7 @@ import AppKit
 /// 专业波形断句起止拖拽与交互层（绿色 S# 徽章置顶、橙色 E# 徽章置底，两端对齐零遮挡，精准像素对齐）
 public struct DraggableWaveformOverlay: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     let viewportStart: Double
     let viewportEnd: Double
     let width: CGFloat
@@ -35,6 +36,7 @@ public struct DraggableWaveformOverlay: View {
         onZoomDelta: ((Double, CGPoint?) -> Void)? = nil
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.viewportStart = viewportStart
         self.viewportEnd = viewportEnd
         self.width = width
@@ -56,7 +58,7 @@ public struct DraggableWaveformOverlay: View {
             // 静态标线一次性批量绘制；只有 S#/E# 徽章保留 SwiftUI 视图。
             WaveformBoundaryCanvas(
                 segments: visible,
-                activeSegmentIndex: engine.activeSegmentIndex,
+                activeSegmentIndex: activeSegmentState.index,
                 viewportStart: viewportStart,
                 viewportEnd: viewportEnd,
                 width: width,
@@ -69,7 +71,7 @@ public struct DraggableWaveformOverlay: View {
 
             WaveformBoundaryLabels(
                 segments: visible,
-                activeSegmentIndex: engine.activeSegmentIndex,
+                activeSegmentIndex: activeSegmentState.index,
                 viewportStart: viewportStart,
                 viewportEnd: viewportEnd,
                 width: width,
@@ -83,7 +85,7 @@ public struct DraggableWaveformOverlay: View {
             // 2. 底层统一 AppKit 鼠标事件响应与手势驱动层
             WaveformInteractionNSViewRepresentable(
                 segments: engine.segments,
-                activeSegmentIndex: engine.activeSegmentIndex,
+                activeSegmentIndex: activeSegmentState.index,
                 viewportStart: viewportStart,
                 viewportEnd: viewportEnd,
                 duration: engine.duration,
@@ -134,7 +136,7 @@ public struct DraggableWaveformOverlay: View {
     
     // 按住 Ctrl + 鼠标左键：设置断句起点
     private func handleCtrlLeftClick(at targetTime: Double) {
-        if let idx = engine.activeSegmentIndex, idx < engine.segments.count {
+        if let idx = activeSegmentState.index, idx < engine.segments.count {
             let seg = engine.segments[idx]
             let clamped = max(0, min(targetTime, seg.endTime - 0.05))
             engine.updateSegmentAnchor(id: seg.id, start: clamped)
@@ -145,7 +147,7 @@ public struct DraggableWaveformOverlay: View {
     
     // 按住 Ctrl + 鼠标右键：设置断句终点
     private func handleCtrlRightClick(at targetTime: Double) {
-        if let idx = engine.activeSegmentIndex, idx < engine.segments.count {
+        if let idx = activeSegmentState.index, idx < engine.segments.count {
             let seg = engine.segments[idx]
             let maxBound = engine.duration > 0 ? engine.duration : 999999.0
             let clamped = min(maxBound, max(targetTime, seg.startTime + 0.05))

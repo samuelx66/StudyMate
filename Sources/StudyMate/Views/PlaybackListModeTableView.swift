@@ -5,6 +5,7 @@ import AppKit
 /// 具备独立 Equatable 行渲染、字幕字体/字号/颜色实时联动、无卡顿即时高亮跟随与跟随播放按钮。
 public struct PlaybackListModeTableView: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject var lang: LanguageManager
 
@@ -21,13 +22,14 @@ public struct PlaybackListModeTableView: View {
         lang: LanguageManager = .shared
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
     }
 
     /// 当前播放句的唯一标识符（严格与 engine.activeSegmentIndex 对应的 segment.id 同步，杜绝索引偏差）
     private var activeSegmentID: UUID? {
-        guard let index = engine.activeSegmentIndex,
+        guard let index = activeSegmentState.index,
               engine.segments.indices.contains(index) else { return nil }
         return engine.segments[index].id
     }
@@ -200,7 +202,7 @@ public struct PlaybackListModeTableView: View {
                 .equatable()
             }
             .onAppear {
-                if let idx = engine.activeSegmentIndex, idx >= 0, idx < engine.segments.count {
+                if let idx = activeSegmentState.index, idx >= 0, idx < engine.segments.count {
                     let targetID = engine.segments[idx].id
                     DispatchQueue.main.async {
                         proxy.scrollTo(targetID, anchor: nil)
@@ -208,7 +210,7 @@ public struct PlaybackListModeTableView: View {
                 }
             }
             .onChange(of: FollowScrollTarget(id: activeSegmentID, enabled: followState.shouldFollow)) { _, _ in
-                let newIndex = engine.activeSegmentIndex
+                let newIndex = activeSegmentState.index
                 guard followState.shouldFollow else { return }
                 guard let newIndex, newIndex >= 0, newIndex < engine.segments.count else { return }
                 let targetID = engine.segments[newIndex].id

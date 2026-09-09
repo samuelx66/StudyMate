@@ -4,10 +4,141 @@ import Combine
 import SwiftUI
 import AppKit
 
+/// A publisher for high-frequency presentation state that must not invalidate
+/// every view observing `PlaybackEngine`.
+///
+/// `@Published` intentionally forwards through the enclosing
+/// `ObservableObject.objectWillChange`.  That is correct for engine state such
+/// as the loaded media or a playback mode, but the active sentence changes
+/// frequently and belongs to a much smaller set of views.  This wrapper keeps
+/// the projected publisher available to non-SwiftUI clients while isolating
+/// the change from the engine's object-wide publisher.
+@propertyWrapper
+public final class IsolatedPublished<Value> {
+    private var value: Value
+    private let subject: CurrentValueSubject<Value, Never>
+
+    public init(wrappedValue: Value) {
+        value = wrappedValue
+        subject = CurrentValueSubject(wrappedValue)
+    }
+
+    public var wrappedValue: Value {
+        get { value }
+        set {
+            value = newValue
+            subject.send(newValue)
+        }
+    }
+
+    public var projectedValue: AnyPublisher<Value, Never> {
+        subject.eraseToAnyPublisher()
+    }
+}
+
 /// 高频播放时钟与低频工程状态分离，避免 60fps 时间更新使整个界面重算。
 @MainActor
 public final class PlaybackClock: ObservableObject {
     @Published public fileprivate(set) var currentTime: Double = 0
+}
+
+/// 当前句的局部展示状态。
+///
+/// PlaybackEngine 仍然保存并修改唯一的当前句索引；这个对象只是给需要
+/// 高亮、跟随和字幕同步的视图提供窄范围的观察入口，避免切句时刷新主窗口
+/// 的工具栏、布局容器和其它与当前句无关的区域。
+@MainActor
+public final class ActiveSegmentPresentationState: ObservableObject {
+    @Published public fileprivate(set) var index: Int?
+    @Published public fileprivate(set) var explicitSelectionRevision: Int = 0
+
+    fileprivate init(index: Int? = nil) {
+        self.index = index
+    }
+
+    fileprivate func updateIndex(_ index: Int?) {
+        guard self.index != index else { return }
+        self.index = index
+    }
+
+    fileprivate func updateExplicitSelectionRevision(_ revision: Int) {
+        explicitSelectionRevision = revision
+    }
+}
+
+/// The sentence repeat counter is shown only in the compact status bar.  It
+/// changes at sentence boundaries and must not invalidate the media window's
+/// toolbar or command hierarchy while a menu is open.
+@MainActor
+public final class PlaybackRepeatPresentationState: ObservableObject {
+    @Published public fileprivate(set) var currentRepeatCount: Int = 1
+
+    fileprivate func update(_ count: Int) {
+        guard currentRepeatCount != count else { return }
+        currentRepeatCount = count
+    }
+}
+
+/// Native window presentation state is kept separate from the playback
+/// engine's high-frequency state so full-screen layout changes remain local to
+/// the window content.
+@MainActor
+public final class WindowPresentationState: ObservableObject {
+    @Published public fileprivate(set) var isFullScreen = false
+
+    fileprivate func update(isFullScreen: Bool) {
+        guard self.isFullScreen != isFullScreen else { return }
+        self.isFullScreen = isFullScreen
+    }
+}
+
+/// The toolbar observes only values that affect its labels and enabled states.
+/// Playback time, active sentence, seeking and repeat progress are deliberately
+/// excluded so sentence transitions cannot rebuild AppKit's toolbar/menu.
+@MainActor
+public final class PlaybackToolbarState: ObservableObject {
+    @Published public fileprivate(set) var currentMedia: MediaItem?
+    @Published public fileprivate(set) var playbackRate: Float
+    @Published public fileprivate(set) var loopMode: PlaybackLoopMode
+    @Published public fileprivate(set) var repeatCountLimit: Int
+    @Published public fileprivate(set) var shadowingPauseRatio: Double
+    @Published public fileprivate(set) var shadowingPauseSeconds: Double
+
+    private var cancellables: Set<AnyCancellable> = []
+
+    fileprivate init(engine: PlaybackEngine) {
+        currentMedia = engine.currentMedia
+        playbackRate = engine.playbackRate
+        loopMode = engine.loopMode
+        repeatCountLimit = engine.repeatCountLimit
+        shadowingPauseRatio = engine.shadowingPauseRatio
+        shadowingPauseSeconds = engine.shadowingPauseSeconds
+
+        engine.$currentMedia
+            .removeDuplicates()
+            .sink { [weak self] value in self?.currentMedia = value }
+            .store(in: &cancellables)
+        engine.$playbackRate
+            .removeDuplicates()
+            .sink { [weak self] value in self?.playbackRate = value }
+            .store(in: &cancellables)
+        engine.$loopMode
+            .removeDuplicates()
+            .sink { [weak self] value in self?.loopMode = value }
+            .store(in: &cancellables)
+        engine.$repeatCountLimit
+            .removeDuplicates()
+            .sink { [weak self] value in self?.repeatCountLimit = value }
+            .store(in: &cancellables)
+        engine.$shadowingPauseRatio
+            .removeDuplicates()
+            .sink { [weak self] value in self?.shadowingPauseRatio = value }
+            .store(in: &cancellables)
+        engine.$shadowingPauseSeconds
+            .removeDuplicates()
+            .sink { [weak self] value in self?.shadowingPauseSeconds = value }
+            .store(in: &cancellables)
+    }
 }
 
 /// 只由波形相关视图观察的展示状态。
@@ -37,6 +168,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public let clock = PlaybackClock()
     public let waveformState = WaveformPresentationState()
+    public let activeSegmentState = ActiveSegmentPresentationState()
+    public let repeatPresentationState = PlaybackRepeatPresentationState()
+    public let windowPresentationState = WindowPresentationState()
+    public lazy var toolbarState = PlaybackToolbarState(engine: self)
 
     // MARK: - 基础播放状态
     @Published public var currentMedia: MediaItem?
@@ -99,7 +234,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 单句定次重复上限 (1, 2, 3, 5, 10，0 表示无限单句重复)
     @Published public var repeatCountLimit: Int = 1
     /// 当前句已播放/复读次数
-    @Published public var currentRepeatCount: Int = 1
+    @IsolatedPublished public var currentRepeatCount: Int = 1 {
+        didSet {
+            repeatPresentationState.update(currentRepeatCount)
+        }
+    }
     /// 跟读停顿倍率 (0.0x 表示不停顿，1.0x 表示停顿当前句相同时长供用户开口跟读)
     @Published public var shadowingPauseRatio: Double = 0.0
     /// 跟读固定停顿秒数 (0.0 表示不按固定秒数停顿，1.0/2.0/3.0/5.0 表示固定停顿秒数)
@@ -121,7 +260,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 仅复读收藏难句模式
     @Published public var onlyPlayBookmarked: Bool = false
     /// 当前主窗口是否处于全屏播放状态
-    @Published public var isFullScreen: Bool = false
+    @Published public var isFullScreen: Bool = false {
+        didSet {
+            windowPresentationState.update(isFullScreen: isFullScreen)
+        }
+    }
 
     // MARK: - AI 语音识词与双引擎断句状态
     @Published public var isAITranscribing: Bool = false
@@ -168,10 +311,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// signal to distinguish an intentional jump from natural playback, so a
     /// focused editor can load the newly selected sentence without allowing
     /// the playback clock to overwrite text while the user is typing.
-    @Published public private(set) var explicitSegmentSelectionRevision: Int = 0
-    @Published public var activeSegmentIndex: Int? {
+    @IsolatedPublished public private(set) var explicitSegmentSelectionRevision: Int = 0
+    @IsolatedPublished public var activeSegmentIndex: Int? {
         didSet {
             if activeSegmentIndex != oldValue {
+                activeSegmentState.updateIndex(activeSegmentIndex)
                 updateSecondaryViewportForActiveSegment()
             }
         }
@@ -3257,6 +3401,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     private func markExplicitSegmentSelection() {
         explicitSegmentSelectionRevision &+= 1
+        activeSegmentState.updateExplicitSelectionRevision(explicitSegmentSelectionRevision)
     }
 
     public func previousSegment() {

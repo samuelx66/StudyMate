@@ -33,6 +33,37 @@ final class ModeAuditRegressionTests: XCTestCase {
         return (hosting, window)
     }
 
+    func testWaveformVisibilityIsIndependentAcrossModes() throws {
+        let suite = "StudyMate.UXTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "StudyMate.ShowWaveforms")
+        PlaybackWorkspacePreferences.initializeWaveformPreferences(defaults: defaults)
+        PlaybackWorkspacePreferences.setWaveformsVisible(false, for: .fullText, defaults: defaults)
+        defaults.set(false, forKey: "StudyMate.ShowWaveforms")
+        PlaybackWorkspacePreferences.initializeWaveformPreferences(defaults: defaults)
+        XCTAssertFalse(PlaybackWorkspacePreferences.waveformsVisible(for: .fullText, defaults: defaults))
+        XCTAssertTrue(PlaybackWorkspacePreferences.waveformsVisible(for: .video, defaults: defaults))
+        XCTAssertTrue(PlaybackWorkspacePreferences.waveformsVisible(for: .sentence, defaults: defaults))
+    }
+
+    func testAutomaticTranslationColorResolvesLegacyTokenInBothAppearances() throws {
+        let color = VideoSubtitleSettings.readingColor(hex: "system.secondaryLabel", mode: .fullText)
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                XCTAssertEqual(color.usingColorSpace(.sRGB), NSColor.labelColor.withAlphaComponent(0.8).usingColorSpace(.sRGB))
+            }
+        }
+    }
+
+    func testPlaybackTimeHandlesHoursAndInvalidMediaTimes() {
+        XCTAssertEqual(FloatingVideoOSDView.playbackTime(1844.426), "30:44")
+        XCTAssertEqual(FloatingVideoOSDView.playbackTime(3601), "1:00:01")
+        XCTAssertEqual(FloatingVideoOSDView.playbackTime(.nan), "00:00")
+        XCTAssertEqual(FloatingVideoOSDView.playbackTime(-1), "00:00")
+    }
+
     func testPeekRetainsDraftAndEditedSentenceUsesNewAnswer() async throws {
         var segment = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Hello world")
         var completed = 0
@@ -96,9 +127,11 @@ final class ModeAuditRegressionTests: XCTestCase {
         let oldPeek = settings.showOriginalInFillInBlank
         settings.showOriginalInFillInBlank = false
         defer { settings.showOriginalInFillInBlank = oldPeek }
+        engine.pause()
         let (hosting, window) = host(PlaybackFillInBlankModeView(engine: engine, videoSubtitleSettings: settings))
         defer { window.orderOut(nil); engine.pause() }
         try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(engine.isPlaying, "Entering practice must preserve an explicit pause")
         enter("Hello", into: try XCTUnwrap(fields(in: hosting).first))
         try await Task.sleep(for: .milliseconds(100))
         // The toolbar button and global command both call this engine entry point.

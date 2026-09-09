@@ -40,3 +40,25 @@ public enum PlaybackInterfaceMode: String, CaseIterable, Identifiable, Sendable 
         }
     }
 }
+
+/// Each workspace remembers its own waveform visibility. The shared key remains
+/// the active workspace value so menu commands and toolbar controls stay in sync.
+public enum PlaybackWorkspacePreferences {
+    public static func initializeWaveformPreferences(defaults: UserDefaults = .standard) {
+        let legacy = defaults.object(forKey: "StudyMate.ShowWaveforms") as? Bool ?? true
+        for mode in PlaybackInterfaceMode.allCases {
+            let key = "StudyMate.ShowWaveforms." + mode.rawValue
+            if defaults.object(forKey: key) == nil { defaults.set(legacy, forKey: key) }
+        }
+    }
+
+    public static func waveformsVisible(for mode: PlaybackInterfaceMode, defaults: UserDefaults = .standard) -> Bool {
+        let key = "StudyMate.ShowWaveforms." + mode.rawValue
+        return defaults.object(forKey: key) as? Bool
+            ?? defaults.object(forKey: "StudyMate.ShowWaveforms") as? Bool ?? true
+    }
+
+    public static func setWaveformsVisible(_ visible: Bool, for mode: PlaybackInterfaceMode, defaults: UserDefaults = .standard) {
+        defaults.set(visible, forKey: "StudyMate.ShowWaveforms." + mode.rawValue)
+    }
+}

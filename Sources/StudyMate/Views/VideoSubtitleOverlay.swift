@@ -256,13 +256,23 @@ public final class VideoSubtitleSettings: ObservableObject {
         return Self.readingColor(hex: settings.translationColorHex, mode: mode)
     }
 
+    // Applying alpha directly to a semantic NSColor can resolve it immediately.
+    // Keep the provider dynamic so an already-open document follows appearance changes.
+    static let automaticTranslationColor = NSColor(name: nil) { appearance in
+        var resolved = NSColor.black
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = (NSColor.labelColor.usingColorSpace(.sRGB) ?? .black).withAlphaComponent(0.8)
+        }
+        return resolved
+    }
+
     /// Legacy video defaults need a semantic foreground on document surfaces.
     static func readingColor(hex: String, mode: PlaybackInterfaceMode) -> NSColor {
         switch hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case StudyMateSubtitleColorToken.label:
             return .labelColor
         case StudyMateSubtitleColorToken.secondaryLabel:
-            return .secondaryLabelColor
+            return Self.automaticTranslationColor
         default:
             break
         }
@@ -917,18 +927,20 @@ private struct SubtitleLayoutKey: Equatable {
 /// 所以字幕会随着当前活动句实时切换；支持随底部 OSD 控制面板呼出平滑上浮避让。
 public struct VideoSubtitleOverlay: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     var isOSDVisible: Bool
     @ObservedObject private var settings = VideoSubtitleSettings.shared
 
     public init(engine: PlaybackEngine, isOSDVisible: Bool = false) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.isOSDVisible = isOSDVisible
     }
 
     public var body: some View {
         GeometryReader { geometry in
             if engine.currentMedia != nil,
-               let index = engine.activeSegmentIndex,
+               let index = activeSegmentState.index,
                engine.segments.indices.contains(index) {
                 let segment = engine.segments[index]
                 ZStack {
@@ -1063,6 +1075,20 @@ public struct VideoSubtitleFontSettingsPopover: View {
                 onFontSizeEditingChanged: handleFontSizeEditingChanged
             )
 
+            if selectedMode != .video {
+                HStack {
+                    Text(lang.text("自动配色随浅色与深色外观调整", "Automatic colors adapt to Light and Dark Mode"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(lang.text("恢复自动配色", "Use automatic colors")) {
+                        updateDraft {
+                            $0.originalColorHex = StudyMateSubtitleColorToken.label
+                            $0.translationColorHex = StudyMateSubtitleColorToken.secondaryLabel
+                        }
+                    }
+                }
+            }
+
             if selectedMode == .video {
                 HStack {
                     Spacer()
@@ -1189,7 +1215,7 @@ private struct SubtitleFontFamilyMenu: View {
 /// 对视频画面更稳定的高对比默认色。
 fileprivate enum StudyMateSubtitleColorToken {
     static let label = "system.label"
-    static let secondaryLabel = "system.secondaryLabel"
+    static let secondaryLabel = "system.secondarylabel"
 }
 
 extension Color {
@@ -1201,7 +1227,7 @@ extension Color {
             return
         }
         if normalized.lowercased() == StudyMateSubtitleColorToken.secondaryLabel {
-            self.init(nsColor: .secondaryLabelColor)
+            self.init(nsColor: VideoSubtitleSettings.automaticTranslationColor)
             return
         }
         var value: UInt64 = 0

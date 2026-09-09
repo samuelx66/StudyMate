@@ -4,17 +4,19 @@ import AppKit
 /// 次波形图视图（高度 70pt，当前句放大，固定基准视口，拖动标线时波形图保持绝对静止，仅绿[S]/橙[E]标线左右平滑移动）
 public struct SecondaryWaveformView: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var waveformState: WaveformPresentationState
     @ObservedObject var lang = LanguageManager.shared
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.waveformState = engine.waveformState
     }
     
     // 当前选中的断句
     private var activeSegment: SentenceSegment? {
-        guard let idx = engine.activeSegmentIndex, idx >= 0, idx < engine.segments.count else {
+        guard let idx = activeSegmentState.index, idx >= 0, idx < engine.segments.count else {
             return nil
         }
         return engine.segments[idx]

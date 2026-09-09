@@ -382,6 +382,61 @@ final class PlaybackEngineTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testActiveSegmentPresentationIsolatedFromEngineObjectChanges() {
+        let engine = makeTestPlaybackEngine()
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0.0, endTime: 2.0),
+            SentenceSegment(index: 2, startTime: 2.0, endTime: 4.0)
+        ]
+
+        var engineChangeCount = 0
+        var activeStateChangeCount = 0
+        let engineCancellable = engine.objectWillChange.sink { _ in
+            engineChangeCount += 1
+        }
+        let activeStateCancellable = engine.activeSegmentState.objectWillChange.sink { _ in
+            activeStateChangeCount += 1
+        }
+
+        engine.activeSegmentIndex = 0
+        XCTAssertEqual(engine.activeSegmentState.index, 0)
+        XCTAssertEqual(engineChangeCount, 0)
+        XCTAssertEqual(activeStateChangeCount, 1)
+
+        withExtendedLifetime(engineCancellable) {}
+        withExtendedLifetime(activeStateCancellable) {}
+    }
+
+    func testRepeatCountPresentationIsolatedFromEngineObjectChanges() {
+        let engine = makeTestPlaybackEngine()
+        engine.currentRepeatCount = 2
+        let toolbarState = engine.toolbarState
+
+        var engineChangeCount = 0
+        var repeatStateChangeCount = 0
+        var toolbarStateChangeCount = 0
+        let engineCancellable = engine.objectWillChange.sink { _ in
+            engineChangeCount += 1
+        }
+        let repeatStateCancellable = engine.repeatPresentationState.objectWillChange.sink { _ in
+            repeatStateChangeCount += 1
+        }
+        let toolbarStateCancellable = toolbarState.objectWillChange.sink { _ in
+            toolbarStateChangeCount += 1
+        }
+
+        engine.currentRepeatCount = 1
+        engine.activeSegmentIndex = 0
+        XCTAssertEqual(engine.repeatPresentationState.currentRepeatCount, 1)
+        XCTAssertEqual(engineChangeCount, 0)
+        XCTAssertEqual(repeatStateChangeCount, 1)
+        XCTAssertEqual(toolbarStateChangeCount, 0)
+
+        withExtendedLifetime(engineCancellable) {}
+        withExtendedLifetime(repeatStateCancellable) {}
+        withExtendedLifetime(toolbarStateCancellable) {}
+    }
+
     func testExplicitAdjacentSentenceSelectionSurvivesFrameEarlySeekResult() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

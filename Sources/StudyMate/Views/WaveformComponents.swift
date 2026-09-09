@@ -191,6 +191,7 @@ private enum WaveformSegmentsPathCache {
 /// 断句切片背景覆盖层
 public struct WaveformSentenceSegmentsOverlay: View {
     @ObservedObject var engine: PlaybackEngine
+    @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     let viewportStart: Double
     let viewportEnd: Double
     let width: CGFloat
@@ -206,6 +207,7 @@ public struct WaveformSentenceSegmentsOverlay: View {
         isWindowResizing: Bool = false
     ) {
         self.engine = engine
+        self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.viewportStart = viewportStart
         self.viewportEnd = viewportEnd
         self.width = width
@@ -216,7 +218,7 @@ public struct WaveformSentenceSegmentsOverlay: View {
     public var body: some View {
         let span = max(0.001, viewportEnd - viewportStart)
         let segments = Array(visibleSegments)
-        let activeIndex = engine.activeSegmentIndex
+        let activeIndex = activeSegmentState.index
 
         Canvas { context, size in
             guard !segments.isEmpty, size.width > 0, size.height > 0 else { return }

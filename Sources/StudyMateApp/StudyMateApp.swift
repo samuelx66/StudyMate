@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 #if canImport(StudyMateKit)
 import StudyMateKit
@@ -77,14 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
-        // Let AppKit own the full-screen chrome transition. The system hides
-        // the menu bar and unified toolbar together, then reveals them when
-        // the pointer reaches the top edge without introducing a competing
-        // SwiftUI overlay or an extra event-monitor loop.
+        // Let AppKit own the full-screen chrome transition. Keep the menu bar
+        // available so Display > Enter/Exit Full Screen remains discoverable
+        // while media is playing; only the unified toolbar auto-hides.
         guard window.identifier?.rawValue == "studymate-main-window" else {
             return proposedOptions
         }
-        return proposedOptions.union([.autoHideMenuBar, .autoHideToolbar])
+        var options = proposedOptions
+        options.remove(.autoHideMenuBar)
+        options.insert(.autoHideToolbar)
+        return options
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -93,6 +96,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         PlaybackEngine.shared.isFullScreen = false
+    }
+}
+
+/// Defers playback-driven command updates while a menu is being tracked.
+/// Only low-frequency values that affect command labels or enabled states are
+/// observed.  Playback counters and timeline ticks are intentionally excluded
+/// so a natural sentence transition cannot rebuild the open Display menu.
+@MainActor
+final class PlaybackCommandState: ObservableObject {
+    static let shared = PlaybackCommandState()
+
+    @Published private(set) var revision: Int = 0
+
+    private let engine = PlaybackEngine.shared
+    private var cancellables: Set<AnyCancellable> = []
+    private var menuTrackingDepth = 0
+    private var pendingRefresh = false
+    private var refreshScheduled = false
+
+    private init() {
+        let lowFrequencyPublishers: [AnyPublisher<Void, Never>] = [
+            engine.$currentMedia
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$segments
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$isAITranscribing
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$isAutoTranslating
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$playbackRate
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$loopMode
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$repeatCountLimit
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$shadowingPauseRatio
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$shadowingPauseSeconds
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.$volume
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher()
+        ]
+
+        Publishers.MergeMany(lowFrequencyPublishers)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .store(in: &cancellables)
+
+        let center = NotificationCenter.default
+        center.publisher(for: NSMenu.didBeginTrackingNotification)
+            .sink { [weak self] _ in self?.menuTrackingDepth += 1 }
+            .store(in: &cancellables)
+
+        center.publisher(for: NSMenu.didEndTrackingNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.menuTrackingDepth = max(0, self.menuTrackingDepth - 1)
+                guard self.menuTrackingDepth == 0, self.pendingRefresh else { return }
+                self.pendingRefresh = false
+                self.scheduleRefresh()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func scheduleRefresh() {
+        guard menuTrackingDepth == 0 else {
+            pendingRefresh = true
+            return
+        }
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            guard self.menuTrackingDepth == 0 else {
+                self.pendingRefresh = true
+                return
+            }
+            self.revision &+= 1
+        }
     }
 }
 
@@ -112,7 +214,8 @@ struct StudyMateApp: App {
     @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
     @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
 
-    @ObservedObject private var engine = PlaybackEngine.shared
+    private var engine: PlaybackEngine { PlaybackEngine.shared }
+    @StateObject private var commandState = PlaybackCommandState.shared
     
     init() {
         UserDefaults.standard.register(defaults: [
@@ -126,6 +229,7 @@ struct StudyMateApp: App {
     }
     
     var body: some Scene {
+        let _ = commandState.revision
         // 欢迎页是应用定义的第一个窗口场景，因此 macOS 启动时只创建它；
         // 主媒体窗口作为第二个场景，仅在用户打开文件时按需创建。
         Window(languageManager.text("学伴", "StudyMate"), id: "welcome") {
@@ -612,7 +716,7 @@ struct StudyMateApp: App {
             
             // 播放与复读控制菜单
             CommandMenu(languageManager.text("播放控制", "Playback")) {
-                Button(engine.isPlaying ? languageManager.localized(.pause) : languageManager.localized(.play)) {
+                Button(languageManager.text("播放 / 暂停", "Play / Pause")) {
                     engine.togglePlayPause()
                 }
                 
@@ -955,15 +1059,10 @@ struct WindowAccessor: NSViewRepresentable {
         if window.title != appName { window.title = appName }
         if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
         if window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = false }
-        if window.styleMask.contains(.fullScreen) {
-            if !window.styleMask.contains(.fullSizeContentView) {
-                window.styleMask.insert(.fullSizeContentView)
-            }
-        } else {
-            if window.styleMask.contains(.fullSizeContentView) {
-                window.styleMask.remove(.fullSizeContentView)
-            }
-        }
+        // Do not toggle fullSizeContentView during ordinary SwiftUI updates.
+        // Playback advances frequently, and mutating the window style mask
+        // here makes AppKit rebuild the View menu while it is open. Full-screen
+        // transitions update this bit in their dedicated notifications below.
         for style in [NSWindow.StyleMask.titled, .closable, .miniaturizable, .resizable]
             where !window.styleMask.contains(style) {
             window.styleMask.insert(style)
@@ -1082,6 +1181,7 @@ final class MainWindowAccessorView: NSView {
                 object: window,
                 queue: .main
             ) { [weak window] _ in
+                window?.styleMask.insert(.fullSizeContentView)
                 WindowAccessor.configureWindow(window)
                 Task { @MainActor in
                     PlaybackEngine.shared.isFullScreen = true
@@ -1092,6 +1192,7 @@ final class MainWindowAccessorView: NSView {
                 object: window,
                 queue: .main
             ) { [weak window] _ in
+                window?.styleMask.remove(.fullSizeContentView)
                 WindowAccessor.configureWindow(window)
                 Task { @MainActor in
                     PlaybackEngine.shared.isFullScreen = false

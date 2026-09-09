@@ -7,15 +7,19 @@ public struct FloatingVideoOSDView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @Binding var isScrubbing: Bool
     @Binding var isVolumeScrubbing: Bool
+    private let onFocusChanged: (Bool) -> Void
+    @FocusState private var focusedControl: Int?
     
     public init(
         engine: PlaybackEngine,
         isScrubbing: Binding<Bool>,
-        isVolumeScrubbing: Binding<Bool>
+        isVolumeScrubbing: Binding<Bool>,
+        onFocusChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.engine = engine
         self._isScrubbing = isScrubbing
         self._isVolumeScrubbing = isVolumeScrubbing
+        self.onFocusChanged = onFocusChanged
     }
     
     public var body: some View {
@@ -28,6 +32,15 @@ public struct FloatingVideoOSDView: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
         .frame(maxWidth: 540)
+        .onChange(of: focusedControl) { _, value in onFocusChanged(value != nil) }
+        .onDisappear { onFocusChanged(false) }
+    }
+
+    static func playbackTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "00:00" }
+        let total = Int(min(seconds, Double(Int.max / 2)))
+        if total >= 3600 { return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60) }
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     private var osdControls: some View {
@@ -36,10 +49,11 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.repeatCurrentSegment() }) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 26, height: 26)
+                    .frame(width: 32, height: 32)
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .focused($focusedControl, equals: 0)
             .accessibilityLabel(lang.localized(.repeatSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.repeatSentence),
@@ -50,10 +64,11 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.previousSegment() }) {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 26, height: 26)
+                    .frame(width: 32, height: 32)
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .focused($focusedControl, equals: 1)
             .accessibilityLabel(lang.localized(.previousSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.previousSentence),
@@ -64,10 +79,11 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.togglePlayPause() }) {
                 Image(systemName: engine.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 12, weight: .bold))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 36, height: 36)
                     .contentShape(Circle())
             }
             .studymateChromeButton(prominent: true, shape: .circle)
+            .focused($focusedControl, equals: 2)
             .accessibilityLabel(engine.isPlaying ? lang.localized(.pause) : lang.localized(.play))
             .help(StudyMateShortcutCatalog.help(
                 engine.isPlaying ? lang.localized(.pause) : lang.localized(.play),
@@ -78,10 +94,11 @@ public struct FloatingVideoOSDView: View {
             Button(action: { engine.nextSegment() }) {
                 Image(systemName: "forward.end.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 26, height: 26)
+                    .frame(width: 32, height: 32)
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
+            .focused($focusedControl, equals: 3)
             .accessibilityLabel(lang.localized(.nextSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.nextSentence),
@@ -103,12 +120,13 @@ public struct FloatingVideoOSDView: View {
                 onSeek: { engine.seek(to: $0) }
             )
             .frame(minWidth: 80, maxHeight: 22)
+            .focused($focusedControl, equals: 6)
             
             // 7. 总时间
-            Text(SentenceSegment.formatTimecode(engine.duration))
+            Text(Self.playbackTime(engine.duration))
                 .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                 .foregroundColor(.secondary)
-                .frame(minWidth: 54, alignment: .leading)
+                .frame(minWidth: 40, alignment: .leading)
             
             // 分隔小竖线
             Divider()
@@ -122,11 +140,12 @@ public struct FloatingVideoOSDView: View {
                 }) {
                     Image(systemName: engine.volume == 0 ? "speaker.slash.fill" : (engine.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
                         .font(.system(size: 11, weight: .medium))
-                        .frame(width: 20, height: 20)
+                        .frame(width: 28, height: 28)
                         .contentShape(Circle())
                 }
                 .studymateChromeButton(shape: .circle)
-                .accessibilityLabel(lang.text("静音 / 取消静音", "Mute / Unmute"))
+                .focused($focusedControl, equals: 4)
+            .accessibilityLabel(lang.text("静音 / 取消静音", "Mute / Unmute"))
                 .help(StudyMateShortcutCatalog.help(
                     lang.text("静音 / 取消静音", "Mute / Unmute"),
                     shortcut: .mute
@@ -143,7 +162,8 @@ public struct FloatingVideoOSDView: View {
                     }
                 )
                 .labelsHidden()
-                .accessibilityLabel(lang.text("音量", "Volume"))
+                .focused($focusedControl, equals: 5)
+            .accessibilityLabel(lang.text("音量", "Volume"))
                 .accessibilityValue("\(Int(engine.volume * 100))%")
                 .frame(width: 52, height: 22)
                 .transaction { transaction in
@@ -206,9 +226,9 @@ private struct OSDTimecodeText: View {
     @ObservedObject var clock: PlaybackClock
 
     var body: some View {
-        Text(SentenceSegment.formatTimecode(clock.currentTime))
+        Text(FloatingVideoOSDView.playbackTime(clock.currentTime))
             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
             .foregroundColor(.primary)
-            .frame(minWidth: 54, alignment: .trailing)
+            .frame(minWidth: 40, alignment: .trailing)
     }
 }
