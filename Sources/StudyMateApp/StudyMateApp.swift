@@ -402,7 +402,9 @@ struct StudyMateApp: App {
                     videoSubtitleSettings.toggleTranslation(for: playbackInterfaceMode)
                 } label: {
                     HStack {
-                        Text(videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode)
+                        Text(playbackInterfaceMode == .reverseTranslation
+                             ? languageManager.text("反译模式中译文始终显示", "Translation is always shown in Reverse Translation mode")
+                             : videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode)
                              ? languageManager.text("隐藏画面译文字幕", "Hide Translated Subtitles")
                              : languageManager.text("显示画面译文字幕", "Show Translated Subtitles"))
                         if videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) {
@@ -411,6 +413,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .disabled(playbackInterfaceMode == .reverseTranslation)
 
                 Button(languageManager.text("字幕字体设置…", "Subtitle Font Settings…")) {
                     openWindow(id: "subtitle-font-settings")
@@ -763,7 +766,7 @@ struct StudyMateApp: App {
                 
                 Divider()
 
-                // 四种播放模式使用固定快捷键，和工具栏分段选择器保持一致。
+                // 四种播放循环模式使用固定快捷键，和工具栏播放控制保持一致。
                 Button {
                     engine.loopMode = .normal
                 } label: {

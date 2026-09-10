@@ -452,6 +452,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var pauseAfterSegmentHoldsCurrentSegment: Bool = false
     @Published public private(set) var replayRevision = 0
     private var volumeBeforeMute: Float = 1.0
+    /// One-shot practice playback used by reverse translation mode. When the
+    /// current sentence reaches its authoritative end, the boundary handler
+    /// advances directly instead of applying the user's normal loop policy.
+    private var shouldAdvanceAfterCurrentSegmentPlayback = false
 
     public func toggleMute() {
         volume = volume > 0 ? 0 : volumeBeforeMute
@@ -847,6 +851,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         backend.onFinished = { [weak self, weak backend] in
             guard let self, self.activeBackend === backend else { return }
             let hadPlaybackIntent = self.wantsPlayback
+
+            if self.shouldAdvanceAfterCurrentSegmentPlayback && hadPlaybackIntent {
+                self.shouldAdvanceAfterCurrentSegmentPlayback = false
+                // Some backends finish without emitting the exact sentence-end
+                // sample. Treat the media-finished callback as the authoritative
+                // completion for this one-shot practice action as well.
+                self.advanceToNextSentenceAfterCompletion(playNextSentence: false)
+                return
+            }
 
             // Some backends deliver `onFinished` without a final time tick,
             // and their last reported time can still be a stale frame.  In
@@ -1546,6 +1559,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         previewSeekTask?.cancel()
         previewSeekTask = nil
         cancelShadowingPause()
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         waveformTask?.cancel()
         waveformTask = nil
         sidecarTask?.cancel()
@@ -1668,6 +1682,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         previewSeekTask = nil
         pendingPreviewSeekTime = nil
         cancelShadowingPause()
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         waveformTask?.cancel()
         sidecarTask?.cancel()
         segmentationTask?.cancel()
@@ -2918,6 +2933,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     public func stop() {
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         cancelShadowingPause()
         pause()
         hasEndedAfterLastSegment = false
@@ -2927,6 +2943,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 毫秒级极速精准 Seek（实时刷新视频画面与音频时间戳）
     public func seek(to seconds: Double, completion: (@Sendable () -> Void)? = nil) {
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         cancelShadowingPause()
         isWaveformFrozenAtNaturalEnd = false
         hasEndedAfterLastSegment = false
@@ -3209,6 +3226,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
         if time >= currentSeg.endTime - 0.005 && isPlaying && !isShadowingPaused {
+            if shouldAdvanceAfterCurrentSegmentPlayback {
+                shouldAdvanceAfterCurrentSegmentPlayback = false
+                // 反译模式的完成播放是一次性动作，完成后直接复用统一的
+                // “下一句并暂停”路径，不让普通循环模式再次介入。
+                advanceToNextSentenceAfterCompletion(playNextSentence: false)
+                return
+            }
             let needsRepeat = (repeatCountLimit == 0) || (currentRepeatCount < repeatCountLimit) || (loopMode == .singleSegment)
             let hasShadowingPause = shadowingPauseRatio > 0 || shadowingPauseSeconds > 0
             let parksAtSentenceEnd = needsRepeat || hasShadowingPause || loopMode == .pauseAfterSegment
@@ -3680,6 +3704,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func jumpToSegment(at index: Int) {
         guard index >= 0, index < segments.count else { return }
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         cancelShadowingPause()
         completedPreviewSegmentID = nil
         previewSegmentID = nil
@@ -3756,9 +3781,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         jumpToSegment(at: targetIndex)
     }
 
-    /// 在填空模式等场景下，整句完成时前进到下一句并自动播放一次
+    /// 在填空模式等场景下，整句完成时前进到下一句并自动播放一次。
+    /// 反译模式会传入 `playNextSentence: false`，只定位到下一句并保持暂停。
     @discardableResult
-    public func advanceToNextSentenceAfterCompletion() -> Bool {
+    public func advanceToNextSentenceAfterCompletion(playNextSentence: Bool = true) -> Bool {
         guard !segments.isEmpty else { return false }
         let current = activeSegmentIndex ?? 0
         var targetIndex: Int?
@@ -3777,7 +3803,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         if let nextIdx = targetIndex {
             jumpToSegment(at: nextIdx)
-            play()
+            if playNextSentence {
+                play()
+            } else {
+                // jumpToSegment may inherit the previous playback intent while
+                // its asynchronous seek is in flight. Clear that intent now so
+                // the seek completion cannot start the next sentence behind the
+                // user's back.
+                pause()
+            }
             return true
         } else {
             hasEndedAfterLastSegment = true
@@ -3790,9 +3824,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func repeatCurrentSegment() {
         let targetIndex: Int? = activeSegmentIndex ?? (segments.isEmpty ? nil : 0)
         guard let idx = targetIndex, idx >= 0, idx < segments.count else { return }
+        shouldAdvanceAfterCurrentSegmentPlayback = false
         replayRevision &+= 1
         jumpToSegment(at: idx)
         play()
+    }
+
+    /// 播放当前句一次，并在真正到达句末时进入下一句且保持暂停。
+    /// 该动作不修改用户选择的循环模式，也不依赖界面计时器判断播放是否结束。
+    public func playCurrentSegmentOnceThenAdvance() {
+        let targetIndex: Int? = activeSegmentIndex ?? (segments.isEmpty ? nil : 0)
+        guard let idx = targetIndex, idx >= 0, idx < segments.count else { return }
+        jumpToSegment(at: idx)
+        shouldAdvanceAfterCurrentSegmentPlayback = true
+        play()
+    }
+
+    /// 离开反译练习或用户主动开始其它导航时，取消尚未到句末的一次性推进。
+    public func cancelPendingOneShotPracticePlayback() {
+        shouldAdvanceAfterCurrentSegmentPlayback = false
     }
 
     public func toggleBookmark(for segmentId: UUID) {

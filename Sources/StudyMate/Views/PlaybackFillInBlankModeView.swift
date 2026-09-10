@@ -157,16 +157,23 @@ public struct PlaybackFillInBlankModeView: View {
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
     @State private var sentenceAdvanceTask: Task<Void, Never>? = nil
+    public let interfaceMode: PlaybackInterfaceMode
+
+    private var isReverseTranslationMode: Bool {
+        interfaceMode == .reverseTranslation
+    }
 
     public init(
         engine: PlaybackEngine,
         videoSubtitleSettings: VideoSubtitleSettings,
-        lang: LanguageManager = .shared
+        lang: LanguageManager = .shared,
+        interfaceMode: PlaybackInterfaceMode = .fillInBlank
     ) {
         self.engine = engine
         self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
+        self.interfaceMode = interfaceMode
     }
 
     private var currentSegment: SentenceSegment? {
@@ -209,7 +216,6 @@ public struct PlaybackFillInBlankModeView: View {
     private func ensureModePlaybackReady() {
         engine.pauseAfterSegmentHoldsCurrentSegment = true
         engine.loopMode = .pauseAfterSegment
-
     }
 
     // MARK: - 填空句子主交互视窗
@@ -222,7 +228,9 @@ public struct PlaybackFillInBlankModeView: View {
                     Spacer(minLength: 20)
 
                     HStack(spacing: 12) {
-                        Text(lang.text("听写练习 · 每句结束后暂停", "Dictation · Pauses after each sentence"))
+                        Text(isReverseTranslationMode
+                             ? lang.text("反译练习 · 根据译文填写原文", "Reverse translation · Fill in the original from the translation")
+                             : lang.text("听写练习 · 每句结束后暂停", "Dictation · Pauses after each sentence"))
                             .font(.callout).foregroundStyle(.secondary)
                         if !engine.isPlaying {
                             Button(lang.text("开始练习", "Start practice")) {
@@ -235,12 +243,13 @@ public struct PlaybackFillInBlankModeView: View {
 
                     FillInBlankCardView(
                         seg: seg,
-                        showOriginal: videoSubtitleSettings.isOriginalVisible(for: .fillInBlank),
-                        showTranslation: videoSubtitleSettings.isTranslationVisible(for: .fillInBlank),
-                        originalFont: videoSubtitleSettings.makeOriginalFont(for: .fillInBlank),
-                        originalColor: videoSubtitleSettings.originalNSColor(for: .fillInBlank),
-                        translationFont: videoSubtitleSettings.makeTranslationFont(for: .fillInBlank),
-                        translationColor: videoSubtitleSettings.translationNSColor(for: .fillInBlank),
+                        showOriginal: videoSubtitleSettings.isOriginalVisible(for: interfaceMode),
+                        showTranslation: videoSubtitleSettings.isTranslationVisible(for: interfaceMode),
+                        translationOnTop: isReverseTranslationMode,
+                        originalFont: videoSubtitleSettings.makeOriginalFont(for: interfaceMode),
+                        originalColor: videoSubtitleSettings.originalNSColor(for: interfaceMode),
+                        translationFont: videoSubtitleSettings.makeTranslationFont(for: interfaceMode),
+                        translationColor: videoSubtitleSettings.translationNSColor(for: interfaceMode),
                         language: lang.currentLanguage,
                         replayRevision: engine.replayRevision,
                         onReplayAudio: {
@@ -250,14 +259,24 @@ public struct PlaybackFillInBlankModeView: View {
                         },
                         onSentenceCompleted: {
                             sentenceAdvanceTask?.cancel()
-                            let replayRevision = engine.replayRevision
-                            sentenceAdvanceTask = Task { @MainActor in
-                                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                                guard !Task.isCancelled,
-                                      engine.replayRevision == replayRevision,
-                                      currentSegment?.id == seg.id,
-                                      currentSegment?.text == seg.text else { return }
-                                engine.advanceToNextSentenceAfterCompletion()
+                            sentenceAdvanceTask = nil
+                            if isReverseTranslationMode {
+                                // Completion is the trigger for the only
+                                // playback in this mode. The engine advances
+                                // at the authoritative sentence boundary,
+                                // so there is no timer-based race with a slow
+                                // decoder or a user pause.
+                                engine.playCurrentSegmentOnceThenAdvance()
+                            } else {
+                                let replayRevision = engine.replayRevision
+                                sentenceAdvanceTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                    guard !Task.isCancelled,
+                                          engine.replayRevision == replayRevision,
+                                          currentSegment?.id == seg.id,
+                                          currentSegment?.text == seg.text else { return }
+                                    engine.advanceToNextSentenceAfterCompletion()
+                                }
                             }
                         }
                     )
@@ -300,11 +319,13 @@ public struct PlaybackFillInBlankModeView: View {
 
     private var emptyStateView: some View {
         VStack(spacing: 12) {
-            Image(systemName: "character.textbox")
+            Image(systemName: isReverseTranslationMode ? "arrow.uturn.left.circle" : "character.textbox")
                 .font(.system(size: 40))
                 .foregroundColor(.secondary.opacity(0.6))
 
-            Text(lang.text("暂无填空练习内容", "No fill-in-the-blank content"))
+            Text(isReverseTranslationMode
+                 ? lang.text("暂无反译练习内容", "No reverse translation content")
+                 : lang.text("暂无填空练习内容", "No fill-in-the-blank content"))
                 .font(.headline)
                 .foregroundColor(.secondary)
 
@@ -580,6 +601,7 @@ struct FillInBlankCardView: View {
     let seg: SentenceSegment
     let showOriginal: Bool
     let showTranslation: Bool
+    let translationOnTop: Bool
     let originalFont: NSFont
     let originalColor: NSColor
     let translationFont: NSFont
@@ -604,8 +626,21 @@ struct FillInBlankCardView: View {
         seg.translation.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func translationTextView(prefix: String) -> some View {
+        Text(prefix + transText)
+            .font(Font(translationFont))
+            .foregroundColor(Color(translationColor))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // 反译模式把译文固定放在填空区上方，作为本句唯一的提示。
+            if translationOnTop && !transText.isEmpty {
+                translationTextView(prefix: "")
+            }
+
             // 第一行：原文展示或填空槽
             if showOriginal {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -645,8 +680,8 @@ struct FillInBlankCardView: View {
                 }
             }
 
-            // 第二行：译文（如果开启，或者整句填对完成时即刻展示）
-            if (showTranslation || isSentenceCompletedAndShowingTranslation) && !transText.isEmpty {
+            // 填空模式的译文仍位于输入区下方；反译模式已在上方固定展示。
+            if !translationOnTop && (showTranslation || isSentenceCompletedAndShowingTranslation) && !transText.isEmpty {
                 Text(transText)
                     .font(Font(translationFont))
                     .foregroundColor(Color(translationColor))

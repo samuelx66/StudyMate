@@ -212,6 +212,25 @@ final class PlaybackFillInBlankModeTests: XCTestCase {
         XCTAssertFalse(settings.isTranslationVisible(for: .fillInBlank))
     }
 
+    func testReverseTranslationKeepsTranslationVisibleAndIgnoresToggle() {
+        let settings = VideoSubtitleSettings.shared
+        let originalGlobalValue = settings.showTranslation
+        let originalFillValue = settings.showTranslationInFillInBlank
+        defer {
+            settings.showTranslation = originalGlobalValue
+            settings.showTranslationInFillInBlank = originalFillValue
+        }
+
+        settings.showTranslation = false
+        settings.showTranslationInFillInBlank = false
+
+        XCTAssertTrue(settings.isTranslationVisible(for: .reverseTranslation))
+        settings.toggleTranslation(for: .reverseTranslation)
+        XCTAssertTrue(settings.isTranslationVisible(for: .reverseTranslation))
+        XCTAssertFalse(settings.showTranslation)
+        XCTAssertFalse(settings.showTranslationInFillInBlank)
+    }
+
     func testFillInBlankOriginalHiddenByDefaultAndToggleableWithAutoHide() {
         let settings = VideoSubtitleSettings.shared
         let originalVal = settings.showOriginalInFillInBlank
@@ -394,4 +413,3 @@ final class PlaybackFillInBlankModeTests: XCTestCase {
         XCTAssertNotNil(container)
     }
 }
-

@@ -2317,6 +2317,39 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
+    func testOneShotPracticePlaybackAdvancesAtSentenceBoundary() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("reverse-translation.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 12)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 12),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        try await Task.sleep(for: .milliseconds(100))
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3, text: "First"),
+            SentenceSegment(index: 2, startTime: 3, endTime: 6, text: "Second")
+        ]
+        engine.activeSegmentIndex = 0
+        engine.loopMode = .pauseAfterSegment
+        engine.pauseAfterSegmentHoldsCurrentSegment = true
+
+        engine.playCurrentSegmentOnceThenAdvance()
+        await Task.yield()
+        XCTAssertTrue(engine.isPlaying)
+        native.emitTime(3.0)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertEqual(native.currentTime, 3.0, accuracy: 0.01)
+    }
+
     func testFullScreenPresentationStateAndToggle() {
         let engine = makeTestPlaybackEngine()
         XCTAssertFalse(engine.isFullScreen)

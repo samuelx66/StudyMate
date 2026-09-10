@@ -7,6 +7,7 @@ public enum PlaybackInterfaceMode: String, CaseIterable, Identifiable, Sendable 
     case fullText = "fullText"       // 全文模式
     case sentence = "sentence"       // 句子模式
     case fillInBlank = "fillInBlank" // 填空模式
+    case reverseTranslation = "reverseTranslation" // 反译模式
 
     public var id: String { rawValue }
 
@@ -22,6 +23,8 @@ public enum PlaybackInterfaceMode: String, CaseIterable, Identifiable, Sendable 
             return lang.text("句子模式", "Sentence Mode")
         case .fillInBlank:
             return lang.text("填空模式", "Fill-in-the-Blank")
+        case .reverseTranslation:
+            return lang.text("反译模式", "Reverse Translation")
         }
     }
 
@@ -37,7 +40,15 @@ public enum PlaybackInterfaceMode: String, CaseIterable, Identifiable, Sendable 
             return "text.quote"
         case .fillInBlank:
             return "character.textbox"
+        case .reverseTranslation:
+            return "arrow.uturn.left.circle"
         }
+    }
+
+    /// Modes that use the word-slot practice surface and its temporary
+    /// original-text peek behavior.
+    public var isFillInBlankStyle: Bool {
+        self == .fillInBlank || self == .reverseTranslation
     }
 }
 

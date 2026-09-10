@@ -67,12 +67,15 @@ final class SentenceSegmentTests: XCTestCase {
     }
 
     func testPlaybackInterfaceModeCases() {
-        XCTAssertEqual(PlaybackInterfaceMode.allCases.count, 5)
+        XCTAssertEqual(PlaybackInterfaceMode.allCases.count, 6)
         XCTAssertEqual(PlaybackInterfaceMode.video.rawValue, "video")
         XCTAssertEqual(PlaybackInterfaceMode.list.rawValue, "list")
         XCTAssertEqual(PlaybackInterfaceMode.fullText.rawValue, "fullText")
         XCTAssertEqual(PlaybackInterfaceMode.sentence.rawValue, "sentence")
         XCTAssertEqual(PlaybackInterfaceMode.fillInBlank.rawValue, "fillInBlank")
+        XCTAssertEqual(PlaybackInterfaceMode.reverseTranslation.rawValue, "reverseTranslation")
+        XCTAssertTrue(PlaybackInterfaceMode.fillInBlank.isFillInBlankStyle)
+        XCTAssertTrue(PlaybackInterfaceMode.reverseTranslation.isFillInBlankStyle)
 
         let lang = LanguageManager.shared
         XCTAssertFalse(PlaybackInterfaceMode.video.localized(with: lang).isEmpty)
@@ -80,5 +83,6 @@ final class SentenceSegmentTests: XCTestCase {
         XCTAssertFalse(PlaybackInterfaceMode.fullText.localized(with: lang).isEmpty)
         XCTAssertFalse(PlaybackInterfaceMode.sentence.localized(with: lang).isEmpty)
         XCTAssertFalse(PlaybackInterfaceMode.fillInBlank.localized(with: lang).isEmpty)
+        XCTAssertFalse(PlaybackInterfaceMode.reverseTranslation.localized(with: lang).isEmpty)
     }
 }

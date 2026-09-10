@@ -76,7 +76,7 @@ public struct ModeFontSettings: Codable, Equatable, Sendable {
 }
 
 /// 媒体播放区双语字幕的显示、位置及各界面模式独立的字体设置。
-/// 设置保存在 UserDefaults，4 种模式（视频/列表/全文/句子）拥有各自独立且隔离的字体配置。
+/// 设置保存在 UserDefaults，每种播放模式拥有各自独立且隔离的字体配置。
 @MainActor
 public final class VideoSubtitleSettings: ObservableObject {
     public static let shared = VideoSubtitleSettings()
@@ -97,14 +97,14 @@ public final class VideoSubtitleSettings: ObservableObject {
     private var originalPeekTimer: Task<Void, Never>?
 
     public func isOriginalVisible(for mode: PlaybackInterfaceMode) -> Bool {
-        if mode == .fillInBlank {
+        if mode.isFillInBlankStyle {
             return showOriginalInFillInBlank
         }
         return showOriginal
     }
 
     public func toggleOriginal(for mode: PlaybackInterfaceMode) {
-        if mode == .fillInBlank {
+        if mode.isFillInBlankStyle {
             originalPeekTimer?.cancel()
             originalPeekTimer = nil
             showOriginalInFillInBlank.toggle()
@@ -129,6 +129,10 @@ public final class VideoSubtitleSettings: ObservableObject {
     }
 
     public func isTranslationVisible(for mode: PlaybackInterfaceMode) -> Bool {
+        if mode == .reverseTranslation {
+            // 反译练习必须始终以译文作为提示，任何旧的全局偏好都不能将其隐藏。
+            return true
+        }
         if mode == .fillInBlank {
             return showTranslationInFillInBlank
         }
@@ -136,6 +140,7 @@ public final class VideoSubtitleSettings: ObservableObject {
     }
 
     public func toggleTranslation(for mode: PlaybackInterfaceMode) {
+        guard mode != .reverseTranslation else { return }
         if mode == .fillInBlank {
             showTranslationInFillInBlank.toggle()
         } else {
@@ -143,7 +148,7 @@ public final class VideoSubtitleSettings: ObservableObject {
         }
     }
 
-    // 5 种界面模式的独立字体设置
+    // 各种界面模式的独立字体设置
     // 预览字号时会暂时跳过持久化，但仍然发布变化让字幕实时更新。
     private var shouldPersistFontSettings = true
 
@@ -182,6 +187,13 @@ public final class VideoSubtitleSettings: ObservableObject {
             }
         }
     }
+    @Published public var reverseTranslationFontSettings: ModeFontSettings {
+        didSet {
+            if shouldPersistFontSettings {
+                persistFontSettings(reverseTranslationFontSettings, mode: .reverseTranslation)
+            }
+        }
+    }
 
     // Normalized coordinates keep the subtitle position stable when the video
     // window is resized.  (0, 0) is the top-left and (1, 1) is the bottom-right.
@@ -210,6 +222,7 @@ public final class VideoSubtitleSettings: ObservableObject {
         case .fullText: return fullTextFontSettings
         case .sentence: return sentenceFontSettings
         case .fillInBlank: return fillInBlankFontSettings
+        case .reverseTranslation: return reverseTranslationFontSettings
         }
     }
 
@@ -229,6 +242,7 @@ public final class VideoSubtitleSettings: ObservableObject {
         case .fullText: fullTextFontSettings = newSettings
         case .sentence: sentenceFontSettings = newSettings
         case .fillInBlank: fillInBlankFontSettings = newSettings
+        case .reverseTranslation: reverseTranslationFontSettings = newSettings
         }
     }
 
@@ -428,12 +442,14 @@ public final class VideoSubtitleSettings: ObservableObject {
             originalColorHex: StudyMateSubtitleColorToken.label,
             translationColorHex: StudyMateSubtitleColorToken.secondaryLabel
         )
+        let defaultReverseTranslation = defaultFillInBlank
 
         videoFontSettings = Self.loadFontSettings(from: defaults, mode: .video, defaultSettings: defaultVideo)
         listFontSettings = Self.loadFontSettings(from: defaults, mode: .list, defaultSettings: defaultList)
         fullTextFontSettings = Self.loadFontSettings(from: defaults, mode: .fullText, defaultSettings: defaultFullText)
         sentenceFontSettings = Self.loadFontSettings(from: defaults, mode: .sentence, defaultSettings: defaultSentence)
         fillInBlankFontSettings = Self.loadFontSettings(from: defaults, mode: .fillInBlank, defaultSettings: defaultFillInBlank)
+        reverseTranslationFontSettings = Self.loadFontSettings(from: defaults, mode: .reverseTranslation, defaultSettings: defaultReverseTranslation)
 
         originalPositionX = defaults.object(forKey: Keys.originalPositionX) as? Double ?? 0.5
         originalPositionY = defaults.object(forKey: Keys.originalPositionY) as? Double ?? 0.76
@@ -998,7 +1014,7 @@ public struct VideoSubtitleOverlay: View {
 }
 
 /// 工具栏“字体设置”按钮打开的紧凑配置面板。
-/// 支持对视频模式、列表模式、全文模式、句子模式 4 种界面模式的字体独立调优。
+/// 支持六种界面模式的字体独立调优。
 @MainActor
 public struct VideoSubtitleFontSettingsPopover: View {
     // 弹窗使用本地草稿，不订阅整个全局设置对象；这样字幕实时预览仍然生效，

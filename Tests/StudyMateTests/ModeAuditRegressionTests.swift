@@ -18,7 +18,7 @@ final class ModeAuditRegressionTests: XCTestCase {
 
     private func card(_ segment: SentenceSegment, peek: Bool = false, replay: Int = 0,
                       completion: @escaping () -> Void = {}) -> FillInBlankCardView {
-        FillInBlankCardView(seg: segment, showOriginal: peek, showTranslation: false,
+        FillInBlankCardView(seg: segment, showOriginal: peek, showTranslation: false, translationOnTop: false,
                             originalFont: .systemFont(ofSize: 20), originalColor: .labelColor,
                             translationFont: .systemFont(ofSize: 18), translationColor: .labelColor,
                             language: .en, replayRevision: replay, onReplayAudio: {}, onSentenceCompleted: completion)
@@ -252,7 +252,7 @@ final class ModeAuditRegressionTests: XCTestCase {
     }
 
     func testReadingDefaultsAdaptButVideoAndCustomColorsStayIntact() {
-        for mode in [PlaybackInterfaceMode.list, .sentence, .fullText, .fillInBlank] {
+        for mode in [PlaybackInterfaceMode.list, .sentence, .fullText, .fillInBlank, .reverseTranslation] {
             XCTAssertEqual(VideoSubtitleSettings.readingColor(hex: "#FFFFFF", mode: mode), .labelColor)
             XCTAssertEqual(VideoSubtitleSettings.readingColor(hex: "#FFE36E", mode: mode), .labelColor)
             XCTAssertNotEqual(VideoSubtitleSettings.readingColor(hex: "#123456", mode: mode), .labelColor)

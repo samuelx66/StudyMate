@@ -66,7 +66,7 @@ public struct MainContentView: View {
     @State private var isProjectRecoveryDialogPresented: Bool = false
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible: Bool = true
     @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
-    @State private var savedLoopModeBeforeFillInBlank: PlaybackLoopMode? = nil
+    @State private var savedLoopModeBeforePracticeMode: PlaybackLoopMode? = nil
     @State private var playlistWidth: Double = UserDefaults.standard.double(forKey: "studymate_playlist_width") >= 240 ? UserDefaults.standard.double(forKey: "studymate_playlist_width") : 360
     private let onWindowDidAppear: () -> Void
     
@@ -141,8 +141,8 @@ public struct MainContentView: View {
             handlePlaybackInterfaceModeChange(to: newMode)
         }
         .onAppear {
-            if playbackInterfaceMode == .fillInBlank {
-                handlePlaybackInterfaceModeChange(to: .fillInBlank)
+            if playbackInterfaceMode.isFillInBlankStyle {
+                handlePlaybackInterfaceModeChange(to: playbackInterfaceMode)
             }
         }
         // 顶部工具栏 (首帧静态直出，彻底消除异步挂载滞后与抖动)
@@ -225,6 +225,8 @@ public struct MainContentView: View {
                 sentenceModeWorkspace
             case .fillInBlank:
                 fillInBlankModeWorkspace
+            case .reverseTranslation:
+                reverseTranslationModeWorkspace
             }
 
             PlaybackStatusBarContainer(
@@ -568,23 +570,44 @@ extension MainContentView {
             PlaybackFillInBlankModeView(
                 engine: engine,
                 videoSubtitleSettings: videoSubtitleSettings,
-                lang: lang
+                lang: lang,
+                interfaceMode: .fillInBlank
+            )
+        }
+    }
+
+    private var reverseTranslationModeWorkspace: some View {
+        PlaybackWorkspaceContainer(
+            engine: engine,
+            isWaveformsVisible: isWaveformsVisible,
+            isSecondaryWaveformVisible: isSecondaryWaveformVisible,
+            isSubtitleEditVisible: isSubtitleEditVisible
+        ) {
+            PlaybackFillInBlankModeView(
+                engine: engine,
+                videoSubtitleSettings: videoSubtitleSettings,
+                lang: lang,
+                interfaceMode: .reverseTranslation
             )
         }
     }
 
     private func handlePlaybackInterfaceModeChange(to newMode: PlaybackInterfaceMode) {
-        if newMode == .fillInBlank {
-            if savedLoopModeBeforeFillInBlank == nil {
-                savedLoopModeBeforeFillInBlank = engine.loopMode
+        if newMode != .reverseTranslation {
+            engine.cancelPendingOneShotPracticePlayback()
+        }
+        if newMode.isFillInBlankStyle {
+            videoSubtitleSettings.hideOriginalPeekInFillInBlank()
+            if savedLoopModeBeforePracticeMode == nil {
+                savedLoopModeBeforePracticeMode = engine.loopMode
             }
             engine.pauseAfterSegmentHoldsCurrentSegment = true
             engine.loopMode = .pauseAfterSegment
         } else {
             engine.pauseAfterSegmentHoldsCurrentSegment = false
-            if let prev = savedLoopModeBeforeFillInBlank {
+            if let prev = savedLoopModeBeforePracticeMode {
                 engine.loopMode = prev
-                savedLoopModeBeforeFillInBlank = nil
+                savedLoopModeBeforePracticeMode = nil
             }
         }
     }
@@ -768,7 +791,7 @@ extension MainContentView {
 /// 将工具栏从主视图的超长泛型表达式中隔离出来，避免 Release 优化编译器
 /// 因 SwiftUI 类型推断复杂度而失败；所有动作仍回调至主窗口状态。
 /// macOS 26 分组工具栏（Grouped Toolbar）：
-/// - 左区（核心控制与资源）：打开媒体、学习工具组（词典/句库/生词本）、媒体信息、五种学习模式分段控件直接外露
+/// - 左区（核心控制与资源）：打开媒体、学习工具组（词典/句库/生词本）、媒体信息、六种学习模式分段控件直接外露
 /// - 中区（播放调节）：语速、复读、跟读一体化胶囊药丸合集（Liquid Glass Capsule）
 /// - 右区（工作区面板开关与字幕）：字幕控制组（原文/译文/样式）、播放列表、Xcode 风格三段面板切换开关
 private struct MainWindowToolbar: ToolbarContent {
@@ -854,7 +877,7 @@ private struct MainWindowToolbar: ToolbarContent {
             }
         }
 
-        // 五种学习模式分段控件直接外露
+        // 六种学习模式分段控件直接外露
         ToolbarItem(placement: .navigation) {
             Picker(
                 lang.text("学习模式", "Study Mode"),
@@ -870,7 +893,7 @@ private struct MainWindowToolbar: ToolbarContent {
             .labelsHidden()
             .pickerStyle(.segmented)
             .controlSize(.regular)
-            .help(lang.text("界面学习模式：视频模式 / 列表模式 / 全文模式 / 句子模式 / 填空模式", "Study modes: Video / List / Full Text / Sentence / Fill-in-the-Blank"))
+            .help(lang.text("界面学习模式：视频模式 / 列表模式 / 全文模式 / 句子模式 / 填空模式 / 反译模式", "Study modes: Video / List / Full Text / Sentence / Fill-in-the-Blank / Reverse Translation"))
             .accessibilityLabel(lang.text("学习模式", "Study mode"))
             .accessibilityValue(playbackInterfaceMode.localized(with: lang))
         }
@@ -911,16 +934,21 @@ private struct MainWindowToolbar: ToolbarContent {
                         .studymateToolbarIcon()
                 }
                 .help(StudyMateShortcutCatalog.help(
-                    videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode)
+                    playbackInterfaceMode == .reverseTranslation
+                        ? lang.text("反译模式中译文始终显示", "Translation is always shown in Reverse Translation mode")
+                        : videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode)
                         ? lang.text("隐藏画面译文字幕", "Hide translated subtitles")
                         : lang.text("显示画面译文字幕", "Show translated subtitles"),
                     shortcut: .toggleVideoTranslationSubtitle
                 ))
                 .accessibilityLabel(lang.text("画面译文字幕", "Translated subtitles"))
                 .accessibilityValue(videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
-                .accessibilityHint(lang.text("切换画面译文字幕", "Toggle translated subtitles"))
+                .accessibilityHint(playbackInterfaceMode == .reverseTranslation
+                                   ? lang.text("反译模式中译文固定显示", "Translation is fixed on in Reverse Translation mode")
+                                   : lang.text("切换画面译文字幕", "Toggle translated subtitles"))
                 .accessibilityAddTraits(videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) ? .isSelected : [])
                 .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(playbackInterfaceMode == .reverseTranslation)
 
                 Button {
                     isVideoSubtitleFontSettingsPresented.toggle()

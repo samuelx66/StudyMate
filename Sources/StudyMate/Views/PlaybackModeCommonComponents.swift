@@ -4,7 +4,7 @@ import AppKit
 /// 播放模式通用工作区容器 (PlaybackWorkspaceContainer)
 ///
 /// 统一管理顶部波形图工作区与底部双语字幕编辑区的展开、收起与动画过渡，
-/// 消除 5 种界面模式工作区中大量重复的波形图与字幕编辑区布局代码。
+/// 消除 6 种界面模式工作区中大量重复的波形图与字幕编辑区布局代码。
 public struct PlaybackWorkspaceContainer<Content: View>: View {
     let engine: PlaybackEngine
     let isWaveformsVisible: Bool
