@@ -120,7 +120,8 @@ public struct PrimaryWaveformView: View {
                         viewportStart: viewport.start,
                         viewportEnd: viewport.end,
                         width: width,
-                        height: height
+                        height: height,
+                        isPlaying: engine.isPlaying
                     )
                     
                     // 4. 可左右自由拖拽的绿(顶)/橙(底)标线层 + 拖动波形平移浏览层

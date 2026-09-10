@@ -110,10 +110,39 @@ final class PlaybackCommandState: ObservableObject {
     @Published private(set) var revision: Int = 0
 
     private let engine = PlaybackEngine.shared
+    private let menuTrackingState = MenuTrackingState.shared
     private var cancellables: Set<AnyCancellable> = []
-    private var menuTrackingDepth = 0
     private var pendingRefresh = false
     private var refreshScheduled = false
+
+    /// 检测当前是否有任何顶级菜单或子菜单处于展开跟踪状态
+    var isAnyMenuTracking: Bool {
+        if menuTrackingState.isTracking { return true }
+        if let mainMenu = NSApp.mainMenu {
+            for item in mainMenu.items {
+                if item.isHighlighted { return true }
+                if let sub = item.submenu, menuTreeIsActive(sub) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// A submenu can remain visible while the pointer is moving between menu
+    /// columns, even though no item is highlighted for one run-loop turn. Use
+    /// the tracked menu instances as well as highlight state so a pending
+    /// command refresh can never rebuild an open tertiary panel during that
+    /// gap.
+    private func menuTreeIsActive(_ menu: NSMenu) -> Bool {
+        for item in menu.items {
+            if item.isHighlighted { return true }
+            if let submenu = item.submenu, menuTreeIsActive(submenu) {
+                return true
+            }
+        }
+        return false
+    }
 
     private init() {
         let lowFrequencyPublishers: [AnyPublisher<Void, Never>] = [
@@ -155,6 +184,10 @@ final class PlaybackCommandState: ObservableObject {
             engine.$volume
                 .removeDuplicates()
                 .map { _ in () }
+                .eraseToAnyPublisher(),
+            engine.windowPresentationState.$isFullScreen
+                .removeDuplicates()
+                .map { _ in () }
                 .eraseToAnyPublisher()
         ]
 
@@ -163,36 +196,31 @@ final class PlaybackCommandState: ObservableObject {
             .sink { [weak self] _ in self?.scheduleRefresh() }
             .store(in: &cancellables)
 
-        let center = NotificationCenter.default
-        center.publisher(for: NSMenu.didBeginTrackingNotification)
-            .sink { [weak self] _ in self?.menuTrackingDepth += 1 }
-            .store(in: &cancellables)
-
-        center.publisher(for: NSMenu.didEndTrackingNotification)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.menuTrackingDepth = max(0, self.menuTrackingDepth - 1)
-                guard self.menuTrackingDepth == 0, self.pendingRefresh else { return }
-                self.pendingRefresh = false
+        menuTrackingState.$isTracking
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isTracking in
+                guard let self, !isTracking, self.pendingRefresh else { return }
                 self.scheduleRefresh()
             }
             .store(in: &cancellables)
     }
 
     private func scheduleRefresh() {
-        guard menuTrackingDepth == 0 else {
+        guard !isAnyMenuTracking else {
             pendingRefresh = true
             return
         }
         guard !refreshScheduled else { return }
         refreshScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
             guard let self else { return }
             self.refreshScheduled = false
-            guard self.menuTrackingDepth == 0 else {
+            guard !self.isAnyMenuTracking else {
                 self.pendingRefresh = true
                 return
             }
+            self.pendingRefresh = false
             self.revision &+= 1
         }
     }
@@ -218,6 +246,9 @@ struct StudyMateApp: App {
     @StateObject private var commandState = PlaybackCommandState.shared
     
     init() {
+        // AppKit release notes: opt out before didFinishLaunching. Our explicit
+        // SwiftUI command owns full screen; never mutate an open NSMenu to dedupe.
+        UserDefaults.standard.set(false, forKey: "NSFullScreenMenuItemEverywhere")
         UserDefaults.standard.register(defaults: [
             "NSWindowTabbingShouldShowTabBar": false,
             "AppleWindowTabbingMode": "manual",
@@ -488,6 +519,16 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("书签", "Bookmarks"), systemImage: "bookmark")
                 }
+
+                Divider()
+
+                Button(engine.windowPresentationState.isFullScreen
+                    ? languageManager.text("退出全屏幕", "Exit Full Screen")
+                    : languageManager.text("进入全屏幕", "Enter Full Screen")) {
+                    engine.toggleFullScreen()
+                }
+                .keyboardShortcut("f", modifiers: [.control, .command])
+                .disabled(engine.currentMedia == nil)
             }
             
             // 断句菜单：集中管理断句模式、生成、翻译、导入导出、句库、跟随、筛选与单句编辑

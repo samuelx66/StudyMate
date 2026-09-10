@@ -20,6 +20,8 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     var volume: Float = 1
     let playerView = NSView()
     var onTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    var onBoundaryTimeUpdate: (@MainActor (Double, Double) -> Void)?
+    let supportsIndependentBoundaryTimeUpdates: Bool
     var onStateChanged: (@MainActor (Bool) -> Void)?
     var onFinished: (@MainActor () -> Void)?
     var onError: (@MainActor (Error) -> Void)?
@@ -27,11 +29,13 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     init(
         duration: Double = 60,
         automaticallyCompletesLoads: Bool = true,
-        automaticallyCompletesSeeks: Bool = true
+        automaticallyCompletesSeeks: Bool = true,
+        supportsIndependentBoundaryTimeUpdates: Bool = false
     ) {
         self.duration = duration
         self.automaticallyCompletesLoads = automaticallyCompletesLoads
         self.automaticallyCompletesSeeks = automaticallyCompletesSeeks
+        self.supportsIndependentBoundaryTimeUpdates = supportsIndependentBoundaryTimeUpdates
     }
 
     func load(url: URL, completion: @escaping @MainActor (Bool) -> Void) {
@@ -96,6 +100,9 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
 
     func emitTime(_ time: Double) {
         currentTime = time
+        if supportsIndependentBoundaryTimeUpdates {
+            onBoundaryTimeUpdate?(time, duration)
+        }
         onTimeUpdate?(time, duration)
     }
 

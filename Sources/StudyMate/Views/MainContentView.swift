@@ -219,7 +219,7 @@ public struct MainContentView: View {
         VStack(spacing: 0) {
             switch playbackInterfaceMode {
             case .video:
-                VideoModeWorkspaceView(
+                VideoModeSurface(
                     engine: engine,
                     isWaveformsVisible: isWaveformsVisible,
                     isSecondaryWaveformVisible: isSecondaryWaveformVisible,
@@ -227,6 +227,7 @@ public struct MainContentView: View {
                     isSidebarVisible: isSidebarVisible,
                     isPlaylistMounted: isPlaylistMounted
                 )
+                .equatable()
             case .list:
                 listModeWorkspace
             case .fullText:
@@ -257,16 +258,90 @@ public struct MainContentView: View {
     // 视频模式工作区已抽离为独立的 VideoModeWorkspaceView，将拖拽尺寸变化局限在视口内，防止根视图重绘。
 }
 
-/// 视频模式工作区视图。将侧边栏宽度 (@State) 与拖拽事件彻底隔离在此组件内，
-/// 拖动分割线时仅局部触发视频与列表 HStack 尺寸重绘，
-/// 避免驱动整个 MainContentView（顶部工具栏、底部状态栏、全局抽屉等）全量重算。
-private struct VideoModeWorkspaceView: View {
-    @ObservedObject var engine: PlaybackEngine
+/// Keep video-mode focus/shortcut preferences out of the scene hosting graph.
+/// macOS 26's AppKitWindowController otherwise rebuilds open submenus when
+/// the active cue changes. Playback continues inside this independent graph.
+struct VideoModeSurface: NSViewRepresentable, Equatable {
+    let engine: PlaybackEngine
     let isWaveformsVisible: Bool
     let isSecondaryWaveformVisible: Bool
     let isSubtitleEditVisible: Bool
     let isSidebarVisible: Bool
     let isPlaylistMounted: Bool
+    @Environment(\.openWindow) private var openWindow
+
+    struct Configuration: Equatable {
+        let engineID: ObjectIdentifier
+        let panels: [Bool]
+    }
+
+    final class Coordinator {
+        var configuration: Configuration
+        init(_ configuration: Configuration) { self.configuration = configuration }
+    }
+
+    private var configuration: Configuration {
+        Configuration(engineID: ObjectIdentifier(engine), panels: [isWaveformsVisible,
+            isSecondaryWaveformVisible, isSubtitleEditVisible, isSidebarVisible, isPlaylistMounted])
+    }
+
+    static func == (lhs: VideoModeSurface, rhs: VideoModeSurface) -> Bool {
+        lhs.configuration == rhs.configuration
+    }
+
+    private var content: VideoModeHostContent {
+        VideoModeHostContent(workspace: VideoModeWorkspaceView(engine: engine,
+            isWaveformsVisible: isWaveformsVisible, isSecondaryWaveformVisible: isSecondaryWaveformVisible,
+            isSubtitleEditVisible: isSubtitleEditVisible, isSidebarVisible: isSidebarVisible,
+            isPlaylistMounted: isPlaylistMounted, onOpenLibrary: { openWindow(id: "sentence-library") }))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(configuration) }
+
+    func makeNSView(context: Context) -> VideoModeHostingView {
+        let host = VideoModeHostingView(rootView: content)
+        // Workspace dimensions belong to the parent. Local cue/OSD/layout
+        // changes must not export new intrinsic dimensions to the main window.
+        host.sizingOptions = []
+        return host
+    }
+
+    func updateNSView(_ host: VideoModeHostingView, context: Context) {
+        guard context.coordinator.configuration != configuration else { return }
+        context.coordinator.configuration = configuration
+        host.rootView = content
+    }
+}
+
+/// The video workspace contains native text controls for subtitle selection,
+/// but the workspace host itself must never become a key view.  Keeping this
+/// boundary non-focusable prevents cue-driven child updates from propagating a
+/// new window focus preference to AppKit's menu coordinator.
+final class VideoModeHostingView: NSHostingView<VideoModeHostContent> {
+    override var acceptsFirstResponder: Bool { false }
+    override var canBecomeKeyView: Bool { false }
+}
+
+struct VideoModeHostContent: View {
+    let workspace: VideoModeWorkspaceView
+
+    var body: some View {
+        workspace
+            .tint(StudyMateMediaStyle.accent)
+    }
+}
+
+/// 视频模式工作区视图。将侧边栏宽度 (@State) 与拖拽事件彻底隔离在此组件内，
+/// 拖动分割线时仅局部触发视频与列表 HStack 尺寸重绘，
+/// 避免驱动整个 MainContentView（顶部工具栏、底部状态栏、全局抽屉等）全量重算。
+struct VideoModeWorkspaceView: View {
+    let engine: PlaybackEngine
+    let isWaveformsVisible: Bool
+    let isSecondaryWaveformVisible: Bool
+    let isSubtitleEditVisible: Bool
+    let isSidebarVisible: Bool
+    let isPlaylistMounted: Bool
+    let onOpenLibrary: () -> Void
 
     @State private var sidebarWidth: Double = {
         let saved = UserDefaults.standard.double(forKey: "studymate_sentence_list_width")
@@ -315,7 +390,8 @@ private struct VideoModeWorkspaceView: View {
 
                     SegmentListView(
                         engine: engine,
-                        suppressToolTips: isPlaylistMounted
+                        suppressToolTips: isPlaylistMounted,
+                        onOpenLibrary: onOpenLibrary
                     )
                     .frame(width: max(260, sidebarWidth))
                     // 抽屉在屏幕上时不允许下层列表继续响应；关闭抽屉后立即恢复。

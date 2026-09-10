@@ -944,36 +944,44 @@ public struct VideoSubtitleOverlay: View {
                engine.segments.indices.contains(index) {
                 let segment = engine.segments[index]
                 ZStack {
-                    if settings.showOriginal, !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        DraggableVideoSubtitle(
-                            settings: settings,
-                            engine: engine,
-                            segmentID: segment.id,
-                            track: .original,
-                            text: segment.text,
-                            containerSize: geometry.size,
-                            context: segmentContext(segment),
-                            isOSDVisible: isOSDVisible
-                        )
-                        .id("\(segment.id)_original")
-                        // Keep the original subtitle's move affordance above
-                        // the translation layer when the two cards approach.
-                        .zIndex(2)
-                    }
-                    if settings.showTranslation, !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        DraggableVideoSubtitle(
-                            settings: settings,
-                            engine: engine,
-                            segmentID: segment.id,
-                            track: .translation,
-                            text: segment.translation,
-                            containerSize: geometry.size,
-                            context: segmentContext(segment),
-                            isOSDVisible: isOSDVisible
-                        )
-                        .id("\(segment.id)_translation")
-                        .zIndex(1)
-                    }
+                    // Always keep one native NSTextView mounted for each track.
+                    // A cue with empty text or a temporarily hidden track is
+                    // made transparent and non-interactive instead of removing
+                    // the AppKit responder. This keeps the video host and any
+                    // open Display > Waveforms submenu stable at cue boundaries.
+                    DraggableVideoSubtitle(
+                        settings: settings,
+                        engine: engine,
+                        segmentID: segment.id,
+                        track: .original,
+                        text: segment.text,
+                        containerSize: geometry.size,
+                        context: segmentContext(segment),
+                        isOSDVisible: isOSDVisible
+                    )
+                    .id("video-subtitle-original-track")
+                    .opacity(settings.showOriginal && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
+                    .allowsHitTesting(settings.showOriginal && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityHidden(!settings.showOriginal || segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    // Keep the original subtitle's move affordance above
+                    // the translation layer when the two cards approach.
+                    .zIndex(2)
+
+                    DraggableVideoSubtitle(
+                        settings: settings,
+                        engine: engine,
+                        segmentID: segment.id,
+                        track: .translation,
+                        text: segment.translation,
+                        containerSize: geometry.size,
+                        context: segmentContext(segment),
+                        isOSDVisible: isOSDVisible
+                    )
+                    .id("video-subtitle-translation-track")
+                    .opacity(settings.showTranslation && !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
+                    .allowsHitTesting(settings.showTranslation && !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityHidden(!settings.showTranslation || segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .zIndex(1)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
             }

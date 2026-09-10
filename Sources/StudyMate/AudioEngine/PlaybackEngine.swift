@@ -40,6 +40,253 @@ public final class IsolatedPublished<Value> {
 @MainActor
 public final class PlaybackClock: ObservableObject {
     @Published public fileprivate(set) var currentTime: Double = 0
+
+    // Keep a monotonic presentation anchor even when the decoder only emits
+    // a throttled SwiftUI update. Native waveform views can then interpolate
+    // between samples without making the whole engine publish at display rate.
+    private var presentationAnchorTime: Double = 0
+    private var presentationAnchorUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private var presentationRate: Double = 1
+    private var presentationIsPlaying = false
+    private var pausedPresentationTime: Double = 0
+    private var presentationUpperBound: Double?
+
+    /// Sets an exact position supplied by an explicit seek, media load or
+    /// pause operation.  Unlike a decoder sample this is allowed to move
+    /// backwards because it represents a user-visible discontinuity.
+    func updateTime(_ value: Double, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let sanitized = sanitize(value)
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        presentationAnchorTime = sanitized
+        presentationAnchorUptime = now
+        pausedPresentationTime = sanitized
+        guard currentTime != sanitized else { return }
+        currentTime = sanitized
+    }
+
+    /// Ingests a normal playback sample. Decoder time observers can deliver a
+    /// slightly stale frame after a busy main-run-loop turn; accepting that
+    /// frame literally makes the playhead step backwards and then forwards.
+    /// Keep the presentation estimate monotonic while playing, while still
+    /// publishing the low-frequency clock value used by controls and captions.
+    @discardableResult
+    func ingestPlaybackTime(_ value: Double, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double {
+        let sanitized = sanitize(value)
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        let accepted: Double
+        if presentationIsPlaying {
+            accepted = max(sanitized, presentationTime(at: now))
+        } else {
+            accepted = sanitized
+        }
+        presentationAnchorTime = accepted
+        presentationAnchorUptime = now
+        pausedPresentationTime = accepted
+        guard currentTime != accepted else { return accepted }
+        currentTime = accepted
+        return accepted
+    }
+
+    /// Refreshes only the interpolation anchor. This is used by the backend's
+    /// high-frequency boundary callback and deliberately does not publish.
+    @discardableResult
+    func updatePresentationAnchor(_ value: Double, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double {
+        let sanitized = sanitize(value)
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        let accepted = presentationIsPlaying
+            ? max(sanitized, presentationTime(at: now))
+            : sanitized
+        presentationAnchorTime = accepted
+        presentationAnchorUptime = now
+        if !presentationIsPlaying {
+            pausedPresentationTime = accepted
+        }
+        return accepted
+    }
+
+    /// Snaps only the visual clock to a sentence boundary. This is a
+    /// presentation correction, not a media seek: the backend's raw timeline
+    /// remains authoritative and the caller decides whether to pause, repeat,
+    /// or continue into the next sentence.
+    func snapPresentationTime(_ value: Double, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let sanitized = sanitize(value)
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        presentationAnchorTime = sanitized
+        presentationAnchorUptime = now
+        pausedPresentationTime = sanitized
+    }
+
+    /// Caps only the visual estimate at the active sentence's end. Decoder
+    /// samples can be throttled, so interpolation may otherwise carry the
+    /// marker into the following sentence for a frame before the boundary
+    /// callback arrives. The cap is removed or advanced with the active
+    /// sentence and never changes backend playback time.
+    func setPresentationUpperBound(_ value: Double?) {
+        guard let value else {
+            presentationUpperBound = nil
+            return
+        }
+        presentationUpperBound = value.isFinite && value >= 0 ? value : nil
+    }
+
+    func setPlaying(_ playing: Bool, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        let current = presentationTime(at: now)
+        presentationAnchorTime = current
+        presentationAnchorUptime = now
+        presentationIsPlaying = playing
+        pausedPresentationTime = current
+    }
+
+    func setPlaybackRate(_ rate: Float, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+        let current = presentationTime(at: now)
+        presentationAnchorTime = current
+        presentationAnchorUptime = now
+        presentationRate = Self.sanitizeRate(rate)
+        pausedPresentationTime = current
+    }
+
+    /// Returns the best presentation estimate for the supplied monotonic time.
+    /// A caller may pass an explicit uptime in tests; production callers use
+    /// the current process uptime.
+    public func presentationTime(at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double {
+        let estimate: Double
+        if presentationIsPlaying {
+            let now = uptime.isFinite ? uptime : ProcessInfo.processInfo.systemUptime
+            let elapsed = max(0, now - presentationAnchorUptime)
+            estimate = max(0, presentationAnchorTime + elapsed * presentationRate)
+        } else {
+            estimate = pausedPresentationTime
+        }
+        if let upperBound = presentationUpperBound {
+            return min(estimate, upperBound)
+        }
+        return estimate
+    }
+
+    private func sanitize(_ value: Double) -> Double {
+        value.isFinite && value >= 0 ? value : 0
+    }
+
+    private static func sanitizeRate(_ value: Float) -> Double {
+        let rate = Double(value)
+        return rate.isFinite && rate > 0 ? rate : 1
+    }
+}
+
+/// Tracks the AppKit menu session independently from SwiftUI's command tree.
+///
+/// AppKit briefly ends one `NSMenu` instance while the pointer moves from a
+/// parent item into a nested submenu. Keeping the session alive for a short
+/// grace period prevents command state from rebuilding the menu tree in that
+/// gap. Playback presentation remains live while a menu is open.
+@MainActor
+public final class MenuTrackingState: ObservableObject {
+    public static let shared = MenuTrackingState()
+
+    @Published public private(set) var isTracking = false
+
+    private var trackingDepth = 0
+    private var trackedMenuIDs: Set<ObjectIdentifier> = []
+    private var pendingEndCount = 0
+    private var pendingEndedMenuIDs: Set<ObjectIdentifier> = []
+    private var endFlushTask: Task<Void, Never>?
+    private var cancellables: Set<AnyCancellable> = []
+
+    private static let endGraceNanoseconds: UInt64 = 280_000_000
+
+    private init() {
+        let center = NotificationCenter.default
+        center.publisher(for: NSMenu.didBeginTrackingNotification)
+            .sink { [weak self] notification in
+                self?.beginTracking(menu: notification.object as? NSMenu)
+            }
+            .store(in: &cancellables)
+
+        center.publisher(for: NSMenu.didEndTrackingNotification)
+            .sink { [weak self] notification in
+                self?.endTracking(menu: notification.object as? NSMenu)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func beginTracking(menu: NSMenu?) {
+        endFlushTask?.cancel()
+        endFlushTask = nil
+
+        if let menu {
+            let id = ObjectIdentifier(menu)
+            trackedMenuIDs.insert(id)
+            if pendingEndedMenuIDs.remove(id) != nil {
+                pendingEndCount = max(0, pendingEndCount - 1)
+            } else if pendingEndCount > 0 {
+                // A sibling submenu usually has a different NSMenu identity.
+                // Consume the delayed end from the menu it replaces so the
+                // active depth stays stable across the hand-off.
+                pendingEndCount -= 1
+                if let endedID = pendingEndedMenuIDs.first {
+                    pendingEndedMenuIDs.remove(endedID)
+                    trackedMenuIDs.remove(endedID)
+                }
+            } else {
+                trackingDepth += 1
+            }
+        } else if pendingEndCount > 0 {
+            // A new submenu can be reported without an object on older
+            // AppKit releases. Consume the matching delayed end notification.
+            pendingEndCount -= 1
+            if let endedID = pendingEndedMenuIDs.first {
+                pendingEndedMenuIDs.remove(endedID)
+                trackedMenuIDs.remove(endedID)
+            }
+        } else {
+            trackingDepth += 1
+        }
+
+        updateTrackingFlag()
+    }
+
+    private func endTracking(menu: NSMenu?) {
+        pendingEndCount += 1
+        if let menu {
+            pendingEndedMenuIDs.insert(ObjectIdentifier(menu))
+        }
+        scheduleEndFlush()
+    }
+
+    private func scheduleEndFlush() {
+        endFlushTask?.cancel()
+        endFlushTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.endGraceNanoseconds)
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.flushPendingEnds()
+        }
+    }
+
+    private func flushPendingEnds() {
+        guard pendingEndCount > 0 else {
+            endFlushTask = nil
+            return
+        }
+
+        trackingDepth = max(0, trackingDepth - pendingEndCount)
+        pendingEndCount = 0
+        trackedMenuIDs.subtract(pendingEndedMenuIDs)
+        pendingEndedMenuIDs.removeAll()
+        endFlushTask = nil
+        updateTrackingFlag()
+    }
+
+    private func updateTrackingFlag() {
+        let tracking = trackingDepth > 0 || !trackedMenuIDs.isEmpty
+        guard isTracking != tracking else { return }
+        isTracking = tracking
+    }
 }
 
 /// 当前句的局部展示状态。
@@ -175,10 +422,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - 基础播放状态
     @Published public var currentMedia: MediaItem?
-    @Published public var isPlaying: Bool = false
+    @Published public var isPlaying: Bool = false {
+        didSet {
+            clock.setPlaying(isPlaying && !isShadowingPaused)
+        }
+    }
     public private(set) var currentTime: Double {
         get { clock.currentTime }
-        set { clock.currentTime = max(0, newValue.isFinite ? newValue : 0) }
+        set { clock.updateTime(max(0, newValue.isFinite ? newValue : 0)) }
     }
     @Published public var duration: Double = 0.0
     @Published public private(set) var isMediaLoading: Bool = false
@@ -191,6 +442,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public private(set) var isWindowResizing: Bool = false
     @Published public var playbackRate: Float = 1.0 {
         didSet {
+            clock.setPlaybackRate(playbackRate)
             activeBackend.playbackRate = playbackRate
         }
     }
@@ -254,7 +506,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         shadowingPauseSeconds = max(0.0, seconds)
     }
     /// 是否正处于句末开口跟读倒计时中
-    @Published public var isShadowingPaused: Bool = false
+    @Published public var isShadowingPaused: Bool = false {
+        didSet {
+            // A shadowing countdown keeps the engine's logical playback
+            // intent alive, but the media backend is paused. Keep the visual
+            // presentation clock frozen until the countdown completes so
+            // queued decoder frames cannot move the playhead into the next
+            // sentence.
+            clock.setPlaying(isPlaying && !isShadowingPaused)
+        }
+    }
     /// 跟读倒计时剩余秒数
     @Published public var shadowingCountdownRemaining: Double = 0.0
     /// 仅复读收藏难句模式
@@ -305,7 +566,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    @Published public var segments: [SentenceSegment] = []
+    @Published public var segments: [SentenceSegment] = [] {
+        didSet {
+            updatePresentationUpperBoundForActiveSegment()
+        }
+    }
     /// Increments for every explicit user sentence selection (keyboard, list,
     /// waveform or playback controls).  SubtitleEditView uses this separate
     /// signal to distinguish an intentional jump from natural playback, so a
@@ -314,6 +579,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @IsolatedPublished public private(set) var explicitSegmentSelectionRevision: Int = 0
     @IsolatedPublished public var activeSegmentIndex: Int? {
         didSet {
+            updatePresentationUpperBoundForActiveSegment()
             if activeSegmentIndex != oldValue {
                 activeSegmentState.updateIndex(activeSegmentIndex)
                 updateSecondaryViewportForActiveSegment()
@@ -539,11 +805,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                   self.activeBackend === backend,
                   self.isBackendReady,
                   !self.isSeeking else { return }
+            guard !self.isShadowingPaused else { return }
             // AVFoundation/libmpv 在 pause 或 finished 后可能再送出一帧
             // 滞后的时间。自然结束时保持最后一句的波形视口与活动句不变。
             guard !self.isWaveformFrozenAtNaturalEnd else { return }
             self.updateMediaDurationIfNeeded(total)
-            self.currentTime = current
+            // The presentation clock is intentionally smoothed for waveform
+            // rendering, but sentence boundaries must use the decoder's
+            // authoritative sample. Feeding the interpolated value into the
+            // boundary state machine can postpone an end by one callback and
+            // let a fragment of the next sentence play.
+            _ = self.clock.ingestPlaybackTime(current)
             if backend?.supportsIndependentBoundaryTimeUpdates != true {
                 self.handlePlaybackBoundary(at: current)
             }
@@ -555,8 +827,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                   self.activeBackend === backend,
                   self.isBackendReady,
                   !self.isSeeking,
+                  !self.isShadowingPaused,
                   !self.isWaveformFrozenAtNaturalEnd else { return }
             self.updateMediaDurationIfNeeded(total)
+            // Keep the visual playhead smooth, while preserving raw decoder
+            // time for repeat, pause-after-sentence, shadowing pause and
+            // continuous-playback decisions.
+            _ = self.clock.updatePresentationAnchor(current)
             self.handlePlaybackBoundary(at: current)
         }
 
@@ -803,10 +1080,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 切换主窗口全屏幕播放状态
     @MainActor
     public func toggleFullScreen() {
-        let targetWindow = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "studymate-main-window" })
-        if let targetWindow {
-            targetWindow.toggleFullScreen(nil)
+        let mainWindow = NSApp.windows.first(where: { $0.identifier?.rawValue == "studymate-main-window" })
+        let targetWindow: NSWindow?
+        if let key = NSApp.keyWindow, key.collectionBehavior.contains(.fullScreenPrimary) || key.styleMask.contains(.fullScreen) {
+            targetWindow = key
+        } else {
+            targetWindow = mainWindow
         }
+        targetWindow?.toggleFullScreen(nil)
     }
 
     public func beginBoundaryDrag(from source: BoundaryDragSource) {
@@ -2862,6 +3143,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard isPlaying, !isShadowingPaused else { return }
             let draggedSegment = segments[dragIndex]
             if time >= draggedSegment.endTime - 0.005 {
+                clock.snapPresentationTime(draggedSegment.endTime)
                 triggerSentenceRepeat(for: draggedSegment)
             }
             return
@@ -2881,6 +3163,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                   !isShadowingPaused else { return }
             let currentSeg = boundaryDragSession?.segment(at: activeIdx) ?? segments[activeIdx]
             guard time >= currentSeg.endTime - 0.005 else { return }
+            clock.snapPresentationTime(currentSeg.endTime)
             currentRepeatCount += 1
             seekToTargetSegment(currentSeg)
             return
@@ -2927,21 +3210,32 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
         if time >= currentSeg.endTime - 0.005 && isPlaying && !isShadowingPaused {
             let needsRepeat = (repeatCountLimit == 0) || (currentRepeatCount < repeatCountLimit) || (loopMode == .singleSegment)
+            let hasShadowingPause = shadowingPauseRatio > 0 || shadowingPauseSeconds > 0
+            let parksAtSentenceEnd = needsRepeat || hasShadowingPause || loopMode == .pauseAfterSegment
 
             if needsRepeat {
+                // Repeats stay parked on the orange end line before their
+                // seek/countdown starts. Natural adjacent continuation below
+                // deliberately keeps the monotonic presentation estimate so
+                // the marker does not snap back and rebound at the handoff.
+                clock.snapPresentationTime(currentSeg.endTime)
                 triggerSentenceRepeat(for: currentSeg)
-            } else {
-                if shadowingPauseRatio > 0 || shadowingPauseSeconds > 0 {
-                    let pauseDuration = shadowingPauseSeconds > 0
-                        ? shadowingPauseSeconds
-                        : max(0.5, currentSeg.duration * shadowingPauseRatio)
-                    startShadowingPause(duration: pauseDuration) { [weak self] in
-                        guard let self = self else { return }
-                        self.advanceToNextSentence(from: activeIdx)
-                    }
-                } else {
-                    advanceToNextSentence(from: activeIdx)
+            } else if hasShadowingPause {
+                clock.snapPresentationTime(currentSeg.endTime)
+                let pauseDuration = shadowingPauseSeconds > 0
+                    ? shadowingPauseSeconds
+                    : max(0.5, currentSeg.duration * shadowingPauseRatio)
+                startShadowingPause(duration: pauseDuration) { [weak self] in
+                    guard let self = self else { return }
+                    self.advanceToNextSentence(from: activeIdx, at: time)
                 }
+            } else {
+                if parksAtSentenceEnd {
+                    // Pause-after-sentence mode also remains parked on the
+                    // boundary before its explicit next-sentence seek.
+                    clock.snapPresentationTime(currentSeg.endTime)
+                }
+                advanceToNextSentence(from: activeIdx, at: time)
             }
             return
         }
@@ -3044,7 +3338,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    private func advanceToNextSentence(from currentIndex: Int) {
+    private func advanceToNextSentence(from currentIndex: Int, at boundaryTime: Double? = nil) {
+        // The boundary callback supplies the decoder's authoritative end
+        // timestamp. Do not use the interpolated presentation clock here:
+        // during a shadowing countdown it is deliberately frozen, and during
+        // normal playback it may be a few milliseconds ahead of the sample.
+        let transitionTime = boundaryTime ?? currentTime
         var targetIndex: Int?
 
         if onlyPlayBookmarked {
@@ -3092,12 +3391,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     shadowingPauseSeconds == 0 &&
                     !onlyPlayBookmarked &&
                     nextIdx == currentIndex + 1 &&
-                    abs(nextSegment.startTime - currentTime) <= 0.04
+                    abs(nextSegment.startTime - transitionTime) <= 0.04
 
                 if isAdjacentNaturalContinuation {
                     activeSegmentIndex = nextIdx
                     currentRepeatCount = 1
-                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
+                    // The marker and the primary viewport must cross the
+                    // boundary in the same update. Animating this viewport
+                    // while playback is advancing makes the marker move left
+                    // for a frame and then forward again, which feels like a
+                    // rebound at every sentence handoff.
+                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx, animated: false)
                     updateSecondaryViewportForActiveSegment(force: true)
 
                     // 正常情况下后端仍在播放；如果系统解码器在边界瞬间
@@ -3118,7 +3422,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     // 全篇循环等模式下：按媒体真实时间流自然过渡
                     activeSegmentIndex = nextIdx
                     currentRepeatCount = 1
-                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx)
+                    ensureSegmentVisibleInPrimaryViewport(at: nextIdx, animated: false)
                 } else {
                     // 最后一条断句结束时，全篇循环可能先于媒体的 finished
                     // 回调直接跳回第一条；同步重置主波形，避免仍保留文件尾部视口。
@@ -3352,7 +3656,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     // MARK: - 断句快捷操作、难句收藏与书签
 
     /// 确保目标断句在主波形图视口内完整展现（若处于边缘或在视口外，自动平滑移动视口）
-    public func ensureSegmentVisibleInPrimaryViewport(at index: Int) {
+    public func ensureSegmentVisibleInPrimaryViewport(at index: Int, animated: Bool = true) {
         guard index >= 0, index < segments.count else { return }
         let seg = segments[index]
         let span = max(1.0, primaryViewport.end - primaryViewport.start)
@@ -3364,7 +3668,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let maxStart = duration > 0 ? max(0, duration - span) : newStart
             let clampedStart = min(maxStart, newStart)
             let newEnd = min(duration > 0 ? duration : (clampedStart + span), clampedStart + span)
-            withAnimation(.easeInOut(duration: 0.25)) {
+            if animated {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    primaryViewport = (clampedStart, newEnd)
+                }
+            } else {
                 primaryViewport = (clampedStart, newEnd)
             }
         }
@@ -3716,6 +4024,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         guard let index = activeSegmentIndex,
               segments.indices.contains(index) else { return nil }
         return segments[index]
+    }
+
+    private func updatePresentationUpperBoundForActiveSegment() {
+        guard let index = activeSegmentIndex,
+              segments.indices.contains(index) else {
+            clock.setPresentationUpperBound(nil)
+            return
+        }
+        clock.setPresentationUpperBound(segments[index].endTime)
     }
 
     public var canMergeActiveSegmentWithPrevious: Bool {

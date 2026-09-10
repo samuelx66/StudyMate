@@ -179,6 +179,7 @@ public struct VideoPlayerView: View {
                         NativeVideoPlayerRepresentable(
                             playerView: engine.activeBackend.playerView
                         )
+                        .equatable()
                         .id("\(ObjectIdentifier(engine.activeBackend))_\(media.id)")
                     } else {
                         // 纯音频模式下的视觉占位
@@ -479,10 +480,17 @@ private struct FloatingOSDSizePreferenceKey: PreferenceKey {
 }
 
 /// 纯原生 AppKit 视频渲染容器宿主（集成 NSTrackingArea 确保 100% 鼠标悬停感知）
-public struct NativeVideoPlayerRepresentable: NSViewRepresentable {
+public struct NativeVideoPlayerRepresentable: NSViewRepresentable, Equatable {
     let playerView: NSView
     var onHoverChanged: ((Bool) -> Void)? = nil
     var onPointerActivity: (() -> Void)? = nil
+
+    /// The video view has no callback closures at its current call site. Use
+    /// the native player identity as the equality key so active-cue updates do
+    /// not repeatedly re-embed the same AppKit renderer while a menu is open.
+    public static func == (lhs: NativeVideoPlayerRepresentable, rhs: NativeVideoPlayerRepresentable) -> Bool {
+        ObjectIdentifier(lhs.playerView) == ObjectIdentifier(rhs.playerView)
+    }
     
     public func makeNSView(context: Context) -> TrackingVideoContainerView {
         let container = TrackingVideoContainerView()
@@ -805,7 +813,14 @@ final class VideoGestureOverlayView: NSView {
     private var initialVolume: Float = 1.0
     private var trackingArea: NSTrackingArea?
 
-    override var acceptsFirstResponder: Bool { true }
+    // The overlay only observes pointer/gesture events; it never hosts text
+    // input or a keyboard control. Keeping it out of the responder chain is
+    // important because this view lives in the video-only workspace and is
+    // updated whenever the active subtitle changes. If it advertises itself
+    // as a first responder, AppKit republishes the window's focus preferences
+    // on every cue transition and SwiftUI rebuilds an open menu submenu.
+    override var acceptsFirstResponder: Bool { false }
+    override var canBecomeKeyView: Bool { false }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

@@ -6,6 +6,45 @@ import XCTest
 
 @MainActor
 final class PlaybackEngineTests: XCTestCase {
+    func testMenuTrackingKeepsActiveSentencePresentationLiveAcrossSubmenuHandoff() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 20),
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 5, text: "First"),
+            SentenceSegment(index: 2, startTime: 5, endTime: 10, text: "Second")
+        ]
+        engine.activeSegmentIndex = 0
+
+        let parentMenu = NSMenu(title: "Menu tracking parent")
+        let firstSubmenu = NSMenu(title: "Menu tracking first child")
+        let siblingSubmenu = NSMenu(title: "Menu tracking sibling child")
+        let menuTrackingState = MenuTrackingState.shared
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: parentMenu)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: firstSubmenu)
+        XCTAssertTrue(menuTrackingState.isTracking)
+        engine.activeSegmentIndex = 1
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.activeSegmentState.index, 1)
+
+        // Moving between sibling submenu columns emits an end followed by a
+        // begin for different NSMenu instances. The presentation must remain
+        // live throughout that hand-off.
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: firstSubmenu)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: siblingSubmenu)
+        XCTAssertEqual(engine.activeSegmentState.index, 1)
+
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: siblingSubmenu)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: parentMenu)
+        try await Task.sleep(for: .milliseconds(360))
+        XCTAssertFalse(menuTrackingState.isTracking)
+        XCTAssertEqual(engine.activeSegmentState.index, 1)
+    }
+
     func testStartupRestoresMostRecentlyOpenedReadableMedia() throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -481,6 +520,84 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 0)
     }
 
+    func testSentenceBoundaryUsesDecoderTimeInsteadOfPresentationEstimate() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("raw-boundary-time.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+
+        // This backend models AVFoundation/libmpv: the boundary callback is
+        // independent from the lower-frequency UI time callback.
+        let native = TestMediaPlayerBackend(
+            duration: 10,
+            supportsIndependentBoundaryTimeUpdates: true
+        )
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        for _ in 0..<20 where engine.isMediaLoading { await Task.yield() }
+        engine.loopMode = .pauseAfterSegment
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // Make the visual clock intentionally ahead of the decoder sample.
+        // A presentation estimate must never cause the sentence to end early.
+        let now = ProcessInfo.processInfo.systemUptime
+        engine.clock.updatePresentationAnchor(1.2, at: now)
+        native.emitTime(0.98)
+        XCTAssertTrue(engine.isPlaying)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // The raw end sample then pauses exactly at the sentence boundary.
+        native.emitTime(1.0)
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+    }
+
+    func testSentenceBoundarySnapsPresentationMarkerToSentenceEnd() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("snap-boundary-marker.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 10)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        for _ in 0..<20 where engine.isMediaLoading { await Task.yield() }
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 1
+        engine.setShadowingPauseSeconds(1)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // Simulate a display clock that has extrapolated beyond the raw
+        // sentence end. The marker must be corrected before the pause starts.
+        let now = ProcessInfo.processInfo.systemUptime
+        engine.clock.updatePresentationAnchor(1.2, at: now)
+        XCTAssertEqual(engine.clock.presentationTime(at: now + 0.2), 1.0, accuracy: 0.0001)
+        native.emitTime(1.0)
+
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.clock.presentationTime(), 1.0, accuracy: 0.0001)
+        engine.pause()
+    }
+
     func testBoundaryDragSource() {
         let engine = makeTestPlaybackEngine()
 
@@ -893,6 +1010,39 @@ final class PlaybackEngineTests: XCTestCase {
 
         XCTAssertEqual(engine.activeSegmentIndex, 1)
         XCTAssertEqual(native.seekCount, seekCountBeforeBoundary)
+    }
+
+    func testContinuousAdjacentBoundaryDoesNotSnapPresentationClockBackwards() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("continuous-marker-handoff.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // A throttled callback may arrive just past the sentence boundary.
+        // The old unconditional boundary snap moved the display clock back to
+        // 1.0 before the next sentence resumed, which was visible as a small
+        // rebound in continuous playback.
+        engine.clock.updatePresentationAnchor(1.02)
+        native.emitTime(1.02)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertGreaterThan(engine.clock.presentationTime(), 1.005)
     }
 
     func testLoopAllModeResetsPrimaryViewportWhenMediaFinishes() async throws {
@@ -1330,12 +1480,16 @@ final class PlaybackEngineTests: XCTestCase {
 
         native.emitTime(1.0)
         XCTAssertTrue(engine.isShadowingPaused)
+        let pausedTime = engine.currentTime
+        let pausedPresentationTime = engine.clock.presentationTime()
 
         // A decoder can deliver a queued end frame after pause(). It must not
         // briefly select sentence #2 while sentence #1 is waiting to repeat.
         native.emitTime(1.05)
 
         XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentTime, pausedTime, accuracy: 0.0001)
+        XCTAssertEqual(engine.clock.presentationTime(), pausedPresentationTime, accuracy: 0.0001)
         XCTAssertTrue(engine.isShadowingPaused)
         engine.pause()
     }
@@ -2161,5 +2315,25 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSegmentIndex, 1)
         XCTAssertEqual(native.currentTime, 5.0, accuracy: 0.01)
         XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testFullScreenPresentationStateAndToggle() {
+        let engine = makeTestPlaybackEngine()
+        XCTAssertFalse(engine.isFullScreen)
+        XCTAssertFalse(engine.windowPresentationState.isFullScreen)
+
+        var publishedValues: [Bool] = []
+        let cancellable = engine.windowPresentationState.$isFullScreen.sink { value in
+            publishedValues.append(value)
+        }
+        defer { cancellable.cancel() }
+
+        engine.isFullScreen = true
+        XCTAssertTrue(engine.windowPresentationState.isFullScreen)
+        XCTAssertEqual(publishedValues, [false, true])
+
+        engine.isFullScreen = false
+        XCTAssertFalse(engine.windowPresentationState.isFullScreen)
+        XCTAssertEqual(publishedValues, [false, true, false])
     }
 }

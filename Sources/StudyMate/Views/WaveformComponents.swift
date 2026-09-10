@@ -1,5 +1,83 @@
 import SwiftUI
 import AppKit
+import Combine
+
+/// Shared pixel mapping for sentence boundary lines and the playback marker.
+/// Keeping the edge inset in one place prevents the marker and the orange end
+/// line from drifting apart when the viewport is resized or panned.
+enum WaveformBoundaryGeometry {
+    static let startLineInset: CGFloat = 1
+    static let endLineInset: CGFloat = -1
+    static let playheadLineInset: CGFloat = -1
+    static let playheadLineCenterOffset: CGFloat = 4
+
+    static func timelineX(
+        for time: Double,
+        viewportStart: Double,
+        viewportEnd: Double,
+        width: CGFloat
+    ) -> CGFloat {
+        guard time.isFinite,
+              viewportStart.isFinite,
+              viewportEnd.isFinite,
+              width.isFinite,
+              width > 0 else { return 0 }
+        let span = viewportEnd - viewportStart
+        guard span.isFinite, span > 0 else { return 0 }
+        return CGFloat((time - viewportStart) / span) * width
+    }
+
+    static func startLineX(
+        for time: Double,
+        viewportStart: Double,
+        viewportEnd: Double,
+        width: CGFloat
+    ) -> CGFloat {
+        timelineX(for: time, viewportStart: viewportStart, viewportEnd: viewportEnd, width: width)
+            + startLineInset
+    }
+
+    static func endLineX(
+        for time: Double,
+        viewportStart: Double,
+        viewportEnd: Double,
+        width: CGFloat
+    ) -> CGFloat {
+        timelineX(for: time, viewportStart: viewportStart, viewportEnd: viewportEnd, width: width)
+            + endLineInset
+    }
+
+    /// The center of the red playhead stroke, clamped to the drawable edge.
+    /// The orange sentence-end line uses the same `-1pt` edge inset.
+    static func playheadLineX(
+        for time: Double,
+        viewportStart: Double,
+        viewportEnd: Double,
+        width: CGFloat
+    ) -> CGFloat {
+        let rawX = timelineX(
+            for: time,
+            viewportStart: viewportStart,
+            viewportEnd: viewportEnd,
+            width: width
+        ) + playheadLineInset
+        return max(0, min(max(0, width - 1), rawX))
+    }
+
+    static func playheadMarkerOriginX(
+        for time: Double,
+        viewportStart: Double,
+        viewportEnd: Double,
+        width: CGFloat
+    ) -> CGFloat {
+        playheadLineX(
+            for: time,
+            viewportStart: viewportStart,
+            viewportEnd: viewportEnd,
+            width: width
+        ) - playheadLineCenterOffset
+    }
+}
 
 @MainActor
 private enum WaveformRenderCache {
@@ -311,73 +389,223 @@ public struct WaveformSentenceSegmentsOverlay: View {
     }
 }
 
-/// 播放游标指示线与时间指示器
-public struct PrimaryPlayhead: View {
-    let playheadX: CGFloat
-    let height: CGFloat
-    let currentTime: Double
-    
-    public init(playheadX: CGFloat, height: CGFloat, currentTime: Double) {
-        self.playheadX = playheadX
-        self.height = height
-        self.currentTime = currentTime
+/// A compositor-driven playhead. Decoder callbacks are intentionally allowed
+/// to arrive at a lower rate than the display refresh; Core Animation fills the
+/// short gaps between samples on the render server, so the marker does not
+/// visibly step while SwiftUI is rebuilding the surrounding waveform.
+@MainActor
+public final class WaveformPlayheadNSView: NSView {
+    enum Style: Equatable {
+        case primary
+        case secondary
     }
-    
-    public var body: some View {
-        ZStack(alignment: .top) {
-            Rectangle()
-                .fill(StudyMateMediaStyle.destructive)
-                .frame(width: 2, height: height)
-                .shadow(color: StudyMateMediaStyle.destructive.opacity(0.6), radius: 2)
-            
-            Image(systemName: "arrowtriangle.down.fill")
-                .font(.system(size: 7))
-                .foregroundStyle(StudyMateMediaStyle.destructive)
-                .offset(y: -2)
+
+    private let clock: PlaybackClock
+    private let style: Style
+    private let markerLayer = CALayer()
+    private let lineLayer = CALayer()
+    private let arrowLayer: CAShapeLayer?
+    private var clockCancellable: AnyCancellable?
+    private var displayTimer: Timer?
+    private var viewportStart = 0.0
+    private var viewportEnd = 1.0
+    private var isPlaying = false
+
+    init(frame frameRect: NSRect, clock: PlaybackClock, style: Style) {
+        self.clock = clock
+        self.style = style
+        if style == .primary {
+            let arrow = CAShapeLayer()
+            arrow.fillColor = NSColor.systemRed.cgColor
+            arrow.strokeColor = nil
+            arrowLayer = arrow
+        } else {
+            arrowLayer = nil
         }
-        .frame(width: 2, height: height)
-        .position(x: playheadX, y: height / 2.0)
+        super.init(frame: frameRect)
+
+        wantsLayer = true
+        let rootLayer = CALayer()
+        rootLayer.isGeometryFlipped = true
+        rootLayer.masksToBounds = true
+        layer = rootLayer
+
+        markerLayer.anchorPoint = CGPoint(x: 0, y: 0)
+        markerLayer.zPosition = 10
+        markerLayer.actions = [
+            "position": NSNull(),
+            "bounds": NSNull(),
+            "hidden": NSNull()
+        ]
+        lineLayer.backgroundColor = NSColor.systemRed.cgColor
+        lineLayer.shadowColor = NSColor.systemRed.withAlphaComponent(0.6).cgColor
+        lineLayer.shadowOpacity = 1
+        lineLayer.shadowRadius = 2
+        lineLayer.shadowOffset = .zero
+        markerLayer.addSublayer(lineLayer)
+        if let arrowLayer {
+            markerLayer.addSublayer(arrowLayer)
+        }
+        rootLayer.addSublayer(markerLayer)
+
+        // The native view observes only the narrow clock publisher. No SwiftUI
+        // body is invalidated by these ticks.
+        clockCancellable = clock.$currentTime.sink { [weak self] _ in
+            self?.refreshPosition(animated: false)
+        }
+        refreshPosition(animated: false)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        clockCancellable?.cancel()
+        displayTimer?.invalidate()
+    }
+
+    public override var acceptsFirstResponder: Bool { false }
+    public override var canBecomeKeyView: Bool { false }
+
+    /// Let the interaction layer below receive all pointer events.
+    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    public override func layout() {
+        super.layout()
+        layoutMarkerLayers()
+        refreshPosition(animated: false)
+    }
+
+    func configure(
+        viewportStart: Double,
+        viewportEnd: Double,
+        isPlaying: Bool
+    ) {
+        let viewportChanged = self.viewportStart != viewportStart || self.viewportEnd != viewportEnd
+        let playingChanged = self.isPlaying != isPlaying
+        self.viewportStart = viewportStart
+        self.viewportEnd = viewportEnd
+        self.isPlaying = isPlaying
+        if viewportChanged || playingChanged {
+            refreshPosition(animated: false)
+        }
+        updateDisplayTimer()
+    }
+
+    /// Drive only this marker at display cadence. Common modes include
+    /// AppKit's menu tracking mode, so opening a menu never pauses the
+    /// playback marker.
+    private func updateDisplayTimer() {
+        guard isPlaying else {
+            displayTimer?.invalidate()
+            displayTimer = nil
+            return
+        }
+        guard displayTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshPosition(animated: false)
+            }
+        }
+        timer.tolerance = 0.002
+        RunLoop.main.add(timer, forMode: .common)
+        displayTimer = timer
+    }
+
+    private func layoutMarkerLayers() {
+        let markerHeight = max(0, bounds.height)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        markerLayer.bounds = CGRect(x: 0, y: 0, width: 8, height: markerHeight)
+        markerLayer.position = CGPoint(x: markerLayer.position.x, y: 0)
+        lineLayer.frame = CGRect(x: 3, y: 0, width: 2, height: markerHeight)
+        if let arrowLayer {
+            arrowLayer.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 0, y: 0))
+            path.addLine(to: CGPoint(x: 8, y: 0))
+            path.addLine(to: CGPoint(x: 4, y: 7))
+            path.closeSubpath()
+            arrowLayer.path = path
+        }
+        CATransaction.commit()
+    }
+
+    private func refreshPosition(animated _: Bool) {
+        guard layer != nil else { return }
+        let span = viewportEnd - viewportStart
+        guard span.isFinite, span > 0, bounds.width > 0, bounds.height > 0 else {
+            markerLayer.isHidden = true
+            markerLayer.removeAnimation(forKey: "waveform-playhead-position")
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let presentationTime = clock.presentationTime(at: now)
+        let progress = (presentationTime - viewportStart) / span
+        guard progress.isFinite, progress >= 0, progress <= 1 else {
+            markerLayer.isHidden = true
+            markerLayer.removeAnimation(forKey: "waveform-playhead-position")
+            return
+        }
+
+        // `markerLayer.position` is the layer origin, while the visible red
+        // stroke is four points inside that layer (x: 3, width: 2). Position
+        // the origin so the stroke center lands on the same coordinate as the
+        // orange sentence-end line instead of appearing to run past it.
+        let markerOriginX = WaveformBoundaryGeometry.playheadMarkerOriginX(
+            for: presentationTime,
+            viewportStart: viewportStart,
+            viewportEnd: viewportEnd,
+            width: bounds.width
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        markerLayer.isHidden = false
+        markerLayer.position = CGPoint(x: markerOriginX, y: 0)
+        markerLayer.removeAnimation(forKey: "waveform-playhead-position")
+        CATransaction.commit()
     }
 }
 
-/// 只有这一小层订阅 60fps 播放时钟，波形、标线和工具栏不会随每一帧重建。
-public struct PrimaryWaveformPlayhead: View {
-    @ObservedObject var clock: PlaybackClock
+/// The representables keep a stable AppKit marker instance while the SwiftUI
+/// waveform itself is allowed to update for viewport and sentence changes.
+public struct PrimaryWaveformPlayhead: NSViewRepresentable {
+    let clock: PlaybackClock
     let viewportStart: Double
     let viewportEnd: Double
     let width: CGFloat
     let height: CGFloat
+    let isPlaying: Bool
 
-    public var body: some View {
-        Group {
-            if clock.currentTime >= viewportStart, clock.currentTime <= viewportEnd {
-                let progress = (clock.currentTime - viewportStart) / max(0.001, viewportEnd - viewportStart)
-                PrimaryPlayhead(
-                    playheadX: CGFloat(progress) * width,
-                    height: height,
-                    currentTime: clock.currentTime
-                )
-            }
-        }
+    public func makeNSView(context: Context) -> WaveformPlayheadNSView {
+        let view = WaveformPlayheadNSView(frame: NSRect(x: 0, y: 0, width: width, height: height), clock: clock, style: .primary)
+        view.configure(viewportStart: viewportStart, viewportEnd: viewportEnd, isPlaying: isPlaying)
+        return view
+    }
+
+    public func updateNSView(_ nsView: WaveformPlayheadNSView, context: Context) {
+        nsView.configure(viewportStart: viewportStart, viewportEnd: viewportEnd, isPlaying: isPlaying)
     }
 }
 
-public struct SecondaryWaveformPlayhead: View {
-    @ObservedObject var clock: PlaybackClock
+public struct SecondaryWaveformPlayhead: NSViewRepresentable {
+    let clock: PlaybackClock
     let viewportStart: Double
     let viewportEnd: Double
     let width: CGFloat
     let height: CGFloat
+    let isPlaying: Bool
 
-    public var body: some View {
-        Group {
-            if clock.currentTime >= viewportStart, clock.currentTime <= viewportEnd {
-                let progress = (clock.currentTime - viewportStart) / max(0.001, viewportEnd - viewportStart)
-                Rectangle()
-                    .fill(StudyMateMediaStyle.destructive)
-                    .frame(width: 2, height: height)
-                    .position(x: CGFloat(progress) * width, y: height / 2)
-            }
-        }
+    public func makeNSView(context: Context) -> WaveformPlayheadNSView {
+        let view = WaveformPlayheadNSView(frame: NSRect(x: 0, y: 0, width: width, height: height), clock: clock, style: .secondary)
+        view.configure(viewportStart: viewportStart, viewportEnd: viewportEnd, isPlaying: isPlaying)
+        return view
+    }
+
+    public func updateNSView(_ nsView: WaveformPlayheadNSView, context: Context) {
+        nsView.configure(viewportStart: viewportStart, viewportEnd: viewportEnd, isPlaying: isPlaying)
     }
 }

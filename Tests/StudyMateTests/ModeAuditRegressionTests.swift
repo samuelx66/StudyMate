@@ -33,6 +33,80 @@ final class ModeAuditRegressionTests: XCTestCase {
         return (hosting, window)
     }
 
+    func testVideoSurfaceKeepsHostAndRendererWhileSubtitlesAdvance() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("video.mp4")
+        try Data("video fixture".utf8).write(to: url)
+        let backend = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(nativeBackend: backend, mpvBackend: TestMediaPlayerBackend(duration: 20),
+                                    projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")))
+        let previousAutoGenerate = engine.autoGenerateSubtitles
+        engine.autoGenerateSubtitles = false
+        defer { engine.autoGenerateSubtitles = previousAutoGenerate; engine.pause() }
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: url)
+        try await Task.sleep(for: .milliseconds(100))
+        engine.segments = [SentenceSegment(index: 1, startTime: 0, endTime: 5, text: "First video sentence"),
+                           SentenceSegment(index: 2, startTime: 5, endTime: 10, text: "Second video sentence with more words")]
+        engine.activeSegmentIndex = 0
+        let settings = VideoSubtitleSettings.shared
+        let previousOriginal = settings.showOriginal
+        settings.showOriginal = true
+        defer { settings.showOriginal = previousOriginal }
+        let (outerHost, window) = host(VideoModeSurface(engine: engine, isWaveformsVisible: true,
+                                                         isSecondaryWaveformVisible: true, isSubtitleEditVisible: false,
+                                                         isSidebarVisible: true, isPlaylistMounted: false))
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(150))
+
+        func descendants(_ view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap { descendants($0) }
+        }
+        let videoHost = try XCTUnwrap(descendants(outerHost).compactMap { $0 as? NSHostingView<VideoModeHostContent> }.first)
+        let rendererContainer = try XCTUnwrap(backend.playerView.superview)
+        let windowFrame = window.frame
+        let initialSubtitle = try XCTUnwrap(
+            descendants(videoHost).compactMap { $0 as? NSTextView }.first { $0.string == "First video sentence" }
+        )
+
+        engine.play()
+        backend.emitTime(5.2)
+        try await Task.sleep(for: .milliseconds(150))
+        outerHost.layoutSubtreeIfNeeded()
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertTrue(descendants(outerHost).contains { $0 === videoHost })
+        XCTAssertTrue(backend.playerView.superview === rendererContainer)
+        XCTAssertEqual(window.frame, windowFrame)
+        let updatedSubtitle = try XCTUnwrap(
+            descendants(videoHost).compactMap { $0 as? NSTextView }.first { $0.string == "Second video sentence with more words" }
+        )
+        XCTAssertTrue(updatedSubtitle === initialSubtitle,
+                      "The video subtitle text view should be reused across cue changes")
+
+        let widthWithSidebar = rendererContainer.bounds.width
+        outerHost.rootView = VideoModeSurface(engine: engine, isWaveformsVisible: true,
+                                             isSecondaryWaveformVisible: true, isSubtitleEditVisible: false,
+                                             isSidebarVisible: false, isPlaylistMounted: false)
+        try await Task.sleep(for: .milliseconds(150))
+        outerHost.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(rendererContainer.bounds.width, widthWithSidebar)
+        XCTAssertTrue(backend.playerView.superview === rendererContainer)
+
+        outerHost.frame.size = NSSize(width: 850, height: 500)
+        outerHost.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThan(videoHost.bounds.width, 700)
+        XCTAssertTrue(backend.playerView.superview === rendererContainer)
+    }
+
+    func testWaveformInteractionStaysOutOfKeyboardResponderChain() {
+        let view = WaveformInteractionNSViewRepresentable.InteractiveWaveformNSView()
+        XCTAssertFalse(view.acceptsFirstResponder)
+        XCTAssertFalse(view.canBecomeKeyView)
+    }
+
     func testWaveformVisibilityIsIndependentAcrossModes() throws {
         let suite = "StudyMate.UXTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -205,4 +279,5 @@ final class ModeAuditRegressionTests: XCTestCase {
         XCTAssertEqual(view.textStorage?.attribute(.foregroundColor, at: first.location, effectiveRange: nil) as? NSColor, .systemRed)
         XCTAssertEqual(view.textStorage?.attribute(.foregroundColor, at: second.location, effectiveRange: nil) as? NSColor, .labelColor)
     }
+
 }

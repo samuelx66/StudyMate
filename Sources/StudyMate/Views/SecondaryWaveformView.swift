@@ -180,7 +180,8 @@ public struct SecondaryWaveformView: View {
                             viewportStart: viewport.start,
                             viewportEnd: viewport.end,
                             width: width,
-                            height: height
+                            height: height,
+                            isPlaying: engine.isPlaying
                         )
                         
                         // 可左右自由拖拽的绿(顶)/橙(底)标线交互层

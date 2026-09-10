@@ -169,7 +169,6 @@ private struct WaveformBoundaryCanvas: View {
     let isBoundaryDragging: Bool
 
     var body: some View {
-        let span = max(0.001, viewportEnd - viewportStart)
         Canvas { context, _ in
             // The AppKit interaction layer draws the active marker directly
             // from the mouse event while dragging. Do not leave a coalesced
@@ -182,8 +181,18 @@ private struct WaveformBoundaryCanvas: View {
             for segment in segments {
                 let isActive = activeSegmentIndex == (segment.index - 1)
                 guard !isSecondaryView || isActive else { continue }
-                let startX = CGFloat((segment.startTime - viewportStart) / span) * width + 1
-                let endX = CGFloat((segment.endTime - viewportStart) / span) * width - 1
+                let startX = WaveformBoundaryGeometry.startLineX(
+                    for: segment.startTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
+                let endX = WaveformBoundaryGeometry.endLineX(
+                    for: segment.endTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
 
                 startPath.move(to: CGPoint(x: startX, y: 0))
                 startPath.addLine(to: CGPoint(x: startX, y: height))
@@ -430,7 +439,6 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             super.draw(dirtyRect)
             guard modelIsBoundaryDragging || isBoundaryDragging else { return }
 
-            let span = max(0.001, viewportEnd - viewportStart)
             let active = boundaryVisualDrag ?? activeDrag
             let coupledIndex: Int? = active.flatMap { drag in
                 guard let x = boundaryVisualX else { return nil }
@@ -445,8 +453,18 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
                       segment.startTime <= viewportEnd,
                       !isSecondaryView || activeSegmentIndex == (segment.index - 1) else { continue }
 
-                let startX = CGFloat((segment.startTime - viewportStart) / span) * bounds.width + 1
-                let endX = CGFloat((segment.endTime - viewportStart) / span) * bounds.width - 1
+                let startX = WaveformBoundaryGeometry.startLineX(
+                    for: segment.startTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: bounds.width
+                )
+                let endX = WaveformBoundaryGeometry.endLineX(
+                    for: segment.endTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: bounds.width
+                )
                 let skipStart = active.map {
                     shouldSkipStartMarker(segment, index: index, drag: $0, coupledIndex: coupledIndex)
                 } ?? false
@@ -658,8 +676,18 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             }
         }
         
+        // Waveform interaction is entirely pointer/gesture based. It never
+        // consumes keyboard input, so advertising first-responder support
+        // only makes AppKit republish window focus preferences whenever the
+        // active cue marker changes. That preference update can cause SwiftUI
+        // to replace an open tertiary menu. Keep the view interactive without
+        // placing it in the keyboard responder chain.
         public override var acceptsFirstResponder: Bool {
-            return true
+            return false
+        }
+
+        public override var canBecomeKeyView: Bool {
+            return false
         }
         
         public override func updateTrackingAreas() {
@@ -939,7 +967,6 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         }
 
         func handle(at loc: NSPoint) -> ActiveDrag? {
-            let span = max(0.001, viewportEnd - viewportStart)
             let width = bounds.width
             let height = bounds.height
             let candidateRange = visibleSegmentRange()
@@ -964,8 +991,18 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
             for index in candidateRange {
                 let seg = segments[index]
                 guard !isSecondaryView || activeSegmentIndex == (seg.index - 1) else { continue }
-                let startX = CGFloat((seg.startTime - viewportStart) / span) * width + 1.0
-                let endX = CGFloat((seg.endTime - viewportStart) / span) * width - 1.0
+                let startX = WaveformBoundaryGeometry.startLineX(
+                    for: seg.startTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
+                let endX = WaveformBoundaryGeometry.endLineX(
+                    for: seg.endTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
 
                 // 1. 检查绿色起始标签（顶部 >S#）
                 let startBadge = startBadgeRect(for: seg.index, startX: startX)
@@ -1064,15 +1101,24 @@ public struct WaveformInteractionNSViewRepresentable: NSViewRepresentable {
         }
 
         private func markerX(for drag: ActiveDrag) -> CGFloat? {
-            let span = max(0.001, viewportEnd - viewportStart)
             let width = bounds.width
             switch drag {
             case .start(let id):
                 guard let segment = segments.first(where: { $0.id == id }) else { return nil }
-                return CGFloat((segment.startTime - viewportStart) / span) * width + 1.0
+                return WaveformBoundaryGeometry.startLineX(
+                    for: segment.startTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
             case .end(let id):
                 guard let segment = segments.first(where: { $0.id == id }) else { return nil }
-                return CGFloat((segment.endTime - viewportStart) / span) * width - 1.0
+                return WaveformBoundaryGeometry.endLineX(
+                    for: segment.endTime,
+                    viewportStart: viewportStart,
+                    viewportEnd: viewportEnd,
+                    width: width
+                )
             default:
                 return nil
             }

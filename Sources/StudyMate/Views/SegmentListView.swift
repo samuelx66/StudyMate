@@ -464,6 +464,7 @@ public struct SegmentListView: View {
     /// 播放列表等顶层抽屉展示期间，底层控件不能继续注册说明提示。
     /// AppKit 的 tooltip tracking area 不会自动遵循 SwiftUI 的视觉遮挡层级。
     private let suppressToolTips: Bool
+    private let onOpenLibrary: (() -> Void)?
     @ObservedObject var lang = LanguageManager.shared
     @ObservedObject private var libraryManager = SentenceLibraryManager.shared
     @ObservedObject private var vocabularyManager = VocabularyNotebookManager.shared
@@ -507,10 +508,11 @@ public struct SegmentListView: View {
     @State private var displayRefreshTask: Task<Void, Never>?
     @State private var displayRefreshGeneration = UUID()
 
-    public init(engine: PlaybackEngine, suppressToolTips: Bool = false) {
+    public init(engine: PlaybackEngine, suppressToolTips: Bool = false, onOpenLibrary: (() -> Void)? = nil) {
         self.engine = engine
         self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.suppressToolTips = suppressToolTips
+        self.onOpenLibrary = onOpenLibrary
     }
 
     private var displayedSegments: [SentenceSegment] {
@@ -702,7 +704,11 @@ public struct SegmentListView: View {
                         },
                         onOpenLibrary: {
                             showAddToLibraryPopover = false
-                            openWindow(id: "sentence-library")
+                            if let onOpenLibrary {
+                                onOpenLibrary()
+                            } else {
+                                openWindow(id: "sentence-library")
+                            }
                         },
                         lang: lang
                     )

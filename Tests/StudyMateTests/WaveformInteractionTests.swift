@@ -4,6 +4,47 @@ import XCTest
 
 @MainActor
 final class WaveformInteractionTests: XCTestCase {
+    func testPlayheadStrokeSharesSentenceEndCoordinate() {
+        let viewportStart = 0.0
+        let viewportEnd = 10.0
+        let width: CGFloat = 1_000
+        let sentenceEnd = 2.0
+
+        let orangeEndX = WaveformBoundaryGeometry.endLineX(
+            for: sentenceEnd,
+            viewportStart: viewportStart,
+            viewportEnd: viewportEnd,
+            width: width
+        )
+        let markerOriginX = WaveformBoundaryGeometry.playheadMarkerOriginX(
+            for: sentenceEnd,
+            viewportStart: viewportStart,
+            viewportEnd: viewportEnd,
+            width: width
+        )
+        let redStrokeCenterX = markerOriginX + WaveformBoundaryGeometry.playheadLineCenterOffset
+
+        XCTAssertEqual(redStrokeCenterX, orangeEndX, accuracy: 0.0001)
+    }
+
+    func testPlayheadAndSentenceEndRemainAlignedAtViewportEdge() {
+        let width: CGFloat = 640
+        let orangeEndX = WaveformBoundaryGeometry.endLineX(
+            for: 10,
+            viewportStart: 0,
+            viewportEnd: 10,
+            width: width
+        )
+        let redStrokeCenterX = WaveformBoundaryGeometry.playheadLineX(
+            for: 10,
+            viewportStart: 0,
+            viewportEnd: 10,
+            width: width
+        )
+
+        XCTAssertEqual(redStrokeCenterX, orangeEndX, accuracy: 0.0001)
+    }
+
     func testStartBoundaryHitChoosesNearestLine() {
         let first = SentenceSegment(index: 1, startTime: 1.0, endTime: 2.0)
         let second = SentenceSegment(index: 2, startTime: 1.03, endTime: 2.03)
@@ -94,5 +135,67 @@ final class WaveformInteractionTests: XCTestCase {
         XCTAssertNotNil(descriptor)
         XCTAssertEqual(descriptor?.keyDisplay, "⌥⇧W")
         XCTAssertEqual(descriptor?.chineseName, "显示或隐藏次波形图")
+    }
+
+    func testPlaybackClockInterpolatesAndFreezesAcrossPlaybackStateChanges() {
+        let clock = PlaybackClock()
+        clock.updateTime(10, at: 100)
+        clock.setPlaybackRate(2, at: 100)
+        clock.setPlaying(true, at: 100)
+
+        XCTAssertEqual(clock.presentationTime(at: 100.25), 10.5, accuracy: 0.0001)
+
+        // A decoder sample re-anchors interpolation without requiring a
+        // display-rate objectWillChange publication.
+        clock.updatePresentationAnchor(11, at: 100.5)
+        XCTAssertEqual(clock.presentationTime(at: 100.75), 11.5, accuracy: 0.0001)
+
+        clock.setPlaying(false, at: 100.75)
+        let frozen = clock.presentationTime(at: 105)
+        XCTAssertEqual(frozen, 11.5, accuracy: 0.0001)
+    }
+
+    func testPlaybackClockRejectsStaleBackwardDecoderSamplesWhilePlaying() {
+        let clock = PlaybackClock()
+        clock.updateTime(10, at: 100)
+        clock.setPlaying(true, at: 100)
+
+        clock.updatePresentationAnchor(10.10, at: 100.10)
+        let beforeStaleSample = clock.presentationTime(at: 100.20)
+
+        // A delayed decoder callback reports an older timestamp. The
+        // presentation clock must not move the playhead backwards.
+        clock.ingestPlaybackTime(10.05, at: 100.20)
+        let afterStaleSample = clock.presentationTime(at: 100.20)
+        XCTAssertGreaterThanOrEqual(afterStaleSample, beforeStaleSample)
+
+        let acceptedBoundaryTime = clock.updatePresentationAnchor(9.95, at: 100.21)
+        XCTAssertGreaterThanOrEqual(acceptedBoundaryTime, afterStaleSample)
+
+        // Explicit seeking remains discontinuous and is still allowed to move
+        // backwards immediately.
+        clock.updateTime(5, at: 100.25)
+        XCTAssertEqual(clock.presentationTime(at: 100.25), 5, accuracy: 0.0001)
+    }
+
+    func testPlaybackClockCapsPresentationAtSentenceBoundary() {
+        let clock = PlaybackClock()
+        clock.updateTime(10, at: 100)
+        clock.setPlaying(true, at: 100)
+        clock.setPresentationUpperBound(10.5)
+
+        // Interpolation may run beyond the decoder's latest sample, but the
+        // visual marker must stop at the active sentence's end.
+        XCTAssertEqual(clock.presentationTime(at: 101), 10.5, accuracy: 0.0001)
+
+        // The cap is presentation-only and can advance with the next sentence.
+        clock.setPresentationUpperBound(12)
+        XCTAssertEqual(clock.presentationTime(at: 101), 11, accuracy: 0.0001)
+
+        clock.setPlaying(false, at: 101)
+        clock.setPresentationUpperBound(10.5)
+        XCTAssertEqual(clock.presentationTime(at: 105), 10.5, accuracy: 0.0001)
+        clock.setPresentationUpperBound(nil)
+        XCTAssertEqual(clock.presentationTime(at: 105), 11, accuracy: 0.0001)
     }
 }
