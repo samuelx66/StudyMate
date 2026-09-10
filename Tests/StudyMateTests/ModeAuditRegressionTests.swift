@@ -70,6 +70,14 @@ final class ModeAuditRegressionTests: XCTestCase {
         let initialSubtitle = try XCTUnwrap(
             descendants(videoHost).compactMap { $0 as? NSTextView }.first { $0.string == "First video sentence" }
         )
+        // Regression: subtitle text view must not participate in the window's key-view
+        // loop; doing so triggers AppKit's menu coordinator to close open tertiary panels.
+        XCTAssertFalse(initialSubtitle.acceptsFirstResponder,
+                       "Subtitle NSTextView must not accept first responder")
+        XCTAssertFalse(initialSubtitle.canBecomeKeyView,
+                       "Subtitle NSTextView must not become key view")
+        let menuBeforeCueChange = initialSubtitle.menu
+        XCTAssertNotNil(menuBeforeCueChange, "Subtitle NSTextView must have a context menu")
 
         engine.play()
         backend.emitTime(5.2)
@@ -84,6 +92,12 @@ final class ModeAuditRegressionTests: XCTestCase {
         )
         XCTAssertTrue(updatedSubtitle === initialSubtitle,
                       "The video subtitle text view should be reused across cue changes")
+        // Regression: the NSMenu object must not be replaced during a cue advance.
+        // Replacing textView.menu triggers AppKit's menu coordinator to dismiss any
+        // open tertiary submenu panel (e.g. Display > Waveforms) on macOS 26.
+        XCTAssertTrue(updatedSubtitle.menu === menuBeforeCueChange,
+                      "NSMenu identity must be preserved across cue advances to keep the " +
+                      "open tertiary submenu panel alive")
 
         let widthWithSidebar = rendererContainer.bounds.width
         outerHost.rootView = VideoModeSurface(engine: engine, isWaveformsVisible: true,

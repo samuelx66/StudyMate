@@ -81,17 +81,6 @@ public struct MainContentView: View {
             // 全屏模式下忽略顶部安全区，工具栏以悬浮浮层形式平滑滑入滑出，避免画面上下跳动
             .ignoresSafeArea(.container, edges: windowPresentationState.isFullScreen ? .top : [])
         .background(WindowTextInputFocusDismissalBridge())
-        .background {
-            Button("") {
-                withAnimation(Self.panelSpringAnimation) {
-                    isSecondaryWaveformVisible.toggle()
-                }
-            }
-            .keyboardShortcut("w", modifiers: [.option, .shift])
-            .opacity(0)
-            .frame(width: 0, height: 0)
-            .allowsHitTesting(false)
-        }
         .animation(Self.panelSpringAnimation, value: isWaveformsVisible)
         .animation(Self.panelSpringAnimation, value: isSecondaryWaveformVisible)
         .animation(Self.panelSpringAnimation, value: isSubtitleEditVisible)

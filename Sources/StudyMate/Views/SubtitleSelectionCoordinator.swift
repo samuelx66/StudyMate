@@ -1155,7 +1155,24 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
             textView.toolTip = text
-            textView.menu = contextMenu(for: textView)
+            // On macOS 26, assigning a new NSMenu object to an NSTextView triggers
+            // AppKit's menu coordinator to re-evaluate the window's responder chain.
+            // This dismisses any open tertiary submenu panel (e.g. Display > Waveforms)
+            // the moment a video subtitle cue changes during continuous playback.
+            // The video subtitle overlay keeps the same NSTextView alive across cue
+            // boundaries (via a stable .id string) so updateNSView is called rather
+            // than makeNSView. To avoid the dismissal, update the ContextMenuTarget
+            // text in-place when one already exists, leaving the NSMenu object itself
+            // unchanged. Only fall back to creating a new menu when no target exists.
+            if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
+                target.text = text
+                target.context = self.context
+                if let lookupItem = textView.menu?.items.first {
+                    lookupItem.title = LanguageManager.shared.text("查询所选词", "Look Up Selection")
+                }
+            } else {
+                textView.menu = contextMenu(for: textView)
+            }
             textView.font = font
             textView.textColor = color
             textView.alignment = alignment
@@ -1236,6 +1253,15 @@ public struct SubtitleSelectableText: NSViewRepresentable {
             lastIntrinsicHeight = height
             return NSSize(width: NSView.noIntrinsicMetric, height: height)
         }
+
+        // The subtitle text view is purely for text selection and dictionary
+        // lookup; it must never participate in the window's key-view loop.
+        // Advertising itself as a first responder causes AppKit to rebroadcast
+        // focus preferences on every cue-driven size or position update, which
+        // triggers the menu coordinator to close any open tertiary submenu panel.
+        override var acceptsFirstResponder: Bool { false }
+        override var canBecomeKeyView: Bool { false }
+
 
         override func layout() {
             super.layout()
