@@ -527,14 +527,30 @@ public struct SegmentListView: View {
         VStack(spacing: 0) {
             // 列表头部工具栏
             HStack(spacing: 6) {
-                Label(lang.localized(.segmentList), systemImage: "list.bullet.indent")
+                // 阅读 / 功能状态切换：图标表达当前状态，功能状态下显示右侧操作按钮组。
+                Button {
+                    editingLayout.toggle()
+                } label: {
+                    Image(systemName: editingLayout ? "slider.horizontal.3" : "book")
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(editingLayout ? StudyMateMediaStyle.accent : .secondary)
+                }
+                .studymateChromeButton(shape: .circle)
+                .focusable(false)
+                .segmentListHelp(
+                    editingLayout
+                        ? lang.text("功能状态：显示操作按钮、时间与批量操作，点击切换到阅读", "Function mode: action buttons, timing and batch actions. Click to switch to reading.")
+                        : lang.text("阅读状态：纯粹阅读双语内容，点击切换到功能", "Reading mode: pure subtitle reading. Click to switch to function mode.")
+                )
+
+                Text(lang.localized(.segmentList))
                     .font(.subheadline.bold())
 
                 Text("(\(engine.segments.count))")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                if !selectedSegmentIDs.isEmpty {
+                if editingLayout, !selectedSegmentIDs.isEmpty {
                     Text(lang.text("已选 \(selectedSegmentIDs.count)", "\(selectedSegmentIDs.count) selected"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -542,209 +558,197 @@ public struct SegmentListView: View {
 
                 Spacer()
 
-                Menu {
-                    Section(lang.text("字幕处理", "Subtitle tools")) {
-                        Button(lang.text("导入字幕…", "Import subtitles…")) { showImportSheet = true }
-                        Button(lang.text("重新生成原文…", "Regenerate original text…")) {
-                            showRegenerateOriginalConfirmation = true
-                        }
-                        .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
-                        .help(regenerateOriginalHelpText)
-                    }
-                    Divider()
-                    Picker(lang.text("列表布局", "List layout"), selection: $editingLayout) {
-                        Text(lang.text("阅读：突出双语内容", "Reading: focus on subtitles")).tag(false)
-                        Text(lang.text("编辑：显示时间与批量操作", "Editing: timing and selection")).tag(true)
-                    }
-                } label: {
-                    Text(editingLayout ? lang.text("编辑", "Editing") : lang.text("阅读", "Reading"))
-                }
-                .fixedSize()
-                .help(lang.text("列表布局与字幕处理", "List layout and subtitle tools"))
-
-                // 播放时自动跟随当前句开关
-                Button(action: {
-                    followState.toggle()
-                    segmentFollowsPlayback = followState.followsPlayback
-                }) {
-                    Image(systemName: "target")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(followState.shouldFollow ? .primary : .secondary.opacity(0.45))
-                        .segmentListHelp(StudyMateShortcutCatalog.help(
-                            followState.shouldFollow
-                                ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
-                                : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
-                            shortcut: .followActiveSentence
-                        ))
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .segmentListHelp(StudyMateShortcutCatalog.help(
-                    followState.shouldFollow
-                        ? lang.text("播放时自动跟随当前句", "Follow the active sentence during playback")
-                        : lang.text("已暂停自动跟随，点击恢复", "Automatic following is paused; click to resume"),
-                    shortcut: .followActiveSentence
-                ))
-
-                // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
-                Button {
-                    showFilterPopover.toggle()
-                } label: {
-                    Image(systemName: (filterCriteria.hasActiveFilters || !searchText.isEmpty)
-                        ? "line.3.horizontal.decrease.circle.fill"
-                        : "line.3.horizontal.decrease.circle")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor((filterCriteria.hasActiveFilters || !searchText.isEmpty) ? StudyMateMediaStyle.accent : .secondary)
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .segmentListHelp(StudyMateShortcutCatalog.help(
-                    lang.text("筛选与搜索句子", "Filter and search sentences"),
-                    shortcut: .filterSentences
-                ))
-                .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
-                    SegmentFilterPopover(
-                        criteria: $filterCriteria,
-                        searchText: $searchText,
-                        lang: lang,
-                        displayedCount: displayedSegments.count,
-                        selectedCount: selectedDisplayedCount,
-                        onSelectAll: selectDisplayedSegments,
-                        onDeselectAll: deselectDisplayedSegments,
-                        onInvertSelection: invertDisplayedSegmentSelection,
-                        onVocabularyFilterChanged: {
-                            updateVocabularyFilterIfNeeded()
-                        }
-                    )
-                }
-
-                // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
-                Button {
-                    showTranslationPopover = true
-                } label: {
-                    Image(systemName: "translate")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
-                .segmentListHelp(StudyMateShortcutCatalog.help(
-                    translationSettings.isAutomaticTranslationEnabled
-                        ? lang.text("翻译句子（选择服务和目标语言）", "Translate sentences (choose service and target language)")
-                        : lang.text("请先在设置中启用翻译功能", "Enable translation in Settings first"),
-                    shortcut: .translateSentences
-                ))
-                .popover(isPresented: $showTranslationPopover, arrowEdge: .top) {
-                    TranslationExecutionSheet(
-                        engine: engine,
-                        settings: translationSettings,
-                        selectedSegmentIDs: selectedSegmentIDs,
-                        lang: lang
-                    )
-                }
-
-                // 将已选断句统一导出为音频和字幕（仅在勾选句子时显示并启用）
-                if !selectedSegmentIDs.isEmpty {
+                if editingLayout {
+                    // 导入字幕…
                     Button {
-                        showExportPopover = true
+                        showImportSheet = true
                     } label: {
-                        Image(systemName: "square.and.arrow.up")
+                        Image(systemName: "arrow.down.doc")
                             .frame(width: 24, height: 24)
                             .foregroundColor(.secondary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
-                    .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
                     .segmentListHelp(StudyMateShortcutCatalog.help(
-                        lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
-                        shortcut: .exportMenu
+                        lang.text("导入字幕", "Import subtitles"),
+                        shortcut: .importSubtitles
                     ))
-                    .popover(isPresented: $showExportPopover, arrowEdge: .top) {
-                        SegmentExportPopoverView(
-                            onExportSeparate: {
-                                showExportPopover = false
-                                chooseIndividualExportDestination()
+
+                    // 重新生成原文…
+                    Button {
+                        showRegenerateOriginalConfirmation = true
+                    } label: {
+                        Image(systemName: "waveform.and.mic")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                    }
+                    .studymateChromeButton(shape: .circle)
+                    .focusable(false)
+                    .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
+                    .segmentListHelp(StudyMateShortcutCatalog.help(
+                        regenerateOriginalHelpText,
+                        shortcut: .regenerateOriginalText
+                    ))
+
+                    // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
+                    Button {
+                        showFilterPopover.toggle()
+                    } label: {
+                        Image(systemName: (filterCriteria.hasActiveFilters || !searchText.isEmpty)
+                            ? "line.3.horizontal.decrease.circle.fill"
+                            : "line.3.horizontal.decrease.circle")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor((filterCriteria.hasActiveFilters || !searchText.isEmpty) ? StudyMateMediaStyle.accent : .secondary)
+                    }
+                    .studymateChromeButton(shape: .circle)
+                    .focusable(false)
+                    .segmentListHelp(StudyMateShortcutCatalog.help(
+                        lang.text("筛选与搜索句子", "Filter and search sentences"),
+                        shortcut: .filterSentences
+                    ))
+                    .popover(isPresented: $showFilterPopover, arrowEdge: .top) {
+                        SegmentFilterPopover(
+                            criteria: $filterCriteria,
+                            searchText: $searchText,
+                            lang: lang,
+                            displayedCount: displayedSegments.count,
+                            selectedCount: selectedDisplayedCount,
+                            onSelectAll: selectDisplayedSegments,
+                            onDeselectAll: deselectDisplayedSegments,
+                            onInvertSelection: invertDisplayedSegmentSelection,
+                            onVocabularyFilterChanged: {
+                                updateVocabularyFilterIfNeeded()
+                            }
+                        )
+                    }
+
+                    // 翻译必须由用户明确发起；点击后在列表上方冒泡选择服务、模型与目标语言。
+                    Button {
+                        showTranslationPopover = true
+                    } label: {
+                        Image(systemName: "translate")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
+                    }
+                    .studymateChromeButton(shape: .circle)
+                    .focusable(false)
+                    .disabled(!translationSettings.isAutomaticTranslationEnabled || engine.segments.isEmpty || engine.isAutoTranslating)
+                    .segmentListHelp(StudyMateShortcutCatalog.help(
+                        translationSettings.isAutomaticTranslationEnabled
+                            ? lang.text("翻译句子（选择服务和目标语言）", "Translate sentences (choose service and target language)")
+                            : lang.text("请先在设置中启用翻译功能", "Enable translation in Settings first"),
+                        shortcut: .translateSentences
+                    ))
+                    .popover(isPresented: $showTranslationPopover, arrowEdge: .top) {
+                        TranslationExecutionSheet(
+                            engine: engine,
+                            settings: translationSettings,
+                            selectedSegmentIDs: selectedSegmentIDs,
+                            lang: lang
+                        )
+                    }
+
+                    // 将已选断句统一导出为音频和字幕（仅在勾选句子时显示并启用）
+                    if !selectedSegmentIDs.isEmpty {
+                        Button {
+                            showExportPopover = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .frame(width: 24, height: 24)
+                                .foregroundColor(.secondary)
+                        }
+                        .studymateChromeButton(shape: .circle)
+                        .focusable(false)
+                        .disabled(selectedSegmentIDs.isEmpty || engine.currentMedia == nil || statusCenter.progress != nil)
+                        .segmentListHelp(StudyMateShortcutCatalog.help(
+                            lang.text("导出已选句子的 M4A 和 LRC", "Export selected sentences as M4A and LRC"),
+                            shortcut: .exportMenu
+                        ))
+                        .popover(isPresented: $showExportPopover, arrowEdge: .top) {
+                            SegmentExportPopoverView(
+                                onExportSeparate: {
+                                    showExportPopover = false
+                                    chooseIndividualExportDestination()
+                                },
+                                onExportMerged: {
+                                    showExportPopover = false
+                                    chooseMergedExportDestination()
+                                },
+                                lang: lang
+                            )
+                        }
+                    }
+
+                    // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
+                    Button {
+                        showAddToLibraryPopover = true
+                    } label: {
+                        Image(systemName: "text.badge.plus")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(isAddingToLibrary ? StudyMateMediaStyle.accent : .secondary)
+                    }
+                    .studymateChromeButton(shape: .circle)
+                    .focusable(false)
+                    .segmentListHelp(StudyMateShortcutCatalog.help(
+                        selectedSegmentIDs.isEmpty
+                            ? lang.text("请先勾选要加入句库的句子", "Select sentences to add to a library")
+                            : lang.text("将已选句子加入当前句库", "Add selected sentences to the current library"),
+                        shortcut: .addToSentenceLibrary
+                    ))
+                    .popover(isPresented: $showAddToLibraryPopover, arrowEdge: .top) {
+                        SegmentAddToLibraryPopoverView(
+                            currentLibraryName: libraryManager.currentLibrary?.name ?? lang.text("默认句库", "Default Library"),
+                            hasSelectedSegments: !selectedSegmentIDs.isEmpty && engine.currentMedia != nil,
+                            isAdding: isAddingToLibrary,
+                            libraries: libraryManager.libraries,
+                            currentLibraryID: libraryManager.currentLibraryID,
+                            onAddToCurrentLibrary: {
+                                showAddToLibraryPopover = false
+                                addSelectedSegmentsToLibrary()
                             },
-                            onExportMerged: {
-                                showExportPopover = false
-                                chooseMergedExportDestination()
+                            onSelectLibrary: { libraryID in
+                                libraryManager.selectLibrary(libraryID)
+                            },
+                            onOpenLibrary: {
+                                showAddToLibraryPopover = false
+                                if let onOpenLibrary {
+                                    onOpenLibrary()
+                                } else {
+                                    openWindow(id: "sentence-library")
+                                }
                             },
                             lang: lang
                         )
                     }
-                }
 
-                // 将已选断句保存到当前句库；视频句子会在后台截取预览帧。
-                Button {
-                    if selectedSegmentIDs.isEmpty { editingLayout = true }
-                    showAddToLibraryPopover = true
-                } label: {
-                    Image(systemName: "text.badge.plus")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(isAddingToLibrary ? StudyMateMediaStyle.accent : .secondary)
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .segmentListHelp(StudyMateShortcutCatalog.help(
-                    selectedSegmentIDs.isEmpty
-                        ? lang.text("请先勾选要加入句库的句子", "Select sentences to add to a library")
-                        : lang.text("将已选句子加入当前句库", "Add selected sentences to the current library"),
-                    shortcut: .addToSentenceLibrary
-                ))
-                .popover(isPresented: $showAddToLibraryPopover, arrowEdge: .top) {
-                    SegmentAddToLibraryPopoverView(
-                        currentLibraryName: libraryManager.currentLibrary?.name ?? lang.text("默认句库", "Default Library"),
-                        hasSelectedSegments: !selectedSegmentIDs.isEmpty && engine.currentMedia != nil,
-                        isAdding: isAddingToLibrary,
-                        libraries: libraryManager.libraries,
-                        currentLibraryID: libraryManager.currentLibraryID,
-                        onAddToCurrentLibrary: {
-                            showAddToLibraryPopover = false
-                            addSelectedSegmentsToLibrary()
-                        },
-                        onSelectLibrary: { libraryID in
-                            libraryManager.selectLibrary(libraryID)
-                        },
-                        onOpenLibrary: {
-                            showAddToLibraryPopover = false
-                            if let onOpenLibrary {
-                                onOpenLibrary()
-                            } else {
-                                openWindow(id: "sentence-library")
-                            }
-                        },
-                        lang: lang
-                    )
-                }
-
-                // 用户只决定速度优先还是质量优先；句长与证据权重由算法分析。
-                Button {
-                    showSegmentationPopover = true
-                } label: {
-                    Image(systemName: "wand.and.stars")
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                }
-                .studymateChromeButton(shape: .circle)
-                .focusable(false)
-                .modifier(OptionalSegmentListToolTip(text: suppressToolTips ? nil : StudyMateShortcutCatalog.help(
-                    lang.text("选择断句模式", "Choose segmentation mode"),
-                    shortcut: .segmentationMenu
-                )))
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-                .popover(isPresented: $showSegmentationPopover, arrowEdge: .top) {
-                    SegmentSegmentationPopoverView(
-                        onFastSegmentation: {
-                            showSegmentationPopover = false
-                            engine.performSegmentation(mode: .fast)
-                        },
-                        onIntelligentSegmentation: {
-                            showSegmentationPopover = false
-                            engine.performSegmentation(mode: .intelligent)
-                        },
-                        lang: lang
-                    )
+                    // 用户只决定速度优先还是质量优先；句长与证据权重由算法分析。
+                    Button {
+                        showSegmentationPopover = true
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                    }
+                    .studymateChromeButton(shape: .circle)
+                    .focusable(false)
+                    .modifier(OptionalSegmentListToolTip(text: suppressToolTips ? nil : StudyMateShortcutCatalog.help(
+                        lang.text("选择断句模式", "Choose segmentation mode"),
+                        shortcut: .segmentationMenu
+                    )))
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .popover(isPresented: $showSegmentationPopover, arrowEdge: .top) {
+                        SegmentSegmentationPopoverView(
+                            onFastSegmentation: {
+                                showSegmentationPopover = false
+                                engine.performSegmentation(mode: .fast)
+                            },
+                            onIntelligentSegmentation: {
+                                showSegmentationPopover = false
+                                engine.performSegmentation(mode: .intelligent)
+                            },
+                            lang: lang
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 10)
@@ -958,7 +962,7 @@ public struct SegmentListView: View {
             handleSegmentFollowsPlaybackChanged(newValue)
         }
         .modifier(SegmentListNotificationModifier(
-            onFilter: { showFilterPopover.toggle() },
+            onFilter: handleFilterNotification,
             onFollow: handleToggleFollowSentenceNotification,
             onRegenerate: handleRegenerateOriginalNotification,
             onTranslate: handleTranslateSentencesNotification,
@@ -1031,6 +1035,26 @@ public struct SegmentListView: View {
         }
     }
 
+    /// 阅读布局会隐藏列表头部的操作按钮组。若通过菜单快捷键发起筛选、
+    /// 翻译或加入句库等编辑操作，先切回编辑布局再呈现对应的浮层，保证
+    /// 浮层的锚点按钮已经在视图层级中。
+    private func revealHeaderActionsAndPresent(_ present: @escaping () -> Void) {
+        if editingLayout {
+            present()
+        } else {
+            editingLayout = true
+            DispatchQueue.main.async(execute: present)
+        }
+    }
+
+    private func handleFilterNotification() {
+        if editingLayout {
+            showFilterPopover.toggle()
+        } else {
+            revealHeaderActionsAndPresent { showFilterPopover = true }
+        }
+    }
+
     private func handleRegenerateOriginalNotification() {
         guard engine.currentMedia != nil, !engine.segments.isEmpty,
               !engine.isAITranscribing, !engine.isAutoTranslating else { return }
@@ -1039,7 +1063,7 @@ public struct SegmentListView: View {
 
     private func handleTranslateSentencesNotification() {
         guard engine.currentMedia != nil, !engine.segments.isEmpty else { return }
-        showTranslationPopover = true
+        revealHeaderActionsAndPresent { showTranslationPopover = true }
     }
 
     private func handleImportSubtitlesNotification() {
@@ -1069,7 +1093,7 @@ public struct SegmentListView: View {
         guard engine.currentMedia != nil else { return }
         if selectedSegments.isEmpty {
             MainStatusCenter.shared.showSuccess(lang.text("请先勾选要加入句库的句子", "Please select sentences to add to a library first"))
-            showAddToLibraryPopover = true
+            revealHeaderActionsAndPresent { showAddToLibraryPopover = true }
         } else {
             addSelectedSegmentsToLibrary()
         }
@@ -2099,7 +2123,8 @@ struct SegmentRowView: View, Equatable {
 
     var body: some View {
         HStack(spacing: 0) {
-                if editingLayout || isSelectedForExport {
+                // 纯粹阅读状态隐藏复选框，即使此前在功能状态勾选过句子。
+                if editingLayout {
                 Button(action: onToggleExportSelection) {
                     Image(systemName: isSelectedForExport ? "checkmark.square.fill" : "square")
                         .font(.system(size: 12))
