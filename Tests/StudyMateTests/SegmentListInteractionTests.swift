@@ -471,6 +471,36 @@ final class SegmentListInteractionTests: XCTestCase {
         }
     }
 
+    func testViewAndWindowMenuShortcutsAreRegisteredInCatalog() {
+        let catalog = StudyMateShortcutCatalog.all
+
+        let statusBarDesc = catalog.first(where: { $0.id == .toggleStatusBar })
+        XCTAssertNotNil(statusBarDesc)
+        XCTAssertEqual(statusBarDesc?.keyDisplay, "⌘/")
+
+        let vocabDesc = catalog.first(where: { $0.id == .openVocabulary })
+        XCTAssertNotNil(vocabDesc)
+        XCTAssertEqual(vocabDesc?.keyDisplay, "⌘⇧V")
+
+        let expectedModes: [(PlaybackInterfaceMode, String, String)] = [
+            (.video, "1", "⌥⌘1"),
+            (.list, "2", "⌥⌘2"),
+            (.fullText, "3", "⌥⌘3"),
+            (.sentence, "4", "⌥⌘4"),
+            (.fillInBlank, "5", "⌥⌘5"),
+            (.reverseTranslation, "6", "⌥⌘6")
+        ]
+
+        for (mode, expectedKeyChar, expectedDisplay) in expectedModes {
+            XCTAssertEqual(mode.shortcutKey, KeyEquivalent(expectedKeyChar.first!))
+            let desc = catalog.first(where: { $0.id == mode.shortcutID })
+            XCTAssertNotNil(desc, "Mode \(mode) shortcut must exist in catalog")
+            XCTAssertEqual(desc?.keyDisplay, expectedDisplay)
+            XCTAssertFalse(desc?.chineseName.isEmpty ?? true)
+            XCTAssertFalse(desc?.englishName.isEmpty ?? true)
+        }
+    }
+
     @MainActor
     func testSentenceMergePreviousAndNextValidation() {
         let engine = makeTestPlaybackEngine()

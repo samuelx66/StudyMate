@@ -19,7 +19,10 @@ final class FocusDismissalNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeMonitor()
-        guard window != nil else { return }
+        guard let window else { return }
+        DispatchQueue.main.async { [weak window] in
+            window?.makeFirstResponder(nil)
+        }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
             self?.dismissTextFocusIfNeeded(for: event)
             return event

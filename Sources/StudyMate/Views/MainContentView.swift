@@ -113,6 +113,9 @@ public struct MainContentView: View {
             // 主窗口内容已经开始渲染后，才销毁欢迎页场景，避免两个窗口同时
             // 长时间存在，也避免欢迎页提前关闭导致主窗口首帧无宿主窗口。
             onWindowDidAppear()
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .studyMateCloseCurrentMedia),
@@ -937,7 +940,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 ForEach(PlaybackInterfaceMode.allCases) { mode in
                     Text(mode.localized(with: lang).replacingOccurrences(of: lang.text("模式", " Mode"), with: ""))
                         .tag(mode)
-                        .help(mode.localized(with: lang))
+                        .help(StudyMateShortcutCatalog.help(mode.localized(with: lang), shortcut: mode.shortcutID))
                         .accessibilityLabel(mode.localized(with: lang))
                 }
             }

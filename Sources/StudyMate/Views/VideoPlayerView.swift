@@ -356,16 +356,14 @@ private struct DraggableFloatingOSDContainer: View {
     @State private var dragTranslation: CGSize = .zero
     @State private var isVolumeScrubbing: Bool = false
     @State private var panelDragActive = false
-    @State private var hasControlFocus = false
 
-    private var isInteracting: Bool { isScrubbing || isVolumeScrubbing || panelDragActive || hasControlFocus }
+    private var isInteracting: Bool { isScrubbing || isVolumeScrubbing || panelDragActive }
 
     var body: some View {
         FloatingVideoOSDView(
             engine: engine,
             isScrubbing: $isScrubbing,
-            isVolumeScrubbing: $isVolumeScrubbing,
-            onFocusChanged: { hasControlFocus = $0 }
+            isVolumeScrubbing: $isVolumeScrubbing
         )
         .padding(.horizontal, 16)
         .padding(.bottom, 14)

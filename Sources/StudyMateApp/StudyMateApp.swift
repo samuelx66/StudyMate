@@ -297,8 +297,10 @@ struct StudyMateApp: App {
         .commands {
             // 应用菜单：将设置放在 StudyMate 菜单下，并使用 macOS 标准快捷键 ⌘,
             CommandGroup(after: .appInfo) {
-                Button(languageManager.text("设置", "Settings")) {
+                Button {
                     openWindow(id: "settings")
+                } label: {
+                    Label(languageManager.text("设置…", "Settings…"), systemImage: "gearshape")
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }
@@ -330,6 +332,7 @@ struct StudyMateApp: App {
                 Button(languageManager.text("打开生词本…", "Open Vocabulary…")) {
                     openWindow(id: "vocabulary")
                 }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
             }
 
             // 文件菜单
@@ -356,13 +359,16 @@ struct StudyMateApp: App {
                     }
                 } label: {
                     HStack {
-                        Text(languageManager.text("显示状态栏", "Show Status Bar"))
+                        Text(showStatusBar
+                             ? languageManager.text("隐藏状态栏", "Hide Status Bar")
+                             : languageManager.text("显示状态栏", "Show Status Bar"))
                         if showStatusBar {
                             Spacer()
                             Image(systemName: "checkmark")
                         }
                     }
                 }
+                .keyboardShortcut("/", modifiers: [.command])
 
                 Menu {
                     ForEach(PlaybackInterfaceMode.allCases) { mode in
@@ -377,6 +383,7 @@ struct StudyMateApp: App {
                                 }
                             }
                         }
+                        .keyboardShortcut(mode.shortcutKey, modifiers: [.command, .option])
                     }
                 } label: {
                     Label(languageManager.text("界面模式", "Interface Mode"), systemImage: playbackInterfaceMode.iconName)
@@ -397,6 +404,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .keyboardShortcut("o", modifiers: [.command, .option])
 
                 Button {
                     videoSubtitleSettings.toggleTranslation(for: playbackInterfaceMode)
@@ -413,11 +421,13 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .keyboardShortcut("t", modifiers: [.command, .option])
                 .disabled(playbackInterfaceMode == .reverseTranslation)
 
                 Button(languageManager.text("字幕字体设置…", "Subtitle Font Settings…")) {
                     openWindow(id: "subtitle-font-settings")
                 }
+                .keyboardShortcut("f", modifiers: [.command, .option])
 
                 Divider()
 
@@ -476,6 +486,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .keyboardShortcut("s", modifiers: [.option])
                 .disabled(playbackInterfaceMode.isFillInBlankStyle)
 
                 Button {
@@ -491,6 +502,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .keyboardShortcut("p", modifiers: [.option])
 
                 Button {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -507,6 +519,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .keyboardShortcut("l", modifiers: [.option])
 
                 Menu {
                     if navigationBookmarks.isEmpty {
@@ -765,6 +778,7 @@ struct StudyMateApp: App {
                 Button(languageManager.text("播放 / 暂停", "Play / Pause")) {
                     engine.togglePlayPause()
                 }
+                .keyboardShortcut(.space, modifiers: [])
                 
                 Divider()
 

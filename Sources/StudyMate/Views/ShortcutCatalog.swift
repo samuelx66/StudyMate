@@ -1,11 +1,20 @@
 import Foundation
+import SwiftUI
 
 /// 应用中对用户可见的快捷键定义。快捷键集中维护，工具提示和帮助面板
 /// 共用同一份数据，避免显示文字与实际绑定逐渐不一致。
 public enum StudyMateShortcutID: String, CaseIterable, Identifiable, Sendable {
     case openSentenceLibrary
+    case openVocabulary
     case openDictionary
     case openMedia
+    case toggleStatusBar
+    case interfaceModeVideo
+    case interfaceModeList
+    case interfaceModeFullText
+    case interfaceModeSentence
+    case interfaceModeFillInBlank
+    case interfaceModeReverseTranslation
     case playbackModeContinuous
     case playbackModeSingleRepeat
     case playbackModePauseAfter
@@ -89,8 +98,16 @@ public struct StudyMateShortcutDescriptor: Identifiable, Equatable, Sendable {
 public enum StudyMateShortcutCatalog {
     public static let all: [StudyMateShortcutDescriptor] = [
         .init(id: .openSentenceLibrary, chineseName: "打开句库", englishName: "Open Sentence Library", keyDisplay: "⌘L"),
+        .init(id: .openVocabulary, chineseName: "打开生词本", englishName: "Open Vocabulary", keyDisplay: "⌘⇧V"),
         .init(id: .openDictionary, chineseName: "打开词典", englishName: "Open Dictionary", keyDisplay: "⌃⌘D"),
         .init(id: .openMedia, chineseName: "打开音视频", englishName: "Open Audio or Video", keyDisplay: "⌘O"),
+        .init(id: .toggleStatusBar, chineseName: "显示或隐藏状态栏", englishName: "Show or Hide Status Bar", keyDisplay: "⌘/"),
+        .init(id: .interfaceModeVideo, chineseName: "界面模式：视频模式", englishName: "Interface Mode: Video Mode", keyDisplay: "⌥⌘1"),
+        .init(id: .interfaceModeList, chineseName: "界面模式：列表模式", englishName: "Interface Mode: List Mode", keyDisplay: "⌥⌘2"),
+        .init(id: .interfaceModeFullText, chineseName: "界面模式：全文模式", englishName: "Interface Mode: Full Text Mode", keyDisplay: "⌥⌘3"),
+        .init(id: .interfaceModeSentence, chineseName: "界面模式：句子模式", englishName: "Interface Mode: Sentence Mode", keyDisplay: "⌥⌘4"),
+        .init(id: .interfaceModeFillInBlank, chineseName: "界面模式：填空模式", englishName: "Interface Mode: Fill-in-the-Blank Mode", keyDisplay: "⌥⌘5"),
+        .init(id: .interfaceModeReverseTranslation, chineseName: "界面模式：反译模式", englishName: "Interface Mode: Reverse Translation Mode", keyDisplay: "⌥⌘6"),
         .init(id: .playbackModeContinuous, chineseName: "播放模式：连续播放", englishName: "Playback Mode: Continuous Play", keyDisplay: "⌘1"),
         .init(id: .playbackModeSingleRepeat, chineseName: "播放模式：单句重复", englishName: "Playback Mode: Repeat Sentence", keyDisplay: "⌘2"),
         .init(id: .playbackModePauseAfter, chineseName: "播放模式：句后停顿", englishName: "Playback Mode: Pause After Sentence", keyDisplay: "⌘3"),
@@ -168,6 +185,31 @@ public extension PlaybackLoopMode {
         case .singleSegment: return .playbackModeSingleRepeat
         case .pauseAfterSegment: return .playbackModePauseAfter
         case .all: return .playbackModeLoopAll
+        }
+    }
+}
+
+public extension PlaybackInterfaceMode {
+    /// 界面模式选项与菜单命令共用同一快捷键目录。
+    var shortcutID: StudyMateShortcutID {
+        switch self {
+        case .video: return .interfaceModeVideo
+        case .list: return .interfaceModeList
+        case .fullText: return .interfaceModeFullText
+        case .sentence: return .interfaceModeSentence
+        case .fillInBlank: return .interfaceModeFillInBlank
+        case .reverseTranslation: return .interfaceModeReverseTranslation
+        }
+    }
+
+    var shortcutKey: KeyEquivalent {
+        switch self {
+        case .video: return "1"
+        case .list: return "2"
+        case .fullText: return "3"
+        case .sentence: return "4"
+        case .fillInBlank: return "5"
+        case .reverseTranslation: return "6"
         }
     }
 }

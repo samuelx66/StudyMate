@@ -8,7 +8,6 @@ public struct FloatingVideoOSDView: View {
     @Binding var isScrubbing: Bool
     @Binding var isVolumeScrubbing: Bool
     private let onFocusChanged: (Bool) -> Void
-    @FocusState private var focusedControl: Int?
     
     public init(
         engine: PlaybackEngine,
@@ -32,7 +31,6 @@ public struct FloatingVideoOSDView: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 4)
         .frame(maxWidth: 540)
-        .onChange(of: focusedControl) { _, value in onFocusChanged(value != nil) }
         .onDisappear { onFocusChanged(false) }
     }
 
@@ -53,7 +51,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
-            .focused($focusedControl, equals: 0)
+            .focusable(false)
             .accessibilityLabel(lang.localized(.repeatSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.repeatSentence),
@@ -68,7 +66,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
-            .focused($focusedControl, equals: 1)
+            .focusable(false)
             .accessibilityLabel(lang.localized(.previousSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.previousSentence),
@@ -83,7 +81,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(prominent: true, shape: .circle)
-            .focused($focusedControl, equals: 2)
+            .focusable(false)
             .accessibilityLabel(engine.isPlaying ? lang.localized(.pause) : lang.localized(.play))
             .help(StudyMateShortcutCatalog.help(
                 engine.isPlaying ? lang.localized(.pause) : lang.localized(.play),
@@ -98,7 +96,7 @@ public struct FloatingVideoOSDView: View {
                     .contentShape(Circle())
             }
             .studymateChromeButton(shape: .circle)
-            .focused($focusedControl, equals: 3)
+            .focusable(false)
             .accessibilityLabel(lang.localized(.nextSentence))
             .help(StudyMateShortcutCatalog.help(
                 lang.localized(.nextSentence),
@@ -120,7 +118,7 @@ public struct FloatingVideoOSDView: View {
                 onSeek: { engine.seek(to: $0) }
             )
             .frame(minWidth: 80, maxHeight: 22)
-            .focused($focusedControl, equals: 6)
+            .focusable(false)
             
             // 7. 总时间
             Text(Self.playbackTime(engine.duration))
@@ -144,8 +142,8 @@ public struct FloatingVideoOSDView: View {
                         .contentShape(Circle())
                 }
                 .studymateChromeButton(shape: .circle)
-                .focused($focusedControl, equals: 4)
-            .accessibilityLabel(lang.text("静音 / 取消静音", "Mute / Unmute"))
+                .focusable(false)
+                .accessibilityLabel(lang.text("静音 / 取消静音", "Mute / Unmute"))
                 .help(StudyMateShortcutCatalog.help(
                     lang.text("静音 / 取消静音", "Mute / Unmute"),
                     shortcut: .mute
@@ -162,8 +160,8 @@ public struct FloatingVideoOSDView: View {
                     }
                 )
                 .labelsHidden()
-                .focused($focusedControl, equals: 5)
-            .accessibilityLabel(lang.text("音量", "Volume"))
+                .focusable(false)
+                .accessibilityLabel(lang.text("音量", "Volume"))
                 .accessibilityValue("\(Int(engine.volume * 100))%")
                 .frame(width: 52, height: 22)
                 .transaction { transaction in
