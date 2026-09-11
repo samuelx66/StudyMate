@@ -91,4 +91,26 @@ final class HelpManualTests: XCTestCase {
         XCTAssertTrue(html.contains("prefers-color-scheme: dark"))
         XCTAssertTrue(html.contains("</body>"))
     }
+
+    func testMarkdownParserHandlesMultipleCodeSnippetsInSingleLine() {
+        let md = "支持 `0.5x`、`0.75x`、`1.0x`、`1.25x`、`1.5x`、`2.0x` 无级变速。"
+        let html = StudyMateMarkdownParser.toHTML(markdown: md, title: "Test")
+        XCTAssertFalse(html.contains("§§"), "Must not leak any placeholders")
+        XCTAssertFalse(html.contains("CODE"), "Must not leak CODE placeholder text")
+        XCTAssertTrue(html.contains("<code>0.5x</code>"))
+        XCTAssertTrue(html.contains("<code>0.75x</code>"))
+        XCTAssertTrue(html.contains("<code>1.0x</code>"))
+        XCTAssertTrue(html.contains("<code>1.25x</code>"))
+        XCTAssertTrue(html.contains("<code>1.5x</code>"))
+        XCTAssertTrue(html.contains("<code>2.0x</code>"))
+    }
+
+    func testFullZhCnManualParsesWithoutCorruptedPlaceholders() {
+        let (zhText, _) = StudyMateHelpResolver.readHelpMarkdown(for: .zh)
+        XCTAssertFalse(zhText.isEmpty)
+        let html = StudyMateMarkdownParser.toHTML(markdown: zhText, title: "Test")
+        XCTAssertFalse(html.contains("§§"), "HTML output must not contain unexpanded placeholders like §§")
+        XCTAssertFalse(html.contains("CODE"), "HTML output must not contain CODE placeholder leaks")
+        XCTAssertTrue(html.contains("<code>0.5x</code>"))
+    }
 }

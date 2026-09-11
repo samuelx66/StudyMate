@@ -328,17 +328,20 @@ public enum StudyMateMarkdownParser {
     private static func parseInline(_ text: String) -> String {
         var str = text
 
-        // 1. 行内代码保护 (临时用占位符替代，避免后续被加粗/斜体正则误伤)
+        // 1. 行内代码保护 (临时用无特殊字符占位符替代，避免后续被加粗/斜体正则误伤)
         var codeSnippets: [String] = []
         let codePattern = #"`([^`]+)`"#
         if let codeRegex = try? NSRegularExpression(pattern: codePattern) {
             let matches = codeRegex.matches(in: str, range: NSRange(location: 0, length: str.utf16.count))
-            for match in matches.reversed() {
-                if let fullRange = Range(match.range, in: str),
-                   let codeRange = Range(match.range(at: 1), in: str) {
+            for match in matches {
+                if let codeRange = Range(match.range(at: 1), in: str) {
                     let codeText = String(str[codeRange])
-                    let placeholder = "§§CODE_\(codeSnippets.count)§§"
                     codeSnippets.append("<code>\(escapeHTML(codeText))</code>")
+                }
+            }
+            for (idx, match) in matches.enumerated().reversed() {
+                if let fullRange = Range(match.range, in: str) {
+                    let placeholder = "§§SMCODE\(idx)§§"
                     str.replaceSubrange(fullRange, with: placeholder)
                 }
             }
@@ -416,7 +419,7 @@ public enum StudyMateMarkdownParser {
 
         // 9. 还原代码片段
         for (idx, snippet) in codeSnippets.enumerated() {
-            str = str.replacingOccurrences(of: "§§CODE_\(idx)§§", with: snippet)
+            str = str.replacingOccurrences(of: "§§SMCODE\(idx)§§", with: snippet)
         }
 
         return str
