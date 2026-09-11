@@ -1049,7 +1049,7 @@ private struct MainWindowToolbar: ToolbarContent {
 
                 let effectiveSubtitleEditVisible = isSubtitleEditVisible && !playbackInterfaceMode.isFillInBlankStyle
                 Toggle(isOn: Binding(
-                    get: { effectiveSubtitleEditVisible },
+                    get: { isSubtitleEditVisible && !playbackInterfaceMode.isFillInBlankStyle },
                     set: { newValue in
                         withAnimation(MainContentView.panelSpringAnimation) {
                             isSubtitleEditVisible = newValue

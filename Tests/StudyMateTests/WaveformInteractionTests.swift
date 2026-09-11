@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import StudyMateKit
 
@@ -198,4 +199,61 @@ final class WaveformInteractionTests: XCTestCase {
         clock.setPresentationUpperBound(nil)
         XCTAssertEqual(clock.presentationTime(at: 105), 11, accuracy: 0.0001)
     }
+
+    func testOptionSToggle() {
+        UserDefaults.standard.set(false, forKey: "StudyMate.ShowSubtitleEditor")
+        let view = MainContentView()
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .closable, .resizable],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        
+        let eventS = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.option],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "ß",
+            charactersIgnoringModifiers: "s",
+            isARepeat: false,
+            keyCode: 1
+        )!
+        
+        // 初始状态为隐藏，按 ⌥S 展开
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: "StudyMate.ShowSubtitleEditor"))
+        let handledS1 = window.performKeyEquivalent(with: eventS)
+        XCTAssertTrue(handledS1)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "StudyMate.ShowSubtitleEditor"))
+        
+        // 展开状态下再次按 ⌥S，应能正确收起隐藏
+        let handledS2 = window.performKeyEquivalent(with: eventS)
+        XCTAssertTrue(handledS2)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: "StudyMate.ShowSubtitleEditor"))
+
+        let eventW = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.option],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "∑",
+            charactersIgnoringModifiers: "w",
+            isARepeat: false,
+            keyCode: 13
+        )!
+        let handledW1 = window.performKeyEquivalent(with: eventW)
+        XCTAssertTrue(handledW1)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: "StudyMate.ShowWaveforms"))
+
+        let handledW2 = window.performKeyEquivalent(with: eventW)
+        XCTAssertTrue(handledW2)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "StudyMate.ShowWaveforms"))
+    }
 }
+
+
