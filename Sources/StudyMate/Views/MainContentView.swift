@@ -616,7 +616,7 @@ extension MainContentView {
             engine: engine,
             isWaveformsVisible: isWaveformsVisible,
             isSecondaryWaveformVisible: isSecondaryWaveformVisible,
-            isSubtitleEditVisible: isSubtitleEditVisible
+            isSubtitleEditVisible: false
         ) {
             PlaybackFillInBlankModeView(
                 engine: engine,
@@ -632,7 +632,7 @@ extension MainContentView {
             engine: engine,
             isWaveformsVisible: isWaveformsVisible,
             isSecondaryWaveformVisible: isSecondaryWaveformVisible,
-            isSubtitleEditVisible: isSubtitleEditVisible
+            isSubtitleEditVisible: false
         ) {
             PlaybackFillInBlankModeView(
                 engine: engine,
@@ -1046,8 +1046,9 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityAddTraits(isWaveformsVisible ? .isSelected : [])
                 .keyboardShortcut("w", modifiers: [.option])
 
+                let effectiveSubtitleEditVisible = isSubtitleEditVisible && !playbackInterfaceMode.isFillInBlankStyle
                 Toggle(isOn: Binding(
-                    get: { isSubtitleEditVisible },
+                    get: { effectiveSubtitleEditVisible },
                     set: { newValue in
                         withAnimation(MainContentView.panelSpringAnimation) {
                             isSubtitleEditVisible = newValue
@@ -1057,15 +1058,15 @@ private struct MainWindowToolbar: ToolbarContent {
                     Image(systemName: "square.and.pencil").studymateToolbarIcon()
                 }
                 .help(StudyMateShortcutCatalog.help(
-                    isSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"),
+                    effectiveSubtitleEditVisible ? lang.text("隐藏字幕双语编辑区", "Hide subtitle editor") : lang.text("显示字幕双语编辑区", "Show subtitle editor"),
                     shortcut: .toggleSubtitleEditor
                 ))
                 .accessibilityLabel(lang.text("字幕双语编辑区", "Subtitle bilingual editor"))
-                .accessibilityValue(isSubtitleEditVisible ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
+                .accessibilityValue(effectiveSubtitleEditVisible ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
                 .accessibilityHint(lang.text("切换字幕双语编辑区", "Toggle subtitle bilingual editor"))
-                .accessibilityAddTraits(isSubtitleEditVisible ? .isSelected : [])
+                .accessibilityAddTraits(effectiveSubtitleEditVisible ? .isSelected : [])
                 .keyboardShortcut("s", modifiers: [.option])
-                .disabled(playbackInterfaceMode != .video)
+                .disabled(playbackInterfaceMode.isFillInBlankStyle)
 
                 Toggle(isOn: Binding(
                     get: { isSidebarVisible },

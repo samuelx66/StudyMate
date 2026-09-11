@@ -460,21 +460,23 @@ struct StudyMateApp: App {
                     Text(languageManager.text("波形图", "Waveforms"))
                 }
 
+                let effectiveSubtitleEditVisible = showSubtitleEditor && !playbackInterfaceMode.isFillInBlankStyle
                 Button {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         showSubtitleEditor.toggle()
                     }
                 } label: {
                     HStack {
-                        Text(showSubtitleEditor
+                        Text(effectiveSubtitleEditVisible
                              ? languageManager.text("隐藏字幕编辑区", "Hide Subtitle Editor")
                              : languageManager.text("显示字幕编辑区", "Show Subtitle Editor"))
-                        if showSubtitleEditor {
+                        if effectiveSubtitleEditVisible {
                             Spacer()
                             Image(systemName: "checkmark")
                         }
                     }
                 }
+                .disabled(playbackInterfaceMode.isFillInBlankStyle)
 
                 Button {
                     NotificationCenter.default.post(name: .studyMateTogglePlaylist, object: nil)
