@@ -1155,36 +1155,13 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
             textView.toolTip = text
-            // On macOS 26, assigning a new NSMenu object to an NSTextView triggers
-            // AppKit's menu coordinator to re-evaluate the window's responder chain.
-            // This dismisses any open tertiary submenu panel (e.g. Display > Waveforms)
-            // the moment a video subtitle cue changes during continuous playback.
-            // The video subtitle overlay keeps the same NSTextView alive across cue
-            // boundaries (via a stable .id string) so updateNSView is called rather
-            // than makeNSView. To avoid the dismissal, update the ContextMenuTarget
-            // text in-place when one already exists, leaving the NSMenu object itself
-            // unchanged. Only fall back to creating a new menu when no target exists.
-            if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
-                target.text = text
-                target.context = self.context
-                if let lookupItem = textView.menu?.items.first {
-                    lookupItem.title = LanguageManager.shared.text("查询所选词", "Look Up Selection")
-                }
-            } else {
-                textView.menu = contextMenu(for: textView)
-            }
+            installContextMenu(on: textView)
             textView.font = font
             textView.textColor = color
             textView.alignment = alignment
             textView.invalidateIntrinsicContentSize()
-        } else if textView.menu == nil {
-            textView.menu = contextMenu(for: textView)
-        } else if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
-            target.text = text
-            target.context = self.context
-            if let lookupItem = textView.menu?.items.first {
-                lookupItem.title = LanguageManager.shared.text("查询所选词", "Look Up Selection")
-            }
+        } else {
+            installContextMenu(on: textView)
         }
         if textView.font != font {
             textView.font = font
@@ -1202,6 +1179,44 @@ public struct SubtitleSelectableText: NSViewRepresentable {
             self.context,
             .OBJC_ASSOCIATION_COPY_NONATOMIC
         )
+    }
+
+    /// Installs the dictionary context menu on a text view exactly once.
+    ///
+    /// On macOS 26 assigning a *new* `NSMenu` object to an `NSTextView` makes
+    /// AppKit's menu coordinator re-evaluate the window's responder chain, which
+    /// dismisses any open tertiary submenu panel (e.g. 显示 → 波形图). The video
+    /// mode sentence list is the remaining source of fresh text views: as the
+    /// list follows playback across a sentence boundary, newly created rows
+    /// build new text views and would previously assign a new menu while the
+    /// menu bar was still tracking.
+    ///
+    /// Keep the menu object identity stable by updating the existing target in
+    /// place, and defer the very first assignment until the menu session ends.
+    private func installContextMenu(on textView: NSTextView) {
+        if let target = objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) as? ContextMenuTarget {
+            target.text = text
+            target.context = self.context
+            if let lookupItem = textView.menu?.items.first {
+                lookupItem.title = LanguageManager.shared.text("查询所选词", "Look Up Selection")
+            }
+            return
+        }
+
+        // AppKit installs its own standard text menu on a fresh `NSTextView`, so
+        // the presence of `textView.menu` cannot be used to detect our menu.
+        // The associated `ContextMenuTarget` is the authoritative marker.
+        let install: () -> Void = { [weak textView] in
+            guard let textView,
+                  objc_getAssociatedObject(textView, &ContextMenuTarget.associationKey) == nil else { return }
+            textView.menu = self.contextMenu(for: textView)
+        }
+
+        if MenuTrackingState.shared.isTracking {
+            (textView as? SubtitleTextView)?.deferContextMenuInstall(install)
+        } else {
+            install()
+        }
     }
 
     private func contextMenu(for textView: NSTextView) -> NSMenu {
@@ -1241,6 +1256,42 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         private var plainMouseDownPoint: NSPoint?
         private var plainMouseDidMove = false
         private var lastIntrinsicHeight: CGFloat = 0
+        private var deferredContextMenuInstall: (() -> Void)?
+        private var menuTrackingEndObserver: NSObjectProtocol?
+
+        /// Holds the first context-menu assignment until the current menu
+        /// tracking session ends, so creating a row during playback following
+        /// cannot dismiss an open 显示 → 波形图 panel.
+        func deferContextMenuInstall(_ install: @escaping () -> Void) {
+            if !MenuTrackingState.shared.isTracking {
+                install()
+                return
+            }
+            deferredContextMenuInstall = install
+            guard menuTrackingEndObserver == nil else { return }
+            menuTrackingEndObserver = NotificationCenter.default.addObserver(
+                forName: MenuTrackingState.didEndTrackingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.removeMenuTrackingEndObserver()
+                let install = self.deferredContextMenuInstall
+                self.deferredContextMenuInstall = nil
+                install?()
+            }
+        }
+
+        private func removeMenuTrackingEndObserver() {
+            if let menuTrackingEndObserver {
+                NotificationCenter.default.removeObserver(menuTrackingEndObserver)
+                self.menuTrackingEndObserver = nil
+            }
+        }
+
+        deinit {
+            removeMenuTrackingEndObserver()
+        }
 
         override var intrinsicContentSize: NSSize {
             guard let textContainer, let layoutManager else {

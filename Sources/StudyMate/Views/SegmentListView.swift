@@ -502,6 +502,10 @@ public struct SegmentListView: View {
     @State private var isUserScrolling = false
     @StateObject private var tracker = SegmentViewportTracker()
     @State private var shortcutEditRequest: UUID?
+    /// Set when playback following is asked to scroll while a menu bar panel is
+    /// open. The scroll is replayed once the menu session ends so the list never
+    /// churns rows (and row text views) underneath an open tertiary panel.
+    @State private var pendingFollowSegmentID: UUID?
     /// Search filtering is debounced and computed from a value snapshot off
     /// the main actor.  This keeps typing responsive even with thousands of
     /// transcript rows while the visible list remains deterministic.
@@ -858,11 +862,29 @@ public struct SegmentListView: View {
                             guard followState.shouldFollow else { return }
                             if let idx = newIndex, idx >= 0, idx < engine.segments.count {
                                 let targetId = engine.segments[idx].id
+                                // While the menu bar is tracking, scrolling this
+                                // lazy list creates fresh row text views, and each
+                                // new `NSTextView` context-menu assignment makes
+                                // AppKit dismiss the open 显示 → 波形图 panel.
+                                // Hold the follow scroll until the session ends.
+                                if MenuTrackingState.shared.isTracking {
+                                    pendingFollowSegmentID = targetId
+                                    return
+                                }
                                 DispatchQueue.main.async {
                                     guard self.followState.shouldFollow else { return }
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         proxy.scrollTo(targetId, anchor: nil)
                                     }
+                                }
+                            }
+                        }
+                        .onReceive(NotificationCenter.default.publisher(for: MenuTrackingState.didEndTrackingNotification)) { _ in
+                            guard followState.shouldFollow, let targetID = pendingFollowSegmentID else { return }
+                            pendingFollowSegmentID = nil
+                            DispatchQueue.main.async {
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    proxy.scrollTo(targetID, anchor: nil)
                                 }
                             }
                         }

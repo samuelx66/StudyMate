@@ -185,6 +185,11 @@ public final class PlaybackClock: ObservableObject {
 public final class MenuTrackingState: ObservableObject {
     public static let shared = MenuTrackingState()
 
+    /// Posted on the main thread when the last tracked menu (including nested
+    /// submenus) finishes its tracking session. Deferred AppKit work that must
+    /// not run while a menu bar panel is open resumes from this notification.
+    public static let didEndTrackingNotification = Notification.Name("StudyMate.MenuTrackingStateDidEndTracking")
+
     @Published public private(set) var isTracking = false
 
     private var trackingDepth = 0
@@ -286,6 +291,9 @@ public final class MenuTrackingState: ObservableObject {
         let tracking = trackingDepth > 0 || !trackedMenuIDs.isEmpty
         guard isTracking != tracking else { return }
         isTracking = tracking
+        if !tracking {
+            NotificationCenter.default.post(name: Self.didEndTrackingNotification, object: self)
+        }
     }
 }
 

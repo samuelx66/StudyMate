@@ -294,4 +294,58 @@ final class ModeAuditRegressionTests: XCTestCase {
         XCTAssertEqual(view.textStorage?.attribute(.foregroundColor, at: second.location, effectiveRange: nil) as? NSColor, .labelColor)
     }
 
+    /// Regression: the video-mode sentence list follows playback by scrolling
+    /// its lazy rows, which creates fresh `NSTextView` row views. Assigning a
+    /// new `NSMenu` to a text view while the menu bar is tracking makes AppKit
+    /// dismiss the open 显示 → 波形图 tertiary panel, so the first context-menu
+    /// assignment must wait until the menu session ends.
+    func testRowContextMenuAssignmentIsDeferredWhileMenuTracks() async throws {
+        func descendants(_ view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap { descendants($0) }
+        }
+
+        let menuTrackingState = MenuTrackingState.shared
+        XCTAssertFalse(menuTrackingState.isTracking, "A previous test leaked a menu tracking session")
+
+        let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(120))
+
+        let displayMenu = NSMenu(title: "显示")
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: displayMenu)
+        XCTAssertTrue(menuTrackingState.isTracking)
+
+        // The row text view is created while the menu session is in flight,
+        // exactly like a list row that scrolls into view during playback.
+        hosting.rootView = AnyView(SubtitleSelectableText(
+            text: "row while the menu is open",
+            font: .systemFont(ofSize: 12),
+            color: .labelColor
+        ))
+        try await Task.sleep(for: .milliseconds(200))
+        let textView = try XCTUnwrap(
+            descendants(hosting).compactMap { $0 as? NSTextView }.first { $0.string == "row while the menu is open" }
+        )
+        let lookupTitle = LanguageManager.shared.text("查询所选词", "Look Up Selection")
+        XCTAssertFalse(
+            textView.menu?.items.contains { $0.title == lookupTitle } ?? false,
+            "A row text view must not install its dictionary context menu while a menu session is in flight"
+        )
+
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: displayMenu)
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertTrue(
+            textView.menu?.items.contains { $0.title == lookupTitle } ?? false,
+            "The deferred dictionary context menu must be installed once menu tracking ends"
+        )
+    }
+
 }
