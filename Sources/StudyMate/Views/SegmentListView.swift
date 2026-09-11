@@ -585,10 +585,7 @@ public struct SegmentListView: View {
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
                     .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
-                    .segmentListHelp(StudyMateShortcutCatalog.help(
-                        regenerateOriginalHelpText,
-                        shortcut: .regenerateOriginalText
-                    ))
+                    .segmentListHelp(regenerateOriginalHelpText)
 
                     // 句子筛选：每项都是独立复选条件，启用后自动选中符合条件的句子。
                     Button {

@@ -113,9 +113,6 @@ public struct MainContentView: View {
             // 主窗口内容已经开始渲染后，才销毁欢迎页场景，避免两个窗口同时
             // 长时间存在，也避免欢迎页提前关闭导致主窗口首帧无宿主窗口。
             onWindowDidAppear()
-            DispatchQueue.main.async {
-                NSApp.keyWindow?.makeFirstResponder(nil)
-            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .studyMateCloseCurrentMedia),
@@ -901,8 +898,9 @@ private struct MainWindowToolbar: ToolbarContent {
                 Button(action: onOpenVocabulary) {
                     Label(lang.text("生词本", "Vocabulary"), systemImage: "book.closed")
                 }
-                .help(lang.text("打开生词本", "Open vocabulary"))
+                .help(StudyMateShortcutCatalog.help(lang.text("打开生词本", "Open vocabulary"), shortcut: .openVocabulary))
                 .accessibilityLabel(lang.text("打开生词本", "Open vocabulary"))
+                .keyboardShortcut("v", modifiers: [.command, .shift])
             } label: {
                 Label(lang.text("学习资源", "Resources"), systemImage: "books.vertical")
             }

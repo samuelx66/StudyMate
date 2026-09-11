@@ -1057,6 +1057,7 @@ struct StudyMateApp: App {
     private func openMediaInMain(_ url: URL) {
         engine.loadMedia(from: url)
         openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func handleIncomingURL(_ url: URL) {
@@ -1074,6 +1075,15 @@ struct StudyMateApp: App {
 
     private func dismissWelcomeWindow() {
         dismissWindow(id: "welcome")
+        DispatchQueue.main.async {
+            if let mainWindow = NSApp.windows.first(where: {
+                $0.identifier == NSUserInterfaceItemIdentifier("studymate-main-window")
+            }) {
+                if !mainWindow.isKeyWindow {
+                    mainWindow.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
     }
 
     private func closeCurrentMediaAction() {
@@ -1176,9 +1186,14 @@ final class MainWindowAccessorView: NSView {
         if let window {
             attach(to: window)
             WindowAccessor.configureWindow(window)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let window, self?.observedWindow === window else { return }
                 WindowAccessor.configureWindow(window)
+                if !window.isKeyWindow {
+                    window.makeKeyAndOrderFront(nil)
+                }
             }
         } else {
             removeObservers()

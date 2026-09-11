@@ -1654,6 +1654,7 @@ public struct SubtitleLookupOverlay: View {
             }
             .animation(.easeInOut(duration: 0.15), value: coordinator.selectedText != nil && !coordinator.isLookupPresented)
         }
+        .allowsHitTesting(coordinator.selectedText != nil && !coordinator.isLookupPresented)
         .onAppear {
             coordinator.bindPlaybackEngine(playbackEngine)
         }
