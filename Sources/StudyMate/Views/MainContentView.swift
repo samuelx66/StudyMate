@@ -266,9 +266,35 @@ struct VideoModeSurface: NSViewRepresentable, Equatable {
         let panels: [Bool]
     }
 
-    final class Coordinator {
+    final class Coordinator: ObservableObject {
         var configuration: Configuration
-        init(_ configuration: Configuration) { self.configuration = configuration }
+        @Published var engine: PlaybackEngine
+        @Published var isWaveformsVisible: Bool
+        @Published var isSecondaryWaveformVisible: Bool
+        @Published var isSubtitleEditVisible: Bool
+        @Published var isSidebarVisible: Bool
+        @Published var isPlaylistMounted: Bool
+        var onOpenLibrary: () -> Void
+
+        init(
+            configuration: Configuration,
+            engine: PlaybackEngine,
+            isWaveformsVisible: Bool,
+            isSecondaryWaveformVisible: Bool,
+            isSubtitleEditVisible: Bool,
+            isSidebarVisible: Bool,
+            isPlaylistMounted: Bool,
+            onOpenLibrary: @escaping () -> Void
+        ) {
+            self.configuration = configuration
+            self.engine = engine
+            self.isWaveformsVisible = isWaveformsVisible
+            self.isSecondaryWaveformVisible = isSecondaryWaveformVisible
+            self.isSubtitleEditVisible = isSubtitleEditVisible
+            self.isSidebarVisible = isSidebarVisible
+            self.isPlaylistMounted = isPlaylistMounted
+            self.onOpenLibrary = onOpenLibrary
+        }
     }
 
     private var configuration: Configuration {
@@ -280,17 +306,21 @@ struct VideoModeSurface: NSViewRepresentable, Equatable {
         lhs.configuration == rhs.configuration
     }
 
-    private var content: VideoModeHostContent {
-        VideoModeHostContent(workspace: VideoModeWorkspaceView(engine: engine,
-            isWaveformsVisible: isWaveformsVisible, isSecondaryWaveformVisible: isSecondaryWaveformVisible,
-            isSubtitleEditVisible: isSubtitleEditVisible, isSidebarVisible: isSidebarVisible,
-            isPlaylistMounted: isPlaylistMounted, onOpenLibrary: { openWindow(id: "sentence-library") }))
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            configuration: configuration,
+            engine: engine,
+            isWaveformsVisible: isWaveformsVisible,
+            isSecondaryWaveformVisible: isSecondaryWaveformVisible,
+            isSubtitleEditVisible: isSubtitleEditVisible,
+            isSidebarVisible: isSidebarVisible,
+            isPlaylistMounted: isPlaylistMounted,
+            onOpenLibrary: { openWindow(id: "sentence-library") }
+        )
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(configuration) }
-
     func makeNSView(context: Context) -> VideoModeHostingView {
-        let host = VideoModeHostingView(rootView: content)
+        let host = VideoModeHostingView(rootView: VideoModeHostContent(coordinator: context.coordinator))
         // Workspace dimensions belong to the parent. Local cue/OSD/layout
         // changes must not export new intrinsic dimensions to the main window.
         host.sizingOptions = []
@@ -300,7 +330,16 @@ struct VideoModeSurface: NSViewRepresentable, Equatable {
     func updateNSView(_ host: VideoModeHostingView, context: Context) {
         guard context.coordinator.configuration != configuration else { return }
         context.coordinator.configuration = configuration
-        host.rootView = content
+        context.coordinator.onOpenLibrary = { openWindow(id: "sentence-library") }
+        let animation = context.transaction.animation ?? MainContentView.panelSpringAnimation
+        withAnimation(animation) {
+            context.coordinator.engine = engine
+            context.coordinator.isWaveformsVisible = isWaveformsVisible
+            context.coordinator.isSecondaryWaveformVisible = isSecondaryWaveformVisible
+            context.coordinator.isSubtitleEditVisible = isSubtitleEditVisible
+            context.coordinator.isSidebarVisible = isSidebarVisible
+            context.coordinator.isPlaylistMounted = isPlaylistMounted
+        }
     }
 }
 
@@ -314,11 +353,23 @@ final class VideoModeHostingView: NSHostingView<VideoModeHostContent> {
 }
 
 struct VideoModeHostContent: View {
-    let workspace: VideoModeWorkspaceView
+    @ObservedObject var coordinator: VideoModeSurface.Coordinator
 
     var body: some View {
-        workspace
-            .tint(StudyMateMediaStyle.accent)
+        VideoModeWorkspaceView(
+            engine: coordinator.engine,
+            isWaveformsVisible: coordinator.isWaveformsVisible,
+            isSecondaryWaveformVisible: coordinator.isSecondaryWaveformVisible,
+            isSubtitleEditVisible: coordinator.isSubtitleEditVisible,
+            isSidebarVisible: coordinator.isSidebarVisible,
+            isPlaylistMounted: coordinator.isPlaylistMounted,
+            onOpenLibrary: coordinator.onOpenLibrary
+        )
+        .tint(StudyMateMediaStyle.accent)
+        .animation(MainContentView.panelSpringAnimation, value: coordinator.isWaveformsVisible)
+        .animation(MainContentView.panelSpringAnimation, value: coordinator.isSecondaryWaveformVisible)
+        .animation(MainContentView.panelSpringAnimation, value: coordinator.isSubtitleEditVisible)
+        .animation(MainContentView.panelSpringAnimation, value: coordinator.isSidebarVisible)
     }
 }
 
