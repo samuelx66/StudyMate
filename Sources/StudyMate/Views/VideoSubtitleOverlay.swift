@@ -622,6 +622,133 @@ private enum VideoSubtitleTrack {
     case translation
 }
 
+@MainActor
+private final class VideoSubtitleCursorManager {
+    static let shared = VideoSubtitleCursorManager()
+
+    private var desiredCursors = [ObjectIdentifier: NSCursor]()
+    private var currentPushedCursor: NSCursor? = nil
+
+    func update(monitorID: ObjectIdentifier, desired: NSCursor?) {
+        if let desired {
+            desiredCursors[monitorID] = desired
+        } else {
+            desiredCursors.removeValue(forKey: monitorID)
+        }
+        evaluateCursor()
+    }
+
+    func remove(monitorID: ObjectIdentifier) {
+        desiredCursors.removeValue(forKey: monitorID)
+        evaluateCursor()
+    }
+
+    private func evaluateCursor() {
+        let desired: NSCursor?
+        if desiredCursors.values.contains(where: { $0 === NSCursor.closedHand }) {
+            desired = .closedHand
+        } else if desiredCursors.values.contains(where: { $0 === NSCursor.openHand }) {
+            desired = .openHand
+        } else {
+            desired = nil
+        }
+
+        guard currentPushedCursor !== desired else { return }
+
+        if currentPushedCursor != nil {
+            NSCursor.pop()
+            currentPushedCursor = nil
+        }
+
+        if let desired {
+            desired.push()
+            currentPushedCursor = desired
+        }
+    }
+}
+
+@MainActor
+private final class VideoSubtitleHoverMonitor: ObservableObject {
+    @Published var isHovering: Bool = false
+    @Published var isModifierKeyHeld: Bool = false
+    var isDragging: Bool = false
+
+    private var flagsMonitor: Any?
+
+    private var monitorID: ObjectIdentifier {
+        ObjectIdentifier(self)
+    }
+
+    func setHovering(_ hovering: Bool) {
+        isHovering = hovering
+        if hovering {
+            startMonitoring()
+            updateModifierState(NSEvent.modifierFlags)
+        } else {
+            if !isDragging {
+                stopMonitoring()
+                isModifierKeyHeld = false
+                syncCursor()
+            }
+        }
+    }
+
+    func setDragging(_ dragging: Bool) {
+        isDragging = dragging
+        syncCursor()
+        if !dragging {
+            if isHovering {
+                updateModifierState(NSEvent.modifierFlags)
+            } else {
+                stopMonitoring()
+                isModifierKeyHeld = false
+                syncCursor()
+            }
+        }
+    }
+
+    func updateModifierState(_ flags: NSEvent.ModifierFlags) {
+        let hasModifier = flags.contains(.option) || flags.contains(.command)
+        isModifierKeyHeld = hasModifier
+        syncCursor()
+    }
+
+    private func syncCursor() {
+        let desired: NSCursor?
+        if isDragging {
+            desired = .closedHand
+        } else if isHovering && isModifierKeyHeld {
+            desired = .openHand
+        } else {
+            desired = nil
+        }
+        VideoSubtitleCursorManager.shared.update(monitorID: monitorID, desired: desired)
+    }
+
+    private func startMonitoring() {
+        guard flagsMonitor == nil else { return }
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self else { return event }
+            self.updateModifierState(event.modifierFlags)
+            return event
+        }
+    }
+
+    func stopMonitoring() {
+        if let monitor = flagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            flagsMonitor = nil
+        }
+        VideoSubtitleCursorManager.shared.remove(monitorID: monitorID)
+    }
+
+    deinit {
+        if let monitor = flagsMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
+
 private struct DraggableVideoSubtitle: View {
     @ObservedObject var settings: VideoSubtitleSettings
     let engine: PlaybackEngine
@@ -640,6 +767,7 @@ private struct DraggableVideoSubtitle: View {
     /// outer SwiftUI gesture remains as a fallback for the rounded padding,
     /// but must stand down while AppKit is handling the same gesture.
     @State private var appKitDragActive = false
+    @StateObject private var hoverMonitor = VideoSubtitleHoverMonitor()
     /// Text measurement is expensive enough to be visible during a native
     /// modifier-drag. Cache it so only the offset changes at pointer speed.
     @State private var cachedSubtitleSize: CGSize = .zero
@@ -781,7 +909,7 @@ private struct DraggableVideoSubtitle: View {
 
     /// 当底部 OSD 浮现且当前字幕位于底部时，平滑向上避让 68pt，防止字幕被遮挡
     private var avoidanceOffset: CGFloat {
-        if isOSDVisible && isBottomSubtitle && !isDragging && !appKitDragActive {
+        if isOSDVisible && isBottomSubtitle {
             return -68
         }
         return 0
@@ -806,6 +934,9 @@ private struct DraggableVideoSubtitle: View {
                         isHovering = inside
                     }
                 }
+                if inside {
+                    hoverMonitor.setHovering(true)
+                }
             },
             onDoubleClick: {
                 let coordinator = DictionaryInteractionCoordinator.shared
@@ -821,6 +952,7 @@ private struct DraggableVideoSubtitle: View {
                         engine.beginVideoSubtitleDrag(segmentID: segmentID)
                     }
                     isDragging = true
+                    hoverMonitor.setDragging(true)
                 case .changed(let translation):
                     dragOffset = translation
                 case .ended(let translation):
@@ -838,6 +970,7 @@ private struct DraggableVideoSubtitle: View {
                         hasNotifiedEngineOfDrag = false
                         engine.endVideoSubtitleDrag(segmentID: segmentID)
                     }
+                    hoverMonitor.setDragging(false)
                 }
             }
         )
@@ -863,6 +996,9 @@ private struct DraggableVideoSubtitle: View {
         )
         .frame(width: subtitleSize.width, height: subtitleSize.height)
         .contentShape(Rectangle())
+        .onHover { hovering in
+            hoverMonitor.setHovering(hovering)
+        }
         .simultaneousGesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
@@ -873,6 +1009,7 @@ private struct DraggableVideoSubtitle: View {
                         engine.beginVideoSubtitleDrag(segmentID: segmentID)
                     }
                     isDragging = true
+                    hoverMonitor.setDragging(true)
                     dragOffset = value.translation
                 }
                 .onEnded { value in
@@ -890,18 +1027,20 @@ private struct DraggableVideoSubtitle: View {
                         hasNotifiedEngineOfDrag = false
                         engine.endVideoSubtitleDrag(segmentID: segmentID)
                     }
+                    hoverMonitor.setDragging(false)
                 }
         )
         .offset(
             x: dragOffset.width,
             y: dragOffset.height + avoidanceOffset
         )
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: avoidanceOffset)
+        .animation(isDragging ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: avoidanceOffset)
         .position(
             x: constrainedSavedPosition.x * containerSize.width,
             y: constrainedSavedPosition.y * containerSize.height
         )
         .onDisappear {
+            hoverMonitor.stopMonitoring()
             if hasNotifiedEngineOfDrag {
                 hasNotifiedEngineOfDrag = false
                 engine.endVideoSubtitleDrag(segmentID: segmentID)

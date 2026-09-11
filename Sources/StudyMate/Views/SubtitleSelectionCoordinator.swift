@@ -1345,6 +1345,10 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         }
 
         override func resetCursorRects() {
+            guard onOptionDrag != nil else {
+                super.resetCursorRects()
+                return
+            }
             if NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command) {
                 discardCursorRects()
                 addCursorRect(bounds, cursor: .openHand)
@@ -1355,6 +1359,7 @@ public struct SubtitleSelectableText: NSViewRepresentable {
 
         override func flagsChanged(with event: NSEvent) {
             super.flagsChanged(with: event)
+            guard onOptionDrag != nil else { return }
             if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) {
                 NSCursor.openHand.set()
             } else if !isOptionDragging {
@@ -1363,7 +1368,11 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         }
 
         override func cursorUpdate(with event: NSEvent) {
-            if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) {
+            guard onOptionDrag != nil else {
+                super.cursorUpdate(with: event)
+                return
+            }
+            if NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command) {
                 NSCursor.openHand.set()
             } else {
                 super.cursorUpdate(with: event)
@@ -1371,10 +1380,11 @@ public struct SubtitleSelectableText: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
-            if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) {
+            let hasModifier = event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) ||
+                              NSEvent.modifierFlags.contains(.option) || NSEvent.modifierFlags.contains(.command)
+            if hasModifier {
                 isOptionDragging = true
                 dragStartWindowPoint = event.locationInWindow
-                NSCursor.closedHand.push()
                 onOptionDrag?(.started)
                 return
             }
@@ -1406,7 +1416,6 @@ public struct SubtitleSelectableText: NSViewRepresentable {
             if isOptionDragging, let start = dragStartWindowPoint {
                 isOptionDragging = false
                 dragStartWindowPoint = nil
-                NSCursor.pop()
                 let current = event.locationInWindow
                 let translation = CGSize(width: current.x - start.x, height: -(current.y - start.y))
                 onOptionDrag?(.ended(translation: translation))
