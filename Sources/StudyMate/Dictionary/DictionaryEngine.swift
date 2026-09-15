@@ -1068,21 +1068,10 @@ public final class DictionaryEngine: ObservableObject {
         deferredSearchAfterBusy = nil
         cancelPrefetch()
         lemmaOriginalQuery = nil
-        // Do not keep showing candidates from the previous query while the
-        // serial helper is resolving the new one. The sidebar now presents a
-        // loading state until this request publishes its result.
-        searchHits = []
-        ftsHits = []
-
+        // Keep candidates visible during debounce so typing does not flash empty states.
         if includeDetails {
-            searchResults = []
-            definitionQuery = nil
             isLoadingDefinition = true
         } else {
-            // A new window search must not let an older detail request finish
-            // later and overwrite the definition selected for this query.
-            searchResults = []
-            definitionQuery = nil
             isLoadingDefinition = false
         }
         isSearching = true
@@ -1390,7 +1379,6 @@ public final class DictionaryEngine: ObservableObject {
         activeProgressRequestID = nil
         progress = nil
         progressPhase = nil
-        ftsHits = []
         isSearching = true
 
         let runSearch = { [weak self] in

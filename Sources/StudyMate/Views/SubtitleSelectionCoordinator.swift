@@ -13,6 +13,57 @@ private func cleanSubtitleQueryWord(_ value: String) -> String {
     value.trimmingCharacters(in: subtitleBoundaryPunctuation)
 }
 
+enum DictionaryPopoverDirection: Equatable {
+    case above
+    case below
+    case left
+    case right
+}
+
+enum DictionaryPopoverPlacement {
+    static let preferredContentSize = NSSize(width: 420, height: 560)
+
+    /// Selects a direction with enough visible screen space first. If no side
+    /// can contain the whole popover, the side with the most room wins and
+    /// AppKit will clamp the popover to the visible frame.
+    static func direction(
+        for anchor: NSRect,
+        in visibleFrame: NSRect,
+        contentSize: NSSize = preferredContentSize
+    ) -> DictionaryPopoverDirection {
+        let gap: CGFloat = 16
+        let candidates: [(DictionaryPopoverDirection, CGFloat, CGFloat)] = [
+            (.below, anchor.minY - visibleFrame.minY, contentSize.height),
+            (.above, visibleFrame.maxY - anchor.maxY, contentSize.height),
+            (.right, visibleFrame.maxX - anchor.maxX, contentSize.width),
+            (.left, anchor.minX - visibleFrame.minX, contentSize.width)
+        ]
+
+        if let fitting = candidates.first(where: { candidate in
+            candidate.1 >= candidate.2 + gap
+        }) {
+            return fitting.0
+        }
+        return candidates.max { lhs, rhs in lhs.1 < rhs.1 }?.0 ?? .above
+    }
+
+    static func preferredEdge(
+        for direction: DictionaryPopoverDirection,
+        viewIsFlipped: Bool
+    ) -> NSRectEdge {
+        switch direction {
+        case .above:
+            return viewIsFlipped ? .minY : .maxY
+        case .below:
+            return viewIsFlipped ? .maxY : .minY
+        case .left:
+            return .minX
+        case .right:
+            return .maxX
+        }
+    }
+}
+
 /// Reports a SwiftUI-hosted control's frame in AppKit's window coordinate space.
 private struct SubtitleActionBarFrameReader: NSViewRepresentable {
     let onChange: (NSRect?) -> Void
@@ -81,6 +132,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
     private var popoverDelegate: SubtitlePopoverDelegate?
     private var pausedPlaybackForInteraction = false
     private var shouldResumePlaybackAfterInteraction = false
+    private var standaloneDictionarySessionActive = false
     private let avSynthesizer = AVSpeechSynthesizer()
     private var dictionaryAudioTask: Task<Void, Never>?
     private var dictionaryAudioPlayer: AVAudioPlayer?
@@ -91,8 +143,38 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
     private var keyDownMonitor: Any?
     private var selectionUpdateTask: Task<Void, Never>?
     private weak var pendingSelectionTextView: NSTextView?
+    private var mainApplicationActivationObserver: NSObjectProtocol?
+    private var dictionaryLifecycleObservers: [NSObjectProtocol] = []
 
     private init() {
+        mainApplicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.finishStandaloneDictionarySession()
+            }
+        }
+
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didDeactivateApplicationNotification
+        ] {
+            let observer = workspaceNotificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handleDictionaryApplicationLifecycle(notification)
+                }
+            }
+            dictionaryLifecycleObservers.append(observer)
+        }
+
         selectionObserver = NotificationCenter.default.addObserver(
             forName: NSTextView.didChangeSelectionNotification,
             object: nil,
@@ -174,6 +256,12 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         if let mouseUpMonitor { NSEvent.removeMonitor(mouseUpMonitor) }
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
         if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
+        if let mainApplicationActivationObserver {
+            NotificationCenter.default.removeObserver(mainApplicationActivationObserver)
+        }
+        for observer in dictionaryLifecycleObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
         selectionUpdateTask?.cancel()
     }
 
@@ -192,6 +280,11 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
             clearSelection()
             return
         }
+        // Selection lookup is shared by video, list, full-text and sentence
+        // modes. Pause at this single entry point so the first appearance of
+        // the three-button action bar has the same playback semantics in every
+        // mode, including drag selections and context-menu lookup.
+        pausePlaybackForInteractionIfNeeded()
         selectedText = value
         contextText = context?.trimmingCharacters(in: .whitespacesAndNewlines)
         anchorScreenRect = screenRect
@@ -295,8 +388,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
                 self.toggleVocabulary(word: word, exampleSentence: self.contextText ?? "")
             },
             onOpenDictionary: { [weak self] word in
-                self?.dismissPopover()
-                StudyMateDictionaryBridge.openDictionary(query: word)
+                self?.openDictionaryWindow(query: word)
             },
             onDismiss: { [weak self] in
                 self?.dismissPopover()
@@ -305,34 +397,46 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         )
 
         let hostingController = NSHostingController(rootView: popoverView)
+        hostingController.preferredContentSize = DictionaryPopoverPlacement.preferredContentSize
         popover.contentViewController = hostingController
+        popover.contentSize = DictionaryPopoverPlacement.preferredContentSize
 
         if let textView = activeTextView, textView.window != nil {
-            let range = textView.selectedRange()
-            let rect: NSRect
-            if range.length > 0 {
-                rect = textView.firstRect(forCharacterRange: range, actualRange: nil)
-            } else {
-                rect = textView.bounds
-            }
-            let localRect = textView.window?.convertFromScreen(rect) ?? rect
-            let targetRect = textView.convert(localRect, from: nil)
-            popover.show(relativeTo: targetRect, of: textView, preferredEdge: .maxY)
+            let anchor = popoverAnchor(for: textView)
+            let screen = screenContaining(anchor.screenRect)
+            let direction = DictionaryPopoverPlacement.direction(
+                for: anchor.screenRect,
+                in: screen.visibleFrame
+            )
+            let preferredEdge = DictionaryPopoverPlacement.preferredEdge(
+                for: direction,
+                viewIsFlipped: textView.isFlipped
+            )
+            popover.show(relativeTo: anchor.localRect, of: textView, preferredEdge: preferredEdge)
         } else if let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
                   let contentView = window.contentView {
             let targetRect: NSRect
+            let screenAnchor: NSRect
             if let anchorScreenPoint {
                 let windowPoint = window.convertPoint(fromScreen: anchorScreenPoint)
                 let pointInView = contentView.convert(windowPoint, from: nil)
                 let safeX = min(max(20, pointInView.x), max(20, contentView.bounds.width - 20))
                 let safeY = min(max(20, pointInView.y), max(20, contentView.bounds.height - 20))
                 targetRect = NSRect(x: safeX, y: safeY, width: 1, height: 1)
+                screenAnchor = NSRect(origin: anchorScreenPoint, size: .zero)
             } else {
                 targetRect = NSRect(x: contentView.bounds.midX, y: contentView.bounds.midY, width: 1, height: 1)
+                screenAnchor = window.convertToScreen(targetRect)
             }
-            let preferredEdge: NSRectEdge = contentView.isFlipped
-                ? (targetRect.midY > contentView.bounds.height * 0.58 ? .minY : .maxY)
-                : (targetRect.midY < contentView.bounds.height * 0.42 ? .maxY : .minY)
+            let screen = screenContaining(screenAnchor)
+            let direction = DictionaryPopoverPlacement.direction(
+                for: screenAnchor,
+                in: screen.visibleFrame
+            )
+            let preferredEdge = DictionaryPopoverPlacement.preferredEdge(
+                for: direction,
+                viewIsFlipped: contentView.isFlipped
+            )
             popover.show(relativeTo: targetRect, of: contentView, preferredEdge: preferredEdge)
         }
 
@@ -344,6 +448,49 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         }
         self.activePopover = popover
         isLookupPresented = true
+    }
+
+    private struct PopoverAnchor {
+        let localRect: NSRect
+        let screenRect: NSRect
+    }
+
+    private func popoverAnchor(for textView: NSTextView) -> PopoverAnchor {
+        let range = textView.selectedRange()
+        let length = (textView.string as NSString).length
+        let hasSelection = range.location != NSNotFound
+            && range.location >= 0
+            && range.length > 0
+            && range.location + range.length <= length
+        let screenRect: NSRect
+
+        if hasSelection {
+            let selectedRect = textView.firstRect(forCharacterRange: range, actualRange: nil)
+            if selectedRect.width > 0, selectedRect.height > 0 {
+                screenRect = selectedRect
+            } else {
+                screenRect = textView.window?.convertToScreen(
+                    textView.convert(textView.bounds, to: nil)
+                ) ?? NSRect(origin: NSEvent.mouseLocation, size: .zero)
+            }
+        } else {
+            screenRect = textView.window?.convertToScreen(
+                textView.convert(textView.bounds, to: nil)
+            ) ?? NSRect(origin: NSEvent.mouseLocation, size: .zero)
+        }
+
+        let localRect = textView.window.map { window in
+            textView.convert(window.convertFromScreen(screenRect), from: nil)
+        } ?? textView.bounds
+        return PopoverAnchor(localRect: localRect, screenRect: screenRect)
+    }
+
+    private func screenContaining(_ rect: NSRect) -> NSScreen {
+        let point = NSPoint(x: rect.midX, y: rect.midY)
+        return NSScreen.screens.first(where: { $0.visibleFrame.contains(point) })
+            ?? NSScreen.screens.first(where: { $0.frame.contains(point) })
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
     }
 
     public func dismissPopover() {
@@ -598,9 +745,22 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
 
     public func openDictionaryWindow(query: String? = nil, postNotification: Bool = true) {
         let targetQuery = query ?? selectedText ?? ""
+        let hasQuery = !targetQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hasQuery {
+            pausePlaybackForInteractionIfNeeded()
+        }
         dismissPopover()
-        StudyMateDictionaryBridge.openDictionary(query: targetQuery.isEmpty ? nil : targetQuery)
-        clearSelectionAndDeselect(resumePlayback: false)
+        let opened = StudyMateDictionaryBridge.openDictionary(query: hasQuery ? targetQuery : nil)
+        guard hasQuery else { return }
+
+        // The in-app action bar and popover are intentionally removed before
+        // handing the query to the standalone dictionary. Keep the remembered
+        // playback state alive until that external dictionary is hidden,
+        // deactivated, terminated, or the main app becomes active again.
+        clearSelectionAndDeselect(resumePlayback: !opened)
+        if opened {
+            standaloneDictionarySessionActive = true
+        }
     }
 
     @discardableResult
@@ -636,6 +796,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
     }
 
     public func dictionaryWindowDidClose() {
+        standaloneDictionarySessionActive = false
         resumePlaybackIfNeeded()
     }
 
@@ -649,7 +810,23 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         playbackEngine.pause()
     }
 
+    private func finishStandaloneDictionarySession() {
+        guard standaloneDictionarySessionActive else { return }
+        standaloneDictionarySessionActive = false
+        resumePlaybackIfNeeded()
+    }
+
+    private func handleDictionaryApplicationLifecycle(_ notification: Notification) {
+        guard standaloneDictionarySessionActive,
+              let application = notification.object as? NSRunningApplication,
+              application.bundleIdentifier == StudyMateDictionaryBridge.bundleIdentifier else {
+            return
+        }
+        finishStandaloneDictionarySession()
+    }
+
     private func resumePlaybackIfNeeded() {
+        standaloneDictionarySessionActive = false
         guard pausedPlaybackForInteraction else { return }
         let shouldResume = shouldResumePlaybackAfterInteraction
         pausedPlaybackForInteraction = false

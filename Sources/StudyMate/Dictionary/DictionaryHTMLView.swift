@@ -132,6 +132,11 @@ public enum DictionaryHTMLFormatter {
         }
         body {
             color: var(--text-color);
+            animation: studymate-fade-in 0.12s ease-out;
+        }
+        @keyframes studymate-fade-in {
+            from { opacity: 0.85; }
+            to { opacity: 1.0; }
         }
         .dict-badge {
             display: inline-block;
@@ -1835,7 +1840,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             guard !baseURL.isFileURL,
                   let host = baseURL.host,
                   !host.isEmpty,
-                  let documentURL = URL(string: "studymate-resource://\(host)/.studymate-document/\(UUID().uuidString).html") else {
+                  let documentURL = URL(string: "studymate-resource://\(host)/.studymate-document/active.html") else {
                 // A caller-provided file base remains supported for ordinary
                 // local HTML documents. Imported MDX entries use the custom
                 // resource root above and therefore take the same-origin
@@ -1871,7 +1876,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         }
 
         func documentData(for url: URL) -> Data? {
-            guard url == renderedDocumentURL,
+            guard (url == renderedDocumentURL || url.path.hasSuffix("/active.html")),
                   let renderedDocumentHTML else { return nil }
             return renderedDocumentHTML.data(using: .utf8)
         }

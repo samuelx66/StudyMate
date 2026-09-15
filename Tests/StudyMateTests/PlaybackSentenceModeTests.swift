@@ -155,4 +155,44 @@ final class PlaybackSentenceModeTests: XCTestCase {
         // 句子模式适合专注精读，默认字号在 20~28pt 之间
         XCTAssertTrue((20.0...28.0).contains(sentence.originalFontSize))
     }
+
+    func testDictionaryPopoverChoosesVisibleDirection() {
+        let screen = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let size = NSSize(width: 420, height: 560)
+
+        XCTAssertEqual(
+            DictionaryPopoverPlacement.direction(
+                for: NSRect(x: 500, y: 30, width: 80, height: 24),
+                in: screen,
+                contentSize: size
+            ),
+            .above
+        )
+        XCTAssertEqual(
+            DictionaryPopoverPlacement.direction(
+                for: NSRect(x: 500, y: 846, width: 80, height: 24),
+                in: screen,
+                contentSize: size
+            ),
+            .below
+        )
+
+        let shortScreen = NSRect(x: 0, y: 0, width: 1_440, height: 500)
+        XCTAssertEqual(
+            DictionaryPopoverPlacement.direction(
+                for: NSRect(x: 520, y: 238, width: 80, height: 24),
+                in: shortScreen,
+                contentSize: size
+            ),
+            .right
+        )
+        XCTAssertEqual(
+            DictionaryPopoverPlacement.direction(
+                for: NSRect(x: 1_330, y: 238, width: 80, height: 24),
+                in: shortScreen,
+                contentSize: size
+            ),
+            .left
+        )
+    }
 }

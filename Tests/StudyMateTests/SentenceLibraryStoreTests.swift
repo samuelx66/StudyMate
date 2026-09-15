@@ -164,6 +164,41 @@ final class SentenceLibraryStoreTests: XCTestCase {
         )
     }
 
+    func testUpdateEntryChangesTextAndRefreshesSearchIndex() throws {
+        let library = try store.createLibrary(name: "可编辑句库")
+        let entry = SentenceLibraryEntry(
+            originalText: "The old sentence",
+            translation: "旧译文",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: "/lesson.mp4",
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "\(UUID().uuidString).m4a"
+        )
+        let mediaURL = temporaryDirectory.appendingPathComponent("editable.m4a")
+        try Data("audio".utf8).write(to: mediaURL)
+        try store.add(
+            entries: [entry],
+            previewData: [:],
+            to: library.id,
+            mediaURLs: [entry.id: mediaURL]
+        )
+
+        try store.updateEntry(
+            id: entry.id,
+            originalText: "The updated sentence",
+            translation: "新的译文",
+            in: library.id
+        )
+
+        let updated = try XCTUnwrap(store.entries(libraryID: library.id).first)
+        XCTAssertEqual(updated.originalText, "The updated sentence")
+        XCTAssertEqual(updated.translation, "新的译文")
+        XCTAssertEqual(try store.entries(libraryID: library.id, searchText: "updated").map(\.id), [entry.id])
+        XCTAssertEqual(try store.entries(libraryID: library.id, searchText: "新的").map(\.id), [entry.id])
+        XCTAssertTrue(try store.entries(libraryID: library.id, searchText: "old").isEmpty)
+    }
+
     func testIndependentMediaIsStoredAndRemovedWithEntry() throws {
         let library = try store.createLibrary(name: "独立媒体句库")
         let entryID = UUID()

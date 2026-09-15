@@ -27,6 +27,25 @@ public final class SentenceLibraryStatusCenter: ObservableObject {
     }
 }
 
+/// Keeps rapid inline edits in submission order. A field blur can start an
+/// update immediately before the user presses Return in the next field; the
+/// newest payload must never be overwritten by that earlier request.
+private actor SentenceLibraryEntryUpdateQueue {
+    private var tail: Task<Void, Never>?
+
+    func enqueue(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+        let predecessor = tail
+        let work = Task<Void, Error> {
+            await predecessor?.value
+            try await operation()
+        }
+        tail = Task<Void, Never> {
+            _ = try? await work.value
+        }
+        try await work.value
+    }
+}
+
 @MainActor
 public final class SentenceLibraryManager: ObservableObject {
     public static let shared = SentenceLibraryManager()
@@ -54,6 +73,7 @@ public final class SentenceLibraryManager: ObservableObject {
 
     private let store: SentenceLibraryStore
     private let defaults: UserDefaults
+    private let entryUpdateQueue = SentenceLibraryEntryUpdateQueue()
     private let currentLibraryKey = "StudyMate.CurrentSentenceLibraryID"
     private var searchText = ""
     private var dateFilter: SentenceLibraryDateFilter = .all
@@ -373,6 +393,55 @@ public final class SentenceLibraryManager: ObservableObject {
         }
     }
 
+    /// 保存句库中一条句子的原文和译文。编辑过程中由视图在字段失焦、
+    /// 回车确认或点击完成时调用，成功与失败均通过主窗口状态栏反馈。
+    public func updateEntry(
+        id: UUID,
+        originalText: String,
+        translation: String
+    ) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            try await entryUpdateQueue.enqueue { [store] in
+                try await Task.detached(priority: .utility) {
+                    try store.updateEntry(
+                        id: id,
+                        originalText: originalText,
+                        translation: translation,
+                        in: libraryID
+                    )
+                }.value
+            }
+            // `reloadLibraries` starts the filtered entry query asynchronously.
+            // Update the visible snapshot first so the row cannot leave edit
+            // mode and immediately render the pre-save text while that query
+            // is still in flight.
+            if let index = entries.firstIndex(where: { $0.id == id }) {
+                let current = entries[index]
+                entries[index] = SentenceLibraryEntry(
+                    id: current.id,
+                    originalText: originalText,
+                    translation: translation,
+                    note: current.note,
+                    sourceMediaName: current.sourceMediaName,
+                    sourceMediaPath: current.sourceMediaPath,
+                    startTime: current.startTime,
+                    endTime: current.endTime,
+                    createdAt: current.createdAt,
+                    mediaFilename: current.mediaFilename,
+                    previewFilename: current.previewFilename
+                )
+            }
+            await reloadLibraries(createDefaultIfNeeded: false)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("句子原文和译文已保存", "Sentence text and translation saved")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
     public func deleteCurrentLibrary() async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         let libraryName = currentLibrary?.name ?? ""
@@ -529,6 +598,71 @@ public final class SentenceLibraryManager: ObservableObject {
                 }
             )
         }.value
+    }
+
+    /// 导出跨端统一 `.mabstudy` 学习包。只读取已保存句库快照和独立音频，
+    /// 不把 Mac SQLite、WAL、绝对路径或预览附件放入包中。
+    public func exportLearningPackage(
+        _ entries: [SentenceLibraryEntry],
+        destinationURL: URL
+    ) async throws {
+        guard let libraryID = currentLibraryID,
+              let libraryTitle = currentLibrary?.name else {
+            throw SentenceLibraryError.libraryUnavailable
+        }
+        guard !entries.isEmpty else { throw SentenceLibraryError.database("没有可导出的句子。") }
+        guard !isWorking else { throw SentenceLibraryError.operationInProgress }
+        isWorking = true
+        let generation = UUID()
+        operationGeneration = generation
+        operationProgress = SentenceLibraryOperationProgress(fraction: 0, phase: "生成学习包")
+        defer {
+            if operationGeneration == generation {
+                isWorking = false
+                operationProgress = nil
+            }
+        }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.writeLearningPackage(
+                    entries: entries,
+                    libraryID: libraryID,
+                    libraryTitle: libraryTitle,
+                    destinationURL: destinationURL
+                )
+            }.value
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("学习包已导出", "Learning package exported")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 将移动端返回的学习包落入当前句库，并按稳定句子 ID 处理新增、更新和幂等重复。
+    @discardableResult
+    public func importLearningPackage(from packageURL: URL) async throws -> StudyMateLearningPackageImportReport {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !isWorking else { throw SentenceLibraryError.operationInProgress }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let report = try await Task.detached(priority: .userInitiated) { [store] in
+                try store.importLearningPackage(from: packageURL, into: libraryID)
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "学习包已导入：新增 (report.added)，更新 (report.updated)，跳过 (report.skipped)",
+                    "Package imported: (report.added) added, (report.updated) updated, (report.skipped) skipped"
+                )
+            )
+            return report
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
     }
 
     private func reloadLibraries(createDefaultIfNeeded: Bool) async {

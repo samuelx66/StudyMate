@@ -1061,11 +1061,20 @@ struct StudyMateApp: App {
     }
 
     private func handleIncomingURL(_ url: URL) {
-        if url.pathExtension.lowercased() == "mablib" {
+        if url.pathExtension.lowercased() == "mabstudy" {
+            openWindow(id: "sentence-library")
+            Task { @MainActor in
+                do {
+                    _ = try await SentenceLibraryManager.shared.importLearningPackage(from: url)
+                } catch {
+                    MainStatusCenter.shared.showError(error.localizedDescription)
+                }
+            }
+        } else if url.pathExtension.lowercased() == "mablib" {
             MainStatusCenter.shared.showError(
                 languageManager.text(
-                    "句库仅支持从断句列表加入句子。",
-                    "Sentence libraries only accept sentences added from the segment list."
+                    "旧版 .mablib 请先在当前版本句库中导出为 .mabstudy。",
+                    "Export legacy .mablib libraries as .mabstudy before moving them to mobile."
                 )
             )
         } else {
@@ -1096,9 +1105,9 @@ struct StudyMateApp: App {
 
     private func openDictionaryAction() {
         let coordinator = SubtitleSelectionCoordinator.shared
+        coordinator.bindPlaybackEngine(engine)
         _ = coordinator.captureCurrentSelection()
-        let query = coordinator.selectedText
-        StudyMateDictionaryBridge.openDictionary(query: query)
+        coordinator.openDictionaryWindow(query: coordinator.selectedText)
     }
 }
 

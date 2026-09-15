@@ -1,5 +1,9 @@
 import Foundation
 import SQLite3
+import AVFoundation
+#if canImport(StudyMatePackage)
+import StudyMatePackage
+#endif
 
 public enum SentenceLibraryError: LocalizedError {
     case libraryUnavailable
@@ -20,6 +24,18 @@ public enum SentenceLibraryError: LocalizedError {
         case .defaultLibraryCannotBeDeleted: return "默认句库不能删除。"
         case .operationInProgress: return "句库正在处理上一项操作，请稍候。"
         }
+    }
+}
+
+public struct StudyMateLearningPackageImportReport: Equatable, Sendable {
+    public let added: Int
+    public let updated: Int
+    public let skipped: Int
+
+    public init(added: Int, updated: Int, skipped: Int) {
+        self.added = added
+        self.updated = updated
+        self.skipped = skipped
     }
 }
 
@@ -315,6 +331,91 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
+    /// 更新句库中一条句子的原文和译文。媒体、缩略图和时间信息保持不变；
+    /// `entries_au` 触发器会同步刷新 FTS 索引，保证修改后仍可立即搜索到。
+    public func updateEntry(
+        id: UUID,
+        originalText: String,
+        translation: String,
+        in libraryID: UUID
+    ) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                do {
+                    try updateEntryUnlocked(
+                        id: id,
+                        originalText: originalText,
+                        translation: translation,
+                        in: db
+                    )
+                } catch {
+                    guard isFTSIndexCorruption(error) else { throw error }
+                    // Older sentence libraries can contain a stale or
+                    // damaged FTS5 shadow index. Rebuild only the index and
+                    // retry the user's update; the source entries table and
+                    // all media files remain untouched.
+                    try rebuildFTSIndex(in: db)
+                    try updateEntryUnlocked(
+                        id: id,
+                        originalText: originalText,
+                        translation: translation,
+                        in: db
+                    )
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    private func updateEntryUnlocked(
+        id: UUID,
+        originalText: String,
+        translation: String,
+        in db: OpaquePointer
+    ) throws {
+        try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+        do {
+            var statement: OpaquePointer?
+            try prepare(
+                "UPDATE entries SET original_text = ?, translation = ? WHERE id = ?;",
+                db: db,
+                statement: &statement
+            )
+            defer { sqlite3_finalize(statement) }
+            bind(originalText, at: 1, to: statement)
+            bind(translation, at: 2, to: statement)
+            bind(id.uuidString, at: 3, to: statement)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw databaseError(db)
+            }
+            guard sqlite3_changes(db) > 0 else {
+                throw SentenceLibraryError.database("句子不存在。")
+            }
+            try execute("COMMIT;", in: db)
+        } catch {
+            try? execute("ROLLBACK;", in: db)
+            throw error
+        }
+    }
+
+    private func rebuildFTSIndex(in db: OpaquePointer) throws {
+        try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+        do {
+            try execute("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild');", in: db)
+            try execute("COMMIT;", in: db)
+        } catch {
+            try? execute("ROLLBACK;", in: db)
+            throw error
+        }
+    }
+
+    private func isFTSIndexCorruption(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("database disk image is malformed")
+            || (message.contains("database disk image") && message.contains("malformed"))
+    }
+
     @discardableResult
     public func deleteEntries(ids: Set<UUID>, from libraryID: UUID) throws -> [String] {
         guard !ids.isEmpty else { return [] }
@@ -500,6 +601,182 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 throw error
             }
+        }
+    }
+
+    /// Writes the v1 cross-device package without exposing the Mac library's
+    /// SQLite/WAL files or absolute paths. Existing M4A bytes are copied as-is.
+    public func writeLearningPackage(
+        entries: [SentenceLibraryEntry],
+        libraryID: UUID,
+        libraryTitle: String,
+        destinationURL: URL,
+        producerPlatform: String = "macOS"
+    ) throws {
+        guard !entries.isEmpty else { throw StudyMatePackageError.invalidContent("不能导出空句库。") }
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            var portableEntries: [StudyMatePackageEntry] = []
+            var assets: [StudyMatePackageAssetInput] = []
+            for (order, entry) in entries.enumerated() {
+                guard let sourceURL = mediaURL(for: entry, libraryID: libraryID),
+                      fileManager.fileExists(atPath: sourceURL.path),
+                      let data = try? Data(contentsOf: sourceURL, options: [.mappedIfSafe]) else {
+                    throw StudyMatePackageError.mediaValidationFailed(entry.originalText.isEmpty ? entry.id.uuidString : entry.originalText)
+                }
+                let fallbackDuration = max(0.05, entry.endTime - entry.startTime)
+                let encodedDuration = AVURLAsset(url: sourceURL).duration.seconds
+                let duration = encodedDuration.isFinite && encodedDuration > 0 ? encodedDuration : fallbackDuration
+                let durationMs = max(1, Int((duration * 1_000).rounded()))
+                portableEntries.append(StudyMatePackageEntry(
+                    id: entry.id,
+                    originCollectionID: libraryID,
+                    order: order,
+                    original: entry.originalText,
+                    translation: entry.translation,
+                    note: entry.note,
+                    createdAt: entry.createdAt,
+                    updatedAt: nil,
+                    audio: StudyMatePackageAudioReference(assetID: entry.id, endMs: durationMs),
+                    source: StudyMatePackageSourceReference(
+                        mediaTitle: entry.sourceMediaName,
+                        originalStartMs: Int((max(0, entry.startTime) * 1_000).rounded()),
+                        originalEndMs: Int((max(entry.startTime, entry.endTime) * 1_000).rounded())
+                    )
+                ))
+                assets.append(StudyMatePackageAssetInput(id: entry.id, data: data, durationMs: durationMs))
+            }
+            let package = try StudyMateLearningPackage.make(
+                collectionID: libraryID,
+                title: libraryTitle,
+                scope: entries.count == (try readEntriesUnlocked(libraryID: libraryID).count) ? "all" : "selected",
+                entries: portableEntries,
+                assets: assets,
+                producerPlatform: producerPlatform
+            )
+            try package.write(to: destinationURL)
+        }
+    }
+
+    /// Imports a validated package into an existing Mac sentence library.
+    /// Matching IDs are treated as updates/skips; new media is staged before
+    /// the index is changed, and private Mac paths/previews are preserved.
+    public func importLearningPackage(
+        from packageURL: URL,
+        into libraryID: UUID
+    ) throws -> StudyMateLearningPackageImportReport {
+        let package = try StudyMateLearningPackage.load(from: packageURL)
+        return try queue.sync {
+            try validateLibrary(id: libraryID)
+            let existing = try readEntriesUnlocked(libraryID: libraryID)
+            let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+            let targetMediaDirectory = mediaURL(for: libraryID)
+            try fileManager.createDirectory(at: targetMediaDirectory, withIntermediateDirectories: true)
+
+            var newEntries: [SentenceLibraryEntry] = []
+            var updatePlans: [(old: SentenceLibraryEntry, incoming: StudyMatePackageEntry, mediaFilename: String?)] = []
+            var stagedFiles: [URL] = []
+            var added = 0
+            var updated = 0
+            var skipped = 0
+
+            for incoming in package.content.entries.sorted(by: { $0.order < $1.order }) {
+                guard let assetData = package.assetData[incoming.audio.assetID],
+                      let asset = package.manifest.assets.first(where: { $0.id == incoming.audio.assetID }) else {
+                    throw StudyMatePackageError.missingAsset(incoming.audio.assetID.uuidString)
+                }
+                if let old = existingByID[incoming.id] {
+                    let oldDigest = mediaURL(for: old, libraryID: libraryID).flatMap { oldURL in
+                        (try? Data(contentsOf: oldURL, options: [.mappedIfSafe])).map(StudyMateLearningPackage.sha256)
+                    }
+                    let sameMedia = oldDigest == asset.sha256
+                    let sameText = old.originalText == incoming.original &&
+                        old.translation == incoming.translation &&
+                        old.note == incoming.note
+                    if sameMedia && sameText {
+                        skipped += 1
+                        continue
+                    }
+                    var replacementFilename: String?
+                    if !sameMedia {
+                        replacementFilename = "\(UUID().uuidString).m4a"
+                        let stagedURL = targetMediaDirectory.appendingPathComponent(replacementFilename!)
+                        try assetData.write(to: stagedURL, options: .atomic)
+                        stagedFiles.append(stagedURL)
+                    }
+                    updatePlans.append((old, incoming, replacementFilename))
+                    updated += 1
+                } else {
+                    let mediaFilename = "\(UUID().uuidString).m4a"
+                    let stagedURL = targetMediaDirectory.appendingPathComponent(mediaFilename)
+                    try assetData.write(to: stagedURL, options: .atomic)
+                    stagedFiles.append(stagedURL)
+                    let sourceStart = incoming.source?.originalStartMs.map { Double($0) / 1_000 } ?? 0
+                    let sourceEnd = incoming.source?.originalEndMs.map { Double($0) / 1_000 } ?? (Double(asset.durationMs) / 1_000)
+                    newEntries.append(SentenceLibraryEntry(
+                        id: incoming.id,
+                        originalText: incoming.original,
+                        translation: incoming.translation,
+                        note: incoming.note,
+                        sourceMediaName: incoming.source?.mediaTitle ?? "",
+                        sourceMediaPath: "",
+                        startTime: sourceStart,
+                        endTime: max(sourceStart + 0.05, sourceEnd),
+                        createdAt: incoming.createdAt,
+                        mediaFilename: mediaFilename
+                    ))
+                    added += 1
+                }
+            }
+
+            do {
+                try insertEntriesUnlocked(newEntries, into: libraryID)
+                if !updatePlans.isEmpty {
+                    try withDatabase(libraryID: libraryID) { db in
+                        try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                        do {
+                            var statement: OpaquePointer?
+                            try prepare(
+                                "UPDATE entries SET original_text = ?, translation = ?, note = ?, source_media_name = ?, start_time = ?, end_time = ?, media_filename = COALESCE(?, media_filename) WHERE id = ?;",
+                                db: db,
+                                statement: &statement
+                            )
+                            defer { sqlite3_finalize(statement) }
+                            for plan in updatePlans {
+                                sqlite3_reset(statement)
+                                sqlite3_clear_bindings(statement)
+                                bind(plan.incoming.original, at: 1, to: statement)
+                                bind(plan.incoming.translation, at: 2, to: statement)
+                                bind(plan.incoming.note, at: 3, to: statement)
+                                if let mediaTitle = plan.incoming.source?.mediaTitle, !mediaTitle.isEmpty {
+                                    bind(mediaTitle, at: 4, to: statement)
+                                } else {
+                                    bind(plan.old.sourceMediaName, at: 4, to: statement)
+                                }
+                                sqlite3_bind_double(statement, 5, plan.incoming.source?.originalStartMs.map { Double($0) / 1_000 } ?? plan.old.startTime)
+                                sqlite3_bind_double(statement, 6, plan.incoming.source?.originalEndMs.map { Double($0) / 1_000 } ?? plan.old.endTime)
+                                if let mediaFilename = plan.mediaFilename { bind(mediaFilename, at: 7, to: statement) } else { sqlite3_bind_null(statement, 7) }
+                                bind(plan.old.id.uuidString, at: 8, to: statement)
+                                guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                            }
+                            try execute("COMMIT;", in: db)
+                        } catch {
+                            try? execute("ROLLBACK;", in: db)
+                            throw error
+                        }
+                    }
+                }
+            } catch {
+                for file in stagedFiles { try? fileManager.removeItem(at: file) }
+                throw error
+            }
+            for plan in updatePlans where plan.mediaFilename != nil {
+                if let oldURL = mediaURL(for: plan.old, libraryID: libraryID) {
+                    try? fileManager.removeItem(at: oldURL)
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            return StudyMateLearningPackageImportReport(added: added, updated: updated, skipped: skipped)
         }
     }
 

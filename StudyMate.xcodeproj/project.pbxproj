@@ -87,6 +87,7 @@
 		8000A1DF778CEB331C49E162 /* StudyMateApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */; };
 		D38B7268D011178C2033049E /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = BA53D534888C0193FD2955F1 /* InfoPlist.strings */; };
 		97DD076F0BDA6503115D8B89 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 6C16973D55A261AD81C17CBD /* InfoPlist.strings */; };
+		BDB60BB681BCD870C006308C /* StudyMatePackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23A152B2FEB77DEAE489DE5D /* StudyMatePackage.swift */; };
 		11CACBE79E9A58BAEE17D343 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; };
 		BA2D27CDC73DCEA706BCE34C /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 158C35FECB86B6A321C2F534 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		56203E2DB48C94B416EE96BF /* SpeakerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6700D30280B43E9A5F9B450D /* SpeakerKit */; };
@@ -177,6 +178,7 @@
 		B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMateApp/StudyMateApp.swift"; sourceTree = "<group>"; };
 		BA53D534888C0193FD2955F1 /* InfoPlist.strings */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMateApp/en.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		6C16973D55A261AD81C17CBD /* InfoPlist.strings */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "Sources/StudyMateApp/zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		23A152B2FEB77DEAE489DE5D /* StudyMatePackage.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "StudyMateMobile/Shared/StudyMatePackage/StudyMatePackage.swift"; sourceTree = "<group>"; };
 		158C35FECB86B6A321C2F534 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Vendor/Whisper/whisper.xcframework"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -299,6 +301,7 @@
 				B02DED29EC6488A26DC99B3F /* StudyMateApp.swift */,
 				BA53D534888C0193FD2955F1 /* InfoPlist.strings */,
 				6C16973D55A261AD81C17CBD /* InfoPlist.strings */,
+				23A152B2FEB77DEAE489DE5D /* StudyMatePackage.swift */,
 				DB9F2F2F197A979E95533866 /* Assets.xcassets */,
 				365CBFEB4EF016349F6A34C9 /* SpeakerKitModels */,
 				158C35FECB86B6A321C2F534 /* whisper.xcframework */,
@@ -471,6 +474,7 @@
 				527BFAF5F36C0DF617994C56 /* WaveformExtractor.swift in Sources */,
 				9CE3BA51013C67BC21D69362 /* WhisperModelManager.swift in Sources */,
 				8000A1DF778CEB331C49E162 /* StudyMateApp.swift in Sources */,
+				BDB60BB681BCD870C006308C /* StudyMatePackage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -568,7 +572,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 410;
+				CURRENT_PROJECT_VERSION = 420;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -578,7 +582,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.6.0 release";
+				MARKETING_VERSION = "1.6.1 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -593,7 +597,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 410;
+				CURRENT_PROJECT_VERSION = 420;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
@@ -602,7 +606,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.6.0 release";
+				MARKETING_VERSION = "1.6.1 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;

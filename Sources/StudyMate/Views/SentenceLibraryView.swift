@@ -21,6 +21,10 @@ public struct SentenceLibraryView: View {
     @State private var pendingMoveDestinationID: UUID?
     @State private var notice: SentenceLibraryNotice?
 
+    private var learningPackageType: UTType {
+        UTType(exportedAs: "com.studymate.learning-package", conformingTo: .data)
+    }
+
     public init(manager: SentenceLibraryManager) {
         self.manager = manager
         self._libraryPlayer = StateObject(wrappedValue: SentenceLibraryPlayer())
@@ -117,6 +121,24 @@ public struct SentenceLibraryView: View {
                     }
                     .labelsHidden()
                     .frame(width: 110)
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        chooseLearningPackageImport()
+                    } label: {
+                        Label(lang.text("导入学习包…", "Import Package…"), systemImage: "archivebox")
+                    }
+                    .disabled(manager.isWorking)
+                    .help(lang.text("导入 iPhone / iPad 学习包", "Import an iPhone / iPad learning package"))
+
+                    Button {
+                        chooseLearningPackageExport()
+                    } label: {
+                        Label(lang.text("导出学习包…", "Export Package…"), systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(manager.isWorking || manager.entries.isEmpty)
+                    .help(lang.text("导出当前筛选结果为 .mabstudy", "Export the current result as .mabstudy"))
 
                     if !manager.entries.isEmpty {
                         Button { selectAllVisibleEntries() } label: {
@@ -218,6 +240,19 @@ public struct SentenceLibraryView: View {
                                         if let previewURL = manager.previewURL(for: entry) {
                                             selectedEntryID = entry.id
                                             previewRequest = SentencePreviewRequest(url: previewURL, title: entry.originalText)
+                                        }
+                                    },
+                                    onSave: { originalText, translationText in
+                                        do {
+                                            try await manager.updateEntry(
+                                                id: entry.id,
+                                                originalText: originalText,
+                                                translation: translationText
+                                            )
+                                            return true
+                                        } catch {
+                                            // 更新失败已由管理器统一显示在主窗口状态栏。
+                                            return false
                                         }
                                     }
                                 )
@@ -473,6 +508,42 @@ public struct SentenceLibraryView: View {
         }
     }
 
+    private func chooseLearningPackageImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [learningPackageType]
+        panel.prompt = lang.text("导入", "Import")
+        panel.message = lang.text("选择来自 iPhone 或 iPad 的 .mabstudy 学习包", "Choose a .mabstudy package from iPhone or iPad")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                _ = try await manager.importLearningPackage(from: url)
+            } catch {
+                notice = SentenceLibraryNotice(title: lang.text("导入失败", "Import Failed"), message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func chooseLearningPackageExport() {
+        guard !manager.entries.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [learningPackageType]
+        panel.nameFieldStringValue = (manager.currentLibrary?.name ?? "句库") + ".mabstudy"
+        panel.message = lang.text("导出当前筛选结果及独立句子音频", "Export the current filtered entries and independent sentence audio")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                try await manager.exportLearningPackage(manager.entries, destinationURL: url)
+                notice = SentenceLibraryNotice(title: lang.text("学习包已导出", "Package Exported"), message: url.path)
+            } catch {
+                notice = SentenceLibraryNotice(title: lang.text("导出失败", "Export Failed"), message: error.localizedDescription)
+            }
+        }
+    }
+
 }
 
 private struct SentenceLibraryEntryRow: View {
@@ -485,6 +556,9 @@ private struct SentenceLibraryEntryRow: View {
     let onToggleCheck: () -> Void
     let onSelect: () -> Void
     let onPreview: () -> Void
+    let onSave: (String, String) async -> Bool
+    @State private var isEditing = false
+    @State private var editSessionID = UUID()
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -523,32 +597,59 @@ private struct SentenceLibraryEntryRow: View {
                 .disabled(previewURL == nil)
                 .help(previewURL == nil ? "" : lang.text("点击放大预览", "Click to enlarge preview"))
 
-                VStack(alignment: .leading, spacing: 5) {
-                    if !entry.originalText.isEmpty {
-                        Text(entry.originalText)
-                            .font(.body)
-                    }
-                    if !entry.translation.isEmpty {
-                        Text(entry.translation)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 10) {
-                        Label(Self.dateFormatter.string(from: entry.createdAt), systemImage: "calendar")
-                        if !entry.sourceMediaName.isEmpty {
-                            Label(entry.sourceMediaName, systemImage: "play.rectangle")
-                                .lineLimit(1)
+                if isEditing {
+                    SentenceLibraryInlineSubtitleEditor(
+                        originalText: entry.originalText,
+                        translationText: entry.translation,
+                        onSave: onSave,
+                        onFinish: { isEditing = false },
+                        onCancel: { isEditing = false }
+                    )
+                    .id(editSessionID)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        if !entry.originalText.isEmpty {
+                            Text(entry.originalText)
+                                .font(.body)
                         }
-                        Text("\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))")
+                        if !entry.translation.isEmpty {
+                            Text(entry.translation)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 10) {
+                            Label(Self.dateFormatter.string(from: entry.createdAt), systemImage: "calendar")
+                            if !entry.sourceMediaName.isEmpty {
+                                Label(entry.sourceMediaName, systemImage: "play.rectangle")
+                                    .lineLimit(1)
+                            }
+                            Text("\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 1, perform: onSelect)
                 }
 
                 Spacer(minLength: 0)
             }
-            .contentShape(Rectangle())
-            .onTapGesture(count: 1, perform: onSelect)
+
+            if !isEditing {
+                Button {
+                    editSessionID = UUID()
+                    isEditing = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+                .help(lang.text("修改原文和译文", "Edit original and translation"))
+                .accessibilityLabel(lang.text("修改原文和译文", "Edit original and translation"))
+            }
         }
         .padding(10)
         .background(isActive ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
@@ -558,6 +659,341 @@ private struct SentenceLibraryEntryRow: View {
                 .stroke(isActive ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 1)
         }
     }
+}
+
+/// 句库行内编辑器：Tab 在原文与译文之间循环，回车或完成按钮提交，
+/// 字段失焦时先自动保存当前内容；Esc 或取消按钮放弃本次未保存修改。
+private struct SentenceLibraryInlineSubtitleEditor: View {
+    private struct ActiveSave {
+        let id: UUID
+        let task: Task<Bool, Never>
+    }
+
+    @ObservedObject private var lang = LanguageManager.shared
+    @State private var originalText: String
+    @State private var translationText: String
+    @State private var savedOriginalText: String
+    @State private var savedTranslationText: String
+    @State private var isResolved = false
+    @State private var isSaving = false
+    @State private var activeSave: ActiveSave?
+
+    let onSave: (String, String) async -> Bool
+    let onFinish: () -> Void
+    let onCancel: () -> Void
+
+    init(
+        originalText: String,
+        translationText: String,
+        onSave: @escaping (String, String) async -> Bool,
+        onFinish: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _originalText = State(initialValue: originalText)
+        _translationText = State(initialValue: translationText)
+        _savedOriginalText = State(initialValue: originalText)
+        _savedTranslationText = State(initialValue: translationText)
+        self.onSave = onSave
+        self.onFinish = onFinish
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            SentenceLibraryInlineTextFields(
+                originalText: $originalText,
+                translationText: $translationText,
+                originalPlaceholder: lang.text("原文…", "Original text…"),
+                translationPlaceholder: lang.text("译文…", "Translation…"),
+                onFieldBlur: scheduleSaveIfNeeded,
+                onSubmit: finish,
+                onCancel: cancel
+            )
+            .frame(maxWidth: .infinity, minHeight: 26)
+
+            Button(action: finish) {
+                Group {
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "checkmark")
+                    }
+                }
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color.accentColor)
+            .help(lang.text("保存修改", "Save changes"))
+            .accessibilityLabel(lang.text("保存修改", "Save changes"))
+        }
+        .onExitCommand(perform: cancel)
+        .onDisappear {
+            scheduleSaveIfNeeded()
+        }
+    }
+
+    private func scheduleSaveIfNeeded() {
+        guard !isResolved,
+              originalText != savedOriginalText || translationText != savedTranslationText else { return }
+        Task { @MainActor in
+            _ = await persistChanges()
+        }
+    }
+
+    private func finish() {
+        guard !isResolved else { return }
+        Task { @MainActor in
+            let succeeded = await persistChanges()
+            guard succeeded else { return }
+            isResolved = true
+            onFinish()
+        }
+    }
+
+    private func cancel() {
+        guard !isResolved else { return }
+        isResolved = true
+        onCancel()
+    }
+
+    @MainActor
+    private func persistChanges() async -> Bool {
+        while !isResolved {
+            if let activeSave {
+                let succeeded = await activeSave.task.value
+                if self.activeSave?.id == activeSave.id {
+                    self.activeSave = nil
+                }
+                guard succeeded else { return false }
+                // The user may have edited the other field while this write
+                // was in flight. Re-check the current draft before finishing.
+                continue
+            }
+
+            guard originalText != savedOriginalText || translationText != savedTranslationText else { return true }
+
+            let original = originalText
+            let translation = translationText
+            let saveID = UUID()
+            isSaving = true
+            let task = Task { @MainActor in
+                let succeeded = await onSave(original, translation)
+                if succeeded {
+                    savedOriginalText = original
+                    savedTranslationText = translation
+                }
+                isSaving = false
+                return succeeded
+            }
+            activeSave = ActiveSave(id: saveID, task: task)
+            let succeeded = await task.value
+            if self.activeSave?.id == saveID {
+                self.activeSave = nil
+            }
+            guard succeeded else { return false }
+            // Loop once more so a newer draft created during the write is
+            // persisted before Enter or the checkmark closes the editor.
+        }
+        return false
+    }
+}
+
+/// SwiftUI 的 TextField 在 macOS 上会优先把 Tab 交给系统焦点遍历，
+/// 因而无法可靠地执行两个句库输入框之间的循环。这里用原生 NSTextField
+/// 在 keyDown 层截获 Tab、Enter 和 Escape，再把普通文字输入交回系统。
+private struct SentenceLibraryInlineTextFields: NSViewRepresentable {
+    @Binding var originalText: String
+    @Binding var translationText: String
+    let originalPlaceholder: String
+    let translationPlaceholder: String
+    let onFieldBlur: () -> Void
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> EditorView {
+        let view = EditorView()
+        let originalField = makeTextField(
+            placeholder: originalPlaceholder,
+            accessibilityLabel: "原文",
+            font: .systemFont(ofSize: NSFont.systemFontSize),
+            coordinator: context.coordinator
+        )
+        let translationField = makeTextField(
+            placeholder: translationPlaceholder,
+            accessibilityLabel: "译文",
+            font: .systemFont(ofSize: NSFont.systemFontSize),
+            coordinator: context.coordinator
+        )
+        originalField.stringValue = originalText
+        translationField.stringValue = translationText
+        view.install(originalField: originalField, translationField: translationField)
+        context.coordinator.originalField = originalField
+        context.coordinator.translationField = translationField
+        return view
+    }
+
+    func updateNSView(_ nsView: EditorView, context: Context) {
+        context.coordinator.parent = self
+        nsView.originalField?.placeholderString = originalPlaceholder
+        nsView.translationField?.placeholderString = translationPlaceholder
+        if let originalField = nsView.originalField, originalField.stringValue != originalText {
+            originalField.stringValue = originalText
+        }
+        if let translationField = nsView.translationField, translationField.stringValue != translationText {
+            translationField.stringValue = translationText
+        }
+    }
+
+    private func makeTextField(
+        placeholder: String,
+        accessibilityLabel: String,
+        font: NSFont,
+        coordinator: Coordinator
+    ) -> SentenceLibraryInlineTextField {
+        let field = SentenceLibraryInlineTextField()
+        field.placeholderString = placeholder
+        field.font = font
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBordered = true
+        field.bezelStyle = .roundedBezel
+        field.focusRingType = .default
+        field.usesSingleLineMode = true
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.delegate = coordinator
+        field.target = coordinator
+        field.action = #selector(Coordinator.submitFromControl(_:))
+        field.setAccessibilityLabel(accessibilityLabel)
+        return field
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: SentenceLibraryInlineTextFields
+        weak var originalField: SentenceLibraryInlineTextField?
+        weak var translationField: SentenceLibraryInlineTextField?
+
+        init(_ parent: SentenceLibraryInlineTextFields) {
+            self.parent = parent
+            super.init()
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            // AppKit sends this notification from the shared field editor
+            // (NSTextView), not necessarily from the NSTextField itself.
+            // Always read both controls so the SwiftUI draft cannot remain
+            // stale while the visible native editor has already changed.
+            if let originalField {
+                parent.originalText = originalField.stringValue
+            }
+            if let translationField {
+                parent.translationText = translationField.stringValue
+            }
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            parent.onFieldBlur()
+        }
+
+        /// A single-line NSTextField sends its action for the Return key. This
+        /// complements doCommandBy, which is the reliable path for Tab but is
+        /// not called for Return by every AppKit field-editor configuration.
+        @objc func submitFromControl(_ sender: Any?) {
+            parent.onSubmit()
+        }
+
+        /// NSTextField hands Tab and Return to its field editor. Handling the
+        /// command here is the reliable AppKit path; NSTextField.keyDown and a
+        /// window-level event monitor do not receive those commands consistently.
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            guard let field = control as? SentenceLibraryInlineTextField,
+                  field === originalField || field === translationField else {
+                return false
+            }
+
+            switch commandSelector.description {
+            case "insertTab:":
+                moveFocus(from: field, backwards: false)
+                return true
+            case "insertBacktab:":
+                moveFocus(from: field, backwards: true)
+                return true
+            case "insertNewline:", "insertNewlineIgnoringFieldEditor:":
+                parent.onSubmit()
+                return true
+            case "cancelOperation:":
+                parent.onCancel()
+                return true
+            default:
+                return false
+            }
+        }
+
+        func moveFocus(from field: SentenceLibraryInlineTextField?, backwards: Bool) {
+            guard let field, let window = field.window else { return }
+            let target: SentenceLibraryInlineTextField?
+            if backwards {
+                target = field === originalField ? translationField : originalField
+            } else {
+                target = field === originalField ? translationField : originalField
+            }
+            guard let target else { return }
+            window.makeFirstResponder(target)
+        }
+    }
+
+    final class EditorView: NSView {
+        private(set) weak var originalField: SentenceLibraryInlineTextField?
+        private(set) weak var translationField: SentenceLibraryInlineTextField?
+        private let stackView = NSStackView()
+        private var didSetInitialFocus = false
+        func install(
+            originalField: SentenceLibraryInlineTextField,
+            translationField: SentenceLibraryInlineTextField
+        ) {
+            self.originalField = originalField
+            self.translationField = translationField
+            stackView.orientation = .horizontal
+            stackView.spacing = 5
+            stackView.distribution = .fillEqually
+            stackView.addArrangedSubview(originalField)
+            stackView.addArrangedSubview(translationField)
+            stackView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(stackView)
+            NSLayoutConstraint.activate([
+                stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
+                stackView.topAnchor.constraint(equalTo: topAnchor),
+                stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        }
+
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: 26)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil, !didSetInitialFocus else { return }
+            didSetInitialFocus = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window, let originalField = self.originalField else { return }
+                window.makeFirstResponder(originalField)
+            }
+        }
+    }
+}
+
+private final class SentenceLibraryInlineTextField: NSTextField {
 }
 
 @MainActor

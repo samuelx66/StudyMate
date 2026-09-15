@@ -65,6 +65,9 @@ for root, dirs, files in os.walk(sources_dir):
             file_entries.append((f, rel_p, kind))
 
 # 排序以保证确定性输出
+shared_package_path = os.path.join(root_dir, 'StudyMateMobile', 'Shared', 'StudyMatePackage', 'StudyMatePackage.swift')
+if os.path.exists(shared_package_path):
+    file_entries.append(('StudyMatePackage.swift', os.path.relpath(shared_package_path, root_dir), 'source'))
 file_entries.sort(key=lambda x: x[1])
 resource_entries.sort(key=lambda x: x[1])
 

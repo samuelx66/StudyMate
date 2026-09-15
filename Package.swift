@@ -15,6 +15,10 @@ let package = Package(
         .library(
             name: "StudyMateKit",
             targets: ["StudyMateKit"]
+        ),
+        .library(
+            name: "StudyMatePackage",
+            targets: ["StudyMatePackage"]
         )
     ],
     dependencies: [
@@ -26,6 +30,12 @@ let package = Package(
         )
     ],
     targets: [
+        // Kept under StudyMateMobile so the mobile directory can be moved out
+        // as a standalone project without taking AppKit code with it.
+        .target(
+            name: "StudyMatePackage",
+            path: "StudyMateMobile/Shared/StudyMatePackage"
+        ),
         .binaryTarget(
             name: "WhisperFramework",
             path: "Vendor/Whisper/whisper.xcframework"
@@ -40,6 +50,7 @@ let package = Package(
             name: "StudyMateKit",
             dependencies: [
                 "CSpeechRuntime",
+                "StudyMatePackage",
                 .product(name: "SpeakerKit", package: "argmax-oss-swift")
             ],
             path: "Sources/StudyMate",
@@ -81,7 +92,7 @@ let package = Package(
         ),
         .testTarget(
             name: "StudyMateTests",
-            dependencies: ["StudyMateKit"],
+            dependencies: ["StudyMateKit", "StudyMatePackage"],
             path: "Tests/StudyMateTests",
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION")

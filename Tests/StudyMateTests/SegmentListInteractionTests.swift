@@ -265,6 +265,37 @@ final class SegmentListInteractionTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionInNonVideoModesPausesPlayingMediaAndResumesAfterDismissal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudyMate-DictionarySelectionModeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let mediaURL = directory.appendingPathComponent("selection-mode-pause.mp4")
+        try Data("media".utf8).write(to: mediaURL)
+
+        let engine = makeTestPlaybackEngine()
+        engine.loadMedia(from: mediaURL)
+        engine.play()
+
+        let coordinator = DictionaryInteractionCoordinator.shared
+        coordinator.clearSelectionAndDeselect()
+        coordinator.bindPlaybackEngine(engine)
+
+        // List, full-text and sentence mode all feed selections through the
+        // shared coordinator, so selection itself must pause the media before
+        // the three-button action bar is presented.
+        coordinator.updateSelection(text: "selection", context: "A selection")
+        XCTAssertFalse(engine.isPlaying)
+
+        coordinator.clearSelectionAndDeselect()
+        XCTAssertTrue(engine.isPlaying)
+
+        engine.pause()
+        coordinator.clearSelectionAndDeselect()
+    }
+
+    @MainActor
     func testVideoSubtitleSelectionDoesNotResumeMediaThatWasAlreadyPaused() {
         let engine = makeTestPlaybackEngine()
         let coordinator = DictionaryInteractionCoordinator.shared
@@ -540,5 +571,4 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertFalse(engine.canMergeActiveSegmentWithNext, "单句不可合并下一句")
     }
 }
-
 

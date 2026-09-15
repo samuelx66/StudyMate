@@ -184,10 +184,7 @@ public struct MainContentView: View {
             onOpenVocabulary: { openWindow(id: "vocabulary") },
             onOpenDictionary: {
                 _ = dictionaryCoordinator.captureCurrentSelectionForDictionary()
-                if let query = dictionaryCoordinator.selectedText, !query.isEmpty {
-                    dictionaryCoordinator.bindPlaybackEngine(engine)
-                    dictionaryCoordinator.pausePlaybackForVideoSubtitleSelection()
-                }
+                dictionaryCoordinator.bindPlaybackEngine(engine)
                 dictionaryCoordinator.openDictionaryWindow()
             },
             onOpenMedia: openFileDialog,
