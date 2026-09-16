@@ -26,7 +26,11 @@ public final class DictionaryFindCoordinator: ObservableObject {
             container.performFind(action)
             return
         }
-        activeContainer?.performFind(action)
+        // Only respond via the registered container when its window is key;
+        // otherwise find actions would apply to a background window.
+        if let activeContainer, activeContainer.window?.isKeyWindow == true {
+            activeContainer.performFind(action)
+        }
     }
 
     private func findContainer(in view: NSView?) -> DictionaryWebContainerView? {
@@ -97,7 +101,10 @@ public final class DictionaryWebContainerView: NSView, NSTextFinderBarContainer 
     private var hasConfiguredTextFinder = false
     public func setupTextFinderIfNeeded() {
         guard !hasConfiguredTextFinder else { return }
-        let client = webView.perform(Selector(("_ensureTextFinderClient")))?.takeUnretainedValue()
+        guard let client = webView.perform(Selector(("_ensureTextFinderClient")))?
+            .takeUnretainedValue() else {
+            return
+        }
         textFinder.setValue(client, forKey: "client")
         textFinder.findBarContainer = self
         hasConfiguredTextFinder = true

@@ -55,7 +55,8 @@ let package = Package(
             ],
             path: "Sources/StudyMate",
             exclude: [
-                "Resources/Helpers"
+                "Resources/Helpers",
+                "Resources/AppIcon_Master.png"
             ],
             resources: [
                 .process("Resources/Assets.xcassets"),

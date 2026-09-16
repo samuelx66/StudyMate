@@ -912,6 +912,9 @@ public final class DictionaryEngine: ObservableObject {
     /// Keep only the latest query typed while a dictionary package is being
     /// imported or deleted. Retry it after the serialized mutation finishes.
     private var deferredSearchAfterBusy: DeferredDictionarySearch?
+    /// A refresh requested while a dictionary mutation runs must be retried
+    /// after the mutation finishes, mirroring deferredSearchAfterBusy.
+    private var deferredRefreshAfterBusy = false
     private var searchGeneration: UInt64 = 0
     private var detailGeneration: UInt64 = 0
     /// A refresh started while the window opens must not publish a stale
@@ -926,6 +929,36 @@ public final class DictionaryEngine: ObservableObject {
     private var activeProgressRequestID: String?
     private var lastProgressDate = Date.distantPast
     private var lastProgressPhase: String?
+    /// 响应事件保序缓冲区：解析发生在串行 responseQueue 上，这里按解析顺序
+    /// 入队（NSLock 保护），再由 MainActor 统一按 FIFO 顺序处理，避免“每个
+    /// 事件各起一个 Task”导致 progress/progress/response 在 MainActor 上乱序。
+    private final class ResponseEventBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: [(event: DictionaryResponseEvent, generation: UInt64)] = []
+
+        func enqueue(_ event: DictionaryResponseEvent, generation: UInt64) {
+            lock.lock()
+            pending.append((event, generation))
+            lock.unlock()
+        }
+
+        func drain() -> [(event: DictionaryResponseEvent, generation: UInt64)] {
+            lock.lock()
+            let drained = pending
+            pending.removeAll(keepingCapacity: true)
+            lock.unlock()
+            return drained
+        }
+
+        func clear() {
+            lock.lock()
+            pending.removeAll(keepingCapacity: true)
+            lock.unlock()
+        }
+    }
+
+    private let responseEventBuffer = ResponseEventBuffer()
+    private var isDrainingResponseEvents = false
 
     public init(root: URL? = nil) {
         if let root {
@@ -954,20 +987,16 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     deinit {
-        searchTask?.cancel()
-        queryDebounceTask?.cancel()
-        detailTask?.cancel()
-        prefetchTask?.cancel()
-        refreshTask?.cancel()
-        dictionaryMutationTask?.cancel()
-        output?.readabilityHandler = nil
-        responseParser = nil
-        process?.terminate()
+        // 单例对象与进程同生命周期；后台 Task 与子进程依赖进程退出统一清理，
+        // 不在 deinit 中访问 MainActor 隔离状态。
     }
 
     public func refresh() {
         refreshTask?.cancel()
-        guard !isBusy else { return }
+        guard !isBusy else {
+            deferredRefreshAfterBusy = true
+            return
+        }
         refreshTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1119,6 +1148,11 @@ public final class DictionaryEngine: ObservableObject {
         guard !isBusy else {
             // A package mutation may start after the debounce expires. Keep
             // the latest search pending and retry after the mutation finishes.
+            deferredSearchAfterBusy = DeferredDictionarySearch(
+                query: query,
+                dictionaryID: dictionaryID,
+                includeDetails: includeDetails
+            )
             return
         }
 
@@ -1556,6 +1590,11 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     private func retryDeferredSearchIfNeeded() {
+        if !isBusy, deferredRefreshAfterBusy {
+            deferredRefreshAfterBusy = false
+            refresh()
+            return
+        }
         guard !isBusy, let deferred = deferredSearchAfterBusy else { return }
         deferredSearchAfterBusy = nil
         search(
@@ -2215,6 +2254,7 @@ public final class DictionaryEngine: ObservableObject {
             total += entry.dictionaryID.utf8.count
             total += entry.dictionaryTitle.utf8.count
             total += entry.css?.utf8.count ?? 0
+            total += entry.darkCSS?.utf8.count ?? 0
             total += entry.resourceRoot?.utf8.count ?? 0
         }
         // NSCache treats zero as an immediately discardable value. Keep a
@@ -2280,14 +2320,16 @@ public final class DictionaryEngine: ObservableObject {
                 pending[id] = continuation
                 do {
                     guard let input else {
-                        pending.removeValue(forKey: id)
-                        continuation.resume(throwing: StudyMateDictionaryError(message: "词典引擎输入管道不可用。"))
+                        if pending.removeValue(forKey: id) != nil {
+                            continuation.resume(throwing: StudyMateDictionaryError(message: "词典引擎输入管道不可用。"))
+                        }
                         return
                     }
                     try input.write(contentsOf: line)
                 } catch {
-                    pending.removeValue(forKey: id)
-                    continuation.resume(throwing: error)
+                    if pending.removeValue(forKey: id) != nil {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
         }, onCancel: { [weak self] in
@@ -2322,6 +2364,8 @@ public final class DictionaryEngine: ObservableObject {
         let process = Process()
         helperGeneration &+= 1
         let generation = helperGeneration
+        // 新 helper 启动前丢弃上一代遗留的未处理事件
+        responseEventBuffer.clear()
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         process.executableURL = executable
@@ -2330,8 +2374,13 @@ public final class DictionaryEngine: ObservableObject {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.standardError
         let parser = DictionaryResponseParser { [weak self] event in
+            guard let self else { return }
+            // 解析发生在串行 responseQueue 上：先按解析顺序入队（锁保护），
+            // 再交给 MainActor 按 FIFO 顺序处理，保证 progress 一定先于其
+            // 对应的 response 被消费。
+            self.responseEventBuffer.enqueue(event, generation: generation)
             Task { @MainActor [weak self] in
-                self?.handleResponseEvent(event, generation: generation)
+                self?.drainResponseEvents()
             }
         }
         responseParser = parser
@@ -2358,12 +2407,18 @@ public final class DictionaryEngine: ObservableObject {
     }
 
     private func helperURL() throws -> URL {
-        let candidates: [URL?] = [
+        var candidates: [URL?] = [
             Bundle.main.url(forResource: "studymate-dict", withExtension: nil, subdirectory: "Helpers"),
             Bundle.main.resourceURL?.appendingPathComponent("Helpers/studymate-dict"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/studymate-dict"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
             Bundle.main.bundleURL.appendingPathComponent("Helpers/studymate-dict"),
+            URL(fileURLWithPath: "/Applications/StudyMateDictionary.app/Contents/Helpers/studymate-dict")
+        ]
+        // 开发机本地路径候选（#filePath 推导、当前目录推导）只在 Debug 构建下探测，
+        // Release 包不应依赖源码路径或工作目录。
+        #if DEBUG
+        candidates += [
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -2376,7 +2431,6 @@ public final class DictionaryEngine: ObservableObject {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .appendingPathComponent("Embedded/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
-            URL(fileURLWithPath: "/Applications/StudyMateDictionary.app/Contents/Helpers/studymate-dict"),
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Dictionary/target/release/studymate-dict"),
             URL(fileURLWithPath: #filePath)
@@ -2388,6 +2442,7 @@ public final class DictionaryEngine: ObservableObject {
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Dictionary/target/debug/studymate-dict")
         ]
+        #endif
         if let url = candidates.compactMap({ $0 }).first(where: {
             FileManager.default.isExecutableFile(atPath: $0.path)
         }) {
@@ -2396,6 +2451,15 @@ public final class DictionaryEngine: ObservableObject {
         throw StudyMateDictionaryError(
             message: "未找到词典引擎。请重新构建 StudyMate，或把 studymate-dict 放入应用的 Resources/Helpers。"
         )
+    }
+
+    private func drainResponseEvents() {
+        guard !isDrainingResponseEvents else { return }
+        isDrainingResponseEvents = true
+        defer { isDrainingResponseEvents = false }
+        for item in responseEventBuffer.drain() {
+            handleResponseEvent(item.event, generation: item.generation)
+        }
     }
 
     private func handleResponseEvent(_ event: DictionaryResponseEvent, generation: UInt64) {
@@ -2503,12 +2567,21 @@ public final class DictionaryEngine: ObservableObject {
             stem = (mdxFile as NSString).deletingPathExtension
         }
 
-        let cssFileName = "\(stem).studymate-dark.css"
+        // 文件名安全化：stem 可能来自 manifest 或 mdx 文件名，剔除路径分隔符
+        // 与其它在文件名中非法/危险的字符，避免写入越出目标目录。
+        let sanitizedStem = stem
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:")).joined(separator: "_")
+            .replacingOccurrences(of: "..", with: "_")
+        let cssFileName = "\(sanitizedStem).studymate-dark.css"
         let cssFileURL = targetDirectory.appendingPathComponent(cssFileName)
 
         if !fileManager.fileExists(atPath: cssFileURL.path) {
             let initialContent = "/* 本文件只能补充夜间模式的显示效果 */\n"
-            try? initialContent.write(to: cssFileURL, atomically: true, encoding: .utf8)
+            do {
+                try initialContent.write(to: cssFileURL, atomically: true, encoding: .utf8)
+            } catch {
+                MainStatusCenter.shared.showError("无法写入夜间样式文件")
+            }
         }
 
         return cssFileURL

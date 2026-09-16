@@ -2,6 +2,7 @@ import SwiftUI
 import Foundation
 import WebKit
 import AppKit
+import OSLog
 
 
 /// Formats MDX dictionary lookup entries into clean, adaptive HTML documents
@@ -1005,7 +1006,9 @@ public enum DictionaryHTMLFormatter {
             let key = nsHTML.substring(with: match.range(at: 3))
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard !key.isEmpty else { continue }
-            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+            let encodedKey = key.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "#?"))
+            ) ?? key
             let replacement = nsHTML.substring(with: match.range(at: 1))
                 + "sound://\(encodedKey)#studymate-dictionary=\(encodedDictionaryID)"
                 + nsHTML.substring(with: match.range(at: 4))
@@ -1222,6 +1225,7 @@ public enum DictionaryHTMLFormatter {
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
     }
 }
 
@@ -1358,8 +1362,14 @@ private final class DictionarySoundSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        // WKURLSchemeTask contract: every path must deliver a URLResponse
+        // before didFinish. An invalid/nil URL is reported via didFailWithError.
         guard let url = urlSchemeTask.request.url else {
-            urlSchemeTask.didFinish()
+            urlSchemeTask.didFailWithError(NSError(
+                domain: "StudyMate.DictionarySound",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid sound URL"]
+            ))
             return
         }
         let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
@@ -1367,12 +1377,20 @@ private final class DictionarySoundSchemeHandler: NSObject, WKURLSchemeHandler {
             defer { self?.removeTask(withID: taskID) }
             guard !Task.isCancelled else { return }
             self?.coordinator?.handleSoundURL(url)
-            // The native audio player owns playback. Finish the WebKit task
+            // The native audio player owns playback. Deliver an empty 200
+            // response (required by the scheme-task contract) and finish
             // without returning the MDD bytes to WebKit, so a dictionary's
             // normal sound link cannot trigger a second, broken media load.
-            if !Task.isCancelled {
-                urlSchemeTask.didFinish()
-            }
+            guard !Task.isCancelled else { return }
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "audio/mpeg", "Content-Length": "0"]
+            )
+            urlSchemeTask.didReceive(response ?? URLResponse(url: url, mimeType: "audio/mpeg", expectedContentLength: 0, textEncodingName: nil))
+            urlSchemeTask.didReceive(Data())
+            urlSchemeTask.didFinish()
         }
         tasks[taskID] = task
     }
@@ -1522,10 +1540,23 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             return html
         }
         let style = "<style id=\"studymate-user-css\" type=\"text/css\">\n/* User CSS */\n\(userCSS)\n</style>\n"
-        if let headEnd = html.range(of: "</head>", options: .caseInsensitive) {
-            return String(html[..<headEnd.lowerBound]) + style + String(html[headEnd.lowerBound...])
+        // Idempotent: strip an existing user-CSS style block before injecting,
+        // so a pre-rendered document never receives the layer twice.
+        var cleanedHTML = html
+        if let startRange = cleanedHTML.range(
+            of: "<style id=\"studymate-user-css\"",
+            options: .caseInsensitive
+        ), let endRange = cleanedHTML.range(
+            of: "</style>",
+            options: .caseInsensitive,
+            range: startRange.upperBound..<cleanedHTML.endIndex
+        ) {
+            cleanedHTML.removeSubrange(startRange.lowerBound..<endRange.upperBound)
         }
-        return html + style
+        if let headEnd = cleanedHTML.range(of: "</head>", options: .caseInsensitive) {
+            return String(cleanedHTML[..<headEnd.lowerBound]) + style + String(cleanedHTML[headEnd.lowerBound...])
+        }
+        return cleanedHTML + style
     }
 
     /// Returns the document shell with body contents removed. This lets the
@@ -1547,14 +1578,18 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     }
 
     static func configureDeveloperExtras(in config: WKWebViewConfiguration) {
+        #if DEBUG
         UserDefaults.standard.register(defaults: ["WebKitDeveloperExtras": true])
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        #endif
     }
 
     static func configureInspectable(in webView: WKWebView) {
+        #if DEBUG
         if #available(macOS 13.3, *) {
             webView.isInspectable = true
         }
+        #endif
     }
 
     public func makeNSView(context: Context) -> DictionaryWebContainerView {
@@ -1594,7 +1629,6 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         Self.configureInspectable(in: webView)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
-        webView.setValue(false, forKey: "drawsBackground")
         webView.underPageBackgroundColor = .clear
         let container = DictionaryWebContainerView(webView: webView)
         context.coordinator.currentHTML = html
@@ -1772,6 +1806,10 @@ public struct DictionaryHTMLView: NSViewRepresentable {
     }
 
     public final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private static let dictionaryHighlightLogger = Logger(
+            subsystem: "com.samuel.StudyMateDictionary",
+            category: "dictionary-highlight"
+        )
         var parent: DictionaryHTMLView
         var currentHTML: String = ""
         var currentBodyHTML: String = ""
@@ -1810,10 +1848,14 @@ public struct DictionaryHTMLView: NSViewRepresentable {
 
         func allowsResourceDictionaryID(_ dictionaryID: String) -> Bool {
             guard !dictionaryID.isEmpty else { return false }
-            if allowedResourceDictionaryIDs.contains(dictionaryID) {
+            // URL hosts are normalized to lowercase by URL parsing; compare
+            // case-insensitively so mixed-case dictionary IDs still resolve.
+            let normalizedID = dictionaryID.lowercased()
+            if allowedResourceDictionaryIDs.contains(where: { $0.lowercased() == normalizedID }) {
                 return true
             }
-            return allowedResourceDictionaryIDs.isEmpty && currentBaseURL?.host == dictionaryID
+            return allowedResourceDictionaryIDs.isEmpty
+                && currentBaseURL?.host?.lowercased() == normalizedID
         }
 
         deinit {
@@ -1985,8 +2027,16 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 return
             }
             if scheme == "http" || scheme == "https" {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
+                // Only a user-activated click in the main frame leaves for the
+                // system browser. Sub-resource/iframe/script-initiated loads
+                // must not be hijacked, so let WebKit continue them.
+                if navigationAction.navigationType == .linkActivated,
+                   navigationAction.targetFrame?.isMainFrame == true {
+                    NSWorkspace.shared.open(url)
+                    decisionHandler(.cancel)
+                } else {
+                    decisionHandler(.allow)
+                }
                 return
             }
 
@@ -2074,7 +2124,7 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "好")
+            alert.addButton(withTitle: LanguageManager.shared.text("好", "OK"))
             present(alert, in: webView) { _ in completionHandler() }
         }
 
@@ -2086,8 +2136,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "确定")
-            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: LanguageManager.shared.text("确定", "OK"))
+            alert.addButton(withTitle: LanguageManager.shared.text("取消", "Cancel"))
             present(alert, in: webView) { response in
                 completionHandler(response == .alertFirstButtonReturn)
             }
@@ -2102,8 +2152,8 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = prompt
-            alert.addButton(withTitle: "确定")
-            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: LanguageManager.shared.text("确定", "OK"))
+            alert.addButton(withTitle: LanguageManager.shared.text("取消", "Cancel"))
             let input = NSTextField(string: defaultText ?? "")
             input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
             alert.accessoryView = input
@@ -2202,7 +2252,10 @@ public struct DictionaryHTMLView: NSViewRepresentable {
         }
 
         func applyHighlight(in webView: WKWebView, term: String) {
+            // Line separators inside a search term would break window.find().
             let cleanTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: CharacterSet(charactersIn: "\u{2028}\u{2029}\n\r"))
+                .joined(separator: " ")
             guard !cleanTerm.isEmpty else { return }
 
             let escapedTerm = cleanTerm
@@ -2215,6 +2268,9 @@ public struct DictionaryHTMLView: NSViewRepresentable {
             (function() {
                 var term = "\(escapedTerm)";
                 if (!term) return;
+                // Do not clobber an existing user text selection.
+                var existing = window.getSelection ? window.getSelection() : null;
+                if (existing && !existing.isCollapsed) return;
                 if (window.find) {
                     window.getSelection()?.removeAllRanges();
                     var found = window.find(term, false, false, true, false, false, false);
@@ -2237,7 +2293,13 @@ public struct DictionaryHTMLView: NSViewRepresentable {
                 }
             })();
             """
-            webView.evaluateJavaScript(script, completionHandler: nil)
+            webView.evaluateJavaScript(script) { _, error in
+                if let error {
+                    Self.dictionaryHighlightLogger.error(
+                        "highlight script failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
         }
     }
 }
