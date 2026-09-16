@@ -11,6 +11,7 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     private(set) var seekCount = 0
     private(set) var previewSeekCount = 0
     private(set) var loadCount = 0
+    private(set) var playbackEndTime: Double?
     var automaticallyCompletesLoads: Bool
     var automaticallyCompletesSeeks: Bool
     var seekResultOffset: Double = 0
@@ -52,6 +53,10 @@ final class TestMediaPlayerBackend: MediaPlayerBackend {
     func play() {
         isPlaying = true
         onStateChanged?(true)
+    }
+
+    func setPlaybackEndTime(_ seconds: Double?) {
+        playbackEndTime = seconds
     }
 
     func pause() {

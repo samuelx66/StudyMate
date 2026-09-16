@@ -66,6 +66,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
     private var seekRecoveryTask: Task<Void, Never>?
     private var highFrequencyPresentationEnabled = true
     private var presentationTick: UInt64 = 0
+    private var playbackEndTime: Double?
     
     public override init() {
         super.init()
@@ -182,6 +183,15 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
                         guard let self,
                               generation == self.loadGeneration,
                               self.player.currentItem === item else { return }
+                        // An old end notification may arrive after a repeat seek.
+                        guard !self.isSeekingInternal else { return }
+                        if let end = self.playbackEndTime {
+                            let actual = CMTimeGetSeconds(self.player.currentTime())
+                            guard actual >= end - 0.05 else { return }
+                            self.onBoundaryTimeUpdate?(end, self.duration)
+                            return
+                        }
+                        guard CMTimeGetSeconds(self.player.currentTime()) >= self.duration - 0.05 else { return }
                         self.isPlaying = false
                         self.onStateChanged?(false)
                         self.onFinished?()
@@ -205,6 +215,7 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
                 }
                 
             self.player.replaceCurrentItem(with: item)
+            self.setPlaybackEndTime(self.playbackEndTime)
             self.player.volume = self.volume
             self.player.isMuted = false
             self.currentTime = 0.0
@@ -441,6 +452,13 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
 
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
         highFrequencyPresentationEnabled = enabled
+    }
+
+    public func setPlaybackEndTime(_ seconds: Double?) {
+        playbackEndTime = seconds.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        player.currentItem?.forwardPlaybackEndTime = playbackEndTime.map {
+            CMTime(seconds: $0, preferredTimescale: 60000)
+        } ?? .invalid
     }
 
     private func setupTimeControlObservation() {

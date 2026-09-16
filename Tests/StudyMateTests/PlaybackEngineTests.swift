@@ -1,11 +1,188 @@
 import Combine
 import CryptoKit
 import AVFoundation
+import AVKit
 import XCTest
 @testable import StudyMateKit
 
 @MainActor
 final class PlaybackEngineTests: XCTestCase {
+    func testNativeRepeatResumesAfterBlockedMainThreadAndThenAdvances() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let media = directory.appendingPathComponent("native-repeat.wav")
+        try makeTestAudio(at: media, duration: 3)
+        let backend = AVFoundationPlayerBackend()
+        let engine = PlaybackEngine(nativeBackend: backend, mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")))
+        defer { engine.pause(); backend.teardown() }
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: media)
+        for _ in 0..<200 where engine.isMediaLoading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isMediaLoading)
+        engine.volume = 0
+        engine.segments = [SentenceSegment(index: 1, startTime: 0, endTime: 0.5),
+                           SentenceSegment(index: 2, startTime: 0.5, endTime: 3)]
+        engine.activeSegmentIndex = 0
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 2
+        engine.play()
+        let player = try XCTUnwrap((backend.playerView as? AVPlayerView)?.player)
+        for _ in 0..<100 where player.currentTime().seconds < 0.02 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        blockMainThreadForBoundaryTest()
+        XCTAssertEqual(player.currentTime().seconds, 0.5, accuracy: 0.06)
+        for _ in 0..<100 where engine.currentRepeatCount < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        for _ in 0..<200 where engine.activeSegmentIndex == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 1)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testNativeDecoderStopsAtSentenceEndWhileMainThreadIsBlocked() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let media = directory.appendingPathComponent("native-boundary.wav")
+        try makeTestAudio(at: media, duration: 3)
+        let backend = AVFoundationPlayerBackend()
+        defer { backend.teardown() }
+        let loaded = await withCheckedContinuation { continuation in
+            backend.load(url: media) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(loaded)
+        backend.volume = 0
+        backend.setPlaybackEndTime(0.4)
+        backend.play()
+        let player = try XCTUnwrap((backend.playerView as? AVPlayerView)?.player)
+        for _ in 0..<100 where player.currentTime().seconds < 0.02 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertGreaterThan(player.currentTime().seconds, 0.01)
+        blockMainThreadForBoundaryTest()
+        XCTAssertEqual(player.currentTime().seconds, 0.4, accuracy: 0.06)
+        // AVPlayer's public rate notification can itself wait on the main
+        // queue. Verify the actual media clock remains stopped instead.
+        blockMainThreadForBoundaryTest()
+        XCTAssertEqual(player.currentTime().seconds, 0.4, accuracy: 0.06)
+        backend.setPlaybackEndTime(nil)
+        XCTAssertFalse(try XCTUnwrap(player.currentItem).forwardPlaybackEndTime.isValid)
+    }
+
+    func testMPVDecoderEndOptionStopsWithoutMainThreadPolling() throws {
+        let client = MPVClient.shared
+        guard client.isAvailable else { throw XCTSkip("libmpv unavailable") }
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let media = directory.appendingPathComponent("mpv-boundary.wav")
+        try makeTestAudio(at: media, duration: 3)
+        let handle = try XCTUnwrap(client.create())
+        defer { client.destroy(handle) }
+        XCTAssertGreaterThanOrEqual(client.setOptionString(handle, name: "vo", value: "null"), 0)
+        XCTAssertGreaterThanOrEqual(client.setOptionString(handle, name: "ao", value: "null"), 0)
+        XCTAssertGreaterThanOrEqual(client.setOptionString(handle, name: "keep-open", value: "yes"), 0)
+        XCTAssertGreaterThanOrEqual(client.initialize(handle), 0)
+        XCTAssertGreaterThanOrEqual(client.command(handle, args: ["loadfile", media.path]), 0)
+        for _ in 0..<100 {
+            if (client.getPropertyDouble(handle, name: "time-pos") ?? 0) > 0.01 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        // Set this after loading: runtime changes must work, not just options
+        // installed before the file opens.
+        XCTAssertGreaterThanOrEqual(client.setPropertyString(handle, name: "end", value: "0.4"), 0)
+        blockMainThreadForBoundaryTest()
+        XCTAssertLessThanOrEqual(try XCTUnwrap(client.getPropertyDouble(handle, name: "time-pos")), 0.46)
+        XCTAssertEqual(client.getPropertyFlag(handle, name: "eof-reached"), true)
+        XCTAssertGreaterThanOrEqual(client.setPropertyString(handle, name: "end", value: "none"), 0)
+    }
+
+    private func blockMainThreadForBoundaryTest() {
+        // Intentionally simulate synchronous window layout beyond the sentence
+        // end. No main-queue callback can implement the stop during this time.
+        Thread.sleep(forTimeInterval: 0.8)
+    }
+
+    func testDelayedBoundaryStillRepeatsAfterBackendReportsPaused() async throws {
+        for mode: PlaybackLoopMode in [.singleSegment, .normal, .all, .pauseAfterSegment] {
+            let directory = temporaryTestDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let media = directory.appendingPathComponent("delayed.mp4")
+            try Data("media".utf8).write(to: media)
+            let backend = TestMediaPlayerBackend(duration: 20, supportsIndependentBoundaryTimeUpdates: true)
+            let engine = PlaybackEngine(nativeBackend: backend, mpvBackend: TestMediaPlayerBackend(),
+                projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")))
+            engine.setDecoderMode(.system)
+            engine.loadMedia(from: media)
+            for _ in 0..<20 where engine.isMediaLoading { await Task.yield() }
+            engine.segments = [
+                SentenceSegment(index: 1, startTime: 0, endTime: 2),
+                SentenceSegment(index: 2, startTime: 2, endTime: 4),
+                SentenceSegment(index: 3, startTime: 4, endTime: 6)
+            ]
+            engine.activeSegmentIndex = 0
+            engine.loopMode = mode
+            engine.repeatCountLimit = 3
+            engine.play()
+            engine.setHighFrequencyPresentationEnabled(false)
+            XCTAssertEqual(backend.playbackEndTime, 2)
+            // Decoder stops first; UI receives its time callback only after
+            // window work finishes. The user's playback intent is unchanged.
+            backend.pause()
+            XCTAssertFalse(engine.isPlaying)
+            backend.emitTime(4.5)
+            for _ in 0..<10 { await Task.yield() }
+            XCTAssertEqual(engine.activeSegmentIndex, 0, "\(mode)")
+            XCTAssertEqual(engine.currentRepeatCount, 2, "\(mode)")
+            XCTAssertEqual(backend.currentTime, 0, accuracy: 0.01)
+            XCTAssertTrue(engine.isPlaying)
+
+            // A real user pause must NOT be undone by a delayed end callback.
+            engine.pause()
+            let seeks = backend.seekCount
+            backend.emitTime(2)
+            XCTAssertEqual(backend.seekCount, seeks)
+            XCTAssertFalse(engine.isPlaying)
+            XCTAssertNil(backend.playbackEndTime)
+        }
+    }
+
+    func testDecoderStopFollowsSentenceAndRepeatSettings() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let media = directory.appendingPathComponent("limits.mp4")
+        try Data("media".utf8).write(to: media)
+        let backend = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(nativeBackend: backend, mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects")))
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: media)
+        for _ in 0..<20 where engine.isMediaLoading { await Task.yield() }
+        engine.segments = [SentenceSegment(index: 1, startTime: 0, endTime: 2),
+                           SentenceSegment(index: 2, startTime: 2, endTime: 4)]
+        engine.activeSegmentIndex = 0
+        engine.loopMode = .normal
+        engine.play()
+        XCTAssertNil(backend.playbackEndTime)
+        engine.repeatCountLimit = 3
+        XCTAssertEqual(backend.playbackEndTime, 2)
+        engine.activeSegmentIndex = 1
+        XCTAssertEqual(backend.playbackEndTime, 4)
+        engine.repeatCountLimit = 1
+        XCTAssertNil(backend.playbackEndTime)
+        engine.loopMode = .singleSegment
+        XCTAssertEqual(backend.playbackEndTime, 4)
+        engine.pause()
+        XCTAssertNil(backend.playbackEndTime)
+    }
+
     func testMenuTrackingKeepsActiveSentencePresentationLiveAcrossSubmenuHandoff() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

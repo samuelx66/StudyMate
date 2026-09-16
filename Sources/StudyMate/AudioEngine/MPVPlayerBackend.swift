@@ -59,6 +59,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
     private var timerTick: UInt64 = 0
     private var pollGeneration: UInt64 = 0
     private var highFrequencyPresentationEnabled = true
+    private var playbackEndTime: Double?
     private var loadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
     private let commandQueue = DispatchQueue(label: "com.studymate.mpv.commands", qos: .userInitiated)
@@ -82,6 +83,7 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         _ = MPVClient.shared.setOptionString(handle, name: "input-vo-keyboard", value: "no")
         _ = MPVClient.shared.setOptionString(handle, name: "input-cursor", value: "no")
         _ = MPVClient.shared.setOptionString(handle, name: "osc", value: "no")
+        _ = MPVClient.shared.setOptionString(handle, name: "keep-open", value: "yes")
         _ = MPVClient.shared.setOptionString(handle, name: "osd-level", value: "0")
         
         let status = MPVClient.shared.initialize(handle)
@@ -254,6 +256,8 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         seekCancellationToken = cancellationToken
         isSeekingInternal = true
         currentTime = clamped
+        pollGeneration &+= 1
+        isPollingActive = false
         seekGeneration &+= 1
         let generation = seekGeneration
         
@@ -433,6 +437,10 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
                       generation == self.loadGeneration,
                       callbackGeneration == self.pollGeneration else { return }
                 self.isPollingActive = false
+                if eof, let end = self.playbackEndTime {
+                    self.onBoundaryTimeUpdate?(end, self.duration)
+                    return
+                }
                 
                 if pos >= 0 {
                     if dur > 0 && abs(self.duration - dur) > 0.01 {
@@ -460,6 +468,18 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
 
     public func setHighFrequencyPresentationEnabled(_ enabled: Bool) {
         highFrequencyPresentationEnabled = enabled
+    }
+
+    public func setPlaybackEndTime(_ seconds: Double?) {
+        let end = seconds.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        guard end != playbackEndTime else { return }
+        playbackEndTime = end
+        guard let handle = mpvHandle else { return }
+        let bits = UInt(bitPattern: handle)
+        commandQueue.async {
+            guard let handle = OpaquePointer(bitPattern: bits) else { return }
+            _ = MPVClient.shared.setPropertyString(handle, name: "end", value: end.map { String($0) } ?? "none")
+        }
     }
 
     public func setAutomaticSubtitleLoading(_ enabled: Bool) {

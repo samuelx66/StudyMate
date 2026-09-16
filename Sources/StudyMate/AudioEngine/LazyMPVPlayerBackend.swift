@@ -82,6 +82,10 @@ public final class LazyMPVPlayerBackend: MediaPlayerBackend {
         backend?.setHighFrequencyPresentationEnabled(enabled)
     }
 
+    public func setPlaybackEndTime(_ seconds: Double?) {
+        backend?.setPlaybackEndTime(seconds)
+    }
+
     public func setAutomaticSubtitleLoading(_ enabled: Bool) {
         automaticallyLoadsSubtitles = enabled
         backend?.setAutomaticSubtitleLoading(enabled)

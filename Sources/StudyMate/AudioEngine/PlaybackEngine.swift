@@ -454,7 +454,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             activeBackend.playbackRate = playbackRate
         }
     }
-    @Published public var loopMode: PlaybackLoopMode = .normal
+    @Published public var loopMode: PlaybackLoopMode = .normal {
+        didSet { updateDecoderSentenceEnd() }
+    }
     /// 当开启此开关时（如填空模式），句后停顿模式在当前句播放结束时暂停并停留在当前句起点，
     /// 不会自动切到下一句，方便用户重听或在该句完成填词输入。
     @Published public var pauseAfterSegmentHoldsCurrentSegment: Bool = false
@@ -463,7 +465,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// One-shot practice playback used by reverse translation mode. When the
     /// current sentence reaches its authoritative end, the boundary handler
     /// advances directly instead of applying the user's normal loop policy.
-    private var shouldAdvanceAfterCurrentSegmentPlayback = false
+    private var shouldAdvanceAfterCurrentSegmentPlayback = false {
+        didSet { updateDecoderSentenceEnd() }
+    }
 
     public func toggleMute() {
         volume = volume > 0 ? 0 : volumeBeforeMute
@@ -496,17 +500,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - 智能精听与复读系统状态
     /// 单句定次重复上限 (1, 2, 3, 5, 10，0 表示无限单句重复)
-    @Published public var repeatCountLimit: Int = 1
+    @Published public var repeatCountLimit: Int = 1 {
+        didSet { updateDecoderSentenceEnd() }
+    }
     /// 当前句已播放/复读次数
     @IsolatedPublished public var currentRepeatCount: Int = 1 {
         didSet {
             repeatPresentationState.update(currentRepeatCount)
+            updateDecoderSentenceEnd()
         }
     }
     /// 跟读停顿倍率 (0.0x 表示不停顿，1.0x 表示停顿当前句相同时长供用户开口跟读)
-    @Published public var shadowingPauseRatio: Double = 0.0
+    @Published public var shadowingPauseRatio: Double = 0.0 {
+        didSet { updateDecoderSentenceEnd() }
+    }
     /// 跟读固定停顿秒数 (0.0 表示不按固定秒数停顿，1.0/2.0/3.0/5.0 表示固定停顿秒数)
-    @Published public var shadowingPauseSeconds: Double = 0.0
+    @Published public var shadowingPauseSeconds: Double = 0.0 {
+        didSet { updateDecoderSentenceEnd() }
+    }
 
     public func setShadowingPauseRatio(_ ratio: Double) {
         shadowingPauseSeconds = 0.0
@@ -581,6 +592,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var segments: [SentenceSegment] = [] {
         didSet {
             updatePresentationUpperBoundForActiveSegment()
+            updateDecoderSentenceEnd()
         }
     }
     /// Increments for every explicit user sentence selection (keyboard, list,
@@ -592,6 +604,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @IsolatedPublished public var activeSegmentIndex: Int? {
         didSet {
             updatePresentationUpperBoundForActiveSegment()
+            updateDecoderSentenceEnd()
             if activeSegmentIndex != oldValue {
                 activeSegmentState.updateIndex(activeSegmentIndex)
                 updateSecondaryViewportForActiveSegment()
@@ -684,7 +697,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// clearing the new task's reference.
     private var previewSeekGeneration: UInt64 = 0
     private var pendingPreviewSeekTime: Double?
-    private var isPreviewSeeking = false
+    private var isPreviewSeeking = false {
+        didSet { updateDecoderSentenceEnd() }
+    }
     private var segmentationRequestID = UUID()
     private var translationRequestID = UUID()
     private var mediaSessionID = UUID()
@@ -712,7 +727,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// decoder rounding only; ordinary timeline seeks still follow real time.
     private var explicitSegmentSelection: ExplicitSegmentSelection?
     private var isBackendReady = false
-    private var wantsPlayback = false
+    private var wantsPlayback = false {
+        didSet { updateDecoderSentenceEnd() }
+    }
     /// The user's normal presentation preference.  A temporary window resize
     /// throttle must not overwrite it, otherwise hiding/showing the waveforms
     /// during a resize could accidentally leave playback at the reduced rate.
@@ -2917,6 +2934,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         activeBackend.playbackRate = playbackRate
+        updateDecoderSentenceEnd()
         activeBackend.play()
         isPlaying = true
     }
@@ -3140,6 +3158,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     // MARK: - 智能复读、跟读停顿与断句边界判定
 
+    private func updateDecoderSentenceEnd() {
+        // UI work can delay both backends' main-thread boundary callbacks.
+        // Arm the decoder ahead of time; the callback then decides whether
+        // to repeat, wait, or advance after the media has safely stopped.
+        let needsStop = loopMode == .singleSegment || loopMode == .pauseAfterSegment
+            || repeatCountLimit == 0 || currentRepeatCount < repeatCountLimit
+            || shadowingPauseRatio > 0 || shadowingPauseSeconds > 0
+            || shouldAdvanceAfterCurrentSegmentPlayback
+        let end: Double?
+        if wantsPlayback, !isPreviewSeeking, needsStop,
+           let index = activeSegmentIndex, segments.indices.contains(index) {
+            end = segments[index].endTime
+        } else {
+            end = nil
+        }
+        activeBackend.setPlaybackEndTime(end)
+    }
+
     private func handlePlaybackBoundary(at time: Double) {
         guard !isWaveformFrozenAtNaturalEnd else { return }
 
@@ -3165,7 +3201,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 activeSegmentIndex = dragIndex
                 updateSecondaryViewportForActiveSegment(force: true)
             }
-            guard isPlaying, !isShadowingPaused else { return }
+            guard wantsPlayback, !isShadowingPaused else { return }
             let draggedSegment = segments[dragIndex]
             if time >= draggedSegment.endTime - 0.005 {
                 clock.snapPresentationTime(draggedSegment.endTime)
@@ -3184,7 +3220,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard loopMode == .singleSegment,
                   let activeIdx = activeSegmentIndex,
                   (boundaryDragSession?.baseSegments ?? segments).indices.contains(activeIdx),
-                  isPlaying,
+                  wantsPlayback,
                   !isShadowingPaused else { return }
             let currentSeg = boundaryDragSession?.segment(at: activeIdx) ?? segments[activeIdx]
             guard time >= currentSeg.endTime - 0.005 else { return }
@@ -3232,8 +3268,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         let currentSeg = segments[activeIdx]
 
+        // The decoder may report paused before delivering the end timestamp.
+        // Only an explicit pause clears wantsPlayback; isPlaying is an
+        // observation and must not disable the repeat decision here.
         // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
-        if time >= currentSeg.endTime - 0.005 && isPlaying && !isShadowingPaused {
+        if time >= currentSeg.endTime - 0.005 && wantsPlayback && !isShadowingPaused {
             if shouldAdvanceAfterCurrentSegmentPlayback {
                 shouldAdvanceAfterCurrentSegmentPlayback = false
                 // 反译模式的完成播放是一次性动作，完成后直接复用统一的

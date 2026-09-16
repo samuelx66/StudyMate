@@ -32,6 +32,9 @@ public protocol MediaPlayerBackend: AnyObject {
     func stop()
     func teardown()
     func setHighFrequencyPresentationEnabled(_ enabled: Bool)
+    /// Decoder-enforced stop, independent of the main-thread UI clock.
+    /// A nil value restores ordinary full-media playback.
+    func setPlaybackEndTime(_ seconds: Double?)
     /// Controls whether a backend automatically selects subtitle tracks or
     /// matching external subtitle files. Native backends intentionally ignore
     /// this because the setting only applies to libmpv.
@@ -51,6 +54,7 @@ public extension MediaPlayerBackend {
     }
 
     func setHighFrequencyPresentationEnabled(_ enabled: Bool) {}
+    func setPlaybackEndTime(_ seconds: Double?) {}
 
     func setAutomaticSubtitleLoading(_ enabled: Bool) {}
 }
