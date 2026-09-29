@@ -598,7 +598,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.6.3 release";
+				MARKETING_VERSION = "1.7.0 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -622,7 +622,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.6.3 release";
+				MARKETING_VERSION = "1.7.0 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;
