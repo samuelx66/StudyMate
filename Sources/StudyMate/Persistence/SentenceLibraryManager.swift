@@ -1,6 +1,10 @@
 import Foundation
 import AVFoundation
 import AppKit
+import NaturalLanguage
+#if canImport(StudyMatePackage)
+import StudyMatePackage
+#endif
 
 /// Lightweight status projection used by the media window.  The main media
 /// view must not observe the entire sentence-library manager (which publishes
@@ -54,7 +58,10 @@ public final class SentenceLibraryManager: ObservableObject {
     @Published public private(set) var currentLibraryID: UUID?
     @Published public private(set) var entries: [SentenceLibraryEntry] = []
     @Published public private(set) var availableSources: [String] = []
+    @Published public private(set) var availableTags: [String] = []
     @Published public private(set) var selectedSource = ""
+    @Published public private(set) var selectedTag: String? = nil
+    @Published public private(set) var typeFilter: SentenceLibraryTypeFilter = .all
     @Published public private(set) var sortOrder: SentenceLibrarySortOrder = .newestFirst
     @Published public private(set) var isWorking = false {
         didSet { publishStatusProjection() }
@@ -122,10 +129,6 @@ public final class SentenceLibraryManager: ObservableObject {
             let now = Date()
             let currentProcessID = ProcessInfo.processInfo.processIdentifier
             for folder in contents {
-                // A live export marks its work directory with the current
-                // process ID. This prevents an hour-long export from being
-                // removed by a second cleanup pass, while a stale marker from
-                // a crashed process remains recoverable on the next launch.
                 let activeMarker = folder.appendingPathComponent(
                     ".active-\(currentProcessID)",
                     isDirectory: false
@@ -174,6 +177,8 @@ public final class SentenceLibraryManager: ObservableObject {
         defaults.set(id.uuidString, forKey: currentLibraryKey)
         selectedSource = ""
         availableSources = []
+        availableTags = []
+        selectedTag = nil
         reloadSources(for: id)
         reloadEntries()
     }
@@ -183,14 +188,33 @@ public final class SentenceLibraryManager: ObservableObject {
         dateFilter: SentenceLibraryDateFilter,
         selectedDate: Date? = nil,
         sourceMediaName: String = "",
+        typeFilter: SentenceLibraryTypeFilter = .all,
+        selectedTag: String? = nil,
         sortOrder: SentenceLibrarySortOrder = .newestFirst
     ) {
         self.searchText = searchText
         self.dateFilter = dateFilter
         if let selectedDate { selectedFilterDate = selectedDate }
         self.selectedSource = sourceMediaName
+        self.typeFilter = typeFilter
+        self.selectedTag = selectedTag
         self.sortOrder = sortOrder
         reloadEntries(debounceNanoseconds: 150_000_000)
+    }
+
+    public func setTypeFilter(_ filter: SentenceLibraryTypeFilter) {
+        self.typeFilter = filter
+        reloadEntries(debounceNanoseconds: 50_000_000)
+    }
+
+    public func setSelectedTag(_ tag: String?) {
+        self.selectedTag = tag
+        reloadEntries(debounceNanoseconds: 50_000_000)
+    }
+
+    public func setSortOrder(_ order: SentenceLibrarySortOrder) {
+        self.sortOrder = order
+        reloadEntries(debounceNanoseconds: 50_000_000)
     }
 
     public func reloadEntries(debounceNanoseconds: UInt64 = 0) {
@@ -207,12 +231,15 @@ public final class SentenceLibraryManager: ObservableObject {
         let lowerBound = filter.lowerBound(selectedDate: filterDate)
         let upperBound = filter.upperBound(selectedDate: filterDate)
         let source = selectedSource
+        let currentTypeFilter = typeFilter
+        let tag = selectedTag
         let order = sortOrder
         queryTask = Task { [weak self, store] in
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
             guard !Task.isCancelled else { return }
+            let queryTypeFilter = currentTypeFilter == .withVocabularyOnly ? SentenceLibraryTypeFilter.all : currentTypeFilter
             let result = await Task.detached(priority: .utility) {
                 Result {
                     try store.entries(
@@ -221,6 +248,8 @@ public final class SentenceLibraryManager: ObservableObject {
                         createdAfter: lowerBound,
                         createdBefore: upperBound,
                         sourceMediaName: source,
+                        typeFilter: queryTypeFilter,
+                        selectedTag: tag,
                         sortOrder: order
                     )
                 }
@@ -233,11 +262,36 @@ public final class SentenceLibraryManager: ObservableObject {
                   self.dateFilter.rawValue == filter.rawValue,
                   self.selectedFilterDate == filterDate,
                   self.selectedSource == source,
+                  self.typeFilter == currentTypeFilter,
+                  self.selectedTag == tag,
                   self.sortOrder == order else { return }
             switch result {
             case let .success(foundEntries):
-                self.entries = foundEntries
+                var synchronizedEntries = foundEntries
+                var needsStoreUpdate: [UUID: [StudyMatePackageVocabularyCard]] = [:]
+                let knownWords = PackageVocabularyService.shared.allKnownVocabularyWords()
+                if !knownWords.isEmpty {
+                    for i in 0..<synchronizedEntries.count {
+                        let text = synchronizedEntries[i].originalText
+                        let matched = PackageVocabularyService.shared.findMatchingVocabulary(for: text)
+                        let currentWords = synchronizedEntries[i].associatedWords ?? []
+                        if matched != currentWords {
+                            synchronizedEntries[i].associatedWords = matched.isEmpty ? nil : matched
+                            needsStoreUpdate[synchronizedEntries[i].id] = matched
+                        }
+                    }
+                }
+                if currentTypeFilter == .withVocabularyOnly {
+                    self.entries = synchronizedEntries.filter { ($0.associatedWords?.isEmpty == false) }
+                } else {
+                    self.entries = synchronizedEntries
+                }
                 self.lastErrorMessage = nil
+                if !needsStoreUpdate.isEmpty {
+                    Task.detached(priority: .utility) { [store] in
+                        try? store.batchUpdateAssociatedWords(needsStoreUpdate, in: libraryID)
+                    }
+                }
             case let .failure(error):
                 self.entries = []
                 self.lastErrorMessage = error.localizedDescription
@@ -268,6 +322,35 @@ public final class SentenceLibraryManager: ObservableObject {
         let sourceURL = media.url
         let sourceTitle = media.title
         let sourceIsVideo = media.isVideo
+
+        // 检测视频画幅比例 (16:9 / 9:16)
+        var detectedAspectRatio: String? = nil
+        if sourceIsVideo {
+            let asset = AVURLAsset(url: sourceURL)
+            if let track = try? await asset.loadTracks(withMediaType: .video).first {
+                if let size = try? await track.load(.naturalSize),
+                   let transform = try? await track.load(.preferredTransform) {
+                    let transformedSize = size.applying(transform)
+                    let w = abs(transformedSize.width)
+                    let h = abs(transformedSize.height)
+                    if w > 0 && h > 0 {
+                        detectedAspectRatio = w >= h ? "16:9" : "9:16"
+                    }
+                }
+            }
+        }
+
+        // 检测主要语种
+        var detectedSourceLanguage: String? = nil
+        let sampleText = ordered.prefix(5).map(\.text).joined(separator: " ")
+        if !sampleText.isEmpty {
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(sampleText)
+            if let dominant = recognizer.dominantLanguage {
+                detectedSourceLanguage = dominant.rawValue
+            }
+        }
+
         let report: @Sendable (Double, String, String) -> Void = { [weak self] fraction, phase, currentItem in
             Task { @MainActor [weak self] in
                 guard let self, self.operationGeneration == generation else { return }
@@ -278,6 +361,7 @@ public final class SentenceLibraryManager: ObservableObject {
                 )
             }
         }
+
         let prepared = try await Task.detached(priority: .userInitiated) { [store] in
             let fileManager = FileManager.default
             guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -303,8 +387,10 @@ public final class SentenceLibraryManager: ObservableObject {
             var entries: [SentenceLibraryEntry] = []
             var previews: [UUID: Data] = [:]
             var mediaURLs: [UUID: URL] = [:]
+            var missingAlignmentTargets: [SentenceLibraryAlignmentTarget] = []
             let imageGenerator = sourceIsVideo ? SentencePreviewGenerator(mediaURL: sourceURL) : nil
             let total = max(1, ordered.count)
+
             for (offset, segment) in ordered.enumerated() {
                 try Task.checkCancellation()
                 let id = UUID()
@@ -332,18 +418,52 @@ public final class SentenceLibraryManager: ObservableObject {
                     sourceIsVideo ? "生成预览并整理音频" : "整理音频片段",
                     mediaFilename
                 )
+
+                // 语境快照
+                let beforeText = offset > 0 ? ordered[offset - 1].text : nil
+                let afterText = offset + 1 < ordered.count ? ordered[offset + 1].text : nil
+
+                // 自动注音引擎
+                let phonetic = PhoneticEngine.shared.phoneticText(for: segment.text)
+
+                // 自动匹配关联生词
+                let matchingVocab = PackageVocabularyService.shared.findMatchingVocabulary(for: segment.text)
+
+                if segment.wordTokens == nil || segment.wordTokens?.isEmpty == true {
+                    missingAlignmentTargets.append(SentenceLibraryAlignmentTarget(
+                        segmentID: segment.id,
+                        entryID: id,
+                        startTime: segment.startTime,
+                        endTime: segment.endTime,
+                        originalText: segment.text
+                    ))
+                }
+
                 entries.append(SentenceLibraryEntry(
                     id: id,
+                    originalIndex: (segment.originalIndex != nil && segment.originalIndex! > 0) ? segment.originalIndex! : segment.index,
                     originalText: segment.text,
                     translation: segment.translation,
+                    phoneticText: phonetic,
                     note: segment.note,
+                    isBookmarked: segment.isBookmarked,
+                    tags: [],
+                    associatedWords: matchingVocab.isEmpty ? nil : matchingVocab,
+                    contextBefore: beforeText,
+                    contextAfter: afterText,
                     sourceMediaName: sourceTitle,
                     sourceMediaPath: sourceURL.path,
                     startTime: segment.startTime,
                     endTime: segment.endTime,
                     createdAt: timestamp,
                     mediaFilename: mediaFilename,
-                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg"
+                    previewFilename: preview == nil ? nil : "\(id.uuidString).jpg",
+                    speakerRole: segment.speakerRole,
+                    speakerID: segment.speakerID,
+                    speakerIDs: segment.speakerIDs,
+                    isSpeakerOverlap: segment.isSpeakerOverlap,
+                    wordTokens: segment.wordTokens,
+                    shadowing: nil
                 ))
             }
             try Task.checkCancellation()
@@ -356,16 +476,240 @@ public final class SentenceLibraryManager: ObservableObject {
                     report(0.82 + fraction * 0.18, "写入句库索引", "")
                 }
             )
-            return entries.count
+
+            // 更新画幅与语言元数据
+            try? store.updateMetadata(
+                sourceLanguage: detectedSourceLanguage,
+                targetLanguage: nil,
+                videoAspectRatio: detectedAspectRatio,
+                in: libraryID
+            )
+
+            return (count: entries.count, missingTargets: missingAlignmentTargets)
         }.value
 
         operationProgress = SentenceLibraryOperationProgress(fraction: 1, phase: "句库保存完成")
         await reloadLibraries(createDefaultIfNeeded: false)
+        reloadSources(for: libraryID)
         reloadEntries()
         MainStatusCenter.shared.showSuccess(
-            LanguageManager.shared.text("已成功保存 \(prepared) 个句子到句库", "Successfully saved \(prepared) sentences to library")
+            LanguageManager.shared.text("已成功保存 \(prepared.count) 个句子到句库", "Successfully saved \(prepared.count) sentences to library")
         )
-        return prepared
+
+        // 若存在缺少词级时间戳的句子，在后台静默发起 Whisper 自动对齐
+        if !prepared.missingTargets.isEmpty {
+            SentenceLibraryAlignmentService.shared.alignWordTokens(
+                targets: prepared.missingTargets,
+                audioURL: sourceURL,
+                libraryID: libraryID
+            )
+        }
+
+        return prepared.count
+    }
+
+    /// 星标难句切换
+    public func toggleBookmark(id: UUID) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            let isBookmarked = try await Task.detached(priority: .userInitiated) { [store] in
+                try store.toggleBookmark(id: id, in: libraryID)
+            }.value
+            if let idx = entries.firstIndex(where: { $0.id == id }) {
+                entries[idx].isBookmarked = isBookmarked
+            }
+            let msg = isBookmarked
+                ? LanguageManager.shared.text("已加入星标难句", "Added to starred sentences")
+                : LanguageManager.shared.text("已取消星标难句", "Removed from starred sentences")
+            MainStatusCenter.shared.showSuccess(msg)
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 更新单句的分类标签
+    public func updateTags(id: UUID, tags: [String]) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.updateTags(id: id, tags: tags, in: libraryID)
+            }.value
+            if let idx = entries.firstIndex(where: { $0.id == id }) {
+                entries[idx].tags = tags
+            }
+            reloadSources(for: libraryID)
+            if selectedTag != nil {
+                reloadEntries()
+            }
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("标签已更新", "Tags updated")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 批量为句子添加标签
+    public func batchAddTags(to ids: Set<UUID>, tags: [String]) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !ids.isEmpty, !tags.isEmpty else { return }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.batchAddTags(ids: ids, tags: tags, in: libraryID)
+            }.value
+            reloadSources(for: libraryID)
+            reloadEntries()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已为 \(ids.count) 个句子添加标签", "Added tags to \(ids.count) sentences")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 批量覆盖设置句子标签
+    public func batchSetTags(for ids: Set<UUID>, tags: [String]) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !ids.isEmpty else { return }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.batchSetTags(ids: ids, tags: tags, in: libraryID)
+            }.value
+            reloadSources(for: libraryID)
+            reloadEntries()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已更新 \(ids.count) 个句子的标签", "Updated tags for \(ids.count) sentences")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 更新单句的独立说话人角色显示
+    public func updateSpeakerRole(id: UUID, speakerRole: String?) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.updateSpeakerRole(id: id, speakerRole: speakerRole, in: libraryID)
+            }.value
+            if let idx = entries.firstIndex(where: { $0.id == id }) {
+                entries[idx].speakerRole = speakerRole
+            }
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("说话人角色已更新", "Speaker role updated")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 修改单句或同来源所有句子的来源名称
+    public func updateSourceMediaName(
+        entryID: UUID,
+        oldSourceName: String,
+        newSourceName: String,
+        applyToAllWithSameSource: Bool
+    ) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let updatedCount = try await Task.detached(priority: .userInitiated) { [store] in
+                try store.updateSourceMediaName(
+                    entryID: entryID,
+                    oldSourceName: oldSourceName,
+                    newSourceName: trimmedNew,
+                    applyToAllWithSameSource: applyToAllWithSameSource,
+                    in: libraryID
+                )
+            }.value
+
+            if selectedSource == oldSourceName && applyToAllWithSameSource {
+                selectedSource = trimmedNew
+            }
+            reloadSources(for: libraryID)
+            reloadEntries()
+
+            let msg = LanguageManager.shared.text(
+                "已成功更新 \(updatedCount) 个句子的来源名称",
+                "Successfully updated source name for \(updatedCount) sentence(s)"
+            )
+            MainStatusCenter.shared.showSuccess(msg)
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 批量修改选定句子的来源名称
+    public func batchUpdateSourceMediaName(
+        for ids: Set<UUID>,
+        newSourceName: String
+    ) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        guard !ids.isEmpty else { return }
+        let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let count = try await Task.detached(priority: .userInitiated) { [store] in
+                try store.batchUpdateSourceMediaName(ids: ids, newSourceName: trimmedNew, in: libraryID)
+            }.value
+
+            reloadSources(for: libraryID)
+            reloadEntries()
+
+            let msg = LanguageManager.shared.text(
+                "已成功更新 \(count) 个句子的来源名称",
+                "Successfully updated source name for \(count) sentence(s)"
+            )
+            MainStatusCenter.shared.showSuccess(msg)
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 说话人重命名与合并排重
+    public func batchMergeSpeaker(
+        sourceSpeakerID: Int,
+        targetSpeakerID: Int,
+        targetName: String?
+    ) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            try await Task.detached(priority: .userInitiated) { [store] in
+                try store.batchMergeSpeaker(
+                    sourceSpeakerID: sourceSpeakerID,
+                    targetSpeakerID: targetSpeakerID,
+                    targetName: targetName,
+                    in: libraryID
+                )
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            reloadEntries()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("说话人已成功合并排重", "Speaker successfully merged and deduplicated")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 保存学习断点与复习状态
+    public func updateSessionState(_ sessionState: StudyMatePackageSessionState) async throws {
+        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        do {
+            try await Task.detached(priority: .utility) { [store] in
+                try store.updateSessionState(sessionState, in: libraryID)
+            }.value
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
     }
 
     public func deleteEntries(ids: Set<UUID>) async throws {
@@ -378,6 +722,7 @@ public final class SentenceLibraryManager: ObservableObject {
                 try store.deleteEntries(ids: ids, from: libraryID)
             }.value
             await reloadLibraries(createDefaultIfNeeded: false)
+            reloadSources(for: libraryID)
             reloadEntries()
             if !cleanupFailures.isEmpty {
                 lastErrorMessage = "句子记录已删除，但部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
@@ -402,35 +747,22 @@ public final class SentenceLibraryManager: ObservableObject {
     ) async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         do {
+            let phonetic = PhoneticEngine.shared.phoneticText(for: originalText)
             try await entryUpdateQueue.enqueue { [store] in
                 try await Task.detached(priority: .utility) {
                     try store.updateEntry(
                         id: id,
                         originalText: originalText,
                         translation: translation,
+                        phoneticText: phonetic,
                         in: libraryID
                     )
                 }.value
             }
-            // `reloadLibraries` starts the filtered entry query asynchronously.
-            // Update the visible snapshot first so the row cannot leave edit
-            // mode and immediately render the pre-save text while that query
-            // is still in flight.
             if let index = entries.firstIndex(where: { $0.id == id }) {
-                let current = entries[index]
-                entries[index] = SentenceLibraryEntry(
-                    id: current.id,
-                    originalText: originalText,
-                    translation: translation,
-                    note: current.note,
-                    sourceMediaName: current.sourceMediaName,
-                    sourceMediaPath: current.sourceMediaPath,
-                    startTime: current.startTime,
-                    endTime: current.endTime,
-                    createdAt: current.createdAt,
-                    mediaFilename: current.mediaFilename,
-                    previewFilename: current.previewFilename
-                )
+                entries[index].originalText = originalText
+                entries[index].translation = translation
+                entries[index].phoneticText = phonetic
             }
             await reloadLibraries(createDefaultIfNeeded: false)
             MainStatusCenter.shared.showSuccess(
@@ -497,6 +829,7 @@ public final class SentenceLibraryManager: ObservableObject {
                 )
             }.value
             await reloadLibraries(createDefaultIfNeeded: false)
+            reloadSources(for: sourceLibraryID)
             reloadEntries()
             if !cleanupFailures.isEmpty {
                 lastErrorMessage = "句子已移动，但源句库部分文件未能清理：\(cleanupFailures.joined(separator: "、"))"
@@ -522,8 +855,7 @@ public final class SentenceLibraryManager: ObservableObject {
         return store.mediaURL(for: entry, libraryID: libraryID)
     }
 
-    /// 将当前句库中筛选后可见的句子导出为 M4A 与 LRC。媒体文件均来自
-    /// `.mablib/Media`，因此导出不依赖当前主窗口是否还打开原始媒体。
+    /// 将当前句库中筛选后可见的句子导出为 M4A 与 LRC
     public func exportEntries(
         _ entries: [SentenceLibraryEntry],
         merged: Bool,
@@ -531,8 +863,6 @@ public final class SentenceLibraryManager: ObservableObject {
         progress: @escaping @Sendable (SegmentMediaExportProgress) -> Void = { _ in }
     ) async throws -> SegmentMediaExportResult {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        // 调用方传入的顺序就是当前筛选结果在界面上的顺序；导出时保留它，
-        // 这样“最新入库”排序下的合并音频与用户看到的列表一致。
         let ordered = entries
         guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
 
@@ -600,8 +930,7 @@ public final class SentenceLibraryManager: ObservableObject {
         }.value
     }
 
-    /// 导出跨端统一 `.mabstudy` 学习包。只读取已保存句库快照和独立音频，
-    /// 不把 Mac SQLite、WAL、绝对路径或预览附件放入包中。
+    /// 导出跨端原生学习包（.mablib 格式或压缩包）
     public func exportLearningPackage(
         _ entries: [SentenceLibraryEntry],
         destinationURL: URL
@@ -652,10 +981,12 @@ public final class SentenceLibraryManager: ObservableObject {
                 try store.importLearningPackage(from: packageURL, into: libraryID)
             }.value
             await reloadLibraries(createDefaultIfNeeded: false)
+            reloadSources(for: libraryID)
+            reloadEntries()
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text(
-                    "学习包已导入：新增 (report.added)，更新 (report.updated)，跳过 (report.skipped)",
-                    "Package imported: (report.added) added, (report.updated) updated, (report.skipped) skipped"
+                    "学习包已导入：新增 \(report.added)，更新 \(report.updated)，跳过 \(report.skipped)",
+                    "Package imported: \(report.added) added, \(report.updated) updated, \(report.skipped) skipped"
                 )
             )
             return report
@@ -680,6 +1011,7 @@ public final class SentenceLibraryManager: ObservableObject {
             currentLibraryID = nil
             entries = []
             availableSources = []
+            availableTags = []
             lastErrorMessage = error.localizedDescription
             MainStatusCenter.shared.showError(error.localizedDescription)
             return
@@ -703,13 +1035,21 @@ public final class SentenceLibraryManager: ObservableObject {
     private func reloadSources(for libraryID: UUID) {
         Task { [weak self, store] in
             do {
-                let result = try await Task.detached(priority: .utility) {
+                let sources = try await Task.detached(priority: .utility) {
                     try store.sourceMediaNames(libraryID: libraryID)
                 }.value
+                let tags = try await Task.detached(priority: .utility) {
+                    try store.allTags(libraryID: libraryID)
+                }.value
                 guard let self, self.currentLibraryID == libraryID else { return }
-                self.availableSources = result
-                if !self.selectedSource.isEmpty, !result.contains(self.selectedSource) {
+                self.availableSources = sources
+                self.availableTags = tags
+                if !self.selectedSource.isEmpty, !sources.contains(self.selectedSource) {
                     self.selectedSource = ""
+                    self.reloadEntries()
+                }
+                if let tag = self.selectedTag, !tags.contains(tag) {
+                    self.selectedTag = nil
                     self.reloadEntries()
                 }
             } catch {

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(StudyMatePackage)
+import StudyMatePackage
+#endif
 
 /// 将词级时间戳、标点、停顿、说话人变化和 Silero 边界放入同一个全局评分模型。
 public final class SpeechBoundaryOptimizer: @unchecked Sendable {
@@ -356,12 +359,27 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             // Keep recognized text internally through post-processing even
             // when the user disabled subtitle saving. Boundary decisions must
             // be identical for both toggle states; clear it only at the end.
-            let text = joinTokenText(Array(tokens[range]))
-            let speakerIDs = Array(Set(tokens[range].flatMap(\.speakerIDs))).sorted()
+            let rangeTokens = Array(tokens[range])
+            let text = joinTokenText(rangeTokens)
+            let speakerIDs = Array(Set(rangeTokens.flatMap(\.speakerIDs))).sorted()
             let speakerOverlap = !speakerOverlapIDs(
                 in: first.startTime...last.endTime,
                 speakerSegments: speakerSegments
-            ).isEmpty || tokens[range].contains { $0.speakerOverlap }
+            ).isEmpty || rangeTokens.contains { $0.speakerOverlap }
+
+            let wordTokens = rangeTokens.compactMap { token -> StudyMatePackageWordToken? in
+                let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                let relStart = max(0, token.startTime - start)
+                let relEnd = max(relStart + 0.01, token.endTime - start)
+                return StudyMatePackageWordToken(
+                    text: trimmed,
+                    startTime: relStart,
+                    endTime: relEnd,
+                    confidence: token.confidence
+                )
+            }
+
             segments.append(SentenceSegment(
                 index: rangeIndex + 1,
                 startTime: start,
@@ -370,7 +388,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 translation: "",
                 speakerID: speakerIDs.count == 1 ? speakerIDs[0] : nil,
                 speakerIDs: speakerIDs,
-                isSpeakerOverlap: speakerOverlap
+                isSpeakerOverlap: speakerOverlap,
+                wordTokens: wordTokens.isEmpty ? nil : wordTokens
             ))
             naturalBoundaries.append(
                 range.upperBound == count || candidates[range.upperBound].isNaturalBoundary
@@ -409,6 +428,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         return reindexedSegments.map { segment in
             var copy = segment
             copy.text = ""
+            copy.wordTokens = nil
             return copy
         }
     }
@@ -462,8 +482,27 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             segments[index].speakerIDs = ids
             segments[index].speakerID = ids.count == 1 ? ids[0] : nil
             segments[index].isSpeakerOverlap = current.isSpeakerOverlap || next.isSpeakerOverlap
+            segments[index].wordTokens = mergeWordTokens(left: current, right: next)
             segments.remove(at: index + 1)
         }
+    }
+
+    private func mergeWordTokens(left: SentenceSegment, right: SentenceSegment) -> [StudyMatePackageWordToken]? {
+        if let currentTokens = left.wordTokens ?? (right.wordTokens != nil ? [] : nil),
+           let nextTokens = right.wordTokens {
+            let offset = right.startTime - left.startTime
+            let adjustedNextTokens = nextTokens.map { token in
+                StudyMatePackageWordToken(
+                    text: token.text,
+                    startTime: token.startTime + offset,
+                    endTime: token.endTime + offset,
+                    confidence: token.confidence
+                )
+            }
+            let merged = currentTokens + adjustedNextTokens
+            return merged.isEmpty ? nil : merged
+        }
+        return left.wordTokens ?? right.wordTokens
     }
 
     private func joinSegmentTexts(_ left: String, _ right: String) -> String {
@@ -534,6 +573,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                     segments[index - 1].endTime = short.endTime
                     segments[index - 1].text = mergedText(segments[index - 1].text, short.text)
                     segments[index - 1].isSpeakerOverlap = segments[index - 1].isSpeakerOverlap || short.isSpeakerOverlap
+                    segments[index - 1].wordTokens = mergeWordTokens(left: segments[index - 1], right: short)
                     naturalBoundaries[index - 1] = naturalBoundaries[index - 1] || naturalBoundaries[index]
                     segments.remove(at: index)
                     naturalBoundaries.remove(at: index)
@@ -541,6 +581,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                     segments[index + 1].startTime = short.startTime
                     segments[index + 1].text = mergedText(short.text, segments[index + 1].text)
                     segments[index + 1].isSpeakerOverlap = segments[index + 1].isSpeakerOverlap || short.isSpeakerOverlap
+                    segments[index + 1].wordTokens = mergeWordTokens(left: short, right: segments[index + 1])
                     naturalBoundaries[index + 1] = naturalBoundaries[index + 1] || naturalBoundaries[index]
                     segments.remove(at: index)
                     naturalBoundaries.remove(at: index)
@@ -551,6 +592,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 segments[index - 1].endTime = short.endTime
                 segments[index - 1].text = mergedText(segments[index - 1].text, short.text)
                 segments[index - 1].isSpeakerOverlap = segments[index - 1].isSpeakerOverlap || short.isSpeakerOverlap
+                segments[index - 1].wordTokens = mergeWordTokens(left: segments[index - 1], right: short)
                 naturalBoundaries[index - 1] = naturalBoundaries[index - 1] || naturalBoundaries[index]
                 segments.remove(at: index)
                 naturalBoundaries.remove(at: index)
@@ -560,6 +602,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 segments[index + 1].startTime = short.startTime
                 segments[index + 1].text = mergedText(short.text, segments[index + 1].text)
                 segments[index + 1].isSpeakerOverlap = segments[index + 1].isSpeakerOverlap || short.isSpeakerOverlap
+                segments[index + 1].wordTokens = mergeWordTokens(left: short, right: segments[index + 1])
                 naturalBoundaries[index + 1] = naturalBoundaries[index + 1] || naturalBoundaries[index]
                 segments.remove(at: index)
                 naturalBoundaries.remove(at: index)

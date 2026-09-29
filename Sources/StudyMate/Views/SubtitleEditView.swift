@@ -60,6 +60,21 @@ public struct SubtitleEditView: View {
                             submitAndSelectNextSegment()
                         }
                     
+                    if !seg.speakerRoleLabel.isEmpty {
+                        SpeakerBadgeButton(
+                            speakerRoleLabel: seg.speakerRoleLabel,
+                            speakerRole: seg.speakerRole,
+                            isOverlap: seg.isSpeakerOverlap,
+                            font: .system(size: 10, weight: .bold, design: .monospaced),
+                            tintColor: StudyMateMediaStyle.accent,
+                            shape: .roundedRectangle(4),
+                            language: lang.currentLanguage,
+                            onSave: { fromRole, toName in
+                                engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                            }
+                        )
+                    }
+
                     Text("#\(seg.index)")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .padding(.horizontal, 5)

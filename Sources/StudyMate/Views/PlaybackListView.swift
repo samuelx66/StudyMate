@@ -155,7 +155,7 @@ public struct PlaybackListView: View {
                     )
                     .frame(width: 28, height: 28)
 
-                Image(systemName: mediaIcon(for: entry.mediaURL))
+                Image(systemName: mediaIcon(for: entry))
                     .font(.system(size: 13))
                     .foregroundStyle(
                         isCurrent
@@ -184,6 +184,16 @@ public struct PlaybackListView: View {
                             .font(.system(size: 10))
                     }
                     .foregroundStyle(StudyMateMediaStyle.destructive.opacity(0.85))
+                } else if let customPath = entry.customPath, !customPath.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "books.vertical")
+                            .font(.system(size: 8))
+                        Text(customPath)
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(.secondary.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 } else {
                     Text(entry.mediaURL.deletingLastPathComponent().lastPathComponent)
                         .font(.system(size: 10))
@@ -299,11 +309,14 @@ public struct PlaybackListView: View {
         }
     }
 
-    private func mediaIcon(for url: URL) -> String {
+    private func mediaIcon(for entry: PlaybackHistoryEntry) -> String {
+        if entry.isLibrarySession {
+            return "books.vertical"
+        }
         let videoExtensions: Set<String> = [
             "mkv", "mp4", "mov", "m4v", "avi", "webm", "flv", "wmv", "ts", "vob", "ogv", "rmvb", "3gp"
         ]
-        return videoExtensions.contains(url.pathExtension.lowercased()) ? "film" : "music.note"
+        return videoExtensions.contains(entry.mediaURL.pathExtension.lowercased()) ? "film" : "music.note"
     }
 
     private static let allowedMediaTypes: [UTType] = [

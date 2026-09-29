@@ -15,6 +15,7 @@ public struct PlaybackListModeTableView: View {
     @State private var hasSpeakers: Bool = false
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
+    @ObservedObject private var phoneticManager = PhoneticEngineManager.shared
 
     public init(
         engine: PlaybackEngine,
@@ -176,6 +177,7 @@ public struct PlaybackListModeTableView: View {
                     hasSpeakers: hasSpeakers,
                     showOriginal: videoSubtitleSettings.isOriginalVisible(for: .list),
                     showTranslation: videoSubtitleSettings.isTranslationVisible(for: .list),
+                    showPhonetics: phoneticManager.showPhonetics,
                     originalFont: videoSubtitleSettings.makeOriginalFont(for: .list),
                     originalColor: videoSubtitleSettings.originalNSColor(for: .list),
                     translationFont: videoSubtitleSettings.makeTranslationFont(for: .list),
@@ -189,6 +191,9 @@ public struct PlaybackListModeTableView: View {
                         engine.jumpToSegment(id: id)
                         engine.play()
                         followState.resumeFollowing()
+                    },
+                    onRenameSpeaker: { fromRole, toName in
+                        engine.renameSpeaker(fromRole: fromRole, toName: toName)
                     },
                     onUserScroll: {
                         markUserScroll()
@@ -261,6 +266,7 @@ private struct PlaybackListModeRowsView: View, Equatable {
     let hasSpeakers: Bool
     let showOriginal: Bool
     let showTranslation: Bool
+    let showPhonetics: Bool
     let originalFont: NSFont
     let originalColor: NSColor
     let translationFont: NSFont
@@ -268,6 +274,7 @@ private struct PlaybackListModeRowsView: View, Equatable {
     let language: AppLanguage
     let onSelect: (UUID) -> Void
     let onDoubleClick: (UUID) -> Void
+    let onRenameSpeaker: (String, String) -> Void
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
 
@@ -276,6 +283,7 @@ private struct PlaybackListModeRowsView: View, Equatable {
             && lhs.hasSpeakers == rhs.hasSpeakers
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
+            && lhs.showPhonetics == rhs.showPhonetics
             && lhs.originalFont == rhs.originalFont
             && lhs.originalColor == rhs.originalColor
             && lhs.translationFont == rhs.translationFont
@@ -293,13 +301,15 @@ private struct PlaybackListModeRowsView: View, Equatable {
                     hasSpeakers: hasSpeakers,
                     showOriginal: showOriginal,
                     showTranslation: showTranslation,
+                    showPhonetics: showPhonetics,
                     originalFont: originalFont,
                     originalColor: originalColor,
                     translationFont: translationFont,
                     translationColor: translationColor,
                     language: language,
                     onSelect: { onSelect(seg.id) },
-                    onDoubleClick: { onDoubleClick(seg.id) }
+                    onDoubleClick: { onDoubleClick(seg.id) },
+                    onRenameSpeaker: onRenameSpeaker
                 )
                 .equatable()
                 .id(seg.id)
@@ -324,6 +334,7 @@ private struct PlaybackListModeRowView: View, Equatable {
     let hasSpeakers: Bool
     let showOriginal: Bool
     let showTranslation: Bool
+    let showPhonetics: Bool
     let originalFont: NSFont
     let originalColor: NSColor
     let translationFont: NSFont
@@ -331,6 +342,7 @@ private struct PlaybackListModeRowView: View, Equatable {
     let language: AppLanguage
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
+    let onRenameSpeaker: (String, String) -> Void
 
     @State private var isHovered: Bool = false
 
@@ -340,6 +352,7 @@ private struct PlaybackListModeRowView: View, Equatable {
             && lhs.hasSpeakers == rhs.hasSpeakers
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
+            && lhs.showPhonetics == rhs.showPhonetics
             && lhs.originalFont == rhs.originalFont
             && lhs.originalColor == rhs.originalColor
             && lhs.translationFont == rhs.translationFont
@@ -356,11 +369,24 @@ private struct PlaybackListModeRowView: View, Equatable {
                 .frame(maxHeight: .infinity)
 
             // 序号（seg.index 已经是 1-based，从 1 开始；52pt + 3pt指示条 = 55pt对齐表头）
-            Text("\(seg.index)")
-                .font(.system(size: 12, weight: isActive ? .bold : .regular).monospacedDigit())
-                .foregroundColor(isActive ? StudyMateMediaStyle.accent : .secondary)
-                .frame(width: 52, alignment: .center)
-                .padding(.top, 8)
+            VStack(spacing: 2) {
+                Text("\(seg.index)")
+                    .font(.system(size: 12, weight: isActive ? .bold : .regular).monospacedDigit())
+                    .foregroundColor(isActive ? StudyMateMediaStyle.accent : .secondary)
+
+                if let origIdx = seg.originalIndex, origIdx > 0 {
+                    Text("原#\(origIdx)")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.8))
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 0.5)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                }
+            }
+            .frame(width: 52, alignment: .center)
+            .padding(.top, 8)
+            .help(seg.formattedCoordinate(language: .zh) ?? "")
 
             rowColumnDivider
 
@@ -368,13 +394,16 @@ private struct PlaybackListModeRowView: View, Equatable {
             if hasSpeakers {
                 HStack {
                     if !seg.speakerRoleLabel.isEmpty {
-                        Text(seg.speakerRoleLabel)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background((seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple).opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        SpeakerBadgeButton(
+                            speakerRoleLabel: seg.speakerRoleLabel,
+                            speakerRole: seg.speakerRole,
+                            isOverlap: seg.isSpeakerOverlap,
+                            font: .system(size: 10, weight: .semibold),
+                            tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
+                            shape: .roundedRectangle(3),
+                            language: language,
+                            onSave: onRenameSpeaker
+                        )
                     } else {
                         Text("—")
                             .font(.system(size: 11))
@@ -458,6 +487,16 @@ private struct PlaybackListModeRowView: View, Equatable {
                     .foregroundColor(Color(color).opacity(0.35))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        } else if isOriginal && showPhonetics {
+            RubyTextView(
+                text: trimmed,
+                fontSize: font.pointSize,
+                textColor: Color(color),
+                phoneticColor: StudyMateMediaStyle.accent,
+                isPhoneticsVisible: true
+            )
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onSelect)
         } else {
             ZStack(alignment: .topLeading) {
                 // 隐形 Text 用于在 SwiftUI 中撑开自适应动态行高，使用相同字体以精确匹配行高

@@ -241,6 +241,7 @@ struct StudyMateApp: App {
     @AppStorage("StudyMate.ShowSubtitleEditor") private var showSubtitleEditor = true
     @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
     @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
+    @ObservedObject private var phoneticManager = PhoneticEngineManager.shared
 
     private var engine: PlaybackEngine { PlaybackEngine.shared }
     @StateObject private var commandState = PlaybackCommandState.shared
@@ -428,6 +429,21 @@ struct StudyMateApp: App {
                     openWindow(id: "subtitle-font-settings")
                 }
                 .keyboardShortcut("f", modifiers: [.command, .option])
+
+                Button {
+                    phoneticManager.togglePhonetics()
+                } label: {
+                    HStack {
+                        Text(phoneticManager.showPhonetics
+                             ? languageManager.text("隐藏注音", "Hide Phonetics")
+                             : languageManager.text("显示注音", "Show Phonetics"))
+                        if phoneticManager.showPhonetics {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .keyboardShortcut("p", modifiers: [.command, .option])
 
                 Divider()
 
@@ -1061,7 +1077,8 @@ struct StudyMateApp: App {
     }
 
     private func handleIncomingURL(_ url: URL) {
-        if url.pathExtension.lowercased() == "mabstudy" {
+        let ext = url.pathExtension.lowercased()
+        if ext == "mabstudy" || ext == "mablib" {
             openWindow(id: "sentence-library")
             Task { @MainActor in
                 do {
@@ -1070,13 +1087,6 @@ struct StudyMateApp: App {
                     MainStatusCenter.shared.showError(error.localizedDescription)
                 }
             }
-        } else if url.pathExtension.lowercased() == "mablib" {
-            MainStatusCenter.shared.showError(
-                languageManager.text(
-                    "旧版 .mablib 请先在当前版本句库中导出为 .mabstudy。",
-                    "Export legacy .mablib libraries as .mabstudy before moving them to mobile."
-                )
-            )
         } else {
             openMediaInMain(url)
         }

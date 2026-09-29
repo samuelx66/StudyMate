@@ -3,6 +3,9 @@ import AVFoundation
 import Combine
 import SwiftUI
 import AppKit
+#if canImport(StudyMatePackage)
+import StudyMatePackage
+#endif
 
 /// A publisher for high-frequency presentation state that must not invalidate
 /// every view observing `PlaybackEngine`.
@@ -589,6 +592,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    @Published public private(set) var activeSentenceLibraryID: UUID?
+    public var activeSentenceLibraryEntryMap: [UUID: UUID] = [:]
+
     @Published public var segments: [SentenceSegment] = [] {
         didSet {
             updatePresentationUpperBoundForActiveSegment()
@@ -608,6 +614,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if activeSegmentIndex != oldValue {
                 activeSegmentState.updateIndex(activeSegmentIndex)
                 updateSecondaryViewportForActiveSegment()
+                if let libraryID = activeSentenceLibraryID, let idx = activeSegmentIndex {
+                    let entryID = idx < segments.count ? activeSentenceLibraryEntryMap[segments[idx].id] : nil
+                    Task {
+                        try? SentenceLibraryStore.shared.updateSessionState(
+                            StudyMatePackageSessionState(lastPlayedEntryID: entryID, lastPlayedIndex: idx),
+                            in: libraryID
+                        )
+                    }
+                }
             }
         }
     }
@@ -1026,7 +1041,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if success, backend.loadedURL?.standardizedFileURL == url.standardizedFileURL {
                 self.isBackendReady = true
                 self.isMediaLoading = false
-                self.playbackHistoryStore?.recordPlayed(url)
+                if self.activeSentenceLibraryID == nil {
+                    self.playbackHistoryStore?.recordPlayed(url)
+                }
                 self.updateMediaDurationIfNeeded(backend.duration)
                 self.applyPendingPlaybackRestore()
                 return
@@ -1657,6 +1674,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         lastErrorMessage = nil
         segmentationWarningMessage = nil
         translationErrorMessage = nil
+        activeSentenceLibraryID = nil
+        activeSentenceLibraryEntryMap = [:]
 
         // 这些推理器与 PCM/波形缓存是进程级共享资源，不会随着 SwiftUI
         // 窗口场景自动释放；关闭媒体时明确清理，欢迎页阶段不继续占用它们。
@@ -1730,7 +1749,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         hasCompletedSegmentation = false
         projectRecoveryRequired = false
         pendingProjectForExplicitRecovery = nil
-        canUseExistingProject = false
+        if mediaURL.path.contains("SentenceLibrarySessions") {
+            if let entry = self.playbackHistoryStore?.entries.first(where: { $0.mediaPath == mediaURL.path }) {
+                self.activeSentenceLibraryID = entry.libraryID
+            }
+            let currentMode = UserDefaults.standard.string(forKey: "StudyMate.PlaybackInterfaceMode")
+            if currentMode == nil || currentMode == PlaybackInterfaceMode.video.rawValue {
+                UserDefaults.standard.set(PlaybackInterfaceMode.list.rawValue, forKey: "StudyMate.PlaybackInterfaceMode")
+            }
+        } else if activeSentenceLibraryID != nil && !mediaURL.path.contains("StudyMateLibSession") {
+            activeSentenceLibraryID = nil
+            activeSentenceLibraryEntryMap = [:]
+        }
         acousticBoundaryTimes = []
         boundaryDragSession = nil
         isVideoSubtitleDragging = false
@@ -2204,9 +2234,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let modelManager = WhisperModelManager.shared
         let modelLevel = modelManager.selectedModelLevel
         guard modelManager.isModelDownloaded(modelLevel) else {
-            lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
+            let msg = LanguageManager.shared.currentLanguage == .zh
                 ? "所选 Whisper 模型尚未下载，请先在设置中下载模型。"
                 : "The selected Whisper model has not been downloaded. Download it in Settings first."
+            lastErrorMessage = msg
+            MainStatusCenter.shared.showError(msg)
             return
         }
 
@@ -2293,9 +2325,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         && abs(current.endTime - target.endTime) <= 0.001
                 }
                 guard timelineStillMatches else {
-                    self.lastErrorMessage = isChinese
+                    let msg = isChinese
                         ? "识别期间目标句子的时间轴发生变化，未覆盖原文，请重新执行。"
                         : "The target sentence timeline changed during recognition. Original text was not overwritten; run it again."
+                    self.lastErrorMessage = msg
+                    MainStatusCenter.shared.showWarning(msg)
                     self.isAITranscribing = false
                     self.aiTranscriptionStatusText = ""
                     self.segmentationTask = nil
@@ -2303,16 +2337,56 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     return
                 }
 
-                let recognizedTexts = Self.recognizedOriginalTexts(
+                let (recognizedTexts, recognizedTokens) = Self.recognizedOriginalTextsAndTokens(
                     for: targets,
                     tokens: timeline.tokens
                 )
                 self.segments = Self.replacingOriginalTexts(
                     in: self.segments,
                     targetIDs: targetIDs,
-                    recognizedTexts: recognizedTexts
+                    recognizedTexts: recognizedTexts,
+                    recognizedTokens: recognizedTokens
                 )
                 self.persistCurrentProject()
+
+                // 若当前会话属于句库学习，同步将词级时间戳与原文写回句库
+                if let libID = self.activeSentenceLibraryID, !self.activeSentenceLibraryEntryMap.isEmpty {
+                    let entryMap = self.activeSentenceLibraryEntryMap
+                    let updatedSegments = self.segments
+                    Task.detached(priority: .utility) {
+                        for targetID in targetIDs {
+                            guard let entryID = entryMap[targetID],
+                                  let seg = updatedSegments.first(where: { $0.id == targetID }) else { continue }
+                            try? SentenceLibraryStore.shared.updateWordTokensAndText(
+                                id: entryID,
+                                originalText: seg.text,
+                                wordTokens: seg.wordTokens,
+                                in: libID
+                            )
+                        }
+                    }
+                }
+
+                let totalWordTokensCount = recognizedTokens.values.reduce(0) { $0 + $1.count }
+                if totalWordTokensCount > 0 {
+                    MainStatusCenter.shared.showSuccess(
+                        isChinese
+                            ? "已完成 \(targets.count) 句的词级时间戳对齐 (共 \(totalWordTokensCount) 词)"
+                            : "Completed word-level timestamps alignment for \(targets.count) sentence(s) (\(totalWordTokensCount) words)"
+                    )
+                } else if !recognizedTexts.isEmpty {
+                    MainStatusCenter.shared.showSuccess(
+                        isChinese
+                            ? "已完成 \(targets.count) 句的 Whisper 文本识别"
+                            : "Completed Whisper text recognition for \(targets.count) sentence(s)"
+                    )
+                } else {
+                    MainStatusCenter.shared.showWarning(
+                        isChinese
+                            ? "Whisper 未在所选音频区间识别出有效语音词汇"
+                            : "Whisper did not detect any speech in the selected audio interval"
+                    )
+                }
                 self.aiTranscriptionProgress = 1
                 self.isAITranscribing = false
                 self.aiTranscriptionStatusText = ""
@@ -2328,6 +2402,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 guard self.mediaSessionID == sessionID,
                       self.segmentationRequestID == requestID else { return }
                 self.lastErrorMessage = error.localizedDescription
+                MainStatusCenter.shared.showError(error.localizedDescription)
                 self.isAITranscribing = false
                 self.aiTranscriptionStatusText = ""
                 self.segmentationTask = nil
@@ -2337,59 +2412,122 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     /// Assigns each Whisper token to the target sentence with the greatest
-    /// source-time overlap, then formats it using the normal subtitle rules.
-    /// The dictionary deliberately contains an empty value for targets where
-    /// Whisper found no text so confirmed regeneration truly overwrites them.
-    static func recognizedOriginalTexts(
+    /// source-time overlap, then formats it using the normal subtitle rules and extracts wordTokens.
+    nonisolated static func recognizedOriginalTextsAndTokens(
         for targets: [SentenceSegment],
         tokens: [SpeechToken]
-    ) -> [UUID: String] {
+    ) -> (texts: [UUID: String], wordTokens: [UUID: [StudyMatePackageWordToken]]) {
         let orderedTargets = targets.sorted {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
             return $0.startTime < $1.startTime
         }
         var grouped = Dictionary(uniqueKeysWithValues: orderedTargets.map { ($0.id, [SpeechToken]()) })
 
-        for token in tokens.sorted(by: {
+        let sortedTokens = tokens.sorted(by: {
             if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
             return $0.startTime < $1.startTime
-        }) {
-            let midpoint = (token.startTime + token.endTime) / 2
-            var bestTarget: SentenceSegment?
-            var bestScore = 0.0
-            for target in orderedTargets {
-                let overlap = max(
-                    0,
-                    min(token.endTime, target.endTime) - max(token.startTime, target.startTime)
-                )
-                let containsPointToken = token.endTime - token.startTime <= 0.001
-                    && midpoint >= target.startTime - 0.001
-                    && midpoint <= target.endTime + 0.001
-                let score = overlap > 0 ? overlap : (containsPointToken ? 0.000_001 : 0)
-                if score > bestScore {
-                    bestScore = score
-                    bestTarget = target
+        })
+
+        if orderedTargets.count == 1, let singleTarget = orderedTargets.first {
+            // 单句对齐/重生成：当前调用为单句专属运行，返回的有效 tokens 全部归属该目标句
+            grouped[singleTarget.id] = sortedTokens
+        } else {
+            for token in sortedTokens {
+                let midpoint = (token.startTime + token.endTime) / 2
+                var bestTarget: SentenceSegment?
+                var bestScore = 0.0
+                for target in orderedTargets {
+                    let overlap = max(
+                        0,
+                        min(token.endTime, target.endTime) - max(token.startTime, target.startTime)
+                    )
+                    let containsPointToken = token.endTime - token.startTime <= 0.001
+                        && midpoint >= target.startTime - 0.001
+                        && midpoint <= target.endTime + 0.001
+                    let score = overlap > 0 ? overlap : (containsPointToken ? 0.000_001 : 0)
+                    if score > bestScore {
+                        bestScore = score
+                        bestTarget = target
+                    }
                 }
-            }
-            if let bestTarget, bestScore > 0 {
-                grouped[bestTarget.id, default: []].append(token)
+                // 边界抖动容差：若声学/模型边界略有超界未产生直接重叠，匹配给 0.6 秒邻域内最近的目标句
+                if bestTarget == nil || bestScore <= 0 {
+                    var nearestTarget: SentenceSegment?
+                    var minDistance = 0.6
+                    for target in orderedTargets {
+                        let dist: Double
+                        if midpoint < target.startTime {
+                            dist = target.startTime - midpoint
+                        } else if midpoint > target.endTime {
+                            dist = midpoint - target.endTime
+                        } else {
+                            dist = 0
+                        }
+                        if dist < minDistance {
+                            minDistance = dist
+                            nearestTarget = target
+                        }
+                    }
+                    bestTarget = nearestTarget
+                }
+                if let bestTarget {
+                    grouped[bestTarget.id, default: []].append(token)
+                }
             }
         }
 
-        return Dictionary(uniqueKeysWithValues: orderedTargets.map { target in
-            let text = SpeechBoundaryOptimizer.shared.joinedRecognizedText(grouped[target.id] ?? [])
-            return (target.id, text)
-        })
+        var texts: [UUID: String] = [:]
+        var wordTokensMap: [UUID: [StudyMatePackageWordToken]] = [:]
+
+        for target in orderedTargets {
+            let matchedTokens = grouped[target.id] ?? []
+            let joined = SpeechBoundaryOptimizer.shared.joinedRecognizedText(matchedTokens)
+            if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                texts[target.id] = joined
+            }
+            let wordTokens = matchedTokens.compactMap { token -> StudyMatePackageWordToken? in
+                let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                let relStart = max(0, token.startTime - target.startTime)
+                let targetSpan = max(0.05, target.endTime - target.startTime)
+                let relEnd = max(relStart + 0.01, min(targetSpan, token.endTime - target.startTime))
+                return StudyMatePackageWordToken(
+                    text: trimmed,
+                    startTime: relStart,
+                    endTime: relEnd,
+                    confidence: token.confidence
+                )
+            }
+            if !wordTokens.isEmpty {
+                wordTokensMap[target.id] = wordTokens
+            }
+        }
+
+        return (texts, wordTokensMap)
     }
 
-    static func replacingOriginalTexts(
+    nonisolated static func recognizedOriginalTexts(
+        for targets: [SentenceSegment],
+        tokens: [SpeechToken]
+    ) -> [UUID: String] {
+        recognizedOriginalTextsAndTokens(for: targets, tokens: tokens).texts
+    }
+
+    nonisolated static func replacingOriginalTexts(
         in segments: [SentenceSegment],
         targetIDs: Set<UUID>,
-        recognizedTexts: [UUID: String]
+        recognizedTexts: [UUID: String],
+        recognizedTokens: [UUID: [StudyMatePackageWordToken]] = [:]
     ) -> [SentenceSegment] {
         var updated = segments
         for index in updated.indices where targetIDs.contains(updated[index].id) {
-            updated[index].text = recognizedTexts[updated[index].id] ?? ""
+            let segID = updated[index].id
+            if let newText = recognizedTexts[segID], !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updated[index].text = newText
+            }
+            if let tokens = recognizedTokens[segID], !tokens.isEmpty {
+                updated[index].wordTokens = tokens
+            }
         }
         return updated
     }
@@ -2667,13 +2805,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     private func applySubtitleItems(_ items: [ParsedSubtitleItem], origin: SegmentOrigin, persist: Bool) {
         guard !items.isEmpty else { return }
+        let defaultMediaName = currentMedia?.title
         let newSegments = items.map { item in
             SentenceSegment(
                 index: item.index,
+                originalIndex: item.index,
                 startTime: item.startTime,
                 endTime: item.endTime,
                 text: item.text,
-                translation: item.translation
+                translation: item.translation,
+                sourceMediaName: defaultMediaName,
+                sourceStartTime: item.startTime
             )
         }
         if duration <= 0, let maxTime = newSegments.last?.endTime, maxTime > 0 {
@@ -2764,9 +2906,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let proposedEnd = source.endTime.isFinite ? source.endTime : start + 0.05
             let end = min(upperBound, max(start + 0.05, proposedEnd))
             guard end > start else { continue }
+
+            let adjustedWordTokens: [StudyMatePackageWordToken]? = source.wordTokens?.compactMap { token in
+                let timeDelta = start - source.startTime
+                let adjStart = max(0, token.startTime - timeDelta)
+                let adjEnd = max(adjStart + 0.01, token.endTime - timeDelta)
+                guard adjStart < (end - start) else { return nil }
+                return StudyMatePackageWordToken(
+                    text: token.text,
+                    startTime: adjStart,
+                    endTime: min(end - start, adjEnd),
+                    confidence: token.confidence
+                )
+            }
+
             result.append(SentenceSegment(
                 id: source.id,
                 index: result.count + 1,
+                originalIndex: source.originalIndex,
                 startTime: start,
                 endTime: end,
                 text: source.text,
@@ -2776,7 +2933,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 isBookmarked: source.isBookmarked,
                 speakerID: source.speakerID,
                 speakerIDs: source.speakerIDs,
-                isSpeakerOverlap: source.isSpeakerOverlap
+                isSpeakerOverlap: source.isSpeakerOverlap,
+                speakerRole: source.speakerRole,
+                phoneticText: source.phoneticText,
+                associatedWords: source.associatedWords,
+                wordTokens: (adjustedWordTokens?.isEmpty == true) ? nil : (adjustedWordTokens ?? source.wordTokens),
+                contextBefore: source.contextBefore,
+                contextAfter: source.contextAfter,
+                sourceMediaName: source.sourceMediaName,
+                sourceStartTime: source.sourceStartTime
             ))
         }
         return result
@@ -3896,6 +4061,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         if let idx = segments.firstIndex(where: { $0.id == segmentId }) {
             segments[idx].isBookmarked.toggle()
             scheduleDebouncedPersistence()
+
+            if let libraryID = activeSentenceLibraryID, let entryID = activeSentenceLibraryEntryMap[segmentId] {
+                Task {
+                    _ = try? SentenceLibraryStore.shared.toggleBookmark(id: entryID, in: libraryID)
+                }
+            }
         }
     }
 
@@ -3999,9 +4170,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let current = segments[idx]
         guard splitTime > current.startTime + 0.05 && splitTime < current.endTime - 0.05 else { return }
 
+        let splitOffset = splitTime - current.startTime
+        let seg1Tokens = current.wordTokens?.filter { $0.endTime <= splitOffset + 0.05 }
+        let seg2Tokens = current.wordTokens?.compactMap { token -> StudyMatePackageWordToken? in
+            guard token.startTime >= splitOffset - 0.05 else { return nil }
+            return StudyMatePackageWordToken(
+                text: token.text,
+                startTime: max(0, token.startTime - splitOffset),
+                endTime: max(0.01, token.endTime - splitOffset),
+                confidence: token.confidence
+            )
+        }
+
         let seg1 = SentenceSegment(
             id: current.id,
             index: current.index,
+            originalIndex: current.originalIndex,
             startTime: current.startTime,
             endTime: splitTime,
             text: current.text,
@@ -4011,11 +4195,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             isBookmarked: current.isBookmarked,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
-            isSpeakerOverlap: current.isSpeakerOverlap
+            isSpeakerOverlap: current.isSpeakerOverlap,
+            speakerRole: current.speakerRole,
+            phoneticText: current.phoneticText,
+            associatedWords: current.associatedWords,
+            wordTokens: (seg1Tokens?.isEmpty == true) ? nil : seg1Tokens,
+            contextBefore: current.contextBefore,
+            contextAfter: current.contextAfter,
+            sourceMediaName: current.sourceMediaName,
+            sourceStartTime: current.sourceStartTime
         )
 
         let seg2 = SentenceSegment(
             index: current.index + 1,
+            originalIndex: current.originalIndex,
             startTime: splitTime,
             endTime: current.endTime,
             text: current.text,
@@ -4023,7 +4216,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             isBookmarked: false,
             speakerID: current.speakerID,
             speakerIDs: current.speakerIDs,
-            isSpeakerOverlap: current.isSpeakerOverlap
+            isSpeakerOverlap: current.isSpeakerOverlap,
+            speakerRole: current.speakerRole,
+            phoneticText: current.phoneticText,
+            associatedWords: current.associatedWords,
+            wordTokens: (seg2Tokens?.isEmpty == true) ? nil : seg2Tokens,
+            contextBefore: current.contextBefore,
+            contextAfter: current.contextAfter,
+            sourceMediaName: current.sourceMediaName,
+            sourceStartTime: current.sourceStartTime
         )
 
         segments.remove(at: idx)
@@ -4036,42 +4237,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func splitSegment(id: UUID, at splitTime: Double) {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return }
-        let current = segments[idx]
-        guard splitTime > current.startTime + 0.05 && splitTime < current.endTime - 0.05 else { return }
-
-        let seg1 = SentenceSegment(
-            id: current.id,
-            index: current.index,
-            startTime: current.startTime,
-            endTime: splitTime,
-            text: current.text,
-            translation: current.translation,
-            note: current.note,
-            isNavigationBookmarked: current.isNavigationBookmarked,
-            isBookmarked: current.isBookmarked,
-            speakerID: current.speakerID,
-            speakerIDs: current.speakerIDs,
-            isSpeakerOverlap: current.isSpeakerOverlap
-        )
-
-        let seg2 = SentenceSegment(
-            index: current.index + 1,
-            startTime: splitTime,
-            endTime: current.endTime,
-            text: current.text,
-            translation: current.translation,
-            isBookmarked: false,
-            speakerID: current.speakerID,
-            speakerIDs: current.speakerIDs,
-            isSpeakerOverlap: current.isSpeakerOverlap
-        )
-
-        segments.remove(at: idx)
-        segments.insert(contentsOf: [seg1, seg2], at: idx)
-        reindexSegments()
         activeSegmentIndex = idx
-        refreshSecondaryViewportAfterSegmentMutation()
-        persistCurrentProject()
+        splitSegment(at: splitTime)
     }
 
     public func mergeSegmentWithNext(at index: Int) {
@@ -4079,9 +4246,28 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let seg1 = segments[index]
         let seg2 = segments[index + 1]
 
+        let role = (seg1.speakerRole == seg2.speakerRole) ? seg1.speakerRole : nil
+        let mergedTokens: [StudyMatePackageWordToken]? = {
+            if let t1 = seg1.wordTokens ?? (seg2.wordTokens != nil ? [] : nil),
+               let t2 = seg2.wordTokens {
+                let offset = seg2.startTime - seg1.startTime
+                let adjustedT2 = t2.map { token in
+                    StudyMatePackageWordToken(
+                        text: token.text,
+                        startTime: token.startTime + offset,
+                        endTime: token.endTime + offset,
+                        confidence: token.confidence
+                    )
+                }
+                return t1 + adjustedT2
+            }
+            return seg1.wordTokens ?? seg2.wordTokens
+        }()
+
         let merged = SentenceSegment(
             id: seg1.id,
             index: seg1.index,
+            originalIndex: seg1.originalIndex,
             startTime: seg1.startTime,
             endTime: seg2.endTime,
             text: [seg1.text, seg2.text].filter { !$0.isEmpty }.joined(separator: " "),
@@ -4091,7 +4277,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             isBookmarked: seg1.isBookmarked || seg2.isBookmarked,
             speakerID: nil,
             speakerIDs: Array(Set(seg1.speakerIDs + seg2.speakerIDs)).sorted(),
-            isSpeakerOverlap: seg1.isSpeakerOverlap || seg2.isSpeakerOverlap
+            isSpeakerOverlap: seg1.isSpeakerOverlap || seg2.isSpeakerOverlap,
+            speakerRole: role,
+            phoneticText: [seg1.phoneticText, seg2.phoneticText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "),
+            associatedWords: Array(Set((seg1.associatedWords ?? []) + (seg2.associatedWords ?? []))),
+            wordTokens: (mergedTokens?.isEmpty == true) ? nil : mergedTokens,
+            contextBefore: seg1.contextBefore,
+            contextAfter: seg2.contextAfter,
+            sourceMediaName: seg1.sourceMediaName,
+            sourceStartTime: seg1.sourceStartTime
         )
 
         segments.remove(at: index + 1)
@@ -4176,6 +4370,321 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
             guard changed else { return }
             scheduleDebouncedPersistence()
+
+            if let libraryID = activeSentenceLibraryID, let entryID = activeSentenceLibraryEntryMap[id] {
+                let phonetics = PhoneticEngine.shared.phoneticText(for: text)
+                Task {
+                    try? SentenceLibraryStore.shared.updateEntry(
+                        id: entryID,
+                        originalText: text,
+                        translation: translation ?? self.segments[idx].translation,
+                        phoneticText: phonetics,
+                        in: libraryID
+                    )
+                }
+            }
+        }
+    }
+
+    /// 重命名说话人，若目标说话人已存在则自动合并排重
+    public func renameSpeaker(fromRole: String, toName: String) {
+        let trimmed = toName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // 收集当前使用的说话人映射
+        var currentNames: [String: String] = [:]
+        for seg in segments {
+            if let sid = seg.speakerID {
+                let key = SpeakerRoleManager.roleKey(for: sid)
+                if let role = seg.speakerRole {
+                    currentNames[key] = role
+                }
+            }
+        }
+
+        let resolution = SpeakerRoleManager.shared.resolveRename(
+            fromRoleKey: fromRole,
+            inputName: trimmed,
+            currentSpeakerNames: currentNames
+        )
+
+        switch resolution.action {
+        case .unchanged:
+            break
+        case .renamed(let roleKey, let newName):
+            guard let sid = SpeakerRoleManager.speakerID(from: roleKey) else {
+                for i in 0..<segments.count {
+                    if segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
+                        segments[i].speakerRole = newName
+                    }
+                }
+                scheduleDebouncedPersistence()
+                return
+            }
+            for i in 0..<segments.count {
+                if segments[i].speakerID == sid || segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
+                    segments[i].speakerRole = newName
+                }
+            }
+            scheduleDebouncedPersistence()
+
+            if let libraryID = activeSentenceLibraryID {
+                Task {
+                    var names = resolution.updatedNames
+                    names[roleKey] = newName
+                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
+                }
+            }
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("说话人已重命名为 \(newName)", "Speaker renamed to \(newName)")
+            )
+
+        case .merged(let fromKey, let toKey, let unifiedName, _):
+            guard let fromID = SpeakerRoleManager.speakerID(from: fromKey),
+                  let toID = SpeakerRoleManager.speakerID(from: toKey) else { return }
+
+            let mergedCount = SpeakerRoleManager.shared.mergeSpeaker(
+                fromRoleKey: fromKey,
+                toRoleKey: toKey,
+                in: &self.segments
+            )
+            for i in 0..<segments.count {
+                if segments[i].speakerID == toID {
+                    segments[i].speakerRole = unifiedName
+                }
+            }
+            scheduleDebouncedPersistence()
+
+            if let libraryID = activeSentenceLibraryID {
+                Task {
+                    try? SentenceLibraryStore.shared.batchMergeSpeaker(
+                        sourceSpeakerID: fromID,
+                        targetSpeakerID: toID,
+                        targetName: unifiedName,
+                        in: libraryID
+                    )
+                }
+            }
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已将说话人 \(fromKey) 合并至 \(unifiedName) (共合并 \(mergedCount) 句)",
+                    "Merged speaker \(fromKey) into \(unifiedName) (\(mergedCount) sentences)"
+                )
+            )
+        }
+    }
+
+    /// 从句库学习包直接装载进 5 大学习模式
+    @MainActor
+    public func loadSentenceLibrary(
+        libraryID: UUID,
+        entries: [SentenceLibraryEntry],
+        descriptor: SentenceLibraryDescriptor?
+    ) async throws {
+        guard !entries.isEmpty else { return }
+
+        // 计算符合规范的显示名称：
+        // 单一来源时：“句库名字-来源.mablib”；多个来源或无来源时：“句库名字.mablib”
+        let distinctSources = Array(Set(entries.map { entry -> String in
+            let s = entry.sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty {
+                return (s as NSString).deletingPathExtension
+            }
+            let p = (entry.sourceMediaPath as NSString).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !p.isEmpty {
+                return (p as NSString).deletingPathExtension
+            }
+            return ""
+        }.filter { !$0.isEmpty }))
+
+        let libraryName = descriptor?.name ?? LanguageManager.shared.text("句库", "Sentence Library")
+        let sessionTitle: String
+        let safeFileSlug: String
+        if distinctSources.count == 1, let singleSource = distinctSources.first, !singleSource.isEmpty {
+            sessionTitle = "\(libraryName)-\(singleSource).mablib"
+            safeFileSlug = "\(libraryName)_\(singleSource)"
+        } else {
+            sessionTitle = "\(libraryName).mablib"
+            safeFileSlug = libraryName
+        }
+
+        let sanitizedSlug = safeFileSlug
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let sessionDir = appSupport
+            .appendingPathComponent("StudyMate", isDirectory: true)
+            .appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+            .appendingPathComponent(libraryID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let outputAudioURL = sessionDir.appendingPathComponent("\(sanitizedSlug).m4a")
+
+        // 1. 在后台线程执行切片文件存在性过滤与音频合并导出，杜绝阻塞主线程
+        let (validEntries, mediaURLs) = await Task.detached(priority: .userInitiated) {
+            var valid: [SentenceLibraryEntry] = []
+            var urls: [UUID: URL] = [:]
+            for entry in entries {
+                if let url = SentenceLibraryStore.shared.mediaURL(for: entry, libraryID: libraryID),
+                   FileManager.default.fileExists(atPath: url.path) {
+                    urls[entry.id] = url
+                    valid.append(entry)
+                }
+            }
+            return (valid, urls)
+        }.value
+
+        guard !validEntries.isEmpty else {
+            throw NSError(
+                domain: "StudyMate.SentenceLibrary",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: LanguageManager.shared.text("所选句子缺少有效的音频切片文件", "Selected sentences are missing valid audio slice files")]
+            )
+        }
+
+        // 2. 在后台线程合成合并音频
+        _ = try await Task.detached(priority: .userInitiated) {
+            try SegmentMediaExporter.shared.exportLibraryEntriesMerged(
+                entries: validEntries,
+                mediaURLs: mediaURLs,
+                outputAudioURL: outputAudioURL,
+                album: libraryName,
+                artist: "StudyMate",
+                progress: { _ in }
+            )
+        }.value
+
+        // 3. 在后台线程提取音频切片实际时长并构建时间轴断句模型
+        let (timelineSegments, entryMap, totalDuration) = await Task.detached(priority: .userInitiated) {
+            var segments: [SentenceSegment] = []
+            var runningTime: Double = 0
+            var map: [UUID: UUID] = [:]
+
+            for (index, entry) in validEntries.enumerated() {
+                let segID = UUID()
+                map[segID] = entry.id
+                let duration: Double
+                if let url = mediaURLs[entry.id] {
+                    let asset = AVURLAsset(url: url)
+                    let d = asset.duration.seconds
+                    duration = d.isFinite && d > 0 ? d : max(0.05, entry.endTime - entry.startTime)
+                } else {
+                    duration = max(0.05, entry.endTime - entry.startTime)
+                }
+                let start = runningTime
+                let end = runningTime + duration
+                runningTime += duration
+
+                let seg = SentenceSegment(
+                    id: segID,
+                    index: index + 1,
+                    originalIndex: entry.originalIndex,
+                    startTime: start,
+                    endTime: end,
+                    text: entry.originalText,
+                    translation: entry.translation,
+                    note: entry.note,
+                    isNavigationBookmarked: false,
+                    isBookmarked: entry.isBookmarked,
+                    speakerID: entry.speakerID,
+                    speakerIDs: entry.speakerIDs,
+                    isSpeakerOverlap: entry.isSpeakerOverlap,
+                    speakerRole: entry.speakerRole,
+                    phoneticText: entry.phoneticText,
+                    associatedWords: entry.associatedWords,
+                    wordTokens: entry.wordTokens,
+                    contextBefore: entry.contextBefore,
+                    contextAfter: entry.contextAfter,
+                    sourceMediaName: entry.sourceMediaName.isEmpty ? nil : entry.sourceMediaName,
+                    sourceStartTime: entry.startTime
+                )
+                segments.append(seg)
+            }
+            return (segments, map, runningTime)
+        }.value
+
+        // 4. 回到主线程装载媒体并设置状态
+        self.loadMedia(from: outputAudioURL)
+
+        self.sidecarTask?.cancel()
+        self.sidecarTask = nil
+        self.segmentOrigin = .project
+        self.projectRecoveryRequired = false
+        self.pendingProjectForExplicitRecovery = nil
+        self.canUseExistingProject = false
+
+        self.activeSentenceLibraryID = libraryID
+        self.activeSentenceLibraryEntryMap = entryMap
+        self.segments = timelineSegments
+        self.hasCompletedSegmentation = true
+
+        if let media = self.currentMedia {
+            self.currentMedia = MediaItem(
+                id: media.id,
+                url: media.url,
+                title: sessionTitle,
+                duration: totalDuration,
+                isVideo: media.isVideo,
+                fileSize: media.fileSize
+            )
+        }
+
+        // 持久化工程文件，支持从欢迎屏幕或播放列表再次打开时瞬间恢复
+        self.projectFileManager.saveProject(
+            for: outputAudioURL,
+            title: sessionTitle,
+            duration: totalDuration,
+            lastPosition: 0,
+            segments: timelineSegments,
+            waveformData: nil,
+            persistWaveform: false,
+            hasCompletedSegmentation: true,
+            acousticBoundaryTimes: []
+        )
+
+        // 在播放历史和播放列表中登记：
+        // 名字：“句库名字-来源.mablib” 或 “句库名字.mablib”
+        // 路径：“句库”
+        self.playbackHistoryStore?.recordPlayed(
+            outputAudioURL,
+            customTitle: sessionTitle,
+            customPath: LanguageManager.shared.text("句库", "Sentence Library"),
+            libraryID: libraryID,
+            selectedEntryIDs: validEntries.map(\.id)
+        )
+
+        let initialIndex: Int
+        if let session = descriptor?.session,
+           let lastIndex = session.lastPlayedIndex,
+           lastIndex >= 0, lastIndex < timelineSegments.count {
+            initialIndex = lastIndex
+        } else {
+            initialIndex = 0
+        }
+
+        if !timelineSegments.isEmpty {
+            self.jumpToSegment(at: initialIndex)
+        }
+
+        self.extractWaveform(from: outputAudioURL, sessionID: self.mediaSessionID)
+
+        // 若当前句库学习材料中包含缺少词级时间戳的句子，在后台静默启动对齐补齐
+        let missingSessionTargets = timelineSegments.compactMap { seg -> SentenceLibraryAlignmentTarget? in
+            guard seg.wordTokens == nil || seg.wordTokens?.isEmpty == true else { return nil }
+            guard let entryID = entryMap[seg.id] else { return nil }
+            return SentenceLibraryAlignmentTarget(
+                segmentID: seg.id,
+                entryID: entryID,
+                startTime: seg.startTime,
+                endTime: seg.endTime,
+                originalText: seg.text
+            )
+        }
+        if !missingSessionTargets.isEmpty {
+            SentenceLibraryAlignmentService.shared.alignWordTokens(
+                targets: missingSessionTargets,
+                audioURL: outputAudioURL,
+                libraryID: libraryID
+            )
         }
     }
 

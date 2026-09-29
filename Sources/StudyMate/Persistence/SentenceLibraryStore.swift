@@ -39,8 +39,8 @@ public struct StudyMateLearningPackageImportReport: Equatable, Sendable {
     }
 }
 
-/// `.mablib` 是可携带目录包：manifest.json 保存格式版本，Library.sqlite3
-/// 保存可检索字段，Previews/ 保存 JPEG，Media/ 保存每条句子的独立 AAC M4A 片段。
+/// `.mablib` 是可携带原生学习包：manifest.json 保存格式版本与会话状态，Library.sqlite3
+/// 保存检索字段与深层学习元数据，Previews/ 保存 JPEG，Media/ 保存每条句子的独立 AAC M4A 片段。
 /// 图片、媒体与索引分离，可避免数据库因大对象频繁增删而膨胀；
 /// 句库播放不依赖原始音视频文件。
 public final class SentenceLibraryStore: @unchecked Sendable {
@@ -52,6 +52,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     private var openDatabases: [UUID: OpaquePointer] = [:]
     private var initializedDatabases: Set<UUID> = []
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    public static func defaultRootURL(fileManager: FileManager = .default) -> URL {
+        if let ubiquitousURL = fileManager.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents", isDirectory: true)
+            .appendingPathComponent("SentenceLibraries", isDirectory: true) {
+            return ubiquitousURL
+        }
+        let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return support
+            .appendingPathComponent("StudyMate", isDirectory: true)
+            .appendingPathComponent("SentenceLibraries", isDirectory: true)
+    }
 
     public init(rootURL: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -68,13 +80,19 @@ public final class SentenceLibraryStore: @unchecked Sendable {
 
     public func listLibraries() -> [SentenceLibraryDescriptor] {
         queue.sync {
-            // 旧版句库仍保留在原目录中；首次扫描时原地升级，之后只会看到 v3。
             migrateLegacyLibrariesIfNeededUnlocked()
             guard let urls = try? fileManager.contentsOfDirectory(
                 at: rootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             ) else { return [] }
+            for url in urls where url.pathExtension.lowercased() == "mablib" {
+                let contentURL = url.appendingPathComponent("content.json")
+                if !fileManager.fileExists(atPath: contentURL.path),
+                   let desc = readManifest(at: url) {
+                    syncContentJSONUnlocked(libraryID: desc.id)
+                }
+            }
             return urls
                 .filter { $0.pathExtension.lowercased() == "mablib" }
                 .compactMap(readManifest)
@@ -99,6 +117,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             try withDatabase(libraryID: descriptor.id) { db in
                 try createSchema(in: db)
             }
+            syncContentJSONUnlocked(libraryID: descriptor.id)
             return descriptor
         }
     }
@@ -109,6 +128,8 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         createdAfter: Date? = nil,
         createdBefore: Date? = nil,
         sourceMediaName: String? = nil,
+        typeFilter: SentenceLibraryTypeFilter = .all,
+        selectedTag: String? = nil,
         sortOrder: SentenceLibrarySortOrder = .newestFirst
     ) throws -> [SentenceLibraryEntry] {
         try queue.sync {
@@ -116,22 +137,32 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             return try withDatabase(libraryID: libraryID) { db in
                 var clauses: [String] = []
                 let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                // FTS5 trigram 保持中文、英文片段与现有 LIKE 子串搜索的语义；
-                // 单个或两个字符没有完整 trigram，仍精确回退到 LIKE。
                 let usesFullTextIndex = query.count >= 3
                 if !query.isEmpty {
                     if usesFullTextIndex {
                         clauses.append("entries_fts MATCH ?")
                     } else {
-                        clauses.append("(original_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR translation LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+                        clauses.append("(entries.original_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR entries.translation LIKE ? ESCAPE '\\' COLLATE NOCASE OR entries.note LIKE ? ESCAPE '\\' COLLATE NOCASE)")
                     }
                 }
-                if createdAfter != nil { clauses.append("created_at >= ?") }
-                if createdBefore != nil { clauses.append("created_at < ?") }
+                if createdAfter != nil { clauses.append("entries.created_at >= ?") }
+                if createdBefore != nil { clauses.append("entries.created_at < ?") }
                 if let sourceMediaName,
                    !sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    clauses.append("source_media_name = ?")
+                    clauses.append("entries.source_media_name = ?")
                 }
+                switch typeFilter {
+                case .all:
+                    break
+                case .bookmarkedOnly:
+                    clauses.append("entries.is_bookmarked = 1")
+                case .withVocabularyOnly:
+                    clauses.append("(entries.associated_words IS NOT NULL AND entries.associated_words LIKE '%\"word\"%')")
+                }
+                if let tag = selectedTag?.trimmingCharacters(in: .whitespacesAndNewlines), !tag.isEmpty {
+                    clauses.append("entries.tags LIKE ?")
+                }
+
                 let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
                 let orderSQL: String
                 switch sortOrder {
@@ -139,11 +170,17 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     orderSQL = "entries.created_at DESC, entries.rowid DESC"
                 case .oldestFirst:
                     orderSQL = "entries.created_at ASC, entries.rowid ASC"
+                case .originalIndexFirst:
+                    orderSQL = "CASE WHEN entries.original_index > 0 THEN 0 ELSE 1 END, entries.original_index ASC, entries.start_time ASC, entries.created_at ASC, entries.rowid ASC"
                 }
+
                 let sql = """
-                SELECT entries.id, entries.original_text, entries.translation, entries.note, entries.source_media_name,
-                       entries.source_media_path, entries.start_time, entries.end_time, entries.created_at, entries.preview_filename,
-                       entries.media_filename
+                SELECT entries.id, entries.original_index, entries.original_text, entries.translation, entries.phonetic_text,
+                       entries.note, entries.is_bookmarked, entries.tags, entries.associated_words, entries.context_before,
+                       entries.context_after, entries.source_media_name, entries.source_media_path, entries.start_time,
+                       entries.end_time, entries.created_at, entries.preview_filename, entries.media_filename,
+                       entries.speaker_role, entries.speaker_id, entries.speaker_ids, entries.is_speaker_overlap,
+                       entries.word_tokens, entries.shadowing
                 FROM entries\(usesFullTextIndex ? " JOIN entries_fts ON entries_fts.rowid = entries.rowid" : "")\(whereSQL)
                 ORDER BY \(orderSQL);
                 """
@@ -153,7 +190,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 var position: Int32 = 1
                 if !query.isEmpty {
                     if usesFullTextIndex {
-                        // 作为短语传入，特殊字符不会被解释成 MATCH 运算符。
                         let phrase = query.lowercased().replacingOccurrences(of: "\"", with: "\"\"")
                         bind("\"\(phrase)\"", at: position, to: statement); position += 1
                     } else {
@@ -161,6 +197,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                             .replacingOccurrences(of: "\\", with: "\\\\")
                             .replacingOccurrences(of: "%", with: "\\%")
                             .replacingOccurrences(of: "_", with: "\\_")
+                        bind("%\(escaped)%", at: position, to: statement); position += 1
                         bind("%\(escaped)%", at: position, to: statement); position += 1
                         bind("%\(escaped)%", at: position, to: statement); position += 1
                     }
@@ -176,23 +213,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 if let sourceMediaName,
                    !sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     bind(sourceMediaName, at: position, to: statement)
+                    position += 1
                 }
+                if let tag = selectedTag?.trimmingCharacters(in: .whitespacesAndNewlines), !tag.isEmpty {
+                    bind("%\"\(tag)\"%", at: position, to: statement)
+                    position += 1
+                }
+
                 var result: [SentenceLibraryEntry] = []
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    guard let id = UUID(uuidString: text(statement, 0)) else { continue }
-                    result.append(SentenceLibraryEntry(
-                        id: id,
-                        originalText: text(statement, 1),
-                        translation: text(statement, 2),
-                        note: text(statement, 3),
-                        sourceMediaName: text(statement, 4),
-                        sourceMediaPath: text(statement, 5),
-                        startTime: sqlite3_column_double(statement, 6),
-                        endTime: sqlite3_column_double(statement, 7),
-                        createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
-                        mediaFilename: text(statement, 10),
-                        previewFilename: optionalText(statement, 9)
-                    ))
+                    if let entry = parseEntry(from: statement) {
+                        result.append(entry)
+                    }
                 }
                 return result
             }
@@ -218,6 +250,442 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
                 return result
             }
+        }
+    }
+
+    /// 返回当前句库中所有已打上的标签
+    public func allTags(libraryID: UUID) throws -> [String] {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            return try withDatabase(libraryID: libraryID) { db in
+                var statement: OpaquePointer?
+                try prepare("SELECT tags FROM entries WHERE tags != '[]' AND tags IS NOT NULL;", db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                var tagSet = Set<String>()
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    let json = text(statement, 0)
+                    if let tags = Self.deserializeJSON([String].self, from: json) {
+                        for tag in tags {
+                            let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty { tagSet.insert(trimmed) }
+                        }
+                    }
+                }
+                return tagSet.sorted()
+            }
+        }
+    }
+
+    /// 难句星标切换
+    @discardableResult
+    public func toggleBookmark(id: UUID, in libraryID: UUID) throws -> Bool {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            let isBookmarked: Bool = try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var selectStmt: OpaquePointer?
+                    try prepare("SELECT is_bookmarked FROM entries WHERE id = ?;", db: db, statement: &selectStmt)
+                    defer { sqlite3_finalize(selectStmt) }
+                    bind(id.uuidString, at: 1, to: selectStmt)
+                    guard sqlite3_step(selectStmt) == SQLITE_ROW else {
+                        throw SentenceLibraryError.database("句子不存在。")
+                    }
+                    let current = sqlite3_column_int(selectStmt, 0) != 0
+                    let next = !current
+                    var updateStmt: OpaquePointer?
+                    try prepare("UPDATE entries SET is_bookmarked = ? WHERE id = ?;", db: db, statement: &updateStmt)
+                    defer { sqlite3_finalize(updateStmt) }
+                    sqlite3_bind_int(updateStmt, 1, next ? 1 : 0)
+                    bind(id.uuidString, at: 2, to: updateStmt)
+                    guard sqlite3_step(updateStmt) == SQLITE_DONE else { throw databaseError(db) }
+                    try execute("COMMIT;", in: db)
+                    return next
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            return isBookmarked
+        }
+    }
+
+    /// 更新单句的分类标签
+    public func updateTags(id: UUID, tags: [String], in libraryID: UUID) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            let json = Self.serializeJSON(tags)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare("UPDATE entries SET tags = ? WHERE id = ?;", db: db, statement: &statement)
+                    defer { sqlite3_finalize(statement) }
+                    bind(json, at: 1, to: statement)
+                    bind(id.uuidString, at: 2, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 批量为句子追加分类标签（保留原有标签并去重）
+    public func batchAddTags(ids: Set<UUID>, tags: [String], in libraryID: UUID) throws {
+        guard !ids.isEmpty, !tags.isEmpty else { return }
+        let cleanTags = tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !cleanTags.isEmpty else { return }
+
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var selectStmt: OpaquePointer?
+                    try prepare("SELECT tags FROM entries WHERE id = ?;", db: db, statement: &selectStmt)
+                    defer { sqlite3_finalize(selectStmt) }
+
+                    var updateStmt: OpaquePointer?
+                    try prepare("UPDATE entries SET tags = ? WHERE id = ?;", db: db, statement: &updateStmt)
+                    defer { sqlite3_finalize(updateStmt) }
+
+                    for id in ids {
+                        sqlite3_reset(selectStmt)
+                        sqlite3_clear_bindings(selectStmt)
+                        bind(id.uuidString, at: 1, to: selectStmt)
+
+                        var currentTags: [String] = []
+                        if sqlite3_step(selectStmt) == SQLITE_ROW {
+                            let json = text(selectStmt, 0)
+                            if let parsed = Self.deserializeJSON([String].self, from: json) {
+                                currentTags = parsed
+                            }
+                        }
+
+                        var tagSet = Set(currentTags)
+                        var updatedTags = currentTags
+                        for t in cleanTags {
+                            if !tagSet.contains(t) {
+                                tagSet.insert(t)
+                                updatedTags.append(t)
+                            }
+                        }
+
+                        let newJSON = Self.serializeJSON(updatedTags)
+                        sqlite3_reset(updateStmt)
+                        sqlite3_clear_bindings(updateStmt)
+                        bind(newJSON, at: 1, to: updateStmt)
+                        bind(id.uuidString, at: 2, to: updateStmt)
+                        guard sqlite3_step(updateStmt) == SQLITE_DONE else { throw databaseError(db) }
+                    }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 批量为句子覆盖设置分类标签
+    public func batchSetTags(ids: Set<UUID>, tags: [String], in libraryID: UUID) throws {
+        guard !ids.isEmpty else { return }
+        let cleanTags = tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let json = Self.serializeJSON(cleanTags)
+
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var updateStmt: OpaquePointer?
+                    try prepare("UPDATE entries SET tags = ? WHERE id = ?;", db: db, statement: &updateStmt)
+                    defer { sqlite3_finalize(updateStmt) }
+
+                    for id in ids {
+                        sqlite3_reset(updateStmt)
+                        sqlite3_clear_bindings(updateStmt)
+                        bind(json, at: 1, to: updateStmt)
+                        bind(id.uuidString, at: 2, to: updateStmt)
+                        guard sqlite3_step(updateStmt) == SQLITE_DONE else { throw databaseError(db) }
+                    }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 批量更新句子的关联生词
+    public func batchUpdateAssociatedWords(_ updates: [UUID: [StudyMatePackageVocabularyCard]], in libraryID: UUID) throws {
+        guard !updates.isEmpty else { return }
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare("UPDATE entries SET associated_words = ? WHERE id = ?;", db: db, statement: &statement)
+                    defer { sqlite3_finalize(statement) }
+                    for (id, words) in updates {
+                        sqlite3_reset(statement)
+                        sqlite3_clear_bindings(statement)
+                        let json = Self.serializeJSON(words)
+                        bind(json, at: 1, to: statement)
+                        bind(id.uuidString, at: 2, to: statement)
+                        guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 更新单句的独立说话人角色显示
+    public func updateSpeakerRole(id: UUID, speakerRole: String?, in libraryID: UUID) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare("UPDATE entries SET speaker_role = ? WHERE id = ?;", db: db, statement: &statement)
+                    defer { sqlite3_finalize(statement) }
+                    if let role = speakerRole {
+                        bind(role, at: 1, to: statement)
+                    } else {
+                        sqlite3_bind_null(statement, 1)
+                    }
+                    bind(id.uuidString, at: 2, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 更新句子来源名称
+    /// - Parameters:
+    ///   - entryID: 指定当前触发修改的单句 ID
+    ///   - oldSourceName: 原来源名称
+    ///   - newSourceName: 新来源名称
+    ///   - applyToAllWithSameSource: 是否同步应用到相同来源名称的所有句子
+    ///   - libraryID: 句库 ID
+    /// - Returns: 受影响/已更新的句子数量
+    @discardableResult
+    public func updateSourceMediaName(
+        entryID: UUID,
+        oldSourceName: String,
+        newSourceName: String,
+        applyToAllWithSameSource: Bool,
+        in libraryID: UUID
+    ) throws -> Int {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedOld = oldSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            var count = 0
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    defer { sqlite3_finalize(statement) }
+                    if applyToAllWithSameSource && !trimmedOld.isEmpty {
+                        try prepare("UPDATE entries SET source_media_name = ? WHERE source_media_name = ?;", db: db, statement: &statement)
+                        bind(trimmedNew, at: 1, to: statement)
+                        bind(trimmedOld, at: 2, to: statement)
+                    } else {
+                        try prepare("UPDATE entries SET source_media_name = ? WHERE id = ?;", db: db, statement: &statement)
+                        bind(trimmedNew, at: 1, to: statement)
+                        bind(entryID.uuidString, at: 2, to: statement)
+                    }
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    count = Int(sqlite3_changes(db))
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            return count
+        }
+    }
+
+    /// 批量更新选定句子的来源名称
+    @discardableResult
+    public func batchUpdateSourceMediaName(
+        ids: Set<UUID>,
+        newSourceName: String,
+        in libraryID: UUID
+    ) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try queue.sync {
+            try validateLibrary(id: libraryID)
+            var count = 0
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare("UPDATE entries SET source_media_name = ? WHERE id = ?;", db: db, statement: &statement)
+                    defer { sqlite3_finalize(statement) }
+                    for id in ids {
+                        sqlite3_reset(statement)
+                        sqlite3_clear_bindings(statement)
+                        bind(trimmedNew, at: 1, to: statement)
+                        bind(id.uuidString, at: 2, to: statement)
+                        guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                        count += Int(sqlite3_changes(db))
+                    }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            return count
+        }
+    }
+
+    /// 说话人重命名与合并排重：
+    /// 当 sourceSpeakerID (如 s2) 重命名为 targetSpeakerID (如 s1，对应名称 targetName) 时，
+    /// 数据库中所有指向 sourceSpeakerID 的句子统一变更为 targetSpeakerID，
+    /// 并在 manifest.json 中移除旧 key、记录合并后的角色名。
+    public func batchMergeSpeaker(
+        sourceSpeakerID: Int,
+        targetSpeakerID: Int,
+        targetName: String?,
+        in libraryID: UUID
+    ) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    // 1. 更新单个 speaker_id 匹配的条目
+                    var updateSingleStmt: OpaquePointer?
+                    try prepare("UPDATE entries SET speaker_id = ?, speaker_role = ? WHERE speaker_id = ?;", db: db, statement: &updateSingleStmt)
+                    defer { sqlite3_finalize(updateSingleStmt) }
+                    sqlite3_bind_int(updateSingleStmt, 1, Int32(targetSpeakerID))
+                    if let targetName {
+                        bind(targetName, at: 2, to: updateSingleStmt)
+                    } else {
+                        sqlite3_bind_null(updateSingleStmt, 2)
+                    }
+                    sqlite3_bind_int(updateSingleStmt, 3, Int32(sourceSpeakerID))
+                    guard sqlite3_step(updateSingleStmt) == SQLITE_DONE else { throw databaseError(db) }
+
+                    // 2. 更新包含多说话人的 speaker_ids
+                    var selectListStmt: OpaquePointer?
+                    try prepare("SELECT id, speaker_ids FROM entries WHERE speaker_ids LIKE ?;", db: db, statement: &selectListStmt)
+                    defer { sqlite3_finalize(selectListStmt) }
+                    bind("%\(sourceSpeakerID)%", at: 1, to: selectListStmt)
+                    var updates: [(id: String, ids: [Int])] = []
+                    while sqlite3_step(selectListStmt) == SQLITE_ROW {
+                        let id = text(selectListStmt, 0)
+                        let idsJson = text(selectListStmt, 1)
+                        if var ids = Self.deserializeJSON([Int].self, from: idsJson) {
+                            if let idx = ids.firstIndex(of: sourceSpeakerID) {
+                                ids[idx] = targetSpeakerID
+                                let deduplicated = Array(NSOrderedSet(array: ids)) as? [Int] ?? ids
+                                updates.append((id, deduplicated))
+                            }
+                        }
+                    }
+
+                    if !updates.isEmpty {
+                        var updateListStmt: OpaquePointer?
+                        try prepare("UPDATE entries SET speaker_ids = ? WHERE id = ?;", db: db, statement: &updateListStmt)
+                        defer { sqlite3_finalize(updateListStmt) }
+                        for item in updates {
+                            sqlite3_reset(updateListStmt)
+                            sqlite3_clear_bindings(updateListStmt)
+                            bind(Self.serializeJSON(item.ids), at: 1, to: updateListStmt)
+                            bind(item.id, at: 2, to: updateListStmt)
+                            guard sqlite3_step(updateListStmt) == SQLITE_DONE else { throw databaseError(db) }
+                        }
+                    }
+
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+
+            guard var descriptor = readManifest(at: packageURL(for: libraryID)) else { return }
+            var names = descriptor.speakerNames ?? [:]
+            let sourceKey = "s\(sourceSpeakerID + 1)"
+            let targetKey = "s\(targetSpeakerID + 1)"
+            names.removeValue(forKey: sourceKey)
+            if let targetName {
+                names[targetKey] = targetName
+            }
+            descriptor.speakerNames = names
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: packageURL(for: libraryID))
+        }
+    }
+
+    /// 更新句库全局说话人映射表
+    public func updateSpeakerNames(_ names: [String: String], in libraryID: UUID) throws {
+        try queue.sync {
+            guard var descriptor = readManifest(at: packageURL(for: libraryID)) else {
+                throw SentenceLibraryError.invalidLibrary
+            }
+            descriptor.speakerNames = names
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: packageURL(for: libraryID))
+        }
+    }
+
+    /// 跨端学习接力与复习断点保存
+    public func updateSessionState(_ sessionState: StudyMatePackageSessionState, in libraryID: UUID) throws {
+        try queue.sync {
+            guard var descriptor = readManifest(at: packageURL(for: libraryID)) else {
+                throw SentenceLibraryError.invalidLibrary
+            }
+            descriptor.session = sessionState
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: packageURL(for: libraryID))
+        }
+    }
+
+    /// 更新句库元数据信息（原片画幅、源语言、目标语言等）
+    public func updateMetadata(
+        sourceLanguage: String? = nil,
+        targetLanguage: String? = nil,
+        videoAspectRatio: String? = nil,
+        in libraryID: UUID
+    ) throws {
+        try queue.sync {
+            guard var descriptor = readManifest(at: packageURL(for: libraryID)) else {
+                throw SentenceLibraryError.invalidLibrary
+            }
+            if let sourceLanguage { descriptor.sourceLanguage = sourceLanguage }
+            if let targetLanguage { descriptor.targetLanguage = targetLanguage }
+            if let videoAspectRatio { descriptor.videoAspectRatio = videoAspectRatio }
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: packageURL(for: libraryID))
         }
     }
 
@@ -278,10 +746,13 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     do {
                         let sql = """
                         INSERT INTO entries (
-                            id, original_text, translation, note, source_media_name,
-                            source_media_path, start_time, end_time, created_at, preview_filename,
-                            media_filename
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            id, original_index, original_text, translation, phonetic_text,
+                            note, is_bookmarked, tags, associated_words, context_before,
+                            context_after, source_media_name, source_media_path, start_time,
+                            end_time, created_at, preview_filename, media_filename,
+                            speaker_role, speaker_id, speaker_ids, is_speaker_overlap,
+                            word_tokens, shadowing
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """
                         var statement: OpaquePointer?
                         try prepare(sql, db: db, statement: &statement)
@@ -289,24 +760,14 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         for entry in entries {
                             sqlite3_reset(statement)
                             sqlite3_clear_bindings(statement)
-                            bind(entry.id.uuidString, at: 1, to: statement)
-                            bind(entry.originalText, at: 2, to: statement)
-                            bind(entry.translation, at: 3, to: statement)
-                            bind(entry.note, at: 4, to: statement)
-                            bind(entry.sourceMediaName, at: 5, to: statement)
-                            bind(entry.sourceMediaPath, at: 6, to: statement)
-                            sqlite3_bind_double(statement, 7, entry.startTime)
-                            sqlite3_bind_double(statement, 8, entry.endTime)
-                            sqlite3_bind_double(statement, 9, entry.createdAt.timeIntervalSince1970)
-                            if storedPreviewIDs.contains(entry.id), let filename = entry.previewFilename {
-                                bind(filename, at: 10, to: statement)
-                            } else {
-                                sqlite3_bind_null(statement, 10)
-                            }
+                            bindEntry(
+                                entry,
+                                statement: statement,
+                                hasStoredPreview: storedPreviewIDs.contains(entry.id)
+                            )
                             guard storedMediaFilenames.contains(entry.mediaFilename) else {
                                 throw SentenceLibraryError.database("句子媒体片段未完成写入。")
                             }
-                            bind(entry.mediaFilename, at: 11, to: statement)
                             guard sqlite3_step(statement) == SQLITE_DONE else {
                                 throw databaseError(db)
                             }
@@ -331,12 +792,12 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    /// 更新句库中一条句子的原文和译文。媒体、缩略图和时间信息保持不变；
-    /// `entries_au` 触发器会同步刷新 FTS 索引，保证修改后仍可立即搜索到。
+    /// 更新句库中一条句子的原文、译文与注音
     public func updateEntry(
         id: UUID,
         originalText: String,
         translation: String,
+        phoneticText: String? = nil,
         in libraryID: UUID
     ) throws {
         try queue.sync {
@@ -347,19 +808,17 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         id: id,
                         originalText: originalText,
                         translation: translation,
+                        phoneticText: phoneticText,
                         in: db
                     )
                 } catch {
                     guard isFTSIndexCorruption(error) else { throw error }
-                    // Older sentence libraries can contain a stale or
-                    // damaged FTS5 shadow index. Rebuild only the index and
-                    // retry the user's update; the source entries table and
-                    // all media files remain untouched.
                     try rebuildFTSIndex(in: db)
                     try updateEntryUnlocked(
                         id: id,
                         originalText: originalText,
                         translation: translation,
+                        phoneticText: phoneticText,
                         in: db
                     )
                 }
@@ -368,24 +827,71 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
+    public func updateWordTokensAndText(
+        id: UUID,
+        originalText: String,
+        wordTokens: [StudyMatePackageWordToken]?,
+        in libraryID: UUID
+    ) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare(
+                        "UPDATE entries SET original_text = ?, word_tokens = ? WHERE id = ?;",
+                        db: db,
+                        statement: &statement
+                    )
+                    defer { sqlite3_finalize(statement) }
+                    bind(originalText, at: 1, to: statement)
+                    if let wordTokens, !wordTokens.isEmpty,
+                       let data = try? JSONEncoder().encode(wordTokens),
+                       let json = String(data: data, encoding: .utf8) {
+                        bind(json, at: 2, to: statement)
+                    } else {
+                        bind("[]", at: 2, to: statement)
+                    }
+                    bind(id.uuidString, at: 3, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else {
+                        throw databaseError(db)
+                    }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            syncContentJSONUnlocked(libraryID: libraryID)
+        }
+    }
+
     private func updateEntryUnlocked(
         id: UUID,
         originalText: String,
         translation: String,
+        phoneticText: String?,
         in db: OpaquePointer
     ) throws {
         try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
         do {
             var statement: OpaquePointer?
             try prepare(
-                "UPDATE entries SET original_text = ?, translation = ? WHERE id = ?;",
+                "UPDATE entries SET original_text = ?, translation = ?, phonetic_text = ? WHERE id = ?;",
                 db: db,
                 statement: &statement
             )
             defer { sqlite3_finalize(statement) }
             bind(originalText, at: 1, to: statement)
             bind(translation, at: 2, to: statement)
-            bind(id.uuidString, at: 3, to: statement)
+            if let phoneticText {
+                bind(phoneticText, at: 3, to: statement)
+            } else {
+                sqlite3_bind_null(statement, 3)
+            }
+            bind(id.uuidString, at: 4, to: statement)
             guard sqlite3_step(statement) == SQLITE_DONE else {
                 throw databaseError(db)
             }
@@ -443,9 +949,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             do {
                 try touchManifest(libraryID: libraryID)
             } catch {
-                // The database deletion is already committed. Surface a
-                // cleanup warning instead of reporting the whole operation as
-                // failed and leaving the UI with stale entries.
                 cleanupFailures.append("句库清单：\(error.localizedDescription)")
             }
             return cleanupFailures
@@ -466,8 +969,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    /// 将源句库中选中的句子移动到目标句库。媒体和缩略图先复制到目标包，
-    /// 目标索引写入成功后才删除源索引，因此任一步失败都不会造成句子内容丢失。
+    /// 将源句库中选中的句子移动到目标句库
     @discardableResult
     public func moveEntries(
         ids: Set<UUID>,
@@ -532,16 +1034,29 @@ public final class SentenceLibraryStore: @unchecked Sendable {
 
                     let destinationEntry = SentenceLibraryEntry(
                         id: destinationID,
+                        originalIndex: sourceEntry.originalIndex,
                         originalText: sourceEntry.originalText,
                         translation: sourceEntry.translation,
+                        phoneticText: sourceEntry.phoneticText,
                         note: sourceEntry.note,
+                        isBookmarked: sourceEntry.isBookmarked,
+                        tags: sourceEntry.tags,
+                        associatedWords: sourceEntry.associatedWords,
+                        contextBefore: sourceEntry.contextBefore,
+                        contextAfter: sourceEntry.contextAfter,
                         sourceMediaName: sourceEntry.sourceMediaName,
                         sourceMediaPath: sourceEntry.sourceMediaPath,
                         startTime: sourceEntry.startTime,
                         endTime: sourceEntry.endTime,
                         createdAt: sourceEntry.createdAt,
                         mediaFilename: destinationMediaFilename,
-                        previewFilename: destinationPreviewFilename
+                        previewFilename: destinationPreviewFilename,
+                        speakerRole: sourceEntry.speakerRole,
+                        speakerID: sourceEntry.speakerID,
+                        speakerIDs: sourceEntry.speakerIDs,
+                        isSpeakerOverlap: sourceEntry.isSpeakerOverlap,
+                        wordTokens: sourceEntry.wordTokens,
+                        shadowing: sourceEntry.shadowing
                     )
                     destinationEntries.append(destinationEntry)
                     progress(0.35 * Double(offset + 1) / Double(total), "复制句子媒体")
@@ -553,7 +1068,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 do {
                     try deleteEntriesUnlocked(ids: Set(sourceEntries.map(\.id)), from: sourceLibraryID)
                 } catch {
-                    // 目标已写入但源删除失败时回滚目标索引与文件，保持“移动”而不是复制。
                     try? deleteEntriesUnlocked(ids: Set(destinationEntries.map(\.id)), from: destinationLibraryID)
                     throw error
                 }
@@ -604,8 +1118,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    /// Writes the v1 cross-device package without exposing the Mac library's
-    /// SQLite/WAL files or absolute paths. Existing M4A bytes are copied as-is.
+    /// 导出为便携式跨端 `.mablib` 原生学习包（或独立 ZIP 包），包含完整的深层元数据与会话状态
     public func writeLearningPackage(
         entries: [SentenceLibraryEntry],
         libraryID: UUID,
@@ -614,10 +1127,14 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         producerPlatform: String = "macOS"
     ) throws {
         guard !entries.isEmpty else { throw StudyMatePackageError.invalidContent("不能导出空句库。") }
-        try queue.sync {
+        try queue.sync { () throws -> Void in
             try validateLibrary(id: libraryID)
+            let descriptor = readManifest(at: packageURL(for: libraryID))
             var portableEntries: [StudyMatePackageEntry] = []
             var assets: [StudyMatePackageAssetInput] = []
+            var allVocabularyCards: [StudyMatePackageVocabularyCard] = []
+            var seenVocabKeys = Set<String>()
+
             for (order, entry) in entries.enumerated() {
                 guard let sourceURL = mediaURL(for: entry, libraryID: libraryID),
                       fileManager.fileExists(atPath: sourceURL.path),
@@ -628,13 +1145,43 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 let encodedDuration = AVURLAsset(url: sourceURL).duration.seconds
                 let duration = encodedDuration.isFinite && encodedDuration > 0 ? encodedDuration : fallbackDuration
                 let durationMs = max(1, Int((duration * 1_000).rounded()))
+
+                if let words = entry.associatedWords {
+                    for card in words {
+                        let key = card.word.lowercased()
+                        if !seenVocabKeys.contains(key) {
+                            seenVocabKeys.insert(key)
+                            allVocabularyCards.append(card)
+                        }
+                    }
+                }
+
+                var speakerRef: StudyMatePackageSpeakerReference? = nil
+                if let sid = entry.speakerID {
+                    let defaultLabel = "s\(sid + 1)"
+                    let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? defaultLabel
+                    speakerRef = StudyMatePackageSpeakerReference(
+                        id: sid,
+                        name: roleName,
+                        ids: entry.speakerIDs.isEmpty ? [sid] : entry.speakerIDs,
+                        isOverlap: entry.isSpeakerOverlap
+                    )
+                }
+
                 portableEntries.append(StudyMatePackageEntry(
                     id: entry.id,
                     originCollectionID: libraryID,
                     order: order,
+                    originalIndex: entry.originalIndex,
                     original: entry.originalText,
                     translation: entry.translation,
+                    phoneticText: entry.phoneticText,
                     note: entry.note,
+                    isBookmarked: entry.isBookmarked,
+                    tags: entry.tags,
+                    associatedWords: entry.associatedWords,
+                    contextBefore: entry.contextBefore,
+                    contextAfter: entry.contextAfter,
                     createdAt: entry.createdAt,
                     updatedAt: nil,
                     audio: StudyMatePackageAudioReference(assetID: entry.id, endMs: durationMs),
@@ -642,31 +1189,40 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         mediaTitle: entry.sourceMediaName,
                         originalStartMs: Int((max(0, entry.startTime) * 1_000).rounded()),
                         originalEndMs: Int((max(entry.startTime, entry.endTime) * 1_000).rounded())
-                    )
+                    ),
+                    preview: nil,
+                    speaker: speakerRef,
+                    wordTokens: entry.wordTokens,
+                    shadowing: entry.shadowing
                 ))
                 assets.append(StudyMatePackageAssetInput(id: entry.id, data: data, durationMs: durationMs))
             }
+
+            let isAllScope = entries.count == (try readEntriesUnlocked(libraryID: libraryID).count)
             let package = try StudyMateLearningPackage.make(
                 collectionID: libraryID,
                 title: libraryTitle,
-                scope: entries.count == (try readEntriesUnlocked(libraryID: libraryID).count) ? "all" : "selected",
+                scope: isAllScope ? "all" : "selected",
                 entries: portableEntries,
                 assets: assets,
+                sourceLanguage: descriptor?.sourceLanguage ?? "und",
+                translationLanguage: descriptor?.targetLanguage ?? "und",
+                videoAspectRatio: descriptor?.videoAspectRatio,
+                speakerNames: descriptor?.speakerNames,
+                session: descriptor?.session,
                 producerPlatform: producerPlatform
             )
             try package.write(to: destinationURL)
         }
     }
 
-    /// Imports a validated package into an existing Mac sentence library.
-    /// Matching IDs are treated as updates/skips; new media is staged before
-    /// the index is changed, and private Mac paths/previews are preserved.
+    /// 导入跨端原生学习包，将深层元数据与音频无缝注入本地句库
     public func importLearningPackage(
         from packageURL: URL,
         into libraryID: UUID
     ) throws -> StudyMateLearningPackageImportReport {
         let package = try StudyMateLearningPackage.load(from: packageURL)
-        return try queue.sync {
+        return try queue.sync { () throws -> StudyMateLearningPackageImportReport in
             try validateLibrary(id: libraryID)
             let existing = try readEntriesUnlocked(libraryID: libraryID)
             let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
@@ -692,7 +1248,9 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     let sameMedia = oldDigest == asset.sha256
                     let sameText = old.originalText == incoming.original &&
                         old.translation == incoming.translation &&
-                        old.note == incoming.note
+                        old.note == incoming.note &&
+                        old.phoneticText == incoming.phoneticText &&
+                        old.isBookmarked == incoming.isBookmarked
                     if sameMedia && sameText {
                         skipped += 1
                         continue
@@ -715,15 +1273,29 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     let sourceEnd = incoming.source?.originalEndMs.map { Double($0) / 1_000 } ?? (Double(asset.durationMs) / 1_000)
                     newEntries.append(SentenceLibraryEntry(
                         id: incoming.id,
+                        originalIndex: incoming.originalIndex,
                         originalText: incoming.original,
                         translation: incoming.translation,
+                        phoneticText: incoming.phoneticText,
                         note: incoming.note,
+                        isBookmarked: incoming.isBookmarked,
+                        tags: incoming.tags,
+                        associatedWords: incoming.associatedWords,
+                        contextBefore: incoming.contextBefore,
+                        contextAfter: incoming.contextAfter,
                         sourceMediaName: incoming.source?.mediaTitle ?? "",
                         sourceMediaPath: "",
                         startTime: sourceStart,
                         endTime: max(sourceStart + 0.05, sourceEnd),
                         createdAt: incoming.createdAt,
-                        mediaFilename: mediaFilename
+                        mediaFilename: mediaFilename,
+                        previewFilename: nil,
+                        speakerRole: incoming.speaker?.name,
+                        speakerID: incoming.speaker?.id,
+                        speakerIDs: incoming.speaker?.ids ?? (incoming.speaker?.id.map { [$0] } ?? []),
+                        isSpeakerOverlap: incoming.speaker?.isOverlap ?? false,
+                        wordTokens: incoming.wordTokens,
+                        shadowing: incoming.shadowing
                     ))
                     added += 1
                 }
@@ -737,7 +1309,14 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         do {
                             var statement: OpaquePointer?
                             try prepare(
-                                "UPDATE entries SET original_text = ?, translation = ?, note = ?, source_media_name = ?, start_time = ?, end_time = ?, media_filename = COALESCE(?, media_filename) WHERE id = ?;",
+                                """
+                                UPDATE entries SET
+                                    original_text = ?, translation = ?, phonetic_text = ?, note = ?,
+                                    is_bookmarked = ?, tags = ?, associated_words = ?,
+                                    source_media_name = ?, start_time = ?, end_time = ?,
+                                    media_filename = COALESCE(?, media_filename)
+                                WHERE id = ?;
+                                """,
                                 db: db,
                                 statement: &statement
                             )
@@ -747,16 +1326,24 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                                 sqlite3_clear_bindings(statement)
                                 bind(plan.incoming.original, at: 1, to: statement)
                                 bind(plan.incoming.translation, at: 2, to: statement)
-                                bind(plan.incoming.note, at: 3, to: statement)
-                                if let mediaTitle = plan.incoming.source?.mediaTitle, !mediaTitle.isEmpty {
-                                    bind(mediaTitle, at: 4, to: statement)
+                                if let phonetics = plan.incoming.phoneticText {
+                                    bind(phonetics, at: 3, to: statement)
                                 } else {
-                                    bind(plan.old.sourceMediaName, at: 4, to: statement)
+                                    sqlite3_bind_null(statement, 3)
                                 }
-                                sqlite3_bind_double(statement, 5, plan.incoming.source?.originalStartMs.map { Double($0) / 1_000 } ?? plan.old.startTime)
-                                sqlite3_bind_double(statement, 6, plan.incoming.source?.originalEndMs.map { Double($0) / 1_000 } ?? plan.old.endTime)
-                                if let mediaFilename = plan.mediaFilename { bind(mediaFilename, at: 7, to: statement) } else { sqlite3_bind_null(statement, 7) }
-                                bind(plan.old.id.uuidString, at: 8, to: statement)
+                                bind(plan.incoming.note, at: 4, to: statement)
+                                sqlite3_bind_int(statement, 5, plan.incoming.isBookmarked ? 1 : 0)
+                                bind(Self.serializeJSON(plan.incoming.tags), at: 6, to: statement)
+                                bind(Self.serializeJSON(plan.incoming.associatedWords ?? []), at: 7, to: statement)
+                                if let mediaTitle = plan.incoming.source?.mediaTitle, !mediaTitle.isEmpty {
+                                    bind(mediaTitle, at: 8, to: statement)
+                                } else {
+                                    bind(plan.old.sourceMediaName, at: 8, to: statement)
+                                }
+                                sqlite3_bind_double(statement, 9, plan.incoming.source?.originalStartMs.map { Double($0) / 1_000 } ?? plan.old.startTime)
+                                sqlite3_bind_double(statement, 10, plan.incoming.source?.originalEndMs.map { Double($0) / 1_000 } ?? plan.old.endTime)
+                                if let mediaFilename = plan.mediaFilename { bind(mediaFilename, at: 11, to: statement) } else { sqlite3_bind_null(statement, 11) }
+                                bind(plan.old.id.uuidString, at: 12, to: statement)
                                 guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
                             }
                             try execute("COMMIT;", in: db)
@@ -775,7 +1362,40 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     try? fileManager.removeItem(at: oldURL)
                 }
             }
-            try touchManifest(libraryID: libraryID)
+
+            // 同步 manifest 中的说话人、画幅和语言等属性
+            if var descriptor = readManifest(at: self.packageURL(for: libraryID)) {
+                var touched = false
+                if let pkgAspect = package.manifest.videoAspectRatio, descriptor.videoAspectRatio == nil {
+                    descriptor.videoAspectRatio = pkgAspect
+                    touched = true
+                }
+                if let pkgSrcLang = package.manifest.sourceLanguage, descriptor.sourceLanguage == nil {
+                    descriptor.sourceLanguage = pkgSrcLang
+                    touched = true
+                }
+                if let pkgTgtLang = package.manifest.targetLanguage, descriptor.targetLanguage == nil {
+                    descriptor.targetLanguage = pkgTgtLang
+                    touched = true
+                }
+                if let pkgSpeakerNames = package.manifest.speakerNames, !pkgSpeakerNames.isEmpty {
+                    var names = descriptor.speakerNames ?? [:]
+                    for (k, v) in pkgSpeakerNames {
+                        if names[k] == nil {
+                            names[k] = v
+                        }
+                    }
+                    descriptor.speakerNames = names
+                    touched = true
+                }
+                if touched {
+                    descriptor.updatedAt = Date()
+                    try writeManifest(descriptor, to: self.packageURL(for: libraryID))
+                } else {
+                    try touchManifest(libraryID: libraryID)
+                }
+            }
+
             return StudyMateLearningPackageImportReport(added: added, updated: updated, skipped: skipped)
         }
     }
@@ -788,8 +1408,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
     public func mediaURL(for entry: SentenceLibraryEntry, libraryID: UUID) -> URL? {
         let filename = entry.mediaFilename
         guard URL(fileURLWithPath: filename).lastPathComponent == filename, !filename.isEmpty else { return nil }
-        // Constructing a package-local URL must not synchronously touch disk.
-        // Playback/export validates it on their existing background or action path.
         return mediaURL(for: libraryID).appendingPathComponent(filename)
     }
 
@@ -813,9 +1431,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         packageURL(for: id).appendingPathComponent("manifest.json")
     }
 
-    /// 一次性原地迁移 v1/v2 句库。目录、SQLite 文件以及 Media/、Previews/
-    /// 中的原始文件都不搬移、不重编码，只升级数据库索引和 manifest 版本。
-    /// 这样迁移后仍使用原句库 UUID，已保存的当前句库选择也不会失效。
     private func migrateLegacyLibrariesIfNeededUnlocked() {
         guard let urls = try? fileManager.contentsOfDirectory(
             at: rootURL,
@@ -833,7 +1448,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             do {
                 try migrateLegacyLibraryUnlocked(legacy, packageURL: packageURL)
             } catch {
-                // 保留旧 manifest 以便下次启动重试，绝不因迁移失败删除或覆盖旧数据。
                 continue
             }
         }
@@ -859,7 +1473,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         do {
             sqlite3_busy_timeout(openedDatabase, 5_000)
             try createSchema(in: openedDatabase)
-            // 将旧 WAL 中的提交合并回主数据库文件，避免迁移完成后遗漏 WAL 数据。
             try execute("PRAGMA wal_checkpoint(TRUNCATE);", in: openedDatabase)
             sqlite3_close_v2(openedDatabase)
             database = nil
@@ -867,7 +1480,12 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 id: legacy.id,
                 name: legacy.name,
                 createdAt: legacy.createdAt,
-                updatedAt: legacy.updatedAt
+                updatedAt: legacy.updatedAt,
+                sourceLanguage: legacy.sourceLanguage,
+                targetLanguage: legacy.targetLanguage,
+                videoAspectRatio: legacy.videoAspectRatio,
+                speakerNames: legacy.speakerNames,
+                session: legacy.session
             )
             try writeManifest(migrated, to: packageURL)
         } catch {
@@ -876,7 +1494,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    private func readManifest(at packageURL: URL) -> SentenceLibraryDescriptor? {
+    public func readManifest(at packageURL: URL) -> SentenceLibraryDescriptor? {
         guard let data = try? Data(contentsOf: packageURL.appendingPathComponent("manifest.json")) else { return nil }
         return try? Self.decoder.decode(SentenceLibraryDescriptor.self, from: data)
     }
@@ -911,6 +1529,62 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
         descriptor.updatedAt = Date()
         try writeManifest(descriptor, to: packageURL(for: libraryID))
+        syncContentJSONUnlocked(libraryID: libraryID)
+    }
+
+    /// 在 .mablib 包根目录下同步写入 content.json 镜像，实现 macOS 目录 Bundle 与移动端跨平台标准数据层无缝对齐
+    private func syncContentJSONUnlocked(libraryID: UUID) {
+        let pkgURL = packageURL(for: libraryID)
+        guard fileManager.fileExists(atPath: pkgURL.path) else { return }
+        guard let dbEntries = try? readEntriesUnlocked(libraryID: libraryID) else { return }
+        let descriptor = readManifest(at: pkgURL)
+        var portableEntries: [StudyMatePackageEntry] = []
+        for (order, entry) in dbEntries.enumerated() {
+            var speakerRef: StudyMatePackageSpeakerReference? = nil
+            if let sid = entry.speakerID {
+                let defaultLabel = "s\(sid + 1)"
+                let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? defaultLabel
+                speakerRef = StudyMatePackageSpeakerReference(
+                    id: sid,
+                    name: roleName,
+                    ids: entry.speakerIDs.isEmpty ? [sid] : entry.speakerIDs,
+                    isOverlap: entry.isSpeakerOverlap
+                )
+            }
+            let durationMs = max(1, Int(((entry.endTime - entry.startTime) * 1000).rounded()))
+            portableEntries.append(StudyMatePackageEntry(
+                id: entry.id,
+                originCollectionID: libraryID,
+                order: order,
+                originalIndex: entry.originalIndex,
+                original: entry.originalText,
+                translation: entry.translation,
+                phoneticText: entry.phoneticText,
+                note: entry.note,
+                isBookmarked: entry.isBookmarked,
+                tags: entry.tags,
+                associatedWords: entry.associatedWords,
+                contextBefore: entry.contextBefore,
+                contextAfter: entry.contextAfter,
+                createdAt: entry.createdAt,
+                updatedAt: nil,
+                audio: StudyMatePackageAudioReference(assetID: entry.id, endMs: durationMs),
+                source: StudyMatePackageSourceReference(
+                    mediaTitle: entry.sourceMediaName,
+                    originalStartMs: Int((max(0, entry.startTime) * 1000).rounded()),
+                    originalEndMs: Int((max(entry.startTime, entry.endTime) * 1000).rounded())
+                ),
+                preview: entry.previewFilename.map { StudyMatePackagePreviewReference(path: "Previews/\($0)") },
+                speaker: speakerRef,
+                wordTokens: entry.wordTokens,
+                shadowing: entry.shadowing
+            ))
+        }
+        let content = StudyMatePackageContent(entries: portableEntries)
+        if let data = try? StudyMateLearningPackage.encode(content) {
+            let contentURL = pkgURL.appendingPathComponent("content.json")
+            try? data.write(to: contentURL, options: .atomic)
+        }
     }
 
     private func readEntriesUnlocked(libraryID: UUID, ids: Set<UUID>? = nil) throws -> [SentenceLibraryEntry] {
@@ -919,14 +1593,22 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             let sql: String
             if ids == nil {
                 sql = """
-                SELECT id, original_text, translation, note, source_media_name, source_media_path,
-                       start_time, end_time, created_at, preview_filename, media_filename
+                SELECT id, original_index, original_text, translation, phonetic_text,
+                       note, is_bookmarked, tags, associated_words, context_before,
+                       context_after, source_media_name, source_media_path, start_time,
+                       end_time, created_at, preview_filename, media_filename,
+                       speaker_role, speaker_id, speaker_ids, is_speaker_overlap,
+                       word_tokens, shadowing
                 FROM entries ORDER BY created_at ASC, rowid ASC;
                 """
             } else {
                 sql = """
-                SELECT id, original_text, translation, note, source_media_name, source_media_path,
-                       start_time, end_time, created_at, preview_filename, media_filename
+                SELECT id, original_index, original_text, translation, phonetic_text,
+                       note, is_bookmarked, tags, associated_words, context_before,
+                       context_after, source_media_name, source_media_path, start_time,
+                       end_time, created_at, preview_filename, media_filename,
+                       speaker_role, speaker_id, speaker_ids, is_speaker_overlap,
+                       word_tokens, shadowing
                 FROM entries WHERE id = ?;
                 """
             }
@@ -938,34 +1620,137 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     sqlite3_reset(statement)
                     sqlite3_clear_bindings(statement)
                     bind(id.uuidString, at: 1, to: statement)
-                    if sqlite3_step(statement) == SQLITE_ROW, let entry = entry(from: statement) {
+                    if sqlite3_step(statement) == SQLITE_ROW, let entry = parseEntry(from: statement) {
                         result.append(entry)
                     }
                 }
             } else {
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    if let entry = entry(from: statement) { result.append(entry) }
+                    if let entry = parseEntry(from: statement) { result.append(entry) }
                 }
             }
             return result
         }
     }
 
-    private func entry(from statement: OpaquePointer?) -> SentenceLibraryEntry? {
+    private func parseEntry(from statement: OpaquePointer?) -> SentenceLibraryEntry? {
         guard let id = UUID(uuidString: text(statement, 0)) else { return nil }
+        let originalIndex = Int(sqlite3_column_int(statement, 1))
+        let originalText = text(statement, 2)
+        let translation = text(statement, 3)
+        let phoneticText = optionalText(statement, 4)
+        let note = text(statement, 5)
+        let isBookmarked = sqlite3_column_int(statement, 6) != 0
+        let tagsJson = text(statement, 7)
+        let tags = Self.deserializeJSON([String].self, from: tagsJson) ?? []
+        let vocabJson = text(statement, 8)
+        let rawAssociatedWords = Self.deserializeJSON([StudyMatePackageVocabularyCard].self, from: vocabJson)
+        let associatedWords = (rawAssociatedWords?.isEmpty == true) ? nil : rawAssociatedWords
+        let contextBefore = optionalText(statement, 9)
+        let contextAfter = optionalText(statement, 10)
+        let sourceMediaName = text(statement, 11)
+        let sourceMediaPath = text(statement, 12)
+        let startTime = sqlite3_column_double(statement, 13)
+        let endTime = sqlite3_column_double(statement, 14)
+        let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 15))
+        let previewFilename = optionalText(statement, 16)
+        let mediaFilename = text(statement, 17)
+        let speakerRole = optionalText(statement, 18)
+        let speakerID = sqlite3_column_type(statement, 19) == SQLITE_NULL ? nil : Int(sqlite3_column_int(statement, 19))
+        let speakerIDsJson = text(statement, 20)
+        let speakerIDs = Self.deserializeJSON([Int].self, from: speakerIDsJson) ?? []
+        let isSpeakerOverlap = sqlite3_column_int(statement, 21) != 0
+        let wordTokensJson = text(statement, 22)
+        let rawWordTokens = Self.deserializeJSON([StudyMatePackageWordToken].self, from: wordTokensJson)
+        let wordTokens = (rawWordTokens?.isEmpty == true) ? nil : rawWordTokens
+        let shadowingJson = optionalText(statement, 23)
+        let shadowing = shadowingJson.flatMap { Self.deserializeJSON(StudyMatePackageShadowingReference.self, from: $0) }
+
         return SentenceLibraryEntry(
             id: id,
-            originalText: text(statement, 1),
-            translation: text(statement, 2),
-            note: text(statement, 3),
-            sourceMediaName: text(statement, 4),
-            sourceMediaPath: text(statement, 5),
-            startTime: sqlite3_column_double(statement, 6),
-            endTime: sqlite3_column_double(statement, 7),
-            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
-            mediaFilename: text(statement, 10),
-            previewFilename: optionalText(statement, 9)
+            originalIndex: originalIndex,
+            originalText: originalText,
+            translation: translation,
+            phoneticText: phoneticText,
+            note: note,
+            isBookmarked: isBookmarked,
+            tags: tags,
+            associatedWords: associatedWords,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter,
+            sourceMediaName: sourceMediaName,
+            sourceMediaPath: sourceMediaPath,
+            startTime: startTime,
+            endTime: endTime,
+            createdAt: createdAt,
+            mediaFilename: mediaFilename,
+            previewFilename: previewFilename,
+            speakerRole: speakerRole,
+            speakerID: speakerID,
+            speakerIDs: speakerIDs,
+            isSpeakerOverlap: isSpeakerOverlap,
+            wordTokens: wordTokens,
+            shadowing: shadowing
         )
+    }
+
+    private func bindEntry(
+        _ entry: SentenceLibraryEntry,
+        statement: OpaquePointer?,
+        hasStoredPreview: Bool
+    ) {
+        bind(entry.id.uuidString, at: 1, to: statement)
+        sqlite3_bind_int(statement, 2, Int32(entry.originalIndex))
+        bind(entry.originalText, at: 3, to: statement)
+        bind(entry.translation, at: 4, to: statement)
+        if let phonetics = entry.phoneticText {
+            bind(phonetics, at: 5, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 5)
+        }
+        bind(entry.note, at: 6, to: statement)
+        sqlite3_bind_int(statement, 7, entry.isBookmarked ? 1 : 0)
+        bind(Self.serializeJSON(entry.tags), at: 8, to: statement)
+        bind(Self.serializeJSON(entry.associatedWords ?? []), at: 9, to: statement)
+        if let before = entry.contextBefore {
+            bind(before, at: 10, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 10)
+        }
+        if let after = entry.contextAfter {
+            bind(after, at: 11, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 11)
+        }
+        bind(entry.sourceMediaName, at: 12, to: statement)
+        bind(entry.sourceMediaPath, at: 13, to: statement)
+        sqlite3_bind_double(statement, 14, entry.startTime)
+        sqlite3_bind_double(statement, 15, entry.endTime)
+        sqlite3_bind_double(statement, 16, entry.createdAt.timeIntervalSince1970)
+        if hasStoredPreview, let filename = entry.previewFilename {
+            bind(filename, at: 17, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 17)
+        }
+        bind(entry.mediaFilename, at: 18, to: statement)
+        if let role = entry.speakerRole {
+            bind(role, at: 19, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 19)
+        }
+        if let sid = entry.speakerID {
+            sqlite3_bind_int(statement, 20, Int32(sid))
+        } else {
+            sqlite3_bind_null(statement, 20)
+        }
+        bind(Self.serializeJSON(entry.speakerIDs), at: 21, to: statement)
+        sqlite3_bind_int(statement, 22, entry.isSpeakerOverlap ? 1 : 0)
+        bind(Self.serializeJSON(entry.wordTokens ?? []), at: 23, to: statement)
+        if let shadowing = entry.shadowing, let json = try? String(data: Self.encoder.encode(shadowing), encoding: .utf8) {
+            bind(json, at: 24, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 24)
+        }
     }
 
     private func deleteEntriesUnlocked(ids: Set<UUID>, from libraryID: UUID) throws {
@@ -997,10 +1782,13 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             do {
                 let sql = """
                 INSERT INTO entries (
-                    id, original_text, translation, note, source_media_name,
-                    source_media_path, start_time, end_time, created_at, preview_filename,
-                    media_filename
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    id, original_index, original_text, translation, phonetic_text,
+                    note, is_bookmarked, tags, associated_words, context_before,
+                    context_after, source_media_name, source_media_path, start_time,
+                    end_time, created_at, preview_filename, media_filename,
+                    speaker_role, speaker_id, speaker_ids, is_speaker_overlap,
+                    word_tokens, shadowing
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
                 var statement: OpaquePointer?
                 try prepare(sql, db: db, statement: &statement)
@@ -1008,21 +1796,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 for entry in entries {
                     sqlite3_reset(statement)
                     sqlite3_clear_bindings(statement)
-                    bind(entry.id.uuidString, at: 1, to: statement)
-                    bind(entry.originalText, at: 2, to: statement)
-                    bind(entry.translation, at: 3, to: statement)
-                    bind(entry.note, at: 4, to: statement)
-                    bind(entry.sourceMediaName, at: 5, to: statement)
-                    bind(entry.sourceMediaPath, at: 6, to: statement)
-                    sqlite3_bind_double(statement, 7, entry.startTime)
-                    sqlite3_bind_double(statement, 8, entry.endTime)
-                    sqlite3_bind_double(statement, 9, entry.createdAt.timeIntervalSince1970)
-                    if let previewFilename = entry.previewFilename {
-                        bind(previewFilename, at: 10, to: statement)
-                    } else {
-                        sqlite3_bind_null(statement, 10)
-                    }
-                    bind(entry.mediaFilename, at: 11, to: statement)
+                    bindEntry(entry, statement: statement, hasStoredPreview: entry.previewFilename != nil)
                     guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
                 }
                 try execute("COMMIT;", in: db)
@@ -1094,57 +1868,99 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             try execute("""
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY NOT NULL,
+                original_index INTEGER NOT NULL DEFAULT 0,
                 original_text TEXT NOT NULL DEFAULT '',
                 translation TEXT NOT NULL DEFAULT '',
+                phonetic_text TEXT,
                 note TEXT NOT NULL DEFAULT '',
+                is_bookmarked INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
+                associated_words TEXT NOT NULL DEFAULT '[]',
+                context_before TEXT,
+                context_after TEXT,
                 source_media_name TEXT NOT NULL DEFAULT '',
                 source_media_path TEXT NOT NULL DEFAULT '',
                 start_time REAL NOT NULL,
                 end_time REAL NOT NULL,
                 created_at REAL NOT NULL,
                 preview_filename TEXT,
-                media_filename TEXT NOT NULL
+                media_filename TEXT NOT NULL,
+                speaker_role TEXT,
+                speaker_id INTEGER,
+                speaker_ids TEXT NOT NULL DEFAULT '[]',
+                is_speaker_overlap INTEGER NOT NULL DEFAULT 0,
+                word_tokens TEXT NOT NULL DEFAULT '[]',
+                shadowing TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
+            CREATE INDEX IF NOT EXISTS idx_entries_is_bookmarked ON entries(is_bookmarked);
+            CREATE INDEX IF NOT EXISTS idx_entries_original_index ON entries(original_index ASC);
+            CREATE INDEX IF NOT EXISTS idx_entries_speaker_id ON entries(speaker_id);
             \(Self.ftsSchemaSQL)
-            PRAGMA user_version=4;
+            PRAGMA user_version=5;
             """, in: db)
-        } else if version >= 1 && version <= 3 {
-            // v1/v2 的 entries 表与当前字段基本兼容；缺少的新字段只补列，
-            // 不改写原有行，也不触碰 Media/ 和 Previews/ 中的文件。
+        } else if version >= 1 && version <= 4 {
             let columns = try tableColumns(in: db)
-            if !columns.contains("id") {
-                try execute("""
-                CREATE TABLE IF NOT EXISTS entries (
-                    id TEXT PRIMARY KEY NOT NULL,
-                    original_text TEXT NOT NULL DEFAULT '',
-                    translation TEXT NOT NULL DEFAULT '',
-                    note TEXT NOT NULL DEFAULT '',
-                    source_media_name TEXT NOT NULL DEFAULT '',
-                    source_media_path TEXT NOT NULL DEFAULT '',
-                    start_time REAL NOT NULL,
-                    end_time REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    preview_filename TEXT,
-                    media_filename TEXT
-                );
-                """, in: db)
-            } else {
-                if !columns.contains("preview_filename") {
-                    try execute("ALTER TABLE entries ADD COLUMN preview_filename TEXT;", in: db)
-                }
-                if !columns.contains("media_filename") {
-                    try execute("ALTER TABLE entries ADD COLUMN media_filename TEXT;", in: db)
-                }
+            if !columns.contains("original_index") {
+                try execute("ALTER TABLE entries ADD COLUMN original_index INTEGER NOT NULL DEFAULT 0;", in: db)
+            }
+            if !columns.contains("phonetic_text") {
+                try execute("ALTER TABLE entries ADD COLUMN phonetic_text TEXT;", in: db)
+            }
+            if !columns.contains("is_bookmarked") {
+                try execute("ALTER TABLE entries ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0;", in: db)
+            }
+            if !columns.contains("tags") {
+                try execute("ALTER TABLE entries ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';", in: db)
+            }
+            if !columns.contains("associated_words") {
+                try execute("ALTER TABLE entries ADD COLUMN associated_words TEXT NOT NULL DEFAULT '[]';", in: db)
+            }
+            if !columns.contains("context_before") {
+                try execute("ALTER TABLE entries ADD COLUMN context_before TEXT;", in: db)
+            }
+            if !columns.contains("context_after") {
+                try execute("ALTER TABLE entries ADD COLUMN context_after TEXT;", in: db)
+            }
+            if !columns.contains("preview_filename") {
+                try execute("ALTER TABLE entries ADD COLUMN preview_filename TEXT;", in: db)
+            }
+            if !columns.contains("media_filename") {
+                try execute("ALTER TABLE entries ADD COLUMN media_filename TEXT;", in: db)
+            }
+            if !columns.contains("speaker_role") {
+                try execute("ALTER TABLE entries ADD COLUMN speaker_role TEXT;", in: db)
+            }
+            if !columns.contains("speaker_id") {
+                try execute("ALTER TABLE entries ADD COLUMN speaker_id INTEGER;", in: db)
+            }
+            if !columns.contains("speaker_ids") {
+                try execute("ALTER TABLE entries ADD COLUMN speaker_ids TEXT NOT NULL DEFAULT '[]';", in: db)
+            }
+            if !columns.contains("is_speaker_overlap") {
+                try execute("ALTER TABLE entries ADD COLUMN is_speaker_overlap INTEGER NOT NULL DEFAULT 0;", in: db)
+            }
+            if !columns.contains("word_tokens") {
+                try execute("ALTER TABLE entries ADD COLUMN word_tokens TEXT NOT NULL DEFAULT '[]';", in: db)
+            }
+            if !columns.contains("shadowing") {
+                try execute("ALTER TABLE entries ADD COLUMN shadowing TEXT;", in: db)
             }
             try execute("""
             CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_source_media ON entries(source_media_name);
+            CREATE INDEX IF NOT EXISTS idx_entries_is_bookmarked ON entries(is_bookmarked);
+            CREATE INDEX IF NOT EXISTS idx_entries_original_index ON entries(original_index ASC);
+            CREATE INDEX IF NOT EXISTS idx_entries_speaker_id ON entries(speaker_id);
+            DROP TRIGGER IF EXISTS entries_ai;
+            DROP TRIGGER IF EXISTS entries_ad;
+            DROP TRIGGER IF EXISTS entries_au;
+            DROP TABLE IF EXISTS entries_fts;
             \(Self.ftsSchemaSQL)
-            PRAGMA user_version=4;
+            PRAGMA user_version=5;
             """, in: db)
-        } else if version != 4 {
+        } else if version != 5 {
             throw SentenceLibraryError.invalidLibrary
         }
     }
@@ -1192,6 +2008,18 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         return value.isEmpty ? nil : value
     }
 
+    private static func serializeJSON<T: Encodable>(_ value: T) -> String {
+        guard let data = try? encoder.encode(value), let str = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return str
+    }
+
+    private static func deserializeJSON<T: Decodable>(_ type: T.Type, from string: String) -> T? {
+        guard !string.isEmpty, let data = string.data(using: .utf8) else { return nil }
+        return try? decoder.decode(type, from: data)
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1205,32 +2033,33 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         return decoder
     }()
 
-    /// 外部内容表避免复制句库其余字段；触发器保证新增、修改和删除时索引
-    /// 与主表同一事务保持一致。
+    /// 外部内容表全文索引
     private static let ftsSchemaSQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
         original_text,
         translation,
+        note,
+        tags,
         content='entries',
         content_rowid='rowid',
         tokenize='trigram case_sensitive 0'
     );
     CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-        INSERT INTO entries_fts(rowid, original_text, translation)
-        VALUES (new.rowid, lower(new.original_text), lower(new.translation));
+        INSERT INTO entries_fts(rowid, original_text, translation, note, tags)
+        VALUES (new.rowid, lower(new.original_text), lower(new.translation), lower(new.note), lower(new.tags));
     END;
     CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation)
-        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation));
+        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation, note, tags)
+        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation), lower(old.note), lower(old.tags));
     END;
-    CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE OF original_text, translation ON entries BEGIN
-        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation)
-        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation));
-        INSERT INTO entries_fts(rowid, original_text, translation)
-        VALUES (new.rowid, lower(new.original_text), lower(new.translation));
+    CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, original_text, translation, note, tags)
+        VALUES ('delete', old.rowid, lower(old.original_text), lower(old.translation), lower(old.note), lower(old.tags));
+        INSERT INTO entries_fts(rowid, original_text, translation, note, tags)
+        VALUES (new.rowid, lower(new.original_text), lower(new.translation), lower(new.note), lower(new.tags));
     END;
-    INSERT INTO entries_fts(rowid, original_text, translation)
-        SELECT rowid, lower(original_text), lower(translation) FROM entries
+    INSERT INTO entries_fts(rowid, original_text, translation, note, tags)
+        SELECT rowid, lower(original_text), lower(translation), lower(note), lower(tags) FROM entries
         WHERE rowid NOT IN (SELECT rowid FROM entries_fts);
     """
 }

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 struct MABWhisperContext {
     struct whisper_context *value;
@@ -201,9 +202,6 @@ int32_t mab_whisper_transcribe(
     struct whisper_full_params params = whisper_full_default_params(strategy);
     params.n_threads = config.thread_count > 0 ? config.thread_count : 4;
     params.translate = false;
-    // A model context is cached across media to avoid a costly reload. Clear
-    // its rolling text prompt for the first window of every new request, then
-    // allow later windows from that same request to share linguistic context.
     params.no_context = config.reset_context;
     params.no_timestamps = false;
     params.single_segment = false;
@@ -220,6 +218,18 @@ int32_t mab_whisper_transcribe(
     params.tdrz_enable = config.enable_tinydiarize;
     params.language = language == NULL ? "auto" : language;
     params.detect_language = params.language[0] == '\0' || strcmp(params.language, "auto") == 0;
+    if (params.detect_language) {
+        if (whisper_pcm_to_mel(context->value, samples, sample_count, params.n_threads) == 0) {
+            int lang_id = whisper_lang_auto_detect(context->value, 0, params.n_threads, NULL);
+            if (lang_id >= 0) {
+                const char *detected = whisper_lang_str(lang_id);
+                if (detected != NULL && detected[0] != '\0') {
+                    params.language = detected;
+                    params.detect_language = false;
+                }
+            }
+        }
+    }
     params.suppress_blank = true;
     params.suppress_nst = config.suppress_non_speech_tokens;
     params.no_speech_thold = config.no_speech_threshold;
@@ -227,6 +237,7 @@ int32_t mab_whisper_transcribe(
         params.beam_search.beam_size = config.beam_size;
         params.beam_search.patience = 1.0f;
     }
+
     params.progress_callback = mab_progress_callback;
     params.progress_callback_user_data = &callback_state;
     params.encoder_begin_callback = mab_encoder_begin_callback;
@@ -269,10 +280,16 @@ int32_t mab_whisper_transcribe(
     for (int segment_index = 0; segment_index < segment_count; ++segment_index) {
         int segment_token_count = whisper_full_n_tokens(context->value, segment_index);
         bool speaker_turn = whisper_full_get_segment_speaker_turn_next(context->value, segment_index);
+        int64_t seg_t0 = whisper_full_get_segment_t0(context->value, segment_index);
+        int64_t seg_t1 = whisper_full_get_segment_t1(context->value, segment_index);
+        if (seg_t1 < seg_t0) { seg_t1 = seg_t0; }
         int32_t segment_output_start = output_index;
         for (int token_index = 0; token_index < segment_token_count; ++token_index) {
             whisper_token token_id = whisper_full_get_token_id(context->value, segment_index, token_index);
             const char *text = whisper_full_get_token_text(context->value, segment_index, token_index);
+            if (token_id >= end_of_text || text == NULL || text[0] == '\0') {
+                continue;
+            }
             whisper_token_data token_data = whisper_full_get_token_data(
                 context->value,
                 segment_index,
@@ -280,8 +297,13 @@ int32_t mab_whisper_transcribe(
             );
             int64_t t0 = token_data.t0;
             int64_t t1 = token_data.t1;
-            if (token_id >= end_of_text || text == NULL || text[0] == '\0' || t0 < 0 || t1 < t0) {
-                continue;
+            if (t0 < 0 || t1 < t0) {
+                if (segment_token_count > 0 && seg_t1 >= seg_t0) {
+                    t0 = seg_t0 + (seg_t1 - seg_t0) * token_index / segment_token_count;
+                    t1 = seg_t0 + (seg_t1 - seg_t0) * (token_index + 1) / segment_token_count;
+                } else {
+                    continue;
+                }
             }
 
             MABSpeechToken *output = &result->tokens[output_index];

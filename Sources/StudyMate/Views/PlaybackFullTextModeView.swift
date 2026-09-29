@@ -29,15 +29,71 @@ public struct FullTextParagraph: Identifiable, Equatable {
 
 /// 全文模式辅助工具：段落切分、文本拼接与富文本生成
 public enum FullTextParagraphBuilder {
+    /// 剧本对话重组排序（时序还原）：
+    /// 当乱序入库同一媒体的连续几句话时，在切换到“原文模式（剧本流）”时，
+    /// 系统按照 original_index 严格重排对白先后顺序，确保对白因果关系不颠倒。
+    public static func reorderSegmentsForScriptFlow(_ segments: [SentenceSegment]) -> [SentenceSegment] {
+        guard segments.count > 1 else { return segments }
+
+        // 如果没有包含任何 originalIndex > 0 的句子，直接返回原序列
+        let hasOriginalIndices = segments.contains { ($0.originalIndex ?? 0) > 0 }
+        guard hasOriginalIndices else { return segments }
+
+        // 按来源媒体分组，同一媒体内部按照 originalIndex 及时间戳严格升序重组
+        // 使用首现顺序保留不同媒体来源之间的整体排布
+        var mediaGroups: [(media: String, segments: [SentenceSegment])] = []
+        var mediaIndices: [String: Int] = [:]
+
+        for seg in segments {
+            let mediaKey = seg.sourceMediaName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let idx = mediaIndices[mediaKey] {
+                mediaGroups[idx].segments.append(seg)
+            } else {
+                mediaIndices[mediaKey] = mediaGroups.count
+                mediaGroups.append((media: mediaKey, segments: [seg]))
+            }
+        }
+
+        var reordered: [SentenceSegment] = []
+        reordered.reserveCapacity(segments.count)
+
+        for group in mediaGroups {
+            let sortedInGroup = group.segments.sorted { a, b in
+                let origA = a.originalIndex ?? 0
+                let origB = b.originalIndex ?? 0
+                if origA > 0 && origB > 0 {
+                    if origA != origB { return origA < origB }
+                    let timeA = a.sourceStartTime ?? a.startTime
+                    let timeB = b.sourceStartTime ?? b.startTime
+                    if timeA != timeB { return timeA < timeB }
+                    return a.index < b.index
+                } else if origA > 0 {
+                    return true
+                } else if origB > 0 {
+                    return false
+                } else {
+                    let timeA = a.sourceStartTime ?? a.startTime
+                    let timeB = b.sourceStartTime ?? b.startTime
+                    if timeA != timeB { return timeA < timeB }
+                    return a.index < b.index
+                }
+            }
+            reordered.append(contentsOf: sortedInGroup)
+        }
+
+        return reordered
+    }
+
     /// 将断句序列切分为全文段落
     public static func buildParagraphs(from segments: [SentenceSegment]) -> [FullTextParagraph] {
         guard !segments.isEmpty else { return [] }
+        let orderedSegments = reorderSegmentsForScriptFlow(segments)
 
-        let hasSpeakers = segments.contains { !$0.speakerRoleLabel.isEmpty }
+        let hasSpeakers = orderedSegments.contains { !$0.speakerRoleLabel.isEmpty }
 
         // 如果没有角色的，所有断句首尾拼接在一起
         if !hasSpeakers {
-            return [FullTextParagraph(id: segments[0].id, speakerRole: nil, segments: segments)]
+            return [FullTextParagraph(id: orderedSegments[0].id, speakerRole: nil, segments: orderedSegments)]
         }
 
         // 如果有角色的，即 s1, s2 等，每一个角色结束需要换行（按角色轮替分段）
@@ -45,7 +101,7 @@ public enum FullTextParagraphBuilder {
         var currentSpeaker: String? = nil
         var currentGroup: [SentenceSegment] = []
 
-        for seg in segments {
+        for seg in orderedSegments {
             let role = seg.speakerRoleLabel.isEmpty ? nil : seg.speakerRoleLabel
             if role == currentSpeaker && !currentGroup.isEmpty {
                 currentGroup.append(seg)
@@ -176,6 +232,7 @@ public struct PlaybackFullTextModeView: View {
     @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
+    @ObservedObject private var phoneticManager: PhoneticEngineManager = .shared
 
     @State private var cachedParagraphs: [FullTextParagraph] = []
     @State private var bilingualParagraphs: [FullTextParagraph] = []
@@ -248,6 +305,23 @@ public struct PlaybackFullTextModeView: View {
                 .padding(.leading, 16)
 
             Spacer()
+
+            Button {
+                phoneticManager.togglePhonetics()
+            } label: {
+                Image(systemName: "character.phonetic")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 24)
+                    .foregroundColor(phoneticManager.showPhonetics ? StudyMateMediaStyle.accent : .secondary.opacity(0.45))
+                    .help(StudyMateShortcutCatalog.help(
+                        lang.text("切换注音显示", "Toggle phonetics"),
+                        shortcut: .togglePhonetics
+                    ))
+            }
+            .studymateChromeButton(shape: .circle)
+            .focusable(false)
+            .keyboardShortcut("p", modifiers: [.command, .option])
+            .padding(.trailing, 4)
 
             Button {
                 followPlayback.toggle()
@@ -325,6 +399,7 @@ public struct PlaybackFullTextModeView: View {
                 followPlayback: followPlayback,
                 showOriginal: videoSubtitleSettings.isOriginalVisible(for: .fullText),
                 showTranslation: videoSubtitleSettings.isTranslationVisible(for: .fullText),
+                showPhonetics: phoneticManager.showPhonetics,
                 originalFont: videoSubtitleSettings.makeOriginalFont(for: .fullText),
                 originalColor: videoSubtitleSettings.originalNSColor(for: .fullText),
                 translationFont: videoSubtitleSettings.makeTranslationFont(for: .fullText),
@@ -380,6 +455,7 @@ private struct FullTextParagraphRowView: View, Equatable {
     let followPlayback: Bool
     let showOriginal: Bool
     let showTranslation: Bool
+    let showPhonetics: Bool
     let originalFont: NSFont
     let originalColor: NSColor
     let translationFont: NSFont
@@ -394,6 +470,7 @@ private struct FullTextParagraphRowView: View, Equatable {
             && lhs.followPlayback == rhs.followPlayback
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
+            && lhs.showPhonetics == rhs.showPhonetics
             && lhs.originalFont == rhs.originalFont
             && lhs.originalColor == rhs.originalColor
             && lhs.translationFont == rhs.translationFont
@@ -415,17 +492,15 @@ private struct FullTextParagraphRowView: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 角色徽章（如有角色）
+            // 角色徽章（全文模式只读展示，不可修改）
             if let role = paragraph.speakerRole {
-                HStack(spacing: 4) {
-                    Text(role)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(StudyMateMediaStyle.accent)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(StudyMateMediaStyle.accent.opacity(0.12))
-                        .clipShape(Capsule())
-                }
+                Text(role)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(StudyMateMediaStyle.accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(StudyMateMediaStyle.accent.opacity(0.12))
+                    .clipShape(Capsule())
             }
 
             if showOriginal && showTranslation {
@@ -465,7 +540,17 @@ private struct FullTextParagraphRowView: View, Equatable {
         let pairContext = [origTrimmed, transTrimmed].filter { !$0.isEmpty }.joined(separator: "\n")
 
         VStack(alignment: .leading, spacing: 4) {
-            if !origTrimmed.isEmpty {
+            if showPhonetics && !origTrimmed.isEmpty {
+                RubyTextView(
+                    text: origTrimmed,
+                    fontSize: originalFont.pointSize,
+                    textColor: Color(originalColor),
+                    phoneticColor: StudyMateMediaStyle.accent,
+                    isPhoneticsVisible: true
+                )
+                .contentShape(Rectangle())
+                .onTapGesture { onSelect(seg.id) }
+            } else if !origTrimmed.isEmpty {
                 FullTextParagraphTextView(
                     text: origTrimmed, font: originalFont, color: originalColor, lineSpacing: 4,
                     activeSegmentID: activeSegmentID,

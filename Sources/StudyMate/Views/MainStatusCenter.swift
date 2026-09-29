@@ -100,6 +100,17 @@ public final class MainStatusCenter: ObservableObject {
         }
     }
 
+    public func showInfo(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        showSuccess(message, autoDismissAfter: seconds)
+    }
+
+    public func showWarning(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        recordIssue(message: normalized, level: .warning)
+        showInfo(normalized, autoDismissAfter: seconds)
+    }
+
     public func clearSuccess() {
         successGeneration = UUID()
         successMessage = nil

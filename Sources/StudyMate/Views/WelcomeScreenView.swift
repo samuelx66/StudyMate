@@ -303,6 +303,7 @@ private struct RecentMediaFileRow: View {
     @ObservedObject private var lang = LanguageManager.shared
 
     private var isVideo: Bool {
+        if entry.isLibrarySession { return false }
         switch entry.mediaURL.pathExtension.lowercased() {
         case "mp4", "mov", "m4v", "mkv", "webm", "avi", "flv", "wmv", "ts":
             return true
@@ -311,14 +312,24 @@ private struct RecentMediaFileRow: View {
         }
     }
 
+    private var iconName: String {
+        if entry.isLibrarySession {
+            return "books.vertical"
+        }
+        return isVideo ? "video.fill" : "waveform"
+    }
+
     private var isUnderHome: Bool {
         let parentURL = entry.mediaURL.deletingLastPathComponent()
         let homePath = FileManager.default.homeDirectoryForCurrentUser.path
         return parentURL.path.hasPrefix(homePath)
     }
 
-    /// 路径面包屑格式化：如 Documents ▸ English
+    /// 路径面包屑格式化：如 Documents ▸ English 或“句库”
     private var pathBreadcrumb: String {
+        if let customPath = entry.customPath, !customPath.isEmpty {
+            return customPath
+        }
         let parentURL = entry.mediaURL.deletingLastPathComponent()
         let homePath = FileManager.default.homeDirectoryForCurrentUser.path
 
@@ -345,7 +356,7 @@ private struct RecentMediaFileRow: View {
                     .fill(isSelected ? Color.white : Color.secondary.opacity(0.15))
                     .frame(width: 28, height: 28)
 
-                Image(systemName: isVideo ? "video.fill" : "waveform")
+                Image(systemName: iconName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             }
@@ -359,12 +370,14 @@ private struct RecentMediaFileRow: View {
                     .truncationMode(.middle)
 
                 HStack(spacing: 3) {
-                    Image(systemName: isUnderHome ? "house" : "folder")
+                    Image(systemName: entry.isLibrarySession ? "books.vertical" : (isUnderHome ? "house" : "folder"))
                         .font(.system(size: 9))
 
                     if !pathBreadcrumb.isEmpty {
-                        Text("▸")
-                            .font(.system(size: 8))
+                        if !entry.isLibrarySession {
+                            Text("▸")
+                                .font(.system(size: 8))
+                        }
                         Text(pathBreadcrumb)
                             .font(.system(size: 10.5))
                             .lineLimit(1)

@@ -824,6 +824,9 @@ public struct SegmentListView: View {
                                         translation: translationText
                                     )
                                 },
+                                onRenameSpeaker: { fromRole, toName in
+                                    engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                                },
                                 onUserScroll: {
                                     markUserScroll()
                                 },
@@ -1995,6 +1998,7 @@ private struct SegmentListRowsView: View, Equatable {
     let onMergeNext: (UUID) -> Void
     let onDelete: (UUID) -> Void
     let onSaveText: (UUID, String, String) -> Void
+    var onRenameSpeaker: ((String, String) -> Void)? = nil
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
     let onSegmentAppear: (UUID) -> Void
@@ -2039,6 +2043,7 @@ private struct SegmentListRowsView: View, Equatable {
                     onSaveText: { originalText, translationText in
                         onSaveText(seg.id, originalText, translationText)
                     },
+                    onRenameSpeaker: onRenameSpeaker,
                     editRequest: $editRequest,
                     lang: lang,
                     language: language
@@ -2099,6 +2104,7 @@ struct SegmentRowView: View, Equatable {
     let onMergeNext: () -> Void
     let onDelete: () -> Void
     let onSaveText: (String, String) -> Void
+    var onRenameSpeaker: ((String, String) -> Void)? = nil
     @Binding var editRequest: UUID?
     let lang: LanguageManager
     let language: AppLanguage
@@ -2176,25 +2182,19 @@ struct SegmentRowView: View, Equatable {
                             .foregroundColor(isActive ? .primary : .secondary)
 
                         }
-                        if !seg.speakerIDs.isEmpty {
-                            let speakerLabel: String = {
-                                let ids = seg.speakerIDs.map { String($0 + 1) }
-                                if seg.isSpeakerOverlap {
-                                    return "S" + ids.joined(separator: "+")
+                        if !seg.speakerRoleLabel.isEmpty {
+                            SpeakerBadgeButton(
+                                speakerRoleLabel: seg.speakerRoleLabel,
+                                speakerRole: seg.speakerRole,
+                                isOverlap: seg.isSpeakerOverlap,
+                                font: .system(size: 9, weight: .semibold),
+                                tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
+                                shape: .roundedRectangle(3),
+                                language: language,
+                                onSave: { fromRole, toName in
+                                    onRenameSpeaker?(fromRole, toName)
                                 }
-                                if ids.count > 1 {
-                                    return "S" + ids.joined(separator: "→")
-                                }
-                                return "S\(ids[0])"
-                            }()
-                            Text(speakerLabel)
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background((seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple).opacity(0.12))
-                                .cornerRadius(3)
-                                .segmentListHelp(lang.text("SpeakerKit 说话人标签", "SpeakerKit speaker label"))
+                            )
                         }
 
                         Spacer()

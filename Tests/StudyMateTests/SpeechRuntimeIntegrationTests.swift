@@ -141,4 +141,53 @@ final class SpeechRuntimeIntegrationTests: XCTestCase {
             print(String(format: "#%d %.3f --> %.3f %@", segment.index, segment.startTime, segment.endTime, segment.text))
         }
     }
+
+    @MainActor
+    func testRegenerateOriginalTextOnSingleSentence() async throws {
+        let audioPath = "/Users/samuel/Library/Application Support/StudyMate/SentenceLibrarySessions/9A66ACC1-B140-4746-8C1D-6E69CBDC8155/走遍美国_走遍美国2.m4a"
+        let modelPath = "/Users/samuel/Library/Application Support/StudyMate/Models/ggml-base.bin"
+        guard FileManager.default.fileExists(atPath: audioPath),
+              FileManager.default.fileExists(atPath: modelPath) else {
+            throw XCTSkip("Audio or model not found")
+        }
+
+        let pcm = try await AudioPCMExtractor.shared.extract(from: URL(fileURLWithPath: audioPath))
+        let target = SentenceSegment(
+            id: UUID(),
+            index: 53,
+            startTime: 117.138,
+            endTime: 119.308,
+            text: "Tell me about it on the way home.",
+            translation: "在回家的路上告诉我吧。"
+        )
+
+        let speechWindows = [
+            VoiceActivitySegment(startTime: target.startTime, endTime: target.endTime, confidence: 1)
+        ]
+        let hardBoundaries = [target.startTime, target.endTime]
+
+        let timeline = try await NativeSpeechRuntime.shared.transcribe(
+            pcm: pcm,
+            modelURL: URL(fileURLWithPath: modelPath),
+            language: "auto",
+            configuration: SpeechSegmentationMode.intelligent.profile.vad,
+            speechWindows: speechWindows,
+            hardWindowBoundaries: hardBoundaries,
+            isolatedSpeechWindows: true,
+            progress: { _ in }
+        )
+
+        print("[Test] timeline tokens: \(timeline.tokens.count)")
+        for tok in timeline.tokens {
+            print("[Test] token: '\(tok.text)' [\(tok.startTime) - \(tok.endTime)]")
+        }
+
+        let (recognizedTexts, recognizedTokens) = PlaybackEngine.recognizedOriginalTextsAndTokens(
+            for: [target],
+            tokens: timeline.tokens
+        )
+        print("[Test] recognizedText: '\(recognizedTexts[target.id] ?? "")'")
+        print("[Test] recognizedTokens: \(recognizedTokens[target.id]?.count ?? 0)")
+    }
 }
+

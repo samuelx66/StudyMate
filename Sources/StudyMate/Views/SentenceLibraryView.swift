@@ -6,6 +6,9 @@ public struct SentenceLibraryView: View {
     @ObservedObject var manager: SentenceLibraryManager
     @ObservedObject private var lang = LanguageManager.shared
     @StateObject private var libraryPlayer: SentenceLibraryPlayer
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    @AppStorage("StudyMate.PlaybackInterfaceMode") private var playbackInterfaceMode: PlaybackInterfaceMode = .video
 
     @State private var searchText = ""
     @State private var dateFilter: SentenceLibraryDateFilter = .all
@@ -20,6 +23,9 @@ public struct SentenceLibraryView: View {
     @State private var confirmMove = false
     @State private var pendingMoveDestinationID: UUID?
     @State private var notice: SentenceLibraryNotice?
+    @State private var isPreparingStudy = false
+    @State private var showBatchTagPopover = false
+    @State private var showBatchSourcePopover = false
 
     private var learningPackageType: UTType {
         UTType(exportedAs: "com.studymate.learning-package", conformingTo: .data)
@@ -36,6 +42,10 @@ public struct SentenceLibraryView: View {
 
     private var selectedVisibleEntries: [SentenceLibraryEntry] {
         manager.entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var missingSelectedEntries: [SentenceLibraryEntry] {
+        selectedVisibleEntries.filter { $0.wordTokens == nil || $0.wordTokens?.isEmpty == true }
     }
 
     private var selectedEntryPosition: Int? {
@@ -89,7 +99,35 @@ public struct SentenceLibraryView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } detail: {
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Button {
+                        enterStudyMode()
+                    } label: {
+                        if isPreparingStudy {
+                            HStack(spacing: 5) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(lang.text("正在准备学习材料…", "Preparing study materials…"))
+                            }
+                        } else {
+                            Label(lang.text("进入学习", "Enter Study"), systemImage: "graduationcap.fill")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isPreparingStudy || manager.isWorking || manager.entries.isEmpty)
+                    .help(lang.text("以 5 大学习模式开始复习当前句库", "Start studying current library with 5 study modes"))
+
+                    Picker("", selection: Binding(
+                        get: { manager.typeFilter },
+                        set: { manager.setTypeFilter($0) }
+                    )) {
+                        Text(SentenceLibraryTypeFilter.all.localized(with: lang)).tag(SentenceLibraryTypeFilter.all)
+                        Text(SentenceLibraryTypeFilter.bookmarkedOnly.localized(with: lang)).tag(SentenceLibraryTypeFilter.bookmarkedOnly)
+                        Text(SentenceLibraryTypeFilter.withVocabularyOnly.localized(with: lang)).tag(SentenceLibraryTypeFilter.withVocabularyOnly)
+                    }
+                    .labelsHidden()
+                    .frame(width: 112)
+
                     Picker("", selection: $dateFilter) {
                         Text(lang.text("全部日期", "All Dates")).tag(SentenceLibraryDateFilter.all)
                         Text(lang.text("今天", "Today")).tag(SentenceLibraryDateFilter.today)
@@ -98,7 +136,7 @@ public struct SentenceLibraryView: View {
                         Text(lang.text("指定日期", "Specific Date")).tag(SentenceLibraryDateFilter.specificDay)
                     }
                     .labelsHidden()
-                    .frame(width: 130)
+                    .frame(width: 110)
 
                     if dateFilter == .specificDay {
                         DatePicker("", selection: $selectedDate, displayedComponents: .date)
@@ -113,14 +151,18 @@ public struct SentenceLibraryView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .frame(width: 130)
 
-                    Picker("", selection: $sortOrder) {
-                        Text(lang.text("最新入库", "Newest First")).tag(SentenceLibrarySortOrder.newestFirst)
-                        Text(lang.text("最早入库", "Oldest First")).tag(SentenceLibrarySortOrder.oldestFirst)
+                    Picker("", selection: Binding(
+                        get: { manager.sortOrder },
+                        set: { manager.setSortOrder($0) }
+                    )) {
+                        Text(SentenceLibrarySortOrder.newestFirst.localized(with: lang)).tag(SentenceLibrarySortOrder.newestFirst)
+                        Text(SentenceLibrarySortOrder.oldestFirst.localized(with: lang)).tag(SentenceLibrarySortOrder.oldestFirst)
+                        Text(SentenceLibrarySortOrder.originalIndexFirst.localized(with: lang)).tag(SentenceLibrarySortOrder.originalIndexFirst)
                     }
                     .labelsHidden()
-                    .frame(width: 110)
+                    .frame(width: 105)
 
                     Spacer(minLength: 8)
 
@@ -168,6 +210,75 @@ public struct SentenceLibraryView: View {
                         }
                         .disabled(manager.isWorking || selectedVisibleCount == 0)
 
+                        Button {
+                            showBatchTagPopover = true
+                        } label: {
+                            Label(lang.text("标签（\(selectedVisibleCount)）", "Tags (\(selectedVisibleCount))"), systemImage: "tag")
+                        }
+                        .disabled(manager.isWorking)
+                        .popover(isPresented: $showBatchTagPopover) {
+                            BatchTagEditorPopover(
+                                selectedCount: selectedVisibleCount,
+                                availableTags: manager.availableTags,
+                                onAddTags: { tagsToAdd in
+                                    let selectedIDs = selectedEntryIDs.intersection(visibleIDs)
+                                    Task {
+                                        try? await manager.batchAddTags(to: selectedIDs, tags: tagsToAdd)
+                                    }
+                                },
+                                onSetTags: { tagsToSet in
+                                    let selectedIDs = selectedEntryIDs.intersection(visibleIDs)
+                                    Task {
+                                        try? await manager.batchSetTags(for: selectedIDs, tags: tagsToSet)
+                                    }
+                                },
+                                onDismiss: {
+                                    showBatchTagPopover = false
+                                }
+                            )
+                        }
+
+                        Button {
+                            showBatchSourcePopover = true
+                        } label: {
+                            Label(lang.text("来源（\(selectedVisibleCount)）", "Source (\(selectedVisibleCount))"), systemImage: "play.rectangle")
+                        }
+                        .disabled(manager.isWorking)
+                        .popover(isPresented: $showBatchSourcePopover) {
+                            SentenceBatchSourceEditorPopover(
+                                selectedCount: selectedVisibleCount,
+                                availableSources: manager.availableSources,
+                                isPresented: $showBatchSourcePopover,
+                                onSave: { newSource in
+                                    let selectedIDs = selectedEntryIDs.intersection(visibleIDs)
+                                    Task {
+                                        try? await manager.batchUpdateSourceMediaName(
+                                            for: selectedIDs,
+                                            newSourceName: newSource
+                                        )
+                                    }
+                                }
+                            )
+                        }
+
+                        if !missingSelectedEntries.isEmpty {
+                            Button {
+                                if let libraryID = manager.currentLibraryID {
+                                    SentenceLibraryAlignmentService.shared.alignWordTokensForEntries(
+                                        entries: missingSelectedEntries,
+                                        libraryID: libraryID
+                                    )
+                                }
+                            } label: {
+                                Label(
+                                    lang.text("对齐时间戳（\(missingSelectedEntries.count)）", "Align Timestamps (\(missingSelectedEntries.count))"),
+                                    systemImage: "waveform.badge.magnifyingglass"
+                                )
+                            }
+                            .disabled(manager.isWorking || SentenceLibraryAlignmentService.shared.isAligning)
+                            .help(lang.text("使用 Whisper 为选中的句子批量补齐词级时间戳", "Batch align word timestamps using Whisper for selected sentences"))
+                        }
+
                         Button(role: .destructive) { deleteSelectedEntries() } label: {
                             Label(lang.text("删除（\(selectedVisibleCount)）", "Delete (\(selectedVisibleCount))"), systemImage: "trash")
                         }
@@ -200,6 +311,31 @@ public struct SentenceLibraryView: View {
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor))
 
+                if !manager.availableTags.isEmpty {
+                    Divider()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            TagCapsule(
+                                title: lang.text("全部标签", "All Tags"),
+                                isSelected: manager.selectedTag == nil,
+                                action: { manager.setSelectedTag(nil) }
+                            )
+                            ForEach(manager.availableTags, id: \.self) { tag in
+                                TagCapsule(
+                                    title: tag.hasPrefix("#") ? tag : "#\(tag)",
+                                    isSelected: manager.selectedTag == tag,
+                                    action: {
+                                        manager.setSelectedTag(manager.selectedTag == tag ? nil : tag)
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                    }
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                }
+
                 Divider()
 
                 SentenceLibraryPlaybackBar(
@@ -231,7 +367,15 @@ public struct SentenceLibraryView: View {
                                     previewURL: manager.previewURL(for: entry),
                                     isActive: selectedEntryID == entry.id,
                                     isChecked: selectedEntryIDs.contains(entry.id),
+                                    availableTags: manager.availableTags,
+                                    availableSources: manager.availableSources,
+                                    matchingSourceCount: entry.sourceMediaName.isEmpty ? 0 : manager.entries.filter { $0.sourceMediaName == entry.sourceMediaName }.count,
                                     onToggleCheck: { toggleSelection(entry.id) },
+                                    onToggleBookmark: {
+                                        Task {
+                                            try? await manager.toggleBookmark(id: entry.id)
+                                        }
+                                    },
                                     onSelect: {
                                         selectedEntryID = entry.id
                                         libraryPlayer.play(entry, mediaURL: manager.mediaURL(for: entry))
@@ -240,6 +384,30 @@ public struct SentenceLibraryView: View {
                                         if let previewURL = manager.previewURL(for: entry) {
                                             selectedEntryID = entry.id
                                             previewRequest = SentencePreviewRequest(url: previewURL, title: entry.originalText)
+                                        }
+                                    },
+                                    onUpdateTags: { tags in
+                                        try? await manager.updateTags(id: entry.id, tags: tags)
+                                    },
+                                    onUpdateSource: { newSource, applyToAll in
+                                        try? await manager.updateSourceMediaName(
+                                            entryID: entry.id,
+                                            oldSourceName: entry.sourceMediaName,
+                                            newSourceName: newSource,
+                                            applyToAllWithSameSource: applyToAll
+                                        )
+                                    },
+                                    onDelete: {
+                                        Task {
+                                            try? await manager.deleteEntries(ids: [entry.id])
+                                        }
+                                    },
+                                    onAlignTokens: {
+                                        if let libraryID = manager.currentLibraryID {
+                                            SentenceLibraryAlignmentService.shared.alignWordTokensForEntries(
+                                                entries: [entry],
+                                                libraryID: libraryID
+                                            )
                                         }
                                     },
                                     onSave: { originalText, translationText in
@@ -251,7 +419,6 @@ public struct SentenceLibraryView: View {
                                             )
                                             return true
                                         } catch {
-                                            // 更新失败已由管理器统一显示在主窗口状态栏。
                                             return false
                                         }
                                     }
@@ -544,6 +711,550 @@ public struct SentenceLibraryView: View {
         }
     }
 
+    private func enterStudyMode() {
+        guard !isPreparingStudy else { return }
+        guard let libraryID = manager.currentLibraryID else { return }
+        let entriesToStudy = selectedVisibleEntries.isEmpty ? manager.entries : selectedVisibleEntries
+        guard !entriesToStudy.isEmpty else { return }
+
+        // 如果当前是视频播放模式，进入句库学习时切换到列表模式以启用 5 大学习模式
+        if playbackInterfaceMode == .video {
+            playbackInterfaceMode = .list
+        }
+
+        isPreparingStudy = true
+        MainStatusCenter.shared.showInfo(
+            lang.text("正在准备学习材料…", "Preparing study materials…")
+        )
+
+        Task { @MainActor in
+            defer {
+                isPreparingStudy = false
+            }
+            do {
+                try await PlaybackEngine.shared.loadSentenceLibrary(
+                    libraryID: libraryID,
+                    entries: entriesToStudy,
+                    descriptor: manager.currentLibrary
+                )
+                if let mainWindow = NSApp.windows.first(where: {
+                    $0.identifier == NSUserInterfaceItemIdentifier("studymate-main-window")
+                }) {
+                    mainWindow.makeKeyAndOrderFront(nil)
+                } else {
+                    openWindow(id: "main")
+                }
+                dismissWindow(id: "welcome")
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    if let mainWindow = NSApp.windows.first(where: {
+                        $0.identifier == NSUserInterfaceItemIdentifier("studymate-main-window")
+                    }) {
+                        mainWindow.makeKeyAndOrderFront(nil)
+                    }
+                }
+                MainStatusCenter.shared.showSuccess(
+                    lang.text("已载入 \(entriesToStudy.count) 句进入学习模式", "Loaded \(entriesToStudy.count) sentences for study")
+                )
+            } catch {
+                notice = SentenceLibraryNotice(
+                    title: lang.text("进入学习失败", "Failed to Enter Study"),
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+}
+
+private struct TagCapsule: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(isSelected ? .semibold : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.12))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SentenceTagEditorPopover: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let initialTags: [String]
+    let availableTags: [String]
+    let onSave: ([String]) -> Void
+
+    @State private var tags: [String]
+    @State private var newTagText: String = ""
+
+    init(currentTags: [String], availableTags: [String], onSave: @escaping ([String]) -> Void) {
+        self.initialTags = currentTags
+        self.availableTags = availableTags
+        self.onSave = onSave
+        self._tags = State(initialValue: currentTags)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(lang.text("管理标签", "Manage Tags"), systemImage: "tag")
+                    .font(.headline)
+                Spacer()
+                if !tags.isEmpty {
+                    Text(lang.text("共 \(tags.count) 个标签", "\(tags.count) tags"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(lang.text("当前标签：", "Current Tags:"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                if tags.isEmpty {
+                    Text(lang.text("暂未添加任何标签", "No tags added yet"))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 2)
+                } else {
+                    FillInBlankFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                        ForEach(tags, id: \.self) { tag in
+                            HStack(spacing: 4) {
+                                Text(tag.hasPrefix("#") ? tag : "#\(tag)")
+                                    .font(.caption)
+                                Button {
+                                    removeTag(tag)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.leading, 8)
+                            .padding(.trailing, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                TextField(lang.text("输入标签名称（回车添加）", "Tag name (press Enter)"), text: $newTagText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        addNewTag()
+                    }
+
+                Button {
+                    addNewTag()
+                } label: {
+                    Image(systemName: "plus")
+                    Text(lang.text("添加", "Add"))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(newTagText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            let otherTags = availableTags.filter { !tags.contains($0) }
+            if !availableTags.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(lang.text("句库已有标签（点击快速添加）：", "Library Tags (Click to add):"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    if otherTags.isEmpty {
+                        Text(lang.text("所有已有标签已全部添加", "All library tags already added"))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        FillInBlankFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                            ForEach(otherTags, id: \.self) { tag in
+                                Button {
+                                    addExistingTag(tag)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "plus")
+                                            .font(.system(size: 9))
+                                        Text(tag.hasPrefix("#") ? tag : "#\(tag)")
+                                            .font(.caption)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.secondary.opacity(0.1))
+                                    .foregroundStyle(.primary)
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(minWidth: 300, idealWidth: 320, maxWidth: 360)
+    }
+
+    private func addNewTag() {
+        let trimmed = newTagText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !trimmed.isEmpty else { return }
+        if !tags.contains(trimmed) {
+            tags.append(trimmed)
+            onSave(tags)
+        }
+        newTagText = ""
+    }
+
+    private func addExistingTag(_ tag: String) {
+        if !tags.contains(tag) {
+            tags.append(tag)
+            onSave(tags)
+        }
+    }
+
+    private func removeTag(_ tag: String) {
+        tags.removeAll { $0 == tag }
+        onSave(tags)
+    }
+}
+
+private struct BatchTagEditorPopover: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let selectedCount: Int
+    let availableTags: [String]
+    let onAddTags: ([String]) -> Void
+    let onSetTags: ([String]) -> Void
+    let onDismiss: () -> Void
+
+    @State private var pendingTags: [String] = []
+    @State private var newTagText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(lang.text("批量标签设置", "Batch Tagging"), systemImage: "tag")
+                    .font(.headline)
+                Spacer()
+                Text(lang.text("已选 \(selectedCount) 句", "\(selectedCount) selected"))
+                    .font(.caption.bold())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.12))
+                    .foregroundStyle(Color.accentColor)
+                    .clipShape(Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(lang.text("要应用的标签：", "Tags to apply:"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                if pendingTags.isEmpty {
+                    Text(lang.text("在下方输入或点击已有标签以选择", "Enter below or click existing tags to select"))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 2)
+                } else {
+                    FillInBlankFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                        ForEach(pendingTags, id: \.self) { tag in
+                            HStack(spacing: 4) {
+                                Text(tag.hasPrefix("#") ? tag : "#\(tag)")
+                                    .font(.caption)
+                                Button {
+                                    pendingTags.removeAll { $0 == tag }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.leading, 8)
+                            .padding(.trailing, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                TextField(lang.text("新标签名称（回车添加）", "Tag name (press Enter)"), text: $newTagText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        addPendingTag()
+                    }
+
+                Button {
+                    addPendingTag()
+                } label: {
+                    Image(systemName: "plus")
+                    Text(lang.text("添加", "Add"))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(newTagText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !availableTags.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(lang.text("从句库已有标签选择：", "Select from library tags:"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    FillInBlankFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                        ForEach(availableTags, id: \.self) { tag in
+                            let isIncluded = pendingTags.contains(tag)
+                            Button {
+                                if isIncluded {
+                                    pendingTags.removeAll { $0 == tag }
+                                } else {
+                                    pendingTags.append(tag)
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: isIncluded ? "checkmark" : "plus")
+                                        .font(.system(size: 9))
+                                    Text(tag.hasPrefix("#") ? tag : "#\(tag)")
+                                        .font(.caption)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(isIncluded ? Color.accentColor : Color.secondary.opacity(0.1))
+                                .foregroundStyle(isIncluded ? Color.white : Color.primary)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button {
+                    onAddTags(pendingTags)
+                    onDismiss()
+                } label: {
+                    Text(lang.text("追加标签", "Append Tags"))
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(pendingTags.isEmpty)
+                .help(lang.text("为选中的句子保留原有标签，并追加选定标签", "Keep existing tags on selected sentences and append chosen tags"))
+
+                Button {
+                    onSetTags(pendingTags)
+                    onDismiss()
+                } label: {
+                    Text(lang.text("覆盖标签", "Replace Tags"))
+                }
+                .buttonStyle(.bordered)
+                .help(lang.text("将选中句子的标签全部替换为选定标签", "Replace all tags on selected sentences with chosen tags"))
+
+                Spacer()
+
+                Button(lang.text("取消", "Cancel")) {
+                    onDismiss()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(minWidth: 320, idealWidth: 350, maxWidth: 400)
+    }
+
+    private func addPendingTag() {
+        let trimmed = newTagText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !trimmed.isEmpty else { return }
+        if !pendingTags.contains(trimmed) {
+            pendingTags.append(trimmed)
+        }
+        newTagText = ""
+    }
+}
+
+/// 单句来源编辑弹窗（支持直接输入、已有来源快速选择、以及勾选同步应用到来自该来源的所有句子）
+private struct SentenceSourceEditorPopover: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let initialSource: String
+    let availableSources: [String]
+    let matchingSentenceCount: Int?
+    @Binding var isPresented: Bool
+    let onSave: (String, Bool) -> Void
+
+    @State private var sourceText: String
+    @State private var applyToAllMatching: Bool
+
+    init(
+        initialSource: String,
+        availableSources: [String],
+        matchingSentenceCount: Int? = nil,
+        isPresented: Binding<Bool>,
+        onSave: @escaping (String, Bool) -> Void
+    ) {
+        self.initialSource = initialSource
+        self.availableSources = availableSources
+        self.matchingSentenceCount = matchingSentenceCount
+        self._isPresented = isPresented
+        self.onSave = onSave
+        self._sourceText = State(initialValue: initialSource)
+        self._applyToAllMatching = State(initialValue: !initialSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(lang.text("修改句子来源", "Edit Sentence Source"))
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(
+                    lang.text("输入来源名称（如：老友记 S01E01）", "Enter source name (e.g. Friends S01E01)"),
+                    text: $sourceText
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
+
+                let otherSources = availableSources.filter { $0 != initialSource && !$0.isEmpty }
+                if !otherSources.isEmpty {
+                    Menu {
+                        ForEach(otherSources, id: \.self) { source in
+                            Button(source) {
+                                sourceText = source
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(lang.text("从已有来源中选择…", "Choose from existing sources…"))
+                                .font(.caption)
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+            }
+
+            if !initialSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Toggle(isOn: $applyToAllMatching) {
+                    if let count = matchingSentenceCount, count > 1 {
+                        Text(lang.text("同时应用到来自该来源的所有句子（共 \(count) 句）", "Apply to all sentences from this source (\(count) sentences)"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(lang.text("同时应用到来自该来源的所有句子", "Apply to all sentences from this source"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+            }
+
+            HStack {
+                Button(lang.text("取消", "Cancel")) {
+                    isPresented = false
+                }
+                Spacer()
+                Button(lang.text("保存", "Save")) {
+                    isPresented = false
+                    let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onSave(trimmed, applyToAllMatching)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+        .frame(width: 290)
+    }
+}
+
+/// 批量修改句子来源弹窗
+private struct SentenceBatchSourceEditorPopover: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let selectedCount: Int
+    let availableSources: [String]
+    @Binding var isPresented: Bool
+    let onSave: (String) -> Void
+
+    @State private var sourceText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(lang.text("批量修改来源（已选 \(selectedCount) 句）", "Batch Edit Source (\(selectedCount) selected)"))
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(
+                    lang.text("输入新来源名称", "Enter new source name"),
+                    text: $sourceText
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
+
+                let validSources = availableSources.filter { !$0.isEmpty }
+                if !validSources.isEmpty {
+                    Menu {
+                        ForEach(validSources, id: \.self) { source in
+                            Button(source) {
+                                sourceText = source
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(lang.text("从已有来源中选择…", "Choose from existing sources…"))
+                                .font(.caption)
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+            }
+
+            HStack {
+                Button(lang.text("取消", "Cancel")) {
+                    isPresented = false
+                }
+                Spacer()
+                Button(lang.text("保存", "Save")) {
+                    isPresented = false
+                    let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onSave(trimmed)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+        .frame(width: 290)
+    }
 }
 
 private struct SentenceLibraryEntryRow: View {
@@ -553,12 +1264,24 @@ private struct SentenceLibraryEntryRow: View {
     let previewURL: URL?
     let isActive: Bool
     let isChecked: Bool
+    let availableTags: [String]
+    let availableSources: [String]
+    let matchingSourceCount: Int
     let onToggleCheck: () -> Void
+    let onToggleBookmark: () -> Void
     let onSelect: () -> Void
     let onPreview: () -> Void
+    let onUpdateTags: ([String]) async -> Void
+    let onUpdateSource: (String, Bool) async -> Void
+    let onDelete: () -> Void
+    let onAlignTokens: (() -> Void)?
     let onSave: (String, String) async -> Bool
     @State private var isEditing = false
     @State private var editSessionID = UUID()
+    @State private var showContextPopover = false
+    @State private var showTagPopover = false
+    @State private var showSourcePopover = false
+    @State private var isHoveringSource = false
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -568,10 +1291,20 @@ private struct SentenceLibraryEntryRow: View {
     }()
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggleCheck() }))
-                .toggleStyle(.checkbox)
-            .labelsHidden()
+        HStack(alignment: .top, spacing: 10) {
+            VStack(spacing: 8) {
+                Toggle("", isOn: Binding(get: { isChecked }, set: { _ in onToggleCheck() }))
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+
+                Button(action: onToggleBookmark) {
+                    Image(systemName: entry.isBookmarked ? "star.fill" : "star")
+                        .foregroundStyle(entry.isBookmarked ? Color.yellow : Color.secondary.opacity(0.4))
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .help(entry.isBookmarked ? lang.text("取消星标难句", "Unstar") : lang.text("加入星标难句", "Star"))
+            }
 
             HStack(alignment: .top, spacing: 12) {
                 Text("#\(number)")
@@ -581,17 +1314,17 @@ private struct SentenceLibraryEntryRow: View {
 
                 Button(action: onPreview) {
                     SentenceLibraryThumbnail(previewURL: previewURL)
-                    .frame(width: 132, height: 74)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(alignment: .bottomTrailing) {
-                        if previewURL != nil {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.caption2.weight(.semibold))
-                                .padding(5)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
-                                .padding(5)
+                        .frame(width: 132, height: 74)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(alignment: .bottomTrailing) {
+                            if previewURL != nil {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(5)
+                                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                                    .padding(5)
+                            }
                         }
-                    }
                 }
                 .buttonStyle(.plain)
                 .disabled(previewURL == nil)
@@ -609,6 +1342,43 @@ private struct SentenceLibraryEntryRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            if !entry.effectiveSpeakerLabel.isEmpty {
+                                Text(entry.effectiveSpeakerLabel)
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .foregroundStyle(Color.accentColor)
+                                    .clipShape(Capsule())
+                            }
+                            if let words = entry.associatedWords, !words.isEmpty {
+                                Label("\(words.count)", systemImage: "text.book.closed")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.purple.opacity(0.12))
+                                    .foregroundStyle(Color.purple)
+                                    .clipShape(Capsule())
+                                    .help(words.map(\.word).joined(separator: ", "))
+                            }
+                            ForEach(entry.tags, id: \.self) { tag in
+                                Button {
+                                    showTagPopover = true
+                                } label: {
+                                    Text(tag.hasPrefix("#") ? tag : "#\(tag)")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(Color.secondary.opacity(0.12))
+                                        .foregroundStyle(.secondary)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .help(lang.text("点击管理标签", "Click to manage tags"))
+                            }
+                        }
+
                         if !entry.originalText.isEmpty {
                             Text(entry.originalText)
                                 .font(.body)
@@ -618,13 +1388,101 @@ private struct SentenceLibraryEntryRow: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
                             Label(Self.dateFormatter.string(from: entry.createdAt), systemImage: "calendar")
-                            if !entry.sourceMediaName.isEmpty {
-                                Label(entry.sourceMediaName, systemImage: "play.rectangle")
-                                    .lineLimit(1)
+
+                            // 原片坐标元数据标识：来源：阿甘正传.mp4 · #88 (00:15:23)
+                            HStack(spacing: 4) {
+                                Text(lang.text("来源：", "Source: "))
+                                    .foregroundStyle(.secondary)
+
+                                Button {
+                                    showSourcePopover = true
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "play.rectangle")
+                                            .font(.caption2)
+                                        Text(entry.sourceMediaName.isEmpty ? lang.text("设置来源", "Set Source") : entry.sourceMediaName)
+                                            .lineLimit(1)
+                                    }
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(isHoveringSource ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12))
+                                    .foregroundStyle(isHoveringSource ? Color.accentColor : Color.secondary)
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .onHover { isHoveringSource = $0 }
+                                .help(lang.text("点击修改来源（支持同步更新同来源句子）", "Click to edit source (supports batch updating)"))
+                                .popover(isPresented: $showSourcePopover, arrowEdge: .bottom) {
+                                    SentenceSourceEditorPopover(
+                                        initialSource: entry.sourceMediaName,
+                                        availableSources: availableSources,
+                                        matchingSentenceCount: matchingSourceCount,
+                                        isPresented: $showSourcePopover,
+                                        onSave: { newSource, applyToAll in
+                                            Task {
+                                                await onUpdateSource(newSource, applyToAll)
+                                            }
+                                        }
+                                    )
+                                }
+
+                                if entry.originalIndex > 0 {
+                                    Text("·")
+                                        .foregroundStyle(.tertiary)
+                                    Text("原#\(entry.originalIndex)")
+                                        .font(.caption.monospacedDigit().weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            Text("\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))")
+
+                            // 句子起止时间戳与时长（完整保留时间范围，直观显示句子时长）
+                            let duration = max(0, entry.endTime - entry.startTime)
+                            let durationText = String(format: "%.1fs", duration)
+                            Text("\(SentenceSegment.formatCoordinateTime(entry.startTime)) – \(SentenceSegment.formatCoordinateTime(entry.endTime)) (\(durationText))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .help(lang.text("原片区间：\(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime))（时长 \(durationText)）", "Time range: \(SentenceSegment.formatTimecode(entry.startTime)) – \(SentenceSegment.formatTimecode(entry.endTime)) (\(durationText))"))
+
+                            if entry.contextBefore != nil || entry.contextAfter != nil {
+                                Button {
+                                    showContextPopover = true
+                                } label: {
+                                    Label(lang.text("语境", "Context"), systemImage: "bubble.left.and.bubble.right")
+                                        .font(.caption2)
+                                }
+                                .buttonStyle(.borderless)
+                                .popover(isPresented: $showContextPopover) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(lang.text("原片语境快照", "Context Snapshot"))
+                                            .font(.caption.bold())
+                                            .foregroundStyle(.secondary)
+                                        if let before = entry.contextBefore, !before.isEmpty {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(lang.text("前文：", "Before:"))
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                                Text(before)
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        if let after = entry.contextAfter, !after.isEmpty {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(lang.text("后文：", "After:"))
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                                Text(after)
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .padding(12)
+                                    .frame(minWidth: 260, maxWidth: 360)
+                                }
+                            }
                         }
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -638,6 +1496,28 @@ private struct SentenceLibraryEntryRow: View {
             }
 
             if !isEditing {
+                Button {
+                    showTagPopover = true
+                } label: {
+                    Image(systemName: entry.tags.isEmpty ? "tag" : "tag.fill")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(entry.tags.isEmpty ? Color.secondary : Color.accentColor)
+                .help(lang.text("管理标签", "Manage tags"))
+                .accessibilityLabel(lang.text("管理标签", "Manage tags"))
+                .popover(isPresented: $showTagPopover) {
+                    SentenceTagEditorPopover(
+                        currentTags: entry.tags,
+                        availableTags: availableTags,
+                        onSave: { updated in
+                            Task {
+                                await onUpdateTags(updated)
+                            }
+                        }
+                    )
+                }
+
                 Button {
                     editSessionID = UUID()
                     isEditing = true
@@ -657,6 +1537,71 @@ private struct SentenceLibraryEntryRow: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isActive ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 1)
+        }
+        .contextMenu {
+            Button {
+                showTagPopover = true
+            } label: {
+                Label(lang.text("管理标签…", "Manage Tags…"), systemImage: "tag")
+            }
+
+            Button {
+                showSourcePopover = true
+            } label: {
+                Label(lang.text("修改来源…", "Edit Source…"), systemImage: "play.rectangle")
+            }
+
+            Button(action: onToggleBookmark) {
+                Label(
+                    entry.isBookmarked ? lang.text("取消星标难句", "Unstar Sentence") : lang.text("加入星标难句", "Star Sentence"),
+                    systemImage: entry.isBookmarked ? "star.slash" : "star"
+                )
+            }
+
+            Button {
+                editSessionID = UUID()
+                isEditing = true
+            } label: {
+                Label(lang.text("修改原文和译文", "Edit Original & Translation"), systemImage: "pencil")
+            }
+
+            if entry.wordTokens == nil || entry.wordTokens?.isEmpty == true {
+                Button {
+                    onAlignTokens?()
+                } label: {
+                    Label(
+                        lang.text("对齐词级时间戳 (Whisper)", "Align Word Timestamps (Whisper)"),
+                        systemImage: "waveform.badge.magnifyingglass"
+                    )
+                }
+                .disabled(SentenceLibraryAlignmentService.shared.isAligning)
+            }
+
+            Divider()
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(entry.originalText, forType: .string)
+                MainStatusCenter.shared.showSuccess(lang.text("已复制原文", "Copied original text"))
+            } label: {
+                Label(lang.text("复制原文", "Copy Original Text"), systemImage: "doc.on.doc")
+            }
+
+            if !entry.translation.isEmpty {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(entry.translation, forType: .string)
+                    MainStatusCenter.shared.showSuccess(lang.text("已复制译文", "Copied translation"))
+                } label: {
+                    Label(lang.text("复制译文", "Copy Translation"), systemImage: "doc.on.doc")
+                }
+            }
+
+            Divider()
+
+            Button(role: .destructive, action: onDelete) {
+                Label(lang.text("从句库删除", "Delete from Library"), systemImage: "trash")
+            }
         }
     }
 }

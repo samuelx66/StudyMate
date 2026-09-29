@@ -25,12 +25,13 @@ require_tool() {
     }
 }
 
-for tool in swift otool install_name_tool codesign actool ditto lipo; do
+for tool in swift otool install_name_tool codesign actool ditto lipo hdiutil; do
     require_tool "${tool}"
 done
 
 SYNC_DICT=0
 GEN_ZIP=0
+GEN_DMG=0
 for arg in "$@"; do
     case "${arg}" in
         --sync-dict|--sync|-s)
@@ -38,6 +39,18 @@ for arg in "$@"; do
             ;;
         --zip|-z)
             GEN_ZIP=1
+            ;;
+        --dmg|-d)
+            GEN_DMG=1
+            ;;
+        --help|-h)
+            echo "用法: $0 [选项]"
+            echo "选项:"
+            echo "  -s, --sync-dict, --sync  同步外部词典应用与核心模块"
+            echo "  -z, --zip                生成 .zip 归档（dev 分支默认仅生成 .app）"
+            echo "  -d, --dmg                生成 .dmg 安装镜像（支持直接拖入 Applications 目录）"
+            echo "  -h, --help               显示帮助信息"
+            exit 0
             ;;
     esac
 done
@@ -386,24 +399,79 @@ codesign "${SIGN_OPTIONS[@]}" "${APP_BUNDLE}"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 
 CURRENT_BRANCH="$(git branch --show-current)"
-if [[ "${CURRENT_BRANCH}" == "dev" && "${GEN_ZIP}" -ne 1 && "${FORCE_ZIP:-0}" -ne 1 ]]; then
-    echo "dev 分支默认仅生成 .app，不生成 zip：${APP_BUNDLE}"
+DO_ZIP=0
+if [[ "${CURRENT_BRANCH}" != "dev" || "${GEN_ZIP}" -eq 1 || "${FORCE_ZIP:-0}" -eq 1 ]]; then
+    DO_ZIP=1
+fi
+
+DO_DMG=0
+if [[ "${GEN_DMG}" -eq 1 ]]; then
+    DO_DMG=1
+fi
+
+if [[ "${DO_ZIP}" -eq 0 && "${DO_DMG}" -eq 0 ]]; then
+    echo "dev 分支默认仅生成 .app，不生成 zip 或 dmg：${APP_BUNDLE}"
     ls -lh "${APP_BUNDLE}"
     exit 0
 fi
 
-ZIP_PATH="${DIST_DIR}/${APP_NAME}-v${VERSION}-macOS-${ARCH_LABEL}.zip"
-rm -f "${ZIP_PATH}"
-ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_PATH}"
-
-if [[ -n "${NOTARY_PROFILE}" ]]; then
-    [[ "${SIGN_IDENTITY}" != "-" ]] || { echo "公证要求设置 Developer ID CODESIGN_IDENTITY。" >&2; exit 1; }
-    echo "=== 7. 提交 Apple 公证并装订 ==="
-    xcrun notarytool submit "${ZIP_PATH}" --keychain-profile "${NOTARY_PROFILE}" --wait
-    xcrun stapler staple "${APP_BUNDLE}"
+if [[ "${DO_ZIP}" -eq 1 ]]; then
+    ZIP_PATH="${DIST_DIR}/${APP_NAME}-v${VERSION}-macOS-${ARCH_LABEL}.zip"
     rm -f "${ZIP_PATH}"
     ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_PATH}"
+
+    if [[ -n "${NOTARY_PROFILE}" ]]; then
+        [[ "${SIGN_IDENTITY}" != "-" ]] || { echo "公证要求设置 Developer ID CODESIGN_IDENTITY。" >&2; exit 1; }
+        echo "=== 7. 提交 ZIP Apple 公证并装订 ==="
+        xcrun notarytool submit "${ZIP_PATH}" --keychain-profile "${NOTARY_PROFILE}" --wait
+        xcrun stapler staple "${APP_BUNDLE}"
+        rm -f "${ZIP_PATH}"
+        ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_PATH}"
+    fi
+
+    echo "ZIP 发布包已生成：${ZIP_PATH}"
+    ls -lh "${ZIP_PATH}"
 fi
 
-echo "发布包已生成：${ZIP_PATH}"
-ls -lh "${APP_BUNDLE}" "${ZIP_PATH}"
+if [[ "${DO_DMG}" -eq 1 ]]; then
+    echo "=== 7.1 生成 DMG 安装镜像（支持直接拖入 Applications 目录） ==="
+    DMG_PATH="${DIST_DIR}/${APP_NAME}-v${VERSION}-macOS-${ARCH_LABEL}.dmg"
+    rm -f "${DMG_PATH}"
+
+    DMG_STAGING_DIR="${DIST_DIR}/dmg_staging_${APP_NAME}"
+    rm -rf "${DMG_STAGING_DIR}"
+    mkdir -p "${DMG_STAGING_DIR}"
+
+    ditto "${APP_BUNDLE}" "${DMG_STAGING_DIR}/${APP_NAME}.app"
+    ln -s /Applications "${DMG_STAGING_DIR}/Applications"
+
+    if [[ -f "${RESOURCES_DIR}/AppIcon.icns" ]]; then
+        cp "${RESOURCES_DIR}/AppIcon.icns" "${DMG_STAGING_DIR}/.VolumeIcon.icns"
+        if command -v SetFile >/dev/null 2>&1; then
+            SetFile -c icnC "${DMG_STAGING_DIR}/.VolumeIcon.icns" 2>/dev/null || true
+            SetFile -a C "${DMG_STAGING_DIR}" 2>/dev/null || true
+        fi
+    fi
+
+    if command -v diskutil >/dev/null 2>&1 && diskutil help image create >/dev/null 2>&1; then
+        diskutil image create from --volumeName "${APP_NAME}" --format UDZO "${DMG_STAGING_DIR}" "${DMG_PATH}"
+    else
+        hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGING_DIR}" -ov -format UDZO "${DMG_PATH}"
+    fi
+    rm -rf "${DMG_STAGING_DIR}"
+
+    codesign "${SIGN_OPTIONS[@]}" "${DMG_PATH}"
+
+    if [[ -n "${NOTARY_PROFILE}" ]]; then
+        [[ "${SIGN_IDENTITY}" != "-" ]] || { echo "公证要求设置 Developer ID CODESIGN_IDENTITY。" >&2; exit 1; }
+        echo "=== 提交 DMG Apple 公证并装订 ==="
+        xcrun notarytool submit "${DMG_PATH}" --keychain-profile "${NOTARY_PROFILE}" --wait
+        xcrun stapler staple "${DMG_PATH}"
+    fi
+
+    echo "DMG 发布包已生成：${DMG_PATH}"
+    ls -lh "${DMG_PATH}"
+fi
+
+echo "=== 打包发布流程完成 ==="
+ls -lh "${APP_BUNDLE}"

@@ -85,4 +85,57 @@ final class SentenceSegmentTests: XCTestCase {
         XCTAssertFalse(PlaybackInterfaceMode.fillInBlank.localized(with: lang).isEmpty)
         XCTAssertFalse(PlaybackInterfaceMode.reverseTranslation.localized(with: lang).isEmpty)
     }
+
+    func testFormatCoordinateTime() {
+        XCTAssertEqual(SentenceSegment.formatCoordinateTime(0.0), "00:00:00")
+        XCTAssertEqual(SentenceSegment.formatCoordinateTime(923.45), "00:15:23")
+        XCTAssertEqual(SentenceSegment.formatCoordinateTime(3665.0), "01:01:05")
+    }
+
+    func testFormattedCoordinate() {
+        // 1. 完整坐标：来源 + 原片序号 + 时间戳
+        let segFull = SentenceSegment(
+            index: 1,
+            originalIndex: 88,
+            startTime: 0.0,
+            endTime: 5.0,
+            text: "Life is like a box of chocolates.",
+            sourceMediaName: "阿甘正传.mp4",
+            sourceStartTime: 923.0
+        )
+        XCTAssertEqual(segFull.formattedCoordinate(language: .zh), "来源：阿甘正传.mp4 · 原#88 (00:15:23)")
+        XCTAssertEqual(segFull.formattedCoordinate(language: .en), "Source: 阿甘正传.mp4 · #88 (00:15:23)")
+
+        // 2. 来源 + 时间戳（无原序号）
+        let segNoIdx = SentenceSegment(
+            index: 2,
+            startTime: 0.0,
+            endTime: 3.0,
+            text: "Hello",
+            sourceMediaName: "阿甘正传.mp4",
+            sourceStartTime: 125.0
+        )
+        XCTAssertEqual(segNoIdx.formattedCoordinate(language: .zh), "来源：阿甘正传.mp4 (00:02:05)")
+        XCTAssertEqual(segNoIdx.formattedCoordinate(language: .en), "Source: 阿甘正传.mp4 (00:02:05)")
+
+        // 3. 原序号 + 时间戳（无来源名称）
+        let segNoMedia = SentenceSegment(
+            index: 3,
+            originalIndex: 88,
+            startTime: 923.0,
+            endTime: 928.0,
+            text: "Hello"
+        )
+        XCTAssertEqual(segNoMedia.formattedCoordinate(language: .zh), "原片 #88 (00:15:23)")
+        XCTAssertEqual(segNoMedia.formattedCoordinate(language: .en), "Orig #88 (00:15:23)")
+
+        // 4. 两者皆无：返回 nil
+        let segPlain = SentenceSegment(
+            index: 4,
+            startTime: 10.0,
+            endTime: 15.0,
+            text: "Plain"
+        )
+        XCTAssertNil(segPlain.formattedCoordinate(language: .zh))
+    }
 }

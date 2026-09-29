@@ -30,6 +30,10 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(result.count, 2)
         XCTAssertEqual(result[0].text, "Hello there.")
         XCTAssertEqual(result[1].text, "How are you?")
+        XCTAssertEqual(result[0].wordTokens?.count, 2)
+        XCTAssertEqual(result[0].wordTokens?[0].text, "Hello")
+        XCTAssertEqual(result[0].wordTokens?[1].text, "there.")
+        XCTAssertEqual(result[1].wordTokens?.count, 3)
         XCTAssertLessThanOrEqual(result[0].endTime, result[1].startTime)
     }
 

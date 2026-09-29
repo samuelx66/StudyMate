@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+#if canImport(StudyMatePackage)
+import StudyMatePackage
+#endif
 
 /// 句子模式主视图（Sentence Mode View）
 ///
@@ -15,6 +18,8 @@ public struct PlaybackSentenceModeView: View {
     @ObservedObject private var activeSegmentState: ActiveSegmentPresentationState
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
+    @ObservedObject private var phoneticManager: PhoneticEngineManager = .shared
+    @ObservedObject private var clock: PlaybackClock
 
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
@@ -28,6 +33,7 @@ public struct PlaybackSentenceModeView: View {
         self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
+        self._clock = ObservedObject(wrappedValue: engine.clock)
     }
 
     /// 当前激活的断句段落；若尚未定位，默认显示第一句
@@ -57,6 +63,13 @@ public struct PlaybackSentenceModeView: View {
             bottomPlaybackControlBar
         }
         .background(StudyMateMediaStyle.windowBackground)
+        .background(
+            Button("") {
+                phoneticManager.togglePhonetics()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .option])
+            .opacity(0)
+        )
     }
 
     // MARK: - 句子显示主区域
@@ -70,13 +83,28 @@ public struct PlaybackSentenceModeView: View {
 
                     PlaybackSentenceCardView(
                         seg: seg,
+                        currentTime: clock.currentTime,
                         showOriginal: videoSubtitleSettings.isOriginalVisible(for: .sentence),
                         showTranslation: videoSubtitleSettings.isTranslationVisible(for: .sentence),
+                        showPhonetics: phoneticManager.showPhonetics,
                         originalFont: videoSubtitleSettings.makeOriginalFont(for: .sentence),
                         originalColor: videoSubtitleSettings.originalNSColor(for: .sentence),
                         translationFont: videoSubtitleSettings.makeTranslationFont(for: .sentence),
                         translationColor: videoSubtitleSettings.translationNSColor(for: .sentence),
                         language: lang.currentLanguage,
+                        onToggleBookmark: {
+                            engine.toggleBookmark(for: seg.id)
+                        },
+                        onSeekToToken: { offset in
+                            engine.seek(to: seg.startTime + offset)
+                            engine.play()
+                        },
+                        onRegenerateTokens: {
+                            engine.regenerateOriginalText(segmentIDs: [seg.id])
+                        },
+                        onRenameSpeaker: { fromRole, toName in
+                            engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                        },
                         onSelect: {
                             engine.jumpToSegment(id: seg.id)
                         },
@@ -128,22 +156,62 @@ public struct PlaybackSentenceModeView: View {
 
 // MARK: - 单句展示卡片（Equatable 隔离高频刷新，极简无多余修饰）
 
-private struct PlaybackSentenceCardView: View, Equatable {
+struct PlaybackSentenceCardView: View, Equatable {
     let seg: SentenceSegment
+    let currentTime: Double
     let showOriginal: Bool
     let showTranslation: Bool
+    let showPhonetics: Bool
     let originalFont: NSFont
     let originalColor: NSColor
     let translationFont: NSFont
     let translationColor: NSColor
     let language: AppLanguage
+    let onToggleBookmark: () -> Void
+    let onSeekToToken: (Double) -> Void
+    let onRegenerateTokens: () -> Void
+    let onRenameSpeaker: ((String, String) -> Void)?
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
 
+    @State private var isShowingRenamePopover: Bool = false
+    @State private var renameText: String = ""
+    @State private var isShowingContextPopover: Bool = false
+    @State private var selectedVocabCard: StudyMatePackageVocabularyCard? = nil
+
+    static func activeTokenIndex(for tokens: [StudyMatePackageWordToken]?, baseTime: Double, time: Double) -> Int? {
+        guard let tokens, !tokens.isEmpty else { return nil }
+        let relTime = time - baseTime
+        guard relTime >= 0 else { return nil }
+
+        for (i, token) in tokens.enumerated() {
+            // 在当前词自身的时间区间内
+            if relTime >= token.startTime && relTime < token.endTime {
+                return i
+            }
+            // 在与下一词之间微小的停顿间隙中（<= 0.35s），平滑维持当前词的高亮，避免词间跳闪
+            if i + 1 < tokens.count {
+                let nextToken = tokens[i + 1]
+                if relTime >= token.endTime && relTime < nextToken.startTime && (nextToken.startTime - token.endTime) <= 0.35 {
+                    return i
+                }
+            } else {
+                // 句末最后一个词，延展 0.25 秒平滑过渡
+                if relTime >= token.endTime && relTime < token.endTime + 0.25 {
+                    return i
+                }
+            }
+        }
+        return nil
+    }
+
     static func == (lhs: PlaybackSentenceCardView, rhs: PlaybackSentenceCardView) -> Bool {
         lhs.seg == rhs.seg
+            && Self.activeTokenIndex(for: lhs.seg.wordTokens, baseTime: lhs.seg.startTime, time: lhs.currentTime)
+                == Self.activeTokenIndex(for: rhs.seg.wordTokens, baseTime: rhs.seg.startTime, time: rhs.currentTime)
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
+            && lhs.showPhonetics == rhs.showPhonetics
             && lhs.originalFont == rhs.originalFont
             && lhs.originalColor == rhs.originalColor
             && lhs.translationFont == rhs.translationFont
@@ -165,23 +233,183 @@ private struct PlaybackSentenceCardView: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // 顶部元数据指示栏：序号、原片时序坐标、角色、难句收藏、语境快照
+            HStack(spacing: 8) {
+                Text("#\(seg.index)")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundColor(StudyMateMediaStyle.accent)
+
+                if let coordinate = seg.formattedCoordinate(language: language) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.rectangle")
+                            .font(.system(size: 9))
+                        Text(coordinate)
+                            .font(.system(size: 11, design: .monospaced))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.1))
+                    .clipShape(Capsule())
+                    .help(language == .en ? "Original media coordinate (source, sequence number, timestamp)" : "原片时序坐标（来源媒体、原片序号、时间戳）")
+                } else if let origIdx = seg.originalIndex, origIdx > 0 {
+                    Text(language == .en ? "Orig #\(origIdx)" : "原#\(origIdx)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+
+                if !seg.speakerRoleLabel.isEmpty {
+                    SpeakerBadgeButton(
+                        speakerRoleLabel: seg.speakerRoleLabel,
+                        speakerRole: seg.speakerRole,
+                        isOverlap: seg.isSpeakerOverlap,
+                        font: .system(size: 11, weight: .bold, design: .monospaced),
+                        tintColor: StudyMateMediaStyle.accent,
+                        shape: .capsule,
+                        language: language,
+                        onSave: { fromRole, toName in
+                            onRenameSpeaker?(fromRole, toName)
+                        }
+                    )
+                }
+
+                Button(action: onToggleBookmark) {
+                    Image(systemName: seg.isBookmarked ? "star.fill" : "star")
+                        .font(.system(size: 12))
+                        .foregroundColor(seg.isBookmarked ? .yellow : .secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help(language == .en ? "Toggle bookmark" : "切换星标难句")
+
+                if seg.contextBefore != nil || seg.contextAfter != nil {
+                    Button {
+                        isShowingContextPopover.toggle()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "quote.opening")
+                                .font(.system(size: 10))
+                            Text(language == .en ? "Context" : "语境")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(language == .en ? "Show surrounding context snapshot" : "查看前后文语境快照")
+                    .popover(isPresented: $isShowingContextPopover, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(language == .en ? "Surrounding Context" : "前后文语境快照")
+                                .font(.headline)
+                                .padding(.bottom, 2)
+
+                            if let before = seg.contextBefore, !before.isEmpty {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(language == .en ? "Previous Sentence:" : "前文语境：")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(before)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(language == .en ? "Current Sentence:" : "当前句子：")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(seg.text)
+                                    .font(.subheadline)
+                                    .bold()
+                                    .foregroundColor(StudyMateMediaStyle.accent)
+                            }
+
+                            if let after = seg.contextAfter, !after.isEmpty {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(language == .en ? "Next Sentence:" : "后文语境：")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(after)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .frame(width: 320)
+                    }
+                }
+
+                Button {
+                    PhoneticEngineManager.shared.togglePhonetics()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "character.phonetic")
+                            .font(.system(size: 10))
+                        Text(language == .en ? "Phonetics" : "注音")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(showPhonetics ? StudyMateMediaStyle.accent : .secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(showPhonetics ? StudyMateMediaStyle.accent.opacity(0.15) : Color.secondary.opacity(0.1))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(language == .en ? "Toggle phonetics (⌥⌘P)" : "切换注音显示 (⌥⌘P)")
+
+                if let tokens = seg.wordTokens, !tokens.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "waveform.and.mic")
+                            .font(.system(size: 10))
+                        Text(language == .en ? "\(tokens.count) Words" : "\(tokens.count) 词同步")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(StudyMateMediaStyle.accent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(StudyMateMediaStyle.accent.opacity(0.12))
+                    .clipShape(Capsule())
+                    .help(language == .en ? "Whisper word timestamps active: real-time highlight during playback, click word to play." : "Whisper 词级时间戳已启用：播放时实时卡拉OK高亮，点击下方任意单词即刻发音。")
+                } else {
+                    Button(action: onRegenerateTokens) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "waveform.badge.plus")
+                                .font(.system(size: 10))
+                            Text(language == .en ? "Word Sync" : "识别词级时间戳")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(language == .en ? "Use Whisper to recognize word-level timestamps for this sentence" : "使用 Whisper 识别当前句子的词级时间戳，开启卡拉OK发音同步")
+                }
+
+                Spacer()
+            }
+
             if showOriginal && showTranslation {
                 // 原文和译文都显示时：分为两行展示
-                // 第一行：序号 + 原文（同一行，用空格隔开，如 "#16 Hello world"）
-                originalTextView(prefix: "#\(seg.index) ")
+                renderOriginalSection()
 
-                // 第二行：译文（纯译文，左对齐）
                 if !transText.isEmpty {
                     translationTextView(prefix: "")
                 }
             } else if showOriginal {
-                // 仅显示原文：单行/自然换行展示 序号 + 原文（用空格隔开）
-                originalTextView(prefix: "#\(seg.index) ")
+                renderOriginalSection()
             } else if showTranslation {
-                // 仅显示译文：单行/自然换行展示 序号 + 译文（用空格隔开）
                 translationTextView(prefix: "#\(seg.index) ")
             } else {
-                // 原文与译文均隐藏时的简洁提示
                 let hiddenNotice = (language == .en)
                     ? "Subtitles hidden (toggle with ⌥⌘O / ⌥⌘T)"
                     : "原文与译文均已隐藏（可通过工具栏或快捷键 ⌥⌘O / ⌥⌘T 重新显示）"
@@ -190,9 +418,189 @@ private struct PlaybackSentenceCardView: View, Equatable {
                     .foregroundColor(.secondary.opacity(0.6))
                     .frame(maxWidth: .infinity, alignment: .center)
             }
+
+            // 关联生词卡片（Associated Vocabulary Words）
+            if let words = seg.associatedWords, !words.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "character.book.closed")
+                        .font(.system(size: 11))
+                        .foregroundColor(StudyMateMediaStyle.accent)
+
+                    Text(language == .en ? "Vocabulary:" : "关联生词:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    ForEach(words) { card in
+                        Button {
+                            selectedVocabCard = card
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(card.word)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .underline(color: StudyMateMediaStyle.accent)
+                                if let phonetic = card.phonetic, !phonetic.isEmpty {
+                                    Text(phonetic)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(StudyMateMediaStyle.accent.opacity(0.12))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: Binding(
+                            get: { selectedVocabCard?.id == card.id },
+                            set: { if !$0 { selectedVocabCard = nil } }
+                        ), arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(card.word)
+                                        .font(.title3.bold())
+                                    if let p = card.phonetic, !p.isEmpty {
+                                        Text(p)
+                                            .font(.caption.monospaced())
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                if let def = card.definition, !def.isEmpty {
+                                    Text(def)
+                                        .font(.body)
+                                }
+                            }
+                            .padding(14)
+                            .frame(minWidth: 200, maxWidth: 280)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .contextMenu {
+            Button(action: onRegenerateTokens) {
+                Label(
+                    language == .en ? "Recognize Word Timestamps (Whisper)" : "使用 Whisper 识别词级时间戳",
+                    systemImage: "waveform.badge.magnifyingglass"
+                )
+            }
+
+            Button(action: onToggleBookmark) {
+                Label(
+                    seg.isBookmarked
+                        ? (language == .en ? "Unstar Sentence" : "取消星标难句")
+                        : (language == .en ? "Star Sentence" : "加入星标难句"),
+                    systemImage: seg.isBookmarked ? "star.slash" : "star"
+                )
+            }
+
+            if !seg.speakerRoleLabel.isEmpty {
+                Button {
+                    renameText = seg.speakerRole ?? seg.speakerRoleLabel
+                    isShowingRenamePopover = true
+                } label: {
+                    Label(
+                        language == .en ? "Rename Speaker (\(seg.speakerRoleLabel))…" : "修改说话人 (\(seg.speakerRoleLabel))…",
+                        systemImage: "person.crop.circle.badge.checkmark"
+                    )
+                }
+            }
+
+            Divider()
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(origText, forType: .string)
+                MainStatusCenter.shared.showSuccess(language == .en ? "Copied original text" : "已复制原文")
+            } label: {
+                Label(language == .en ? "Copy Original Text" : "复制原文", systemImage: "doc.on.doc")
+            }
+
+            if !transText.isEmpty {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(transText, forType: .string)
+                    MainStatusCenter.shared.showSuccess(language == .en ? "Copied translation" : "已复制译文")
+                } label: {
+                    Label(language == .en ? "Copy Translation" : "复制译文", systemImage: "doc.on.doc")
+                }
+            }
+        }
+        .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
+            SpeakerRenamePopoverContent(
+                roleLabel: seg.speakerRoleLabel,
+                initialText: renameText,
+                language: language,
+                isPresented: $isShowingRenamePopover,
+                onSave: { fromRole, toName in
+                    onRenameSpeaker?(fromRole, toName)
+                }
+            )
+        }
+    }
+
+    // MARK: - 原文渲染（支持自动注音与词级时间戳高亮）
+
+    @ViewBuilder
+    private func renderOriginalSection() -> some View {
+        if let tokens = seg.wordTokens, !tokens.isEmpty {
+            wordTokensKaraokeView(tokens: tokens)
+        } else if showPhonetics && !origText.isEmpty {
+            RubyTextView(
+                text: origText,
+                fontSize: originalFont.pointSize,
+                textColor: Color(originalColor),
+                phoneticColor: StudyMateMediaStyle.accent,
+                isPhoneticsVisible: true
+            )
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onSelect)
+        } else {
+            originalTextView(prefix: "")
+        }
+    }
+
+    private func wordTokensKaraokeView(tokens: [StudyMatePackageWordToken]) -> some View {
+        let activeIdx = Self.activeTokenIndex(for: tokens, baseTime: seg.startTime, time: currentTime)
+
+        return RubyFlowLayout(horizontalSpacing: 4, verticalSpacing: 4) {
+            ForEach(Array(tokens.enumerated()), id: \.offset) { idx, token in
+                let isTokenActive = (activeIdx == idx)
+                let tokenColor: Color = isTokenActive ? StudyMateMediaStyle.accent : Color(originalColor)
+
+                Button {
+                    onSeekToToken(token.startTime)
+                } label: {
+                    if showPhonetics {
+                        let phonetic = PhoneticEngine.phoneticText(for: token.text)
+                        VStack(alignment: .center, spacing: 1) {
+                            if let p = phonetic, !p.isEmpty {
+                                Text(p)
+                                    .font(.system(size: max(10, originalFont.pointSize * 0.52), weight: .medium, design: .rounded))
+                                    .foregroundColor(isTokenActive ? StudyMateMediaStyle.accent : StudyMateMediaStyle.accent.opacity(0.75))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            } else {
+                                Text(" ")
+                                    .font(.system(size: max(10, originalFont.pointSize * 0.52)))
+                                    .opacity(0)
+                            }
+                            Text(token.text)
+                                .font(Font(originalFont))
+                                .foregroundColor(tokenColor)
+                        }
+                    } else {
+                        Text(token.text)
+                            .font(Font(originalFont))
+                            .foregroundColor(tokenColor)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(language == .en ? "Click to play: \(token.text) (\(String(format: "%.2fs", token.startTime)))" : "点击发音播放此词：\(token.text)（\(String(format: "%.2f秒", token.startTime))）")
+            }
+        }
     }
 
     // MARK: - 原文文本

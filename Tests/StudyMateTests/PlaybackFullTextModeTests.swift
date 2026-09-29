@@ -290,4 +290,88 @@ final class PlaybackFullTextModeTests: XCTestCase {
         XCTAssertEqual(attr.attribute(.foregroundColor, at: ranges[1].range.location, effectiveRange: nil) as? NSColor, NSColor.labelColor)
         XCTAssertEqual(attr.attribute(.foregroundColor, at: ranges[0].range.location, effectiveRange: nil) as? NSColor, targetColor)
     }
+
+    func testReorderSegmentsForScriptFlowRestoresChronologicalOrder() {
+        // 模拟用户乱序添加同一场戏的对白：先加了 #88，再加了 #12，最后加了 #89
+        let seg88 = SentenceSegment(
+            index: 1,
+            originalIndex: 88,
+            startTime: 0.0,
+            endTime: 2.0,
+            text: "Are you Forrest?",
+            translation: "你是阿甘吗？",
+            speakerRole: "Jim",
+            sourceMediaName: "阿甘正传.mp4",
+            sourceStartTime: 923.0
+        )
+        let seg12 = SentenceSegment(
+            index: 2,
+            originalIndex: 12,
+            startTime: 2.0,
+            endTime: 4.0,
+            text: "My momma always said life was like a box of chocolates.",
+            translation: "我妈妈常说，生活就像一盒巧克力。",
+            speakerRole: "Forrest",
+            sourceMediaName: "阿甘正传.mp4",
+            sourceStartTime: 120.0
+        )
+        let seg89 = SentenceSegment(
+            index: 3,
+            originalIndex: 89,
+            startTime: 4.0,
+            endTime: 6.0,
+            text: "Yes, I am.",
+            translation: "是的，我是。",
+            speakerRole: "Forrest",
+            sourceMediaName: "阿甘正传.mp4",
+            sourceStartTime: 925.0
+        )
+
+        let input = [seg88, seg12, seg89]
+        let reordered = FullTextParagraphBuilder.reorderSegmentsForScriptFlow(input)
+
+        // 验证时序严格还原：按 originalIndex 升序重排为 #12 -> #88 -> #89
+        XCTAssertEqual(reordered.count, 3)
+        XCTAssertEqual(reordered[0].id, seg12.id)
+        XCTAssertEqual(reordered[1].id, seg88.id)
+        XCTAssertEqual(reordered[2].id, seg89.id)
+
+        // 验证传入 buildParagraphs 时，段落轮替严格依照时序因果顺序形成
+        let paragraphs = FullTextParagraphBuilder.buildParagraphs(from: input)
+        XCTAssertEqual(paragraphs.count, 3)
+        XCTAssertEqual(paragraphs[0].speakerRole, "Forrest")
+        XCTAssertEqual(paragraphs[0].segments.first?.originalIndex, 12)
+        XCTAssertEqual(paragraphs[1].speakerRole, "Jim")
+        XCTAssertEqual(paragraphs[1].segments.first?.originalIndex, 88)
+        XCTAssertEqual(paragraphs[2].speakerRole, "Forrest")
+        XCTAssertEqual(paragraphs[2].segments.first?.originalIndex, 89)
+
+        // 验证多媒体分组稳定性：不同媒体各自在自身内部升序排序，媒体间保持首现顺序
+        let movieB_seg5 = SentenceSegment(
+            index: 4,
+            originalIndex: 5,
+            startTime: 6.0,
+            endTime: 8.0,
+            text: "B5",
+            sourceMediaName: "MovieB.mp4",
+            sourceStartTime: 50.0
+        )
+        let movieB_seg2 = SentenceSegment(
+            index: 5,
+            originalIndex: 2,
+            startTime: 8.0,
+            endTime: 10.0,
+            text: "B2",
+            sourceMediaName: "MovieB.mp4",
+            sourceStartTime: 20.0
+        )
+
+        let multiInput = [seg88, seg12, movieB_seg5, movieB_seg2]
+        let multiReordered = FullTextParagraphBuilder.reorderSegmentsForScriptFlow(multiInput)
+        XCTAssertEqual(multiReordered.count, 4)
+        XCTAssertEqual(multiReordered[0].id, seg12.id)
+        XCTAssertEqual(multiReordered[1].id, seg88.id)
+        XCTAssertEqual(multiReordered[2].id, movieB_seg2.id)
+        XCTAssertEqual(multiReordered[3].id, movieB_seg5.id)
+    }
 }

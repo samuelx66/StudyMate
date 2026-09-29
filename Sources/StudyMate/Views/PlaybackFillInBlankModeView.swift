@@ -614,12 +614,13 @@ struct FillInBlankCardView: View {
     @State private var tokens: [FillInBlankToken] = []
     @State private var drafts: [Int: String] = [:]
     @State private var completedWords: Set<Int> = []
+    @State private var blankIndices: Set<Int> = []
     @State private var isSentenceFinished: Bool = false
     @State private var isSentenceCompletedAndShowingTranslation: Bool = false
     @State private var focusedWordIndex: Int? = 0
 
     private var totalWordCount: Int {
-        tokens.filter { $0.isWord }.count
+        blankIndices.count
     }
 
     private var transText: String {
@@ -742,9 +743,31 @@ struct FillInBlankCardView: View {
         completedWords = []
         isSentenceFinished = false
         isSentenceCompletedAndShowingTranslation = false
-        focusedWordIndex = 0
 
-        if totalWordCount == 0 {
+        let allWordTokens = tokens.filter { $0.isWord }
+        let allIndices = Set(allWordTokens.compactMap { $0.wordIndex })
+
+        // 填空练习优先挖空生词（Priority Cloze）：
+        // 若该句存在 associatedWords，100% 优先作为挖空目标，其余词作为提示
+        if !translationOnTop, let vocabList = seg.associatedWords, !vocabList.isEmpty {
+            let vocabWords = Set(vocabList.map { $0.word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            var matched: Set<Int> = []
+            for token in allWordTokens {
+                if let wIdx = token.wordIndex {
+                    let clean = token.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if vocabWords.contains(clean) || vocabWords.contains(where: { FillInBlankTokenizer.isMatch(input: clean, target: $0) }) {
+                        matched.insert(wIdx)
+                    }
+                }
+            }
+            blankIndices = matched.isEmpty ? allIndices : matched
+        } else {
+            blankIndices = allIndices
+        }
+
+        focusedWordIndex = blankIndices.sorted().first
+
+        if blankIndices.isEmpty {
             isSentenceFinished = true
             isSentenceCompletedAndShowingTranslation = true
             onSentenceCompleted()
@@ -756,8 +779,8 @@ struct FillInBlankCardView: View {
     }
 
     private func ensureFocus() {
-        guard !isSentenceFinished, totalWordCount > 0 else { return }
-        if let current = focusedWordIndex, !completedWords.contains(current) {
+        guard !isSentenceFinished, !blankIndices.isEmpty else { return }
+        if let current = focusedWordIndex, blankIndices.contains(current), !completedWords.contains(current) {
             focusedWordIndex = current
         } else if let next = nextIncompleteWordIndex(from: focusedWordIndex ?? 0) {
             focusedWordIndex = next
@@ -770,61 +793,69 @@ struct FillInBlankCardView: View {
 
     @ViewBuilder
     private func wordSlotView(token: FillInBlankToken, wordIndex: Int) -> some View {
-        let isCompleted = completedWords.contains(wordIndex)
-        let isFocused = (focusedWordIndex == wordIndex)
-        let estimatedWidth = estimatedSlotWidth(for: token.text)
-        let slotHeight = max(28.0, ceil(originalFont.pointSize) + 8.0)
+        if !blankIndices.contains(wordIndex) {
+            // 提示词：直接呈现为静态文字，使学习者聚焦生词槽位
+            Text(token.text)
+                .font(Font(originalFont))
+                .foregroundColor(Color(originalColor))
+                .padding(.bottom, 6)
+        } else {
+            let isCompleted = completedWords.contains(wordIndex)
+            let isFocused = (focusedWordIndex == wordIndex)
+            let estimatedWidth = estimatedSlotWidth(for: token.text)
+            let slotHeight = max(28.0, ceil(originalFont.pointSize) + 8.0)
 
-        VStack(spacing: 2) {
-            FillInBlankWordSlotField(
-                wordIndex: wordIndex,
-                targetWord: token.text,
-                draft: drafts[wordIndex, default: ""],
-                font: originalFont,
-                textColor: originalColor,
-                isCompleted: isCompleted,
-                isFocused: isFocused,
-                onInputChanged: { input in
-                    drafts[wordIndex] = input
-                    checkWordMatch(wordIndex: wordIndex, input: input, target: token.text)
-                },
-                onBecameFocused: {
-                    if !isCompleted {
-                        focusedWordIndex = wordIndex
+            VStack(spacing: 2) {
+                FillInBlankWordSlotField(
+                    wordIndex: wordIndex,
+                    targetWord: token.text,
+                    draft: drafts[wordIndex, default: ""],
+                    font: originalFont,
+                    textColor: originalColor,
+                    isCompleted: isCompleted,
+                    isFocused: isFocused,
+                    onInputChanged: { input in
+                        drafts[wordIndex] = input
+                        checkWordMatch(wordIndex: wordIndex, input: input, target: token.text)
+                    },
+                    onBecameFocused: {
+                        if !isCompleted {
+                            focusedWordIndex = wordIndex
+                        }
+                    },
+                    onTab: {
+                        if let next = nextIncompleteWordIndex(from: wordIndex + 1) {
+                            focusedWordIndex = next
+                        }
+                    },
+                    onBacktab: {
+                        if let prev = previousIncompleteWordIndex(before: wordIndex) {
+                            focusedWordIndex = prev
+                        }
+                    },
+                    onReplayAudio: {
+                        if isSentenceFinished {
+                            setupSentence()
+                        }
+                        onReplayAudio()
                     }
-                },
-                onTab: {
-                    if let next = nextIncompleteWordIndex(from: wordIndex + 1) {
-                        focusedWordIndex = next
-                    }
-                },
-                onBacktab: {
-                    if let prev = previousIncompleteWordIndex(before: wordIndex) {
-                        focusedWordIndex = prev
-                    }
-                },
-                onReplayAudio: {
-                    if isSentenceFinished {
-                        setupSentence()
-                    }
-                    onReplayAudio()
-                }
-            )
-            .frame(width: estimatedWidth, height: slotHeight)
-
-            // 动态下划线
-            Rectangle()
-                .frame(width: estimatedWidth, height: isFocused ? 2.5 : 1.5)
-                .foregroundColor(
-                    isCompleted
-                        ? StudyMateMediaStyle.accent.opacity(0.8)
-                        : (isFocused ? StudyMateMediaStyle.accent : Color(originalColor).opacity(0.45))
                 )
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if !isCompleted {
-                focusedWordIndex = wordIndex
+                .frame(width: estimatedWidth, height: slotHeight)
+
+                // 动态下划线
+                Rectangle()
+                    .frame(width: estimatedWidth, height: isFocused ? 2.5 : 1.5)
+                    .foregroundColor(
+                        isCompleted
+                            ? StudyMateMediaStyle.accent.opacity(0.8)
+                            : (isFocused ? StudyMateMediaStyle.accent : Color(originalColor).opacity(0.45))
+                    )
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !isCompleted {
+                    focusedWordIndex = wordIndex
+                }
             }
         }
     }
@@ -842,7 +873,7 @@ struct FillInBlankCardView: View {
         if FillInBlankTokenizer.isMatch(input: input, target: target) {
             completedWords.insert(wordIndex)
 
-            if completedWords.count >= totalWordCount && !isSentenceFinished {
+            if completedWords.count >= blankIndices.count && !isSentenceFinished {
                 // 整句完成！
                 isSentenceFinished = true
                 focusedWordIndex = nil
@@ -861,32 +892,30 @@ struct FillInBlankCardView: View {
     }
 
     private func nextIncompleteWordIndex(from start: Int = 0) -> Int? {
-        for i in start..<totalWordCount {
-            if !completedWords.contains(i) {
-                return i
+        let sortedBlanks = blankIndices.sorted()
+        for idx in sortedBlanks where idx >= start {
+            if !completedWords.contains(idx) {
+                return idx
             }
         }
-        if start > 0 {
-            for i in 0..<start {
-                if !completedWords.contains(i) {
-                    return i
-                }
+        for idx in sortedBlanks where idx < start {
+            if !completedWords.contains(idx) {
+                return idx
             }
         }
         return nil
     }
 
     private func previousIncompleteWordIndex(before current: Int) -> Int? {
-        if current > 0 {
-            for i in (0..<current).reversed() {
-                if !completedWords.contains(i) {
-                    return i
-                }
+        let sortedBlanks = blankIndices.sorted()
+        for idx in sortedBlanks.reversed() where idx < current {
+            if !completedWords.contains(idx) {
+                return idx
             }
         }
-        for i in (current..<totalWordCount).reversed() {
-            if !completedWords.contains(i) {
-                return i
+        for idx in sortedBlanks.reversed() where idx > current {
+            if !completedWords.contains(idx) {
+                return idx
             }
         }
         return nil

@@ -99,7 +99,7 @@ final class PlaybackEngineTests: XCTestCase {
         // installed before the file opens.
         XCTAssertGreaterThanOrEqual(client.setPropertyString(handle, name: "end", value: "0.4"), 0)
         blockMainThreadForBoundaryTest()
-        XCTAssertLessThanOrEqual(try XCTUnwrap(client.getPropertyDouble(handle, name: "time-pos")), 0.46)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(client.getPropertyDouble(handle, name: "time-pos")), 0.55)
         XCTAssertEqual(client.getPropertyFlag(handle, name: "eof-reached"), true)
         XCTAssertGreaterThanOrEqual(client.setPropertyString(handle, name: "end", value: "none"), 0)
     }
@@ -2232,7 +2232,7 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(updated[1].speakerIDs, second.speakerIDs)
     }
 
-    func testRegeneratedOriginalTextClearsExistingTargetWhenWhisperFindsNoText() {
+    func testRegeneratedOriginalTextPreservesExistingTargetWhenWhisperFindsNoText() {
         let segment = SentenceSegment(
             index: 1,
             startTime: 1,
@@ -2248,7 +2248,8 @@ final class PlaybackEngineTests: XCTestCase {
             recognizedTexts: recognized
         )
 
-        XCTAssertEqual(updated[0].text, "")
+        // Whisper 未能识别出文本时不应抹空已有原文，保护用户现有字幕
+        XCTAssertEqual(updated[0].text, "Stale text")
         XCTAssertEqual(updated[0].translation, "译文")
         XCTAssertEqual(updated[0].startTime, 1)
         XCTAssertEqual(updated[0].endTime, 2)

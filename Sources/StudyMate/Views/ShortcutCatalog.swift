@@ -27,6 +27,7 @@ public enum StudyMateShortcutID: String, CaseIterable, Identifiable, Sendable {
     case shadowingPauseMenu
     case toggleVideoOriginalSubtitle
     case toggleVideoTranslationSubtitle
+    case togglePhonetics
     case videoSubtitleFontSettings
     case togglePlaylist
     case toggleWaveforms
@@ -120,6 +121,7 @@ public enum StudyMateShortcutCatalog {
         .init(id: .shadowingPauseMenu, chineseName: "设置句末跟读停顿", englishName: "Set Shadowing Pause", keyDisplay: "⌘⇧P"),
         .init(id: .toggleVideoOriginalSubtitle, chineseName: "显示或隐藏画面原文字幕", englishName: "Show or Hide Original Subtitles", keyDisplay: "⌘⌥O"),
         .init(id: .toggleVideoTranslationSubtitle, chineseName: "显示或隐藏画面译文字幕", englishName: "Show or Hide Translation Subtitles", keyDisplay: "⌘⌥T"),
+        .init(id: .togglePhonetics, chineseName: "显示或隐藏注音", englishName: "Show or Hide Phonetics", keyDisplay: "⌥⌘P"),
         .init(id: .videoSubtitleFontSettings, chineseName: "设置画面字幕字体", englishName: "Set Subtitle Fonts", keyDisplay: "⌘⌥F"),
         .init(id: .togglePlaylist, chineseName: "显示或隐藏播放列表", englishName: "Show or Hide Playlist", keyDisplay: "⌥P"),
         .init(id: .toggleWaveforms, chineseName: "显示或隐藏波形图", englishName: "Show or Hide Waveforms", keyDisplay: "⌥W"),

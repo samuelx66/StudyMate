@@ -8,17 +8,29 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
     /// Manually added entries leave this nil; tracked entries are preferred
     /// when selecting the automatic startup restore target.
     public let lastOpenedAt: Date?
+    public let customTitle: String?
+    public let customPath: String?
+    public let libraryID: UUID?
+    public let selectedEntryIDs: [UUID]?
 
     public init(
         id: UUID = UUID(),
         mediaPath: String,
         addedAt: Date = Date(),
-        lastOpenedAt: Date? = nil
+        lastOpenedAt: Date? = nil,
+        customTitle: String? = nil,
+        customPath: String? = nil,
+        libraryID: UUID? = nil,
+        selectedEntryIDs: [UUID]? = nil
     ) {
         self.id = id
         self.mediaPath = URL(fileURLWithPath: mediaPath).standardizedFileURL.path
         self.addedAt = addedAt
         self.lastOpenedAt = lastOpenedAt
+        self.customTitle = customTitle
+        self.customPath = customPath
+        self.libraryID = libraryID
+        self.selectedEntryIDs = selectedEntryIDs
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -26,6 +38,10 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
         case mediaPath
         case addedAt
         case lastOpenedAt
+        case customTitle
+        case customPath
+        case libraryID
+        case selectedEntryIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -35,6 +51,10 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
         mediaPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         lastOpenedAt = try container.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
+        customTitle = try container.decodeIfPresent(String.self, forKey: .customTitle)
+        customPath = try container.decodeIfPresent(String.self, forKey: .customPath)
+        libraryID = try container.decodeIfPresent(UUID.self, forKey: .libraryID)
+        selectedEntryIDs = try container.decodeIfPresent([UUID].self, forKey: .selectedEntryIDs)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -43,6 +63,10 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
         try container.encode(mediaPath, forKey: .mediaPath)
         try container.encode(addedAt, forKey: .addedAt)
         try container.encodeIfPresent(lastOpenedAt, forKey: .lastOpenedAt)
+        try container.encodeIfPresent(customTitle, forKey: .customTitle)
+        try container.encodeIfPresent(customPath, forKey: .customPath)
+        try container.encodeIfPresent(libraryID, forKey: .libraryID)
+        try container.encodeIfPresent(selectedEntryIDs, forKey: .selectedEntryIDs)
     }
 
     public var mediaURL: URL {
@@ -50,7 +74,14 @@ public struct PlaybackHistoryEntry: Identifiable, Codable, Equatable, Hashable, 
     }
 
     public var filename: String {
-        mediaURL.lastPathComponent
+        if let customTitle, !customTitle.isEmpty {
+            return customTitle
+        }
+        return mediaURL.lastPathComponent
+    }
+
+    public var isLibrarySession: Bool {
+        libraryID != nil || (customPath != nil && !customPath!.isEmpty)
     }
 }
 
@@ -113,7 +144,13 @@ public final class PlaybackHistoryStore: ObservableObject {
         }
     }
 
-    public func recordPlayed(_ mediaURL: URL) {
+    public func recordPlayed(
+        _ mediaURL: URL,
+        customTitle: String? = nil,
+        customPath: String? = nil,
+        libraryID: UUID? = nil,
+        selectedEntryIDs: [UUID]? = nil
+    ) {
         let standardizedURL = mediaURL.standardizedFileURL
         guard standardizedURL.isFileURL,
               FileManager.default.fileExists(atPath: standardizedURL.path) else { return }
@@ -125,12 +162,20 @@ public final class PlaybackHistoryStore: ObservableObject {
                 id: existing.id,
                 mediaPath: existing.mediaPath,
                 addedAt: existing.addedAt,
-                lastOpenedAt: openedAt
+                lastOpenedAt: openedAt,
+                customTitle: customTitle ?? existing.customTitle,
+                customPath: customPath ?? existing.customPath,
+                libraryID: libraryID ?? existing.libraryID,
+                selectedEntryIDs: selectedEntryIDs ?? existing.selectedEntryIDs
             )
         } else {
             entries.append(PlaybackHistoryEntry(
                 mediaPath: standardizedURL.path,
-                lastOpenedAt: openedAt
+                lastOpenedAt: openedAt,
+                customTitle: customTitle,
+                customPath: customPath,
+                libraryID: libraryID,
+                selectedEntryIDs: selectedEntryIDs
             ))
         }
         persist()
