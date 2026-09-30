@@ -66,10 +66,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
+    private func isMainWindow(_ window: NSWindow) -> Bool {
+        let raw = window.identifier?.rawValue ?? ""
+        if raw == "studymate-main-window" || raw == "main" || raw.hasPrefix("main") {
+            return true
+        }
+        let appName = LanguageManager.shared.text("学伴", "StudyMate")
+        if window.title == appName && raw != "welcome" && raw != "studymate-welcome-window" {
+            return true
+        }
+        return false
+    }
+
     /// 主窗口有媒体时，系统“文件 > 关闭”和红色关闭按钮都只关闭媒体工作区，
     /// 并返回欢迎首屏；首屏本身仍保留 macOS 默认的关闭窗口行为。
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard sender.identifier == NSUserInterfaceItemIdentifier("studymate-main-window"),
+        guard isMainWindow(sender),
               PlaybackEngine.shared.currentMedia != nil else {
             return true
         }
@@ -77,11 +89,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if isMainWindow(window) {
+            PlaybackEngine.shared.pause()
+            if PlaybackEngine.shared.currentMedia != nil {
+                PlaybackEngine.shared.flushPendingPersistence()
+                Task { @MainActor in
+                    await PlaybackEngine.shared.closeCurrentMedia()
+                }
+            }
+        }
+    }
+
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
         // Let AppKit own the full-screen chrome transition. Keep the menu bar
         // available so Display > Enter/Exit Full Screen remains discoverable
         // while media is playing; only the unified toolbar auto-hides.
-        guard window.identifier?.rawValue == "studymate-main-window" else {
+        guard isMainWindow(window) else {
             return proposedOptions
         }
         var options = proposedOptions
@@ -1223,6 +1248,9 @@ final class MainWindowAccessorView: NSView {
             }
         } else {
             removeObservers()
+            if PlaybackEngine.shared.isPlaying {
+                PlaybackEngine.shared.pause()
+            }
         }
     }
 
@@ -1234,6 +1262,15 @@ final class MainWindowAccessorView: NSView {
 
         let center = NotificationCenter.default
         notificationTokens = [
+            center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                PlaybackEngine.shared.pause()
+                PlaybackEngine.shared.flushPendingPersistence()
+                NotificationCenter.default.post(name: .studyMateCloseCurrentMedia, object: nil)
+            },
             center.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,
                 object: window,
@@ -1324,6 +1361,9 @@ final class MainWindowAccessorView: NSView {
     }
 
     private func removeObservers() {
+        if observedWindow != nil && PlaybackEngine.shared.isPlaying {
+            PlaybackEngine.shared.pause()
+        }
         notificationTokens.forEach(NotificationCenter.default.removeObserver)
         notificationTokens.removeAll(keepingCapacity: true)
         resizeEndWorkItem?.cancel()

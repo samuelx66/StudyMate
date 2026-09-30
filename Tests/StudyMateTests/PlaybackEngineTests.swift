@@ -2784,4 +2784,98 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeSentenceLibraryID, libraryID)
         XCTAssertEqual(engine.activeSentenceLibraryEntryMap[entryID], entryID)
     }
+
+    func testSentenceLibrarySessionProjectPreservesSpeakerRolesAgainstSidecars() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sessionDir = directory.appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let mediaURL = sessionDir.appendingPathComponent("session.m4a")
+        try Data("audio".utf8).write(to: mediaURL)
+        let lrcURL = sessionDir.appendingPathComponent("session.lrc")
+        try "[00:00.00]Sidecar text\n".write(to: lrcURL, atomically: true, encoding: .utf8)
+        let srtURL = sessionDir.appendingPathComponent("session.srt")
+        try "1\n00:00:00,000 --> 00:00:02,000\nSidecar text\n".write(to: srtURL, atomically: true, encoding: .utf8)
+
+        let projectDir = directory.appendingPathComponent("projects", isDirectory: true)
+        let projectManager = ProjectFileManager(baseDirectory: projectDir)
+
+        let entryID = UUID()
+        let libraryID = UUID()
+        let seg = SentenceSegment(
+            id: entryID,
+            index: 1,
+            startTime: 0,
+            endTime: 2,
+            text: "Hello",
+            translation: "你好",
+            speakerID: 1,
+            speakerIDs: [1],
+            speakerRole: "Alice"
+        )
+
+        projectManager.saveProject(
+            for: mediaURL,
+            title: "Sentence Library Session",
+            duration: 2,
+            lastPosition: 0,
+            segments: [seg],
+            sentenceLibraryID: libraryID,
+            sentenceLibraryEntryMap: [entryID: entryID]
+        )
+        projectManager.flush()
+
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 2),
+            mpvBackend: TestMediaPlayerBackend(duration: 2),
+            projectFileManager: projectManager
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        for _ in 0..<100 where engine.segments.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(engine.segments.count, 1)
+        XCTAssertEqual(engine.segments.first?.speakerRole, "Alice")
+        XCTAssertEqual(engine.segments.first?.speakerID, 1)
+        XCTAssertEqual(engine.segments.first?.speakerRoleLabel, "Alice")
+    }
+
+    func testDeleteSentenceLibrarySessionFilesRemovesFilesAndFolder() throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let libID = UUID()
+        let sessionDir = directory.appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+            .appendingPathComponent(libID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let mediaURL = sessionDir.appendingPathComponent("走遍美国_01.m4a")
+        let lrcURL = sessionDir.appendingPathComponent("走遍美国_01.lrc")
+        let srtURL = sessionDir.appendingPathComponent("走遍美国_01.srt")
+        let dsStoreURL = sessionDir.appendingPathComponent(".DS_Store")
+
+        try Data("audio".utf8).write(to: mediaURL)
+        try Data("lrc".utf8).write(to: lrcURL)
+        try Data("srt".utf8).write(to: srtURL)
+        try Data("ds".utf8).write(to: dsStoreURL)
+
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(),
+            mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+
+        let success = engine.deleteSentenceLibrarySessionFiles(for: mediaURL)
+        XCTAssertTrue(success)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lrcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: srtURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path))
+    }
 }
+

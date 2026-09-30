@@ -1897,8 +1897,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 )
             }
 
-            // 同名字幕始终接管断句时间轴，但仍复用工程中的播放位置和波形。
-            if let sidecarItems, !sidecarItems.isEmpty {
+            // 同名字幕接管断句时间轴，但句库生成的材料工程作为单一真实源，拥有角色、生词、难句等完整元数据，
+            // 绝不被同目录伴随生成的简化版 .lrc/.srt 覆盖。
+            let isSentenceSession = self.isSentenceLibrarySessionMedia(mediaURL)
+                || compatibleProject?.sentenceLibraryID != nil
+                || self.activeSentenceLibraryID != nil
+
+            if let sidecarItems, !sidecarItems.isEmpty, !(isSentenceSession && compatibleProject != nil) {
                 self.projectRecoveryRequired = false
                 self.pendingProjectForExplicitRecovery = nil
                 self.canUseExistingProject = false
@@ -3068,10 +3073,34 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 仅对句库会话材料执行物理删除，严防误删用户普通的音视频源文件。
     @discardableResult
     public func deleteSentenceLibrarySessionFiles(for mediaURL: URL) -> Bool {
-        let fileURL = mediaURL.standardizedFileURL
-        guard isSentenceLibrarySessionMedia(fileURL) else { return false }
+        let fileURL = mediaURL.resolvingSymlinksInPath().standardizedFileURL
+        let path = fileURL.path
+        let isSession = isSentenceLibrarySessionMedia(fileURL)
+            || path.contains("/SentenceLibrarySessions/")
+            || path.contains("/StudyMateLibSession/")
+        guard isSession else { return false }
 
         let fileManager = FileManager.default
+
+        // 如果传入的直接就是会话目录（例如 SentenceLibrarySessions/<libraryID>），直接递归清理
+        var isDir: ObjCBool = false
+        if fileManager.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+            try? fileManager.removeItem(at: fileURL)
+            let parentDir = fileURL.deletingLastPathComponent()
+            if parentDir.lastPathComponent == "SentenceLibrarySessions" {
+                if let remainingSessions = try? fileManager.contentsOfDirectory(at: parentDir, includingPropertiesForKeys: nil) {
+                    let meaningfulDirs = remainingSessions.filter { $0.lastPathComponent != ".DS_Store" }
+                    if meaningfulDirs.isEmpty {
+                        for dsStore in remainingSessions {
+                            try? fileManager.removeItem(at: dsStore)
+                        }
+                        try? fileManager.removeItem(at: parentDir)
+                    }
+                }
+            }
+            return true
+        }
+
         let parentDir = fileURL.deletingLastPathComponent()
         let baseName = fileURL.deletingPathExtension().lastPathComponent
 
@@ -3120,9 +3149,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     /// 从播放列表移除媒体并清理其工程记录；若为句库生成的学习材料，则同步清理其磁盘文件；普通源媒体文件保持不变。
     public func removeFromPlaybackHistory(_ mediaURL: URL) async {
-        let standardizedURL = mediaURL.standardizedFileURL
+        let standardizedURL = mediaURL.resolvingSymlinksInPath().standardizedFileURL
         let isSessionMedia = isSentenceLibrarySessionMedia(standardizedURL)
-        if currentMedia?.url.standardizedFileURL == standardizedURL {
+        if currentMedia?.url.resolvingSymlinksInPath().standardizedFileURL == standardizedURL {
             debouncedSaveTask?.cancel()
             // 删除当前媒体的历史记录时，同时中止仍可能写入 PCMCache 的
             // 波形/断句任务，避免缓存清理完成后又被后台解码任务生成。
@@ -3151,6 +3180,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 duration = 0
             }
         }
+
+        // 先清理句库材料磁盘文件，确保此时历史记录中的元数据依然可查
+        if isSessionMedia {
+            deleteSentenceLibrarySessionFiles(for: standardizedURL)
+        }
+
         playbackHistoryStore?.remove(standardizedURL)
         do {
             try await projectFileManager.deleteProjectAsync(for: standardizedURL)
@@ -3164,7 +3199,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         await AudioPCMExtractor.shared.removeCache(for: standardizedURL)
 
         if isSessionMedia {
-            deleteSentenceLibrarySessionFiles(for: standardizedURL)
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text("已从列表中移除并清理相关学习文件", "Removed from list and cleaned up learning files")
             )
@@ -4985,8 +5019,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             self.segments[i].isBookmarked = entry.isBookmarked
                             didChange = true
                         }
-                        if self.segments[i].speakerRole != entry.speakerRole {
+                        if self.segments[i].speakerRole != entry.speakerRole
+                            || self.segments[i].speakerID != entry.speakerID
+                            || self.segments[i].speakerIDs != entry.speakerIDs
+                            || self.segments[i].isSpeakerOverlap != entry.isSpeakerOverlap {
                             self.segments[i].speakerRole = entry.speakerRole
+                            self.segments[i].speakerID = entry.speakerID
+                            self.segments[i].speakerIDs = entry.speakerIDs
+                            self.segments[i].isSpeakerOverlap = entry.isSpeakerOverlap
                             didChange = true
                         }
                     }
@@ -5024,6 +5064,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                         timelineSegments[i].translation = entry.translation
                         timelineSegments[i].isBookmarked = entry.isBookmarked
                         timelineSegments[i].speakerRole = entry.speakerRole
+                        timelineSegments[i].speakerID = entry.speakerID
+                        timelineSegments[i].speakerIDs = entry.speakerIDs
+                        timelineSegments[i].isSpeakerOverlap = entry.isSpeakerOverlap
                         timelineSegments[i].phoneticText = entry.phoneticText
                         timelineSegments[i].associatedWords = entry.associatedWords
                         timelineSegments[i].wordTokens = entry.wordTokens

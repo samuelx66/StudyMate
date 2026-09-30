@@ -140,6 +140,52 @@ public final class SentenceLibraryManager: ObservableObject {
                     try? fileManager.removeItem(at: folder)
                 }
             }
+
+            // 清理 SentenceLibrarySessions 下变空或无播放历史关联的孤立会话文件与目录
+            let sessionsRoot = support
+                .appendingPathComponent("StudyMate", isDirectory: true)
+                .appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+            if fileManager.fileExists(atPath: sessionsRoot.path) {
+                if let sessionDirs = try? fileManager.contentsOfDirectory(at: sessionsRoot, includingPropertiesForKeys: nil) {
+                    let entries = await MainActor.run { PlaybackHistoryStore.shared.entries }
+                    let knownPaths = Set(entries.map {
+                        URL(fileURLWithPath: $0.mediaPath).resolvingSymlinksInPath().standardizedFileURL.path
+                    })
+                    for dir in sessionDirs {
+                        guard dir.lastPathComponent != ".DS_Store" else {
+                            try? fileManager.removeItem(at: dir)
+                            continue
+                        }
+                        if let files = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                            let nonDS = files.filter { $0.lastPathComponent != ".DS_Store" }
+                            if nonDS.isEmpty {
+                                for f in files { try? fileManager.removeItem(at: f) }
+                                try? fileManager.removeItem(at: dir)
+                                continue
+                            }
+                            let audioFiles = nonDS.filter { $0.pathExtension.lowercased() == "m4a" }
+                            var allOrphaned = true
+                            for audio in audioFiles {
+                                if knownPaths.contains(audio.resolvingSymlinksInPath().standardizedFileURL.path) {
+                                    allOrphaned = false
+                                    break
+                                }
+                            }
+                            if allOrphaned && !audioFiles.isEmpty {
+                                for f in files { try? fileManager.removeItem(at: f) }
+                                try? fileManager.removeItem(at: dir)
+                            }
+                        }
+                    }
+                    if let remaining = try? fileManager.contentsOfDirectory(at: sessionsRoot, includingPropertiesForKeys: nil) {
+                        let nonDS = remaining.filter { $0.lastPathComponent != ".DS_Store" }
+                        if nonDS.isEmpty {
+                            for f in remaining { try? fileManager.removeItem(at: f) }
+                            try? fileManager.removeItem(at: sessionsRoot)
+                        }
+                    }
+                }
+            }
         }
     }
 
