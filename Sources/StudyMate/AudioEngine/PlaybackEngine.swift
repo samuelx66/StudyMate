@@ -4582,21 +4582,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         case .renamed(let roleKey, let newName):
             var updatedCount = 0
-            guard let sid = SpeakerRoleManager.speakerID(from: roleKey) else {
-                for i in 0..<segments.count {
-                    if segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
-                        segments[i].speakerRole = newName
-                        updatedCount += 1
-                    }
-                }
-                scheduleDebouncedPersistence()
-                MainStatusCenter.shared.showSuccess(
-                    LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
-                )
-                return
-            }
+            let sid = SpeakerRoleManager.speakerID(from: roleKey)
             for i in 0..<segments.count {
-                if segments[i].speakerID == sid || segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
+                if (sid != nil && segments[i].speakerID == sid) || segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
                     segments[i].speakerRole = newName
                     updatedCount += 1
                 }
@@ -4607,6 +4595,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 Task {
                     var names = resolution.updatedNames
                     names[roleKey] = newName
+                    for seg in self.segments where seg.speakerRole == newName {
+                        if let id = seg.speakerID {
+                            names[SpeakerRoleManager.roleKey(for: id)] = newName
+                        }
+                    }
                     try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
                 }
             }
@@ -4615,33 +4608,44 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             )
 
         case .merged(let fromKey, let toKey, let unifiedName, _):
-            guard let fromID = SpeakerRoleManager.speakerID(from: fromKey),
-                  let toID = SpeakerRoleManager.speakerID(from: toKey) else { return }
-
-            let mergedCount = SpeakerRoleManager.shared.mergeSpeaker(
-                fromRoleKey: fromKey,
+            let result = SpeakerRoleManager.shared.mergeSpeakerEx(
+                fromRoleKey: fromRole,
                 toRoleKey: toKey,
+                unifiedName: unifiedName,
                 in: &self.segments
             )
-            for i in 0..<segments.count {
-                if segments[i].speakerID == toID {
-                    segments[i].speakerRole = unifiedName
-                }
-            }
+            let mergedCount = result.updatedCount
+            let targetSpeakerID = result.targetSpeakerID
+            let affectedSourceIDs = result.affectedSourceIDs
+
             scheduleDebouncedPersistence()
 
             if let libraryID = activeSentenceLibraryID {
                 Task {
-                    try? SentenceLibraryStore.shared.batchMergeSpeaker(
-                        sourceSpeakerID: fromID,
-                        targetSpeakerID: toID,
-                        targetName: unifiedName,
-                        in: libraryID
-                    )
+                    for srcID in affectedSourceIDs {
+                        try? SentenceLibraryStore.shared.batchMergeSpeaker(
+                            sourceSpeakerID: srcID,
+                            targetSpeakerID: targetSpeakerID,
+                            targetName: unifiedName,
+                            in: libraryID
+                        )
+                    }
+                    var names = resolution.updatedNames
+                    let targetKey = SpeakerRoleManager.roleKey(for: targetSpeakerID)
+                    names[targetKey] = unifiedName
+                    names.removeValue(forKey: fromRole)
+                    names.removeValue(forKey: fromKey)
+                    for srcID in affectedSourceIDs {
+                        names.removeValue(forKey: SpeakerRoleManager.roleKey(for: srcID))
+                    }
+                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
                 }
             }
             MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text("已将「\(fromKey)」合并至「\(toKey)」(\(unifiedName))，共更新 \(mergedCount) 句", "Merged '\(fromKey)' into '\(toKey)' (\(unifiedName)), updated \(mergedCount) sentences")
+                LanguageManager.shared.text(
+                    "已将「\(fromRole)」合并至「\(toKey)」(\(unifiedName))，共更新 \(mergedCount) 句",
+                    "Merged '\(fromRole)' into '\(toKey)' (\(unifiedName)), updated \(mergedCount) sentences"
+                )
             )
         }
     }

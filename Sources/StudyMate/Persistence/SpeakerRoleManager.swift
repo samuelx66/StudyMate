@@ -30,6 +30,18 @@ public final class SpeakerRoleManager: @unchecked Sendable {
         public let updatedNames: [String: String]
     }
 
+    public struct MergeSpeakerResult: Equatable, Sendable {
+        public let updatedCount: Int
+        public let affectedSourceIDs: Set<Int>
+        public let targetSpeakerID: Int
+
+        public init(updatedCount: Int, affectedSourceIDs: Set<Int>, targetSpeakerID: Int) {
+            self.updatedCount = updatedCount
+            self.affectedSourceIDs = affectedSourceIDs
+            self.targetSpeakerID = targetSpeakerID
+        }
+    }
+
     private let lock = NSLock()
 
     public init() {}
@@ -98,6 +110,15 @@ public final class SpeakerRoleManager: @unchecked Sendable {
             return (.unchanged, currentSpeakerNames)
         }
 
+        // 0. 如果输入与当前角色标签或已绑定的角色名相同，直接返回未修改
+        if trimmedInput.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
+            return (.unchanged, currentSpeakerNames)
+        }
+        if let existing = currentSpeakerNames[normalizedSource],
+           existing.caseInsensitiveCompare(trimmedInput) == .orderedSame {
+            return (.unchanged, currentSpeakerNames)
+        }
+
         var names = currentSpeakerNames
 
         // 1. 如果源角色是一个复合/多说话人标签（如 "s1+s2", "s1->s2", "s1→s2"）
@@ -143,27 +164,32 @@ public final class SpeakerRoleManager: @unchecked Sendable {
         // 检查输入是否是一个已有的角色标识符（例如输入了 "s1"）
         let normalizedInputKey = Self.normalizeRoleKey(trimmedInput)
         if normalizedInputKey != normalizedSource,
-           let targetID = Self.speakerID(from: normalizedInputKey),
-           Self.speakerID(from: normalizedSource) != nil {
+           let targetID = Self.speakerID(from: normalizedInputKey) {
             let targetKey = Self.roleKey(for: targetID)
             let unifiedName = names[targetKey] ?? names[normalizedSource] ?? targetKey
             names.removeValue(forKey: normalizedSource)
+            for (k, v) in names where v == fromRoleKey {
+                names.removeValue(forKey: k)
+            }
             names[targetKey] = unifiedName
-            return (.merged(fromRoleKey: normalizedSource, toRoleKey: targetKey, unifiedName: unifiedName, updatedCount: 0), names)
+            return (.merged(fromRoleKey: fromRoleKey, toRoleKey: targetKey, unifiedName: unifiedName, updatedCount: 0), names)
         }
 
-        // 检查输入的姓名是否已绑定到另一个角色（例如把 s2 改名为 "Jim"，而 s1 已经是 "Jim"）
+        // 检查输入的姓名是否已绑定到另一个角色（例如把 s10 改名为 "Richard"，而 s11 已经是 "Richard"）
         for (existingKey, existingName) in names {
             if existingKey != normalizedSource && existingName.caseInsensitiveCompare(trimmedInput) == .orderedSame {
                 // 触发智能合并！
                 names.removeValue(forKey: normalizedSource)
-                return (.merged(fromRoleKey: normalizedSource, toRoleKey: existingKey, unifiedName: existingName, updatedCount: 0), names)
+                for (k, v) in names where v == fromRoleKey {
+                    names.removeValue(forKey: k)
+                }
+                return (.merged(fromRoleKey: fromRoleKey, toRoleKey: existingKey, unifiedName: existingName, updatedCount: 0), names)
             }
         }
 
         // 普通重命名
         names[normalizedSource] = trimmedInput
-        return (.renamed(roleKey: normalizedSource, newName: trimmedInput), names)
+        return (.renamed(roleKey: fromRoleKey, newName: trimmedInput), names)
     }
 
     /// 解析对单个断句修改发言人的结果（仅作用于当前句，不修改全局其它同角色句子）
@@ -289,36 +315,146 @@ public final class SpeakerRoleManager: @unchecked Sendable {
         )
     }
 
-    /// 批量在断句段落列表中应用合并（将 fromID 合并为 toID）
+    /// 批量在断句段落列表中应用合并（将 fromRoleKey 合并为 toRoleKey / unifiedName）
+    /// 返回更新句数、涉及的所有源 speakerID 集合，以及目标 speakerID
+    @discardableResult
+    public func mergeSpeakerEx(
+        fromRoleKey: String,
+        toRoleKey: String,
+        unifiedName: String? = nil,
+        in segments: inout [SentenceSegment]
+    ) -> MergeSpeakerResult {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let trimmedFrom = fromRoleKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTo = toRoleKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normFrom = Self.normalizeRoleKey(trimmedFrom)
+        let normFromTarget = trimmedFrom.replacingOccurrences(of: "→", with: "->")
+
+        // 1. 确定目标 speakerID (targetSpeakerID)
+        var resolvedTargetID: Int? = Self.speakerID(from: trimmedTo)
+        if resolvedTargetID == nil, let unifiedName, !unifiedName.isEmpty {
+            for seg in segments {
+                if let r = seg.speakerRole, r.caseInsensitiveCompare(unifiedName) == .orderedSame, let sid = seg.speakerID {
+                    resolvedTargetID = sid
+                    break
+                }
+            }
+        }
+        if resolvedTargetID == nil {
+            let existingIDs = segments.compactMap { $0.speakerID }
+            resolvedTargetID = (existingIDs.max() ?? -1) + 1
+        }
+        let targetSpeakerID = resolvedTargetID!
+        let targetKey = Self.roleKey(for: targetSpeakerID)
+
+        // 2. 确定候选源数值 ID
+        let fromNumericalID = Self.speakerID(from: trimmedFrom)
+
+        // 3. 收集所有直接匹配源角色的句子索引和相关源 speakerID
+        var matchedIndices = [Int]()
+        var affectedSourceIDs = Set<Int>()
+        if let fromNumericalID, fromNumericalID != targetSpeakerID {
+            affectedSourceIDs.insert(fromNumericalID)
+        }
+
+        for i in 0..<segments.count {
+            let seg = segments[i]
+            let segLabel = seg.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normSegLabel = segLabel.replacingOccurrences(of: "→", with: "->")
+            let segRole = seg.speakerRole?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            var isMatch = false
+            if segRole == trimmedFrom || segLabel == trimmedFrom || normSegLabel == normFromTarget {
+                isMatch = true
+            } else if let fID = fromNumericalID {
+                if (segRole == nil || segRole == trimmedFrom || segRole == normFrom) &&
+                   (seg.speakerID == fID || seg.speakerIDs.contains(fID)) {
+                    isMatch = true
+                }
+            }
+
+            if isMatch {
+                matchedIndices.append(i)
+                if let sid = seg.speakerID, sid != targetSpeakerID {
+                    affectedSourceIDs.insert(sid)
+                }
+                for id in seg.speakerIDs where id != targetSpeakerID {
+                    affectedSourceIDs.insert(id)
+                }
+            }
+        }
+
+        // 4. 计算最终角色名称
+        let finalRoleName: String?
+        if let unifiedName, !unifiedName.isEmpty {
+            finalRoleName = (unifiedName.caseInsensitiveCompare(targetKey) == .orderedSame) ? nil : unifiedName
+        } else {
+            finalRoleName = nil
+        }
+
+        // 5. 更新所有直接匹配的句子
+        var count = 0
+        for idx in matchedIndices {
+            segments[idx].speakerID = targetSpeakerID
+            segments[idx].speakerIDs = [targetSpeakerID]
+            segments[idx].isSpeakerOverlap = false
+            segments[idx].speakerRole = finalRoleName
+            count += 1
+        }
+
+        // 6. 处理非直接匹配但包含旧 ID 的重叠/多说话人句子
+        if !affectedSourceIDs.isEmpty {
+            for i in 0..<segments.count {
+                guard !matchedIndices.contains(i) else { continue }
+                var modified = false
+                var updatedIDs = segments[i].speakerIDs
+
+                if let sid = segments[i].speakerID, affectedSourceIDs.contains(sid) {
+                    segments[i].speakerID = targetSpeakerID
+                    modified = true
+                }
+
+                if updatedIDs.contains(where: { affectedSourceIDs.contains($0) }) {
+                    updatedIDs = updatedIDs.map { affectedSourceIDs.contains($0) ? targetSpeakerID : $0 }
+                    segments[i].speakerIDs = Array(NSOrderedSet(array: updatedIDs)) as? [Int] ?? Array(Set(updatedIDs)).sorted()
+                    if segments[i].speakerIDs.count == 1 {
+                        segments[i].speakerID = segments[i].speakerIDs[0]
+                        segments[i].isSpeakerOverlap = false
+                    }
+                    modified = true
+                }
+
+                if modified {
+                    count += 1
+                }
+            }
+        }
+
+        // 7. 确保原本就是目标说话人的单人句子，其 speakerRole 统一为目标名称
+        if let finalRoleName {
+            for i in 0..<segments.count {
+                if segments[i].speakerID == targetSpeakerID && segments[i].speakerIDs == [targetSpeakerID] && !segments[i].isSpeakerOverlap {
+                    segments[i].speakerRole = finalRoleName
+                }
+            }
+        }
+
+        return MergeSpeakerResult(
+            updatedCount: count,
+            affectedSourceIDs: affectedSourceIDs,
+            targetSpeakerID: targetSpeakerID
+        )
+    }
+
+    /// 兼容旧签名的 mergeSpeaker
+    @discardableResult
     public func mergeSpeaker(
         fromRoleKey: String,
         toRoleKey: String,
         in segments: inout [SentenceSegment]
     ) -> Int {
-        guard let fromID = Self.speakerID(from: fromRoleKey),
-              let toID = Self.speakerID(from: toRoleKey),
-              fromID != toID else { return 0 }
-
-        var count = 0
-        for i in 0..<segments.count {
-            var modified = false
-            var updatedIDs = segments[i].speakerIDs
-
-            if segments[i].speakerID == fromID {
-                segments[i].speakerID = toID
-                modified = true
-            }
-
-            if updatedIDs.contains(fromID) {
-                updatedIDs = updatedIDs.map { $0 == fromID ? toID : $0 }
-                segments[i].speakerIDs = Array(Set(updatedIDs)).sorted()
-                modified = true
-            }
-
-            if modified {
-                count += 1
-            }
-        }
-        return count
+        mergeSpeakerEx(fromRoleKey: fromRoleKey, toRoleKey: toRoleKey, unifiedName: nil, in: &segments).updatedCount
     }
 }

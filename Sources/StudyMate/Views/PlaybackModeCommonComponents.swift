@@ -250,8 +250,7 @@ public struct SpeakerRenamePopoverContent: View {
                     HStack(spacing: 6) {
                         ForEach(quickOptions, id: \.self) { opt in
                             Button {
-                                isPresented = false
-                                onSave(roleLabel, opt, changeScope)
+                                handleSave(target: opt)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "person.fill")
@@ -280,6 +279,9 @@ public struct SpeakerRenamePopoverContent: View {
                 TextField(language == .en ? "Enter speaker name" : "输入说话人姓名", text: $renameText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 250)
+                    .onSubmit {
+                        handleSave(target: renameText)
+                    }
             }
 
             Group {
@@ -300,16 +302,62 @@ public struct SpeakerRenamePopoverContent: View {
                 }
                 Spacer()
                 Button(language == .en ? "Save" : "保存") {
-                    isPresented = false
-                    let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    onSave(roleLabel, trimmed, changeScope)
+                    handleSave(target: renameText)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(14)
+    }
+
+    private func handleSave(target: String) {
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // 若未做任何更改，直接关闭
+        if trimmed.caseInsensitiveCompare(roleLabel) == .orderedSame {
+            isPresented = false
+            return
+        }
+
+        if changeScope == .allMatching {
+            isPresented = false
+            confirmBatchSpeakerChange(targetName: trimmed)
+        } else {
+            isPresented = false
+            onSave(roleLabel, trimmed, changeScope)
+        }
+    }
+
+    private func confirmBatchSpeakerChange(targetName: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = language == .en ? "Confirm Speaker Change" : "确认修改角色"
+            alert.informativeText = language == .en
+                ? "Are you sure you want to change '\(roleLabel)' to '\(targetName)', for all \(matchingCount) sentences?"
+                : "你确定要修改 \(roleLabel) 为 \(targetName), 共 \(matchingCount) 句吗?"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: language == .en ? "Confirm" : "确定")
+            alert.addButton(withTitle: language == .en ? "Cancel" : "取消")
+
+            let targetWindow = NSApp.windows.first(where: { $0.isKeyWindow && $0.isVisible && !($0 is NSPanel) })
+                ?? NSApp.mainWindow
+                ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
+
+            if let targetWindow {
+                alert.beginSheetModal(for: targetWindow) { response in
+                    if response == .alertFirstButtonReturn {
+                        onSave(roleLabel, targetName, changeScope)
+                    }
+                }
+            } else {
+                let response = alert.runModal()
+                if response == .alertFirstButtonReturn {
+                    onSave(roleLabel, targetName, changeScope)
+                }
+            }
+        }
     }
 }
 

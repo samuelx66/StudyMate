@@ -232,5 +232,108 @@ final class SpeakerRoleManagerTests: XCTestCase {
         XCTAssertEqual(engine.segments[1].speakerRole, "Jim")
         XCTAssertEqual(engine.segments[1].speakerRoleLabel, "Jim")
     }
+
+    func testResolveRenameAndMergeMismatchedSpeakerRole() {
+        let engine = PlaybackEngine()
+
+        // 模拟用户工程中的数据：
+        // 若干句子的 speakerID 是 5，但 speakerRole 被设置为 "s10"
+        let seg1 = SentenceSegment(
+            index: 12,
+            startTime: 0,
+            endTime: 2,
+            text: "Sentence 12",
+            speakerID: 5,
+            speakerIDs: [5],
+            speakerRole: "s10"
+        )
+        let seg2 = SentenceSegment(
+            index: 13,
+            startTime: 2,
+            endTime: 4,
+            text: "Sentence 13",
+            speakerID: 5,
+            speakerIDs: [5],
+            speakerRole: "s10"
+        )
+        // 目标角色：speakerID 是 10，speakerRole 是 "Richard"
+        let segTarget = SentenceSegment(
+            index: 65,
+            startTime: 10,
+            endTime: 12,
+            text: "Sentence 65",
+            speakerID: 10,
+            speakerIDs: [10],
+            speakerRole: "Richard"
+        )
+        engine.segments = [seg1, seg2, segTarget]
+
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "s10")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "s10")
+        XCTAssertEqual(engine.segments[2].speakerRoleLabel, "Richard")
+
+        // 用户在第 13 句（角色标签为 s10）输入 "Richard"，选择所有相同角色
+        engine.renameSpeaker(fromRole: "s10", toName: "Richard", scope: .allMatching, segmentID: seg2.id)
+
+        // 验证：所有原 s10 的句子都成功合并至 Richard (ID: 10)
+        XCTAssertEqual(engine.segments[0].speakerID, 10)
+        XCTAssertEqual(engine.segments[0].speakerIDs, [10])
+        XCTAssertEqual(engine.segments[0].speakerRole, "Richard")
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "Richard")
+
+        XCTAssertEqual(engine.segments[1].speakerID, 10)
+        XCTAssertEqual(engine.segments[1].speakerIDs, [10])
+        XCTAssertEqual(engine.segments[1].speakerRole, "Richard")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "Richard")
+
+        // 目标句子本身也保持为 Richard
+        XCTAssertEqual(engine.segments[2].speakerID, 10)
+        XCTAssertEqual(engine.segments[2].speakerRole, "Richard")
+        XCTAssertEqual(engine.segments[2].speakerRoleLabel, "Richard")
+    }
+
+    func testMergeCustomNameToRoleKey() {
+        let engine = PlaybackEngine()
+
+        let segCustom = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 2,
+            text: "Sentence 1",
+            speakerID: 6,
+            speakerIDs: [6],
+            speakerRole: "Mrs. Vann"
+        )
+        let segTarget = SentenceSegment(
+            index: 2,
+            startTime: 2,
+            endTime: 4,
+            text: "Sentence 2",
+            speakerID: 0,
+            speakerIDs: [0]
+        )
+        engine.segments = [segCustom, segTarget]
+
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "Mrs. Vann")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "s1")
+
+        // 将 Mrs. Vann 合并到 s1
+        engine.renameSpeaker(fromRole: "Mrs. Vann", toName: "s1", scope: .allMatching)
+
+        XCTAssertEqual(engine.segments[0].speakerID, 0)
+        XCTAssertEqual(engine.segments[0].speakerIDs, [0])
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "s1")
+    }
+
+    func testResolveRenameSameNameReturnsUnchanged() {
+        let manager = SpeakerRoleManager()
+        let names = ["s1": "Jim", "s2": "Tom"]
+
+        let res = manager.resolveRename(fromRoleKey: "s1", inputName: "Jim", currentSpeakerNames: names)
+        XCTAssertEqual(res.action, .unchanged)
+
+        let resExact = manager.resolveRename(fromRoleKey: "Jim", inputName: "Jim", currentSpeakerNames: names)
+        XCTAssertEqual(resExact.action, .unchanged)
+    }
 }
 
