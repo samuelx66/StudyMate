@@ -413,6 +413,201 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
     }
 
+    func testRemoveSentenceLibrarySessionCleansUpDiskFilesAndDirectories() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let libraryID = UUID()
+        let sessionsDir = directory.appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+        let sessionDir = sessionsDir.appendingPathComponent(libraryID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let audioURL = sessionDir.appendingPathComponent("Unit1_Lesson1.m4a")
+        let lrcURL = sessionDir.appendingPathComponent("Unit1_Lesson1.lrc")
+        let srtURL = sessionDir.appendingPathComponent("Unit1_Lesson1.srt")
+        let dsStoreURL = sessionDir.appendingPathComponent(".DS_Store")
+        let sessionsDsStoreURL = sessionsDir.appendingPathComponent(".DS_Store")
+
+        try Data("audio-bytes".utf8).write(to: audioURL)
+        try Data("lrc-bytes".utf8).write(to: lrcURL)
+        try Data("srt-bytes".utf8).write(to: srtURL)
+        try Data("ds-store".utf8).write(to: dsStoreURL)
+        try Data("ds-store".utf8).write(to: sessionsDsStoreURL)
+
+        let projects = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: projects,
+            playbackHistoryStore: history
+        )
+
+        history.recordPlayed(
+            audioURL,
+            customTitle: "Unit1.mablib",
+            customPath: "句库",
+            libraryID: libraryID,
+            selectedEntryIDs: []
+        )
+        projects.saveProject(for: audioURL, title: "Unit1.mablib", duration: 10, lastPosition: 0, segments: [])
+        projects.flush()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lrcURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: srtURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: projects.projectFileURL(for: audioURL).path))
+
+        await engine.removeFromPlaybackHistory(audioURL)
+
+        XCTAssertTrue(history.entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projects.projectFileURL(for: audioURL).path))
+        // 关键断言：句库会话媒体切片、歌词、字幕及空会话目录均已被彻底删除
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lrcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: srtURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionsDir.path))
+    }
+
+    func testClearingPlaybackHistoryCleansUpSentenceLibrarySessionsAndPreservesNormalMedia() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let normalMediaURL = directory.appendingPathComponent("movie.mp4")
+        try Data("normal-video".utf8).write(to: normalMediaURL)
+
+        let libraryID = UUID()
+        let sessionsDir = directory.appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+        let sessionDir = sessionsDir.appendingPathComponent(libraryID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let sessionAudioURL = sessionDir.appendingPathComponent("English_900.m4a")
+        let sessionLrcURL = sessionDir.appendingPathComponent("English_900.lrc")
+        try Data("session-audio".utf8).write(to: sessionAudioURL)
+        try Data("session-lrc".utf8).write(to: sessionLrcURL)
+
+        let projects = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: projects,
+            playbackHistoryStore: history
+        )
+
+        history.recordPlayed(normalMediaURL)
+        history.recordPlayed(
+            sessionAudioURL,
+            customTitle: "English_900.mablib",
+            customPath: "句库",
+            libraryID: libraryID,
+            selectedEntryIDs: []
+        )
+        projects.saveProject(for: normalMediaURL, title: "movie", duration: 10, lastPosition: 0, segments: [])
+        projects.saveProject(for: sessionAudioURL, title: "English_900.mablib", duration: 10, lastPosition: 0, segments: [])
+        projects.flush()
+
+        await engine.clearPlaybackHistory()
+
+        XCTAssertTrue(history.entries.isEmpty)
+        // 普通媒体保留
+        XCTAssertTrue(FileManager.default.fileExists(atPath: normalMediaURL.path))
+        // 句库学习文件及其目录彻底清理
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionAudioURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionLrcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionsDir.path))
+    }
+
+    func testHasGeneratedSentenceLibraryMaterialAndReuse() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let libraryID = UUID()
+        let entry1ID = UUID()
+        let entry2ID = UUID()
+
+        let entry1 = SentenceLibraryEntry(
+            id: entry1ID,
+            originalText: "Hello world",
+            translation: "你好世界",
+            sourceMediaName: "Sample.mp4",
+            sourceMediaPath: "/fake/path/Sample.mp4",
+            startTime: 0,
+            endTime: 2,
+            mediaFilename: "clip1.m4a"
+        )
+        let entry2 = SentenceLibraryEntry(
+            id: entry2ID,
+            originalText: "StudyMate is great",
+            translation: "学伴真棒",
+            sourceMediaName: "Sample.mp4",
+            sourceMediaPath: "/fake/path/Sample.mp4",
+            startTime: 2,
+            endTime: 5,
+            mediaFilename: "clip2.m4a"
+        )
+
+        let descriptor = SentenceLibraryDescriptor(
+            id: libraryID,
+            name: "TestLib"
+        )
+
+        let projects = ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        let history = PlaybackHistoryStore(storageDirectory: directory.appendingPathComponent("history"))
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 10),
+            mpvBackend: TestMediaPlayerBackend(duration: 10),
+            projectFileManager: projects,
+            playbackHistoryStore: history
+        )
+
+        let entries = [entry1, entry2]
+
+        // 1. 初始状态：未生成任何材料
+        XCTAssertFalse(engine.hasGeneratedSentenceLibraryMaterial(libraryID: libraryID, entries: entries, descriptor: descriptor))
+
+        // 2. 模拟生成了会话音频和工程文件
+        let (_, outputAudioURL) = engine.sentenceLibrarySessionTarget(libraryID: libraryID, entries: entries, descriptor: descriptor)
+        try FileManager.default.createDirectory(at: outputAudioURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // 写入虚拟音频（> 1024 字节）
+        let dummyData = Data(repeating: 0x41, count: 2048)
+        try dummyData.write(to: outputAudioURL)
+
+        // 登记到播放历史和工程
+        history.recordPlayed(
+            outputAudioURL,
+            customTitle: "TestLib-Sample.mablib",
+            customPath: "句库",
+            libraryID: libraryID,
+            selectedEntryIDs: entries.map { $0.id }
+        )
+        projects.saveProject(
+            for: outputAudioURL,
+            title: "TestLib-Sample.mablib",
+            duration: 5,
+            lastPosition: 1.5,
+            segments: [
+                SentenceSegment(id: entry1ID, index: 1, startTime: 0, endTime: 2, text: "Hello world", translation: "你好世界"),
+                SentenceSegment(id: entry2ID, index: 2, startTime: 2, endTime: 5, text: "StudyMate is great", translation: "学伴真棒")
+            ],
+            sentenceLibraryID: libraryID,
+            sentenceLibraryEntryMap: [entry1ID: entry1ID, entry2ID: entry2ID]
+        )
+        projects.flush()
+
+        // 3. 此时 hasGeneratedSentenceLibraryMaterial 应该返回 true
+        XCTAssertTrue(engine.hasGeneratedSentenceLibraryMaterial(libraryID: libraryID, entries: entries, descriptor: descriptor))
+
+        // 4. 若请求的条目集合不同（例如只选了第一句），则应返回 false（不误复用全量或不匹配的会话）
+        XCTAssertFalse(engine.hasGeneratedSentenceLibraryMaterial(libraryID: libraryID, entries: [entry1], descriptor: descriptor))
+
+        // 5. 模拟从历史中删除该材料后，hasGeneratedSentenceLibraryMaterial 应变为 false
+        await engine.removeFromPlaybackHistory(outputAudioURL)
+        XCTAssertFalse(engine.hasGeneratedSentenceLibraryMaterial(libraryID: libraryID, entries: entries, descriptor: descriptor))
+    }
+
     func testSegmentOperations() {
         let engine = makeTestPlaybackEngine()
         engine.duration = 60.0
@@ -2546,5 +2741,47 @@ final class PlaybackEngineTests: XCTestCase {
         engine.isFullScreen = false
         XCTAssertFalse(engine.windowPresentationState.isFullScreen)
         XCTAssertEqual(publishedValues, [false, true, false])
+    }
+
+    func testProjectPersistencePreservesSentenceLibraryMetadata() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let mediaURL = directory.appendingPathComponent("session.m4a")
+        try Data("audio".utf8).write(to: mediaURL)
+        let projectDir = directory.appendingPathComponent("projects", isDirectory: true)
+        let projectManager = ProjectFileManager(baseDirectory: projectDir)
+
+        let entryID = UUID()
+        let libraryID = UUID()
+        let seg = SentenceSegment(id: entryID, index: 1, startTime: 0, endTime: 2, text: "Hello", translation: "你好")
+
+        projectManager.saveProject(
+            for: mediaURL,
+            title: "Sentence Library Session",
+            duration: 2,
+            lastPosition: 0,
+            segments: [seg],
+            sentenceLibraryID: libraryID,
+            sentenceLibraryEntryMap: [entryID: entryID]
+        )
+        projectManager.flush()
+
+        let loaded = projectManager.loadProject(for: mediaURL)
+        XCTAssertEqual(loaded?.sentenceLibraryID, libraryID)
+        XCTAssertEqual(loaded?.sentenceLibraryEntryMap?[entryID], entryID)
+
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 2),
+            mpvBackend: TestMediaPlayerBackend(duration: 2),
+            projectFileManager: projectManager
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        for _ in 0..<100 where engine.segments.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(engine.activeSentenceLibraryID, libraryID)
+        XCTAssertEqual(engine.activeSentenceLibraryEntryMap[entryID], entryID)
     }
 }

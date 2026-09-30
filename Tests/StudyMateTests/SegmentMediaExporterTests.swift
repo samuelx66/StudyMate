@@ -226,6 +226,67 @@ final class SegmentMediaExporterTests: XCTestCase {
         XCTAssertEqual(duration, 1.4, accuracy: 0.2)
     }
 
+    func testExportLibraryEntriesMerged_sameSourceDirectConcatPreservesMetadataAndSampleAccuracy() async throws {
+        guard AudioPCMExtractor.ffmpegExecutableURL() != nil else {
+            throw XCTSkip("ffmpeg is required for the media export integration test")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudyMate-SameSourceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceURL = root.appendingPathComponent("source.wav")
+        try makeTestAudio(at: sourceURL, duration: 4.0)
+
+        let first = SentenceLibraryEntry(
+            originalIndex: 1,
+            originalText: "First sentence",
+            translation: "第一句",
+            sourceMediaName: "source.wav",
+            sourceMediaPath: sourceURL.path,
+            startTime: 0.5,
+            endTime: 1.5,
+            mediaFilename: "clip1.m4a",
+            speakerRole: "Teacher"
+        )
+        let second = SentenceLibraryEntry(
+            originalIndex: 2,
+            originalText: "Second sentence",
+            translation: "第二句",
+            sourceMediaName: "source.wav",
+            sourceMediaPath: sourceURL.path,
+            startTime: 2.0,
+            endTime: 3.2,
+            mediaFilename: "clip2.m4a",
+            speakerRole: "Student"
+        )
+
+        let exporter = SegmentMediaExporter(temporaryRootURL: root.appendingPathComponent("runtime-temp"))
+        let merged = try exporter.exportLibraryEntriesMerged(
+            entries: [first, second],
+            mediaURLs: [:],
+            outputAudioURL: root.appendingPathComponent("direct_concat.m4a"),
+            album: "TestAlbum",
+            artist: "TestArtist"
+        )
+
+        XCTAssertEqual(merged.timelineSegments.count, 2)
+        XCTAssertEqual(merged.timelineSegments[0].speakerRole, "Teacher")
+        XCTAssertEqual(merged.timelineSegments[1].speakerRole, "Student")
+        XCTAssertEqual(merged.timelineSegments[0].startTime, 0.0, accuracy: 0.001)
+        XCTAssertEqual(merged.timelineSegments[0].endTime, 1.0, accuracy: 0.001)
+        XCTAssertEqual(merged.timelineSegments[1].startTime, 1.0, accuracy: 0.001)
+        XCTAssertEqual(merged.timelineSegments[1].endTime, 2.2, accuracy: 0.001)
+        XCTAssertEqual(merged.totalDuration, 2.2, accuracy: 0.001)
+
+        let duration = try await AVURLAsset(url: merged.location).load(.duration).seconds
+        XCTAssertEqual(duration, 2.2, accuracy: 0.15)
+
+        let srt = try String(contentsOf: merged.location.deletingPathExtension().appendingPathExtension("srt"), encoding: .utf8)
+        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:00:01,000\nFirst sentence\n第一句"))
+        XCTAssertTrue(srt.contains("00:00:01,000 --> 00:00:02,200\nSecond sentence\n第二句"))
+    }
+
     private func makeTestAudio(at url: URL, duration: Double) throws {
         let sampleRate = 16_000.0
         let frameCount = AVAudioFrameCount(sampleRate * duration)

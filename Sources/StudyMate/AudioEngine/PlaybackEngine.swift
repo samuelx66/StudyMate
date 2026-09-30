@@ -1790,6 +1790,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if let entry = self.playbackHistoryStore?.entries.first(where: { $0.mediaPath == mediaURL.path }) {
                 self.activeSentenceLibraryID = entry.libraryID
             }
+            if self.activeSentenceLibraryID == nil {
+                let components = mediaURL.pathComponents
+                if let sessionIdx = components.firstIndex(of: "SentenceLibrarySessions"), sessionIdx + 1 < components.count {
+                    self.activeSentenceLibraryID = UUID(uuidString: components[sessionIdx + 1])
+                }
+            }
             let currentMode = UserDefaults.standard.string(forKey: "StudyMate.PlaybackInterfaceMode")
             if currentMode == nil || currentMode == PlaybackInterfaceMode.video.rawValue {
                 UserDefaults.standard.set(PlaybackInterfaceMode.list.rawValue, forKey: "StudyMate.PlaybackInterfaceMode")
@@ -1940,6 +1946,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 && (effectiveDuration <= 0 || boundary <= effectiveDuration)
         }
         segments = normalizedSegments(project.segments, duration: effectiveDuration)
+
+        if let libID = project.sentenceLibraryID {
+            activeSentenceLibraryID = libID
+            if let map = project.sentenceLibraryEntryMap, !map.isEmpty {
+                activeSentenceLibraryEntryMap = map
+            } else {
+                var map: [UUID: UUID] = [:]
+                for seg in segments {
+                    map[seg.id] = seg.id
+                }
+                activeSentenceLibraryEntryMap = map
+            }
+        }
 
         let restoredPosition = min(max(0, project.lastPosition), effectiveDuration)
         pendingResumeTime = restoredPosition
@@ -3015,7 +3034,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             waveformData: includeWaveform ? self.waveformData : nil,
             persistWaveform: includeWaveform,
             hasCompletedSegmentation: hasCompletedSegmentation,
-            acousticBoundaryTimes: acousticBoundaryTimes
+            acousticBoundaryTimes: acousticBoundaryTimes,
+            sentenceLibraryID: self.activeSentenceLibraryID,
+            sentenceLibraryEntryMap: self.activeSentenceLibraryEntryMap
         )
     }
 
@@ -3026,9 +3047,81 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         playbackHistoryStore?.flush()
     }
 
-    /// 从播放列表移除媒体并清理其工程记录；原始音视频文件保持不变。
+    /// 判断给定媒体文件是否属于句库“进入学习”生成的临时会话材料（.mablib）。
+    public func isSentenceLibrarySessionMedia(_ mediaURL: URL) -> Bool {
+        let standardized = mediaURL.standardizedFileURL
+        let path = standardized.path
+        if path.contains("/SentenceLibrarySessions/") || path.contains("/StudyMateLibSession/") {
+            return true
+        }
+        if let entry = playbackHistoryStore?.entries.first(where: { $0.mediaURL.standardizedFileURL == standardized }),
+           (entry.libraryID != nil || entry.customTitle?.hasSuffix(".mablib") == true || entry.isLibrarySession) {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.standardizedFileURL.path ?? ""
+            if !appSupport.isEmpty && path.hasPrefix(appSupport) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// 删除由句库“进入学习”生成的学习材料文件（包括 .m4a、.lrc、.srt 等及变空的会话目录）。
+    /// 仅对句库会话材料执行物理删除，严防误删用户普通的音视频源文件。
+    @discardableResult
+    public func deleteSentenceLibrarySessionFiles(for mediaURL: URL) -> Bool {
+        let fileURL = mediaURL.standardizedFileURL
+        guard isSentenceLibrarySessionMedia(fileURL) else { return false }
+
+        let fileManager = FileManager.default
+        let parentDir = fileURL.deletingLastPathComponent()
+        let baseName = fileURL.deletingPathExtension().lastPathComponent
+
+        // 1. 删除与该会话同名的所有衍生文件（如 .m4a, .lrc, .srt 等）
+        if let contents = try? fileManager.contentsOfDirectory(at: parentDir, includingPropertiesForKeys: nil) {
+            for item in contents {
+                if item.deletingPathExtension().lastPathComponent == baseName {
+                    try? fileManager.removeItem(at: item)
+                }
+            }
+        } else {
+            try? fileManager.removeItem(at: fileURL)
+            let lrcURL = parentDir.appendingPathComponent("\(baseName).lrc")
+            let srtURL = parentDir.appendingPathComponent("\(baseName).srt")
+            try? fileManager.removeItem(at: lrcURL)
+            try? fileManager.removeItem(at: srtURL)
+        }
+
+        // 2. 检查会话子目录（如 SentenceLibrarySessions/<libraryID>）是否变空（除 .DS_Store 外）
+        if let remainingInParent = try? fileManager.contentsOfDirectory(at: parentDir, includingPropertiesForKeys: nil) {
+            let meaningfulFiles = remainingInParent.filter { $0.lastPathComponent != ".DS_Store" }
+            if meaningfulFiles.isEmpty {
+                for dsStore in remainingInParent {
+                    try? fileManager.removeItem(at: dsStore)
+                }
+                try? fileManager.removeItem(at: parentDir)
+            }
+        }
+
+        // 3. 检查 SentenceLibrarySessions 根目录是否变空；若变空同样清理
+        let sessionsDir = parentDir.deletingLastPathComponent()
+        if sessionsDir.lastPathComponent == "SentenceLibrarySessions" {
+            if let remainingSessions = try? fileManager.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) {
+                let meaningfulDirs = remainingSessions.filter { $0.lastPathComponent != ".DS_Store" }
+                if meaningfulDirs.isEmpty {
+                    for dsStore in remainingSessions {
+                        try? fileManager.removeItem(at: dsStore)
+                    }
+                    try? fileManager.removeItem(at: sessionsDir)
+                }
+            }
+        }
+
+        return true
+    }
+
+    /// 从播放列表移除媒体并清理其工程记录；若为句库生成的学习材料，则同步清理其磁盘文件；普通源媒体文件保持不变。
     public func removeFromPlaybackHistory(_ mediaURL: URL) async {
         let standardizedURL = mediaURL.standardizedFileURL
+        let isSessionMedia = isSentenceLibrarySessionMedia(standardizedURL)
         if currentMedia?.url.standardizedFileURL == standardizedURL {
             debouncedSaveTask?.cancel()
             // 删除当前媒体的历史记录时，同时中止仍可能写入 PCMCache 的
@@ -3041,6 +3134,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segmentationTask = nil
             segmentationRequestID = UUID()
             suppressCurrentProjectPersistence = true
+
+            if isSessionMedia {
+                activeBackend.pause()
+                nativeBackend.teardown()
+                mpvBackend.teardown()
+                currentMedia = nil
+                segments = []
+                waveformData = .empty
+                acousticBoundaryTimes = []
+                activeSentenceLibraryID = nil
+                activeSentenceLibraryEntryMap = [:]
+                isPlaying = false
+                wantsPlayback = false
+                currentTime = 0
+                duration = 0
+            }
         }
         playbackHistoryStore?.remove(standardizedURL)
         do {
@@ -3053,17 +3162,31 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // PCMCache 是可再生的派生数据，删除历史记录时清理当前缓存；
         // 原始音视频文件本身不会受到影响。
         await AudioPCMExtractor.shared.removeCache(for: standardizedURL)
+
+        if isSessionMedia {
+            deleteSentenceLibrarySessionFiles(for: standardizedURL)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已从列表中移除并清理相关学习文件", "Removed from list and cleaned up learning files")
+            )
+        } else {
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已从列表中移除", "Removed from list")
+            )
+        }
     }
 
-    /// 清空播放列表时也清除每个媒体的工程文件、波形文件与 PCM 派生缓存。
+    /// 清空播放列表时清除每个媒体的工程文件、波形文件与 PCM 派生缓存，并彻底清理句库生成的学习材料；
     /// 原始音视频不会被触碰；当前媒体的后台任务会先取消，防止清理后又写回。
     public func clearPlaybackHistory() async {
         guard let playbackHistoryStore else { return }
         let mediaURLs = playbackHistoryStore.entries.map(\.mediaURL)
         guard !mediaURLs.isEmpty else { return }
 
-        if let currentURL = currentMedia?.url.standardizedFileURL,
-           mediaURLs.contains(currentURL) {
+        let sessionURLs = Set(mediaURLs.filter { isSentenceLibrarySessionMedia($0) }.map(\.standardizedFileURL))
+        let currentURL = currentMedia?.url.standardizedFileURL
+        let containsCurrent = currentURL != nil && mediaURLs.contains(where: { $0.standardizedFileURL == currentURL })
+
+        if containsCurrent {
             debouncedSaveTask?.cancel()
             waveformTask?.cancel()
             waveformTask = nil
@@ -3073,18 +3196,55 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segmentationTask = nil
             segmentationRequestID = UUID()
             suppressCurrentProjectPersistence = true
+
+            if let cur = currentURL, sessionURLs.contains(cur) || isSentenceLibrarySessionMedia(cur) {
+                activeBackend.pause()
+                nativeBackend.teardown()
+                mpvBackend.teardown()
+                currentMedia = nil
+                segments = []
+                waveformData = .empty
+                acousticBoundaryTimes = []
+                activeSentenceLibraryID = nil
+                activeSentenceLibraryEntryMap = [:]
+                isPlaying = false
+                wantsPlayback = false
+                currentTime = 0
+                duration = 0
+            }
         }
 
         playbackHistoryStore.removeAll()
+        var cleanedSessionCount = 0
         for mediaURL in mediaURLs {
+            let standardized = mediaURL.standardizedFileURL
+            let isSession = sessionURLs.contains(standardized) || isSentenceLibrarySessionMedia(standardized)
             do {
-                try await projectFileManager.deleteProjectAsync(for: mediaURL)
+                try await projectFileManager.deleteProjectAsync(for: standardized)
             } catch {
                 lastErrorMessage = LanguageManager.shared.currentLanguage == .zh
                     ? "删除工程记录失败：\(error.localizedDescription)"
                     : "Unable to delete project records: \(error.localizedDescription)"
             }
-            await AudioPCMExtractor.shared.removeCache(for: mediaURL)
+            await AudioPCMExtractor.shared.removeCache(for: standardized)
+            if isSession {
+                if deleteSentenceLibrarySessionFiles(for: standardized) {
+                    cleanedSessionCount += 1
+                }
+            }
+        }
+
+        if cleanedSessionCount > 0 {
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已清空播放列表并清理相关学习文件",
+                    "Cleared playlist and cleaned up learning files"
+                )
+            )
+        } else {
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("已清空播放列表", "Cleared playlist")
+            )
         }
     }
 
@@ -4114,9 +4274,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segments[idx].isBookmarked.toggle()
             scheduleDebouncedPersistence()
 
-            if let libraryID = activeSentenceLibraryID, let entryID = activeSentenceLibraryEntryMap[segmentId] {
-                Task {
-                    _ = try? SentenceLibraryStore.shared.toggleBookmark(id: entryID, in: libraryID)
+            if let libraryID = activeSentenceLibraryID {
+                let entryID = activeSentenceLibraryEntryMap[segmentId] ?? segmentId
+                let isBookmarked = segments[idx].isBookmarked
+                let sentenceIndex = segments[idx].index
+                Task { @MainActor in
+                    do {
+                        _ = try await Task.detached(priority: .userInitiated) {
+                            try SentenceLibraryStore.shared.toggleBookmark(id: entryID, in: libraryID)
+                        }.value
+                        SentenceLibraryManager.shared.setBookmarkFromPlayback(id: entryID, isBookmarked: isBookmarked)
+                        let msg = isBookmarked
+                            ? LanguageManager.shared.text("已将第 #\(sentenceIndex) 句加入星标难句", "Added sentence #\(sentenceIndex) to starred sentences")
+                            : LanguageManager.shared.text("已将第 #\(sentenceIndex) 句取消星标难句", "Removed sentence #\(sentenceIndex) from starred sentences")
+                        MainStatusCenter.shared.showSuccess(msg)
+                    } catch {
+                        MainStatusCenter.shared.showError(
+                            LanguageManager.shared.text("更新星标失败: \(error.localizedDescription)", "Failed to update bookmark: \(error.localizedDescription)")
+                        )
+                    }
                 }
             }
         }
@@ -4423,16 +4599,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             guard changed else { return }
             scheduleDebouncedPersistence()
 
-            if let libraryID = activeSentenceLibraryID, let entryID = activeSentenceLibraryEntryMap[id] {
-                let phonetics = PhoneticEngine.shared.phoneticText(for: text)
-                Task {
-                    try? SentenceLibraryStore.shared.updateEntry(
-                        id: entryID,
-                        originalText: text,
-                        translation: translation ?? self.segments[idx].translation,
-                        phoneticText: phonetics,
-                        in: libraryID
-                    )
+            if let libraryID = activeSentenceLibraryID {
+                let entryID = activeSentenceLibraryEntryMap[id] ?? id
+                let finalTranslation = translation ?? self.segments[idx].translation
+                let sentenceIndex = self.segments[idx].index
+                Task { @MainActor in
+                    do {
+                        try await SentenceLibraryManager.shared.updateEntryFromPlayback(
+                            id: entryID,
+                            originalText: text,
+                            translation: finalTranslation,
+                            sentenceIndex: sentenceIndex,
+                            in: libraryID
+                        )
+                    } catch {
+                        // Error feedback is already shown by SentenceLibraryManager in MainStatusCenter
+                    }
                 }
             }
         }
@@ -4492,8 +4674,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segments[idx].isSpeakerOverlap = res.isOverlap
             segments[idx].speakerRole = res.speakerRole
 
-            if let libraryID = activeSentenceLibraryID,
-               let entryID = activeSentenceLibraryEntryMap[targetSegID] {
+            if let libraryID = activeSentenceLibraryID {
+                let entryID = activeSentenceLibraryEntryMap[targetSegID] ?? targetSegID
                 Task {
                     try? SentenceLibraryStore.shared.updateSpeakerAssignment(
                         id: entryID,
@@ -4545,8 +4727,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     segments[i].speakerRole = roleToSet
                     updatedCount += 1
 
-                    if let libraryID = activeSentenceLibraryID,
-                       let entryID = activeSentenceLibraryEntryMap[segments[i].id] {
+                    if let libraryID = activeSentenceLibraryID {
+                        let entryID = activeSentenceLibraryEntryMap[segments[i].id] ?? segments[i].id
                         Task {
                             try? SentenceLibraryStore.shared.updateSpeakerAssignment(
                                 id: entryID,
@@ -4650,17 +4832,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    /// 从句库学习包直接装载进 5 大学习模式
-    @MainActor
-    public func loadSentenceLibrary(
+    /// 计算句库会话媒体的标题与目标音频 URL。
+    public func sentenceLibrarySessionTarget(
         libraryID: UUID,
         entries: [SentenceLibraryEntry],
         descriptor: SentenceLibraryDescriptor?
-    ) async throws {
-        guard !entries.isEmpty else { return }
-
-        // 计算符合规范的显示名称：
-        // 单一来源时：“句库名字-来源.mablib”；多个来源或无来源时：“句库名字.mablib”
+    ) -> (sessionTitle: String, outputAudioURL: URL) {
         let distinctSources = Array(Set(entries.map { entry -> String in
             let s = entry.sourceMediaName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !s.isEmpty {
@@ -4692,10 +4869,74 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             .appendingPathComponent("StudyMate", isDirectory: true)
             .appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
             .appendingPathComponent(libraryID.uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         let outputAudioURL = sessionDir.appendingPathComponent("\(sanitizedSlug).m4a")
 
-        // 1. 在后台线程执行切片文件存在性过滤与音频合并导出，杜绝阻塞主线程
+        return (sessionTitle, outputAudioURL)
+    }
+
+    /// 判断指定的句库学习材料是否已经在本地磁盘生成且与所选条目完全匹配。
+    public func hasGeneratedSentenceLibraryMaterial(
+        libraryID: UUID,
+        entries: [SentenceLibraryEntry],
+        descriptor: SentenceLibraryDescriptor?
+    ) -> Bool {
+        guard !entries.isEmpty else { return false }
+
+        let (_, outputAudioURL) = sentenceLibrarySessionTarget(
+            libraryID: libraryID,
+            entries: entries,
+            descriptor: descriptor
+        )
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: outputAudioURL.path) else { return false }
+        let size = (try? outputAudioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 1024 else { return false }
+
+        let requestedIDs = entries.map(\.id)
+
+        // 1. 优先通过播放历史匹配所选句子 ID 序列
+        if let historyEntry = playbackHistoryStore?.entries.first(where: {
+            $0.mediaURL.standardizedFileURL == outputAudioURL.standardizedFileURL
+        }) {
+            if let selectedIDs = historyEntry.selectedEntryIDs, !selectedIDs.isEmpty {
+                return selectedIDs == requestedIDs
+            }
+        }
+
+        // 2. 通过已保存工程文件匹配片段序列
+        if let project = projectFileManager.loadProject(for: outputAudioURL) {
+            if let map = project.sentenceLibraryEntryMap, !map.isEmpty {
+                let projectIDs = project.segments.compactMap { map[$0.id] }
+                if projectIDs == requestedIDs {
+                    return true
+                }
+            }
+            if project.segments.count == requestedIDs.count {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// 从句库学习包直接装载进 5 大学习模式；若已在本地生成过对应材料，则秒级直接复用，不重复合成转码
+    @MainActor
+    public func loadSentenceLibrary(
+        libraryID: UUID,
+        entries: [SentenceLibraryEntry],
+        descriptor: SentenceLibraryDescriptor?
+    ) async throws {
+        guard !entries.isEmpty else { return }
+
+        let (sessionTitle, outputAudioURL) = sentenceLibrarySessionTarget(
+            libraryID: libraryID,
+            entries: entries,
+            descriptor: descriptor
+        )
+        let libraryName = descriptor?.name ?? LanguageManager.shared.text("句库", "Sentence Library")
+
+        // 1. 在后台线程执行切片文件存在性过滤，杜绝阻塞主线程
         let (validEntries, mediaURLs) = await Task.detached(priority: .userInitiated) {
             var valid: [SentenceLibraryEntry] = []
             var urls: [UUID: URL] = [:]
@@ -4717,8 +4958,159 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             )
         }
 
-        // 2. 在后台线程合成合并音频
-        _ = try await Task.detached(priority: .userInitiated) {
+        let isAlreadyGenerated = hasGeneratedSentenceLibraryMaterial(
+            libraryID: libraryID,
+            entries: validEntries,
+            descriptor: descriptor
+        )
+
+        // 2. 如果已经生成过学习材料且文件完整存在，直接秒级复用，杜绝重复合成与转码
+        if isAlreadyGenerated {
+            // Case A: 当前播放引擎已装载该会话
+            if currentMedia?.url.standardizedFileURL == outputAudioURL.standardizedFileURL {
+                var didChange = false
+                for i in 0..<self.segments.count {
+                    let segID = self.segments[i].id
+                    let entryID = self.activeSentenceLibraryEntryMap[segID] ?? segID
+                    if let entry = validEntries.first(where: { $0.id == entryID }) {
+                        if self.segments[i].text != entry.originalText {
+                            self.segments[i].text = entry.originalText
+                            didChange = true
+                        }
+                        if self.segments[i].translation != entry.translation {
+                            self.segments[i].translation = entry.translation
+                            didChange = true
+                        }
+                        if self.segments[i].isBookmarked != entry.isBookmarked {
+                            self.segments[i].isBookmarked = entry.isBookmarked
+                            didChange = true
+                        }
+                        if self.segments[i].speakerRole != entry.speakerRole {
+                            self.segments[i].speakerRole = entry.speakerRole
+                            didChange = true
+                        }
+                    }
+                }
+                if didChange {
+                    scheduleDebouncedPersistence()
+                }
+                self.activeSentenceLibraryID = libraryID
+                self.playbackHistoryStore?.recordPlayed(
+                    outputAudioURL,
+                    customTitle: sessionTitle,
+                    customPath: LanguageManager.shared.text("句库", "Sentence Library"),
+                    libraryID: libraryID,
+                    selectedEntryIDs: validEntries.map(\.id)
+                )
+                return
+            }
+
+            // Case B: 当前播放器未装载该会话，直接从磁盘已有的工程与音频恢复
+            if let project = projectFileManager.loadProject(for: outputAudioURL) {
+                var timelineSegments = project.segments
+                var entryMap = project.sentenceLibraryEntryMap ?? [:]
+                if entryMap.isEmpty {
+                    for seg in timelineSegments {
+                        entryMap[seg.id] = seg.id
+                    }
+                }
+
+                // 同步句库最新原文、译文、生词、注音与星标
+                for i in 0..<timelineSegments.count {
+                    let segID = timelineSegments[i].id
+                    let entryID = entryMap[segID] ?? segID
+                    if let entry = validEntries.first(where: { $0.id == entryID }) {
+                        timelineSegments[i].text = entry.originalText
+                        timelineSegments[i].translation = entry.translation
+                        timelineSegments[i].isBookmarked = entry.isBookmarked
+                        timelineSegments[i].speakerRole = entry.speakerRole
+                        timelineSegments[i].phoneticText = entry.phoneticText
+                        timelineSegments[i].associatedWords = entry.associatedWords
+                        timelineSegments[i].wordTokens = entry.wordTokens
+                    }
+                }
+
+                let totalDuration = project.duration
+
+                self.loadMedia(from: outputAudioURL)
+                self.sidecarTask?.cancel()
+                self.sidecarTask = nil
+                self.segmentOrigin = .project
+                self.projectRecoveryRequired = false
+                self.pendingProjectForExplicitRecovery = nil
+                self.canUseExistingProject = false
+
+                self.activeSentenceLibraryID = libraryID
+                self.activeSentenceLibraryEntryMap = entryMap
+                self.segments = timelineSegments
+                self.hasCompletedSegmentation = true
+
+                if let savedWaveform = project.waveformData, !savedWaveform.isEmpty {
+                    self.waveformData = savedWaveform
+                    self.waveformExtractionProgress = 1
+                } else {
+                    self.extractWaveform(from: outputAudioURL, sessionID: self.mediaSessionID)
+                }
+
+                if let media = self.currentMedia {
+                    self.currentMedia = MediaItem(
+                        id: media.id,
+                        url: media.url,
+                        title: sessionTitle,
+                        duration: totalDuration,
+                        isVideo: media.isVideo,
+                        fileSize: media.fileSize
+                    )
+                }
+
+                self.projectFileManager.saveProject(
+                    for: outputAudioURL,
+                    title: sessionTitle,
+                    duration: totalDuration,
+                    lastPosition: project.lastPosition,
+                    segments: timelineSegments,
+                    waveformData: project.waveformData,
+                    persistWaveform: project.waveformData?.isEmpty == false,
+                    hasCompletedSegmentation: true,
+                    acousticBoundaryTimes: project.acousticBoundaryTimes,
+                    sentenceLibraryID: libraryID,
+                    sentenceLibraryEntryMap: entryMap
+                )
+
+                self.playbackHistoryStore?.recordPlayed(
+                    outputAudioURL,
+                    customTitle: sessionTitle,
+                    customPath: LanguageManager.shared.text("句库", "Sentence Library"),
+                    libraryID: libraryID,
+                    selectedEntryIDs: validEntries.map(\.id)
+                )
+
+                let restoredPosition = min(max(0, project.lastPosition), totalDuration)
+                self.currentTime = restoredPosition
+                self.pendingResumeTime = restoredPosition
+                self.updateActiveSegment(for: restoredPosition)
+
+                let initialIndex: Int
+                if let session = descriptor?.session,
+                   let lastIndex = session.lastPlayedIndex,
+                   lastIndex >= 0, lastIndex < timelineSegments.count {
+                    initialIndex = lastIndex
+                } else if let activeIdx = self.activeSegmentIndex, activeIdx >= 0, activeIdx < timelineSegments.count {
+                    initialIndex = activeIdx
+                } else {
+                    initialIndex = 0
+                }
+
+                if !timelineSegments.isEmpty {
+                    self.jumpToSegment(at: initialIndex)
+                }
+                return
+            }
+        }
+
+        // 3. 首次进入或条目不匹配时，执行合成导出
+        try FileManager.default.createDirectory(at: outputAudioURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let exportResult = try await Task.detached(priority: .userInitiated) {
             try SegmentMediaExporter.shared.exportLibraryEntriesMerged(
                 entries: validEntries,
                 mediaURLs: mediaURLs,
@@ -4729,58 +5121,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             )
         }.value
 
-        // 3. 在后台线程提取音频切片实际时长并构建时间轴断句模型
         let (timelineSegments, entryMap, totalDuration) = await Task.detached(priority: .userInitiated) {
-            var segments: [SentenceSegment] = []
-            var runningTime: Double = 0
             var map: [UUID: UUID] = [:]
-
-            for (index, entry) in validEntries.enumerated() {
-                let segID = UUID()
-                map[segID] = entry.id
-                let duration: Double
-                if let url = mediaURLs[entry.id] {
-                    let asset = AVURLAsset(url: url)
-                    let d = asset.duration.seconds
-                    duration = d.isFinite && d > 0 ? d : max(0.05, entry.endTime - entry.startTime)
-                } else {
-                    duration = max(0.05, entry.endTime - entry.startTime)
-                }
-                let start = runningTime
-                let end = runningTime + duration
-                runningTime += duration
-
-                let seg = SentenceSegment(
-                    id: segID,
-                    index: index + 1,
-                    originalIndex: entry.originalIndex,
-                    startTime: start,
-                    endTime: end,
-                    text: entry.originalText,
-                    translation: entry.translation,
-                    note: entry.note,
-                    isNavigationBookmarked: false,
-                    isBookmarked: entry.isBookmarked,
-                    speakerID: entry.speakerID,
-                    speakerIDs: entry.speakerIDs,
-                    isSpeakerOverlap: entry.isSpeakerOverlap,
-                    speakerRole: entry.speakerRole,
-                    phoneticText: entry.phoneticText,
-                    associatedWords: entry.associatedWords,
-                    wordTokens: entry.wordTokens,
-                    contextBefore: entry.contextBefore,
-                    contextAfter: entry.contextAfter,
-                    sourceMediaName: entry.sourceMediaName.isEmpty ? nil : entry.sourceMediaName,
-                    sourceStartTime: entry.startTime
-                )
-                segments.append(seg)
+            for seg in exportResult.timelineSegments {
+                map[seg.id] = seg.id
             }
-            return (segments, map, runningTime)
+            return (exportResult.timelineSegments, map, exportResult.totalDuration)
         }.value
 
-        // 4. 回到主线程装载媒体并设置状态
         self.loadMedia(from: outputAudioURL)
-
         self.sidecarTask?.cancel()
         self.sidecarTask = nil
         self.segmentOrigin = .project
@@ -4804,7 +5153,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             )
         }
 
-        // 持久化工程文件，支持从欢迎屏幕或播放列表再次打开时瞬间恢复
         self.projectFileManager.saveProject(
             for: outputAudioURL,
             title: sessionTitle,
@@ -4814,12 +5162,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             waveformData: nil,
             persistWaveform: false,
             hasCompletedSegmentation: true,
-            acousticBoundaryTimes: []
+            acousticBoundaryTimes: [],
+            sentenceLibraryID: libraryID,
+            sentenceLibraryEntryMap: entryMap
         )
 
-        // 在播放历史和播放列表中登记：
-        // 名字：“句库名字-来源.mablib” 或 “句库名字.mablib”
-        // 路径：“句库”
         self.playbackHistoryStore?.recordPlayed(
             outputAudioURL,
             customTitle: sessionTitle,

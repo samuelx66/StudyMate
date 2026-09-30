@@ -47,6 +47,53 @@ final class SentenceLibraryManagerTests: XCTestCase {
         XCTAssertEqual(persistedEntry.translation, "译文新值")
     }
 
+    func testUpdateEntryFromPlaybackUpdatesDatabaseMemoryAndShowsStatusBarSuccess() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudyMate-PlaybackSyncTests-\(UUID().uuidString)", isDirectory: true)
+        let store = SentenceLibraryStore(rootURL: root)
+        let defaultsSuite = "StudyMate-PlaybackSyncTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let library = try store.createLibrary(name: "回写测试句库")
+        let entry = SentenceLibraryEntry(
+            originalText: "Original Before",
+            translation: "译文前",
+            sourceMediaName: "lesson.mp4",
+            sourceMediaPath: "/lesson.mp4",
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "\(UUID().uuidString).m4a"
+        )
+        let mediaURL = root.appendingPathComponent("entry.m4a")
+        try Data("media".utf8).write(to: mediaURL)
+        try store.add(entries: [entry], previewData: [:], to: library.id, mediaURLs: [entry.id: mediaURL])
+
+        let manager = SentenceLibraryManager(store: store, defaults: defaults)
+        try await waitUntil {
+            manager.currentLibraryID == library.id && manager.entries.contains(where: { $0.id == entry.id })
+        }
+
+        try await manager.updateEntryFromPlayback(
+            id: entry.id,
+            originalText: "Original After",
+            translation: "译文后",
+            sentenceIndex: 1,
+            in: library.id
+        )
+
+        let visibleEntry = try XCTUnwrap(manager.entries.first(where: { $0.id == entry.id }))
+        XCTAssertEqual(visibleEntry.originalText, "Original After")
+        XCTAssertEqual(visibleEntry.translation, "译文后")
+        let persistedEntry = try XCTUnwrap(store.entries(libraryID: library.id).first(where: { $0.id == entry.id }))
+        XCTAssertEqual(persistedEntry.originalText, "Original After")
+        XCTAssertEqual(persistedEntry.translation, "译文后")
+        XCTAssertNotNil(MainStatusCenter.shared.successMessage)
+    }
+
     private func waitUntil(
         timeoutNanoseconds: UInt64 = 2_000_000_000,
         condition: @escaping @MainActor () -> Bool

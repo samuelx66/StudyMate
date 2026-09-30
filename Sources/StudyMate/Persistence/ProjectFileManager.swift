@@ -21,6 +21,8 @@ public struct MediaProjectFile: Codable, Sendable {
     public let hasCompletedSegmentation: Bool
     public let acousticBoundaryTimes: [Double]
     public let updatedAt: Date
+    public let sentenceLibraryID: UUID?
+    public let sentenceLibraryEntryMap: [UUID: UUID]?
 
     public init(
         mediaPath: String,
@@ -34,7 +36,9 @@ public struct MediaProjectFile: Codable, Sendable {
         mediaModificationDate: Date? = nil,
         hasCompletedSegmentation: Bool? = nil,
         acousticBoundaryTimes: [Double] = [],
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        sentenceLibraryID: UUID? = nil,
+        sentenceLibraryEntryMap: [UUID: UUID]? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.mediaPath = mediaPath
@@ -49,6 +53,8 @@ public struct MediaProjectFile: Codable, Sendable {
         self.hasCompletedSegmentation = hasCompletedSegmentation ?? !segments.isEmpty
         self.acousticBoundaryTimes = Self.normalizedAcousticBoundaryTimes(acousticBoundaryTimes)
         self.updatedAt = updatedAt
+        self.sentenceLibraryID = sentenceLibraryID
+        self.sentenceLibraryEntryMap = sentenceLibraryEntryMap
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -65,6 +71,8 @@ public struct MediaProjectFile: Codable, Sendable {
         case hasCompletedSegmentation
         case acousticBoundaryTimes
         case updatedAt
+        case sentenceLibraryID
+        case sentenceLibraryEntryMap
     }
 
     public init(from decoder: Decoder) throws {
@@ -95,6 +103,8 @@ public struct MediaProjectFile: Codable, Sendable {
             (try? container.decodeIfPresent([Double].self, forKey: .acousticBoundaryTimes)) ?? []
         )
         updatedAt = (try? container.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
+        sentenceLibraryID = try? container.decodeIfPresent(UUID.self, forKey: .sentenceLibraryID)
+        sentenceLibraryEntryMap = try? container.decodeIfPresent([UUID: UUID].self, forKey: .sentenceLibraryEntryMap)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,6 +122,8 @@ public struct MediaProjectFile: Codable, Sendable {
         try container.encode(hasCompletedSegmentation, forKey: .hasCompletedSegmentation)
         try container.encode(acousticBoundaryTimes, forKey: .acousticBoundaryTimes)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(sentenceLibraryID, forKey: .sentenceLibraryID)
+        try container.encodeIfPresent(sentenceLibraryEntryMap, forKey: .sentenceLibraryEntryMap)
     }
 
     private static func normalizedAcousticBoundaryTimes(_ values: [Double]) -> [Double] {
@@ -220,6 +232,8 @@ public final class ProjectFileManager: @unchecked Sendable {
         let modificationDate: Date?
         let hasCompletedSegmentation: Bool
         let acousticBoundaryTimes: [Double]
+        let sentenceLibraryID: UUID?
+        let sentenceLibraryEntryMap: [UUID: UUID]?
     }
 
     /// Saves are frequently requested by more than one UI event (for example,
@@ -236,6 +250,8 @@ public final class ProjectFileManager: @unchecked Sendable {
             && datesMatch(lhs.modificationDate, rhs.modificationDate)
             && lhs.hasCompletedSegmentation == rhs.hasCompletedSegmentation
             && lhs.acousticBoundaryTimes == rhs.acousticBoundaryTimes
+            && lhs.sentenceLibraryID == rhs.sentenceLibraryID
+            && lhs.sentenceLibraryEntryMap == rhs.sentenceLibraryEntryMap
     }
 
     private func datesMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
@@ -378,7 +394,9 @@ public final class ProjectFileManager: @unchecked Sendable {
         waveformData: WaveformData? = nil,
         persistWaveform: Bool = false,
         hasCompletedSegmentation: Bool? = nil,
-        acousticBoundaryTimes: [Double] = []
+        acousticBoundaryTimes: [Double] = [],
+        sentenceLibraryID: UUID? = nil,
+        sentenceLibraryEntryMap: [UUID: UUID]? = nil
     ) {
         let standardizedURL = mediaURL.standardizedFileURL
         let attributes = try? FileManager.default.attributesOfItem(atPath: standardizedURL.path)
@@ -396,7 +414,9 @@ public final class ProjectFileManager: @unchecked Sendable {
             fileSize: fileSize,
             modificationDate: modificationDate,
             hasCompletedSegmentation: hasCompletedSegmentation ?? !segments.isEmpty,
-            acousticBoundaryTimes: acousticBoundaryTimes
+            acousticBoundaryTimes: acousticBoundaryTimes,
+            sentenceLibraryID: sentenceLibraryID,
+            sentenceLibraryEntryMap: sentenceLibraryEntryMap
         )
         pendingLock.lock()
         if let existing = pendingSaves[standardizedURL.path],
@@ -424,7 +444,9 @@ public final class ProjectFileManager: @unchecked Sendable {
                 fileSize: request.fileSize,
                 modificationDate: request.modificationDate,
                 hasCompletedSegmentation: request.hasCompletedSegmentation,
-                acousticBoundaryTimes: request.acousticBoundaryTimes
+                acousticBoundaryTimes: request.acousticBoundaryTimes,
+                sentenceLibraryID: request.sentenceLibraryID,
+                sentenceLibraryEntryMap: request.sentenceLibraryEntryMap
             )
         } else {
             pendingSaves[standardizedURL.path] = request
@@ -627,7 +649,9 @@ public final class ProjectFileManager: @unchecked Sendable {
                 mediaModificationDate: request.modificationDate,
                 hasCompletedSegmentation: request.hasCompletedSegmentation,
                 acousticBoundaryTimes: request.acousticBoundaryTimes,
-                updatedAt: Date()
+                updatedAt: Date(),
+                sentenceLibraryID: request.sentenceLibraryID,
+                sentenceLibraryEntryMap: request.sentenceLibraryEntryMap
             )
 
             let contentChanged = existingMetadata == nil
@@ -637,6 +661,8 @@ public final class ProjectFileManager: @unchecked Sendable {
                 || existingMetadata?.hasCompletedSegmentation != project.hasCompletedSegmentation
                 || existingMetadata?.mediaTitle != project.mediaTitle
                 || existingMetadata?.schemaVersion != project.schemaVersion
+                || existingMetadata?.sentenceLibraryID != project.sentenceLibraryID
+                || existingMetadata?.sentenceLibraryEntryMap != project.sentenceLibraryEntryMap
 
             // `updatedAt` is deliberately excluded from this comparison.  It
             // is an audit timestamp, not project content; rewriting the JSON
@@ -701,6 +727,8 @@ public final class ProjectFileManager: @unchecked Sendable {
             && datesMatch(existing.mediaModificationDate, desired.mediaModificationDate)
             && existing.hasCompletedSegmentation == desired.hasCompletedSegmentation
             && existing.acousticBoundaryTimes == desired.acousticBoundaryTimes
+            && existing.sentenceLibraryID == desired.sentenceLibraryID
+            && existing.sentenceLibraryEntryMap == desired.sentenceLibraryEntryMap
     }
 
     public func loadProjectResultAsync(for mediaURL: URL) async -> ProjectLoadResult {

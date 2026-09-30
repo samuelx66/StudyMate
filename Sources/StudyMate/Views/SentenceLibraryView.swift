@@ -722,10 +722,18 @@ public struct SentenceLibraryView: View {
             playbackInterfaceMode = .list
         }
 
-        isPreparingStudy = true
-        MainStatusCenter.shared.showInfo(
-            lang.text("正在准备学习材料…", "Preparing study materials…")
+        let alreadyGenerated = PlaybackEngine.shared.hasGeneratedSentenceLibraryMaterial(
+            libraryID: libraryID,
+            entries: entriesToStudy,
+            descriptor: manager.currentLibrary
         )
+
+        if !alreadyGenerated {
+            isPreparingStudy = true
+            MainStatusCenter.shared.showInfo(
+                lang.text("正在准备学习材料…", "Preparing study materials…")
+            )
+        }
 
         Task { @MainActor in
             defer {

@@ -163,6 +163,22 @@ public struct SegmentMediaExportResult: Sendable {
     public let location: URL
     public let audioFileCount: Int
     public let subtitleFileCount: Int
+    public let timelineSegments: [SentenceSegment]
+    public let totalDuration: Double
+
+    public init(
+        location: URL,
+        audioFileCount: Int,
+        subtitleFileCount: Int,
+        timelineSegments: [SentenceSegment] = [],
+        totalDuration: Double = 0.0
+    ) {
+        self.location = location
+        self.audioFileCount = audioFileCount
+        self.subtitleFileCount = subtitleFileCount
+        self.timelineSegments = timelineSegments
+        self.totalDuration = totalDuration
+    }
 }
 
 /// 媒体导出进度。回调始终在导出后台线程触发，调用方应切回主线程更新界面。
@@ -582,6 +598,95 @@ public final class SegmentMediaExporter: @unchecked Sendable {
     ) throws -> SegmentMediaExportResult {
         let ordered = entries
         guard !ordered.isEmpty else { throw SegmentMediaExportError.noSelection }
+        let outputURL = outputAudioURL.deletingPathExtension().appendingPathExtension("m4a")
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let firstSourcePath = ordered.first?.sourceMediaPath ?? ""
+        let allFromSameSource = !firstSourcePath.isEmpty && ordered.allSatisfy { $0.sourceMediaPath == firstSourcePath }
+        let sourceMediaURL = URL(fileURLWithPath: firstSourcePath)
+
+        if allFromSameSource && FileManager.default.fileExists(atPath: firstSourcePath) {
+            // 如果所有句子均来自同一源音视频文件，直接基于源文件在单次滤镜流中以采样级精度切片并拼接，
+            // 杜绝多次有损重编码与 AAC 预卷帧累加（0ms 误差，完美对齐原声）。
+            let sourceSegments = ordered.enumerated().map { (offset, entry) in
+                SentenceSegment(
+                    id: entry.id,
+                    index: offset + 1,
+                    startTime: entry.startTime,
+                    endTime: entry.endTime,
+                    text: entry.originalText,
+                    translation: entry.translation,
+                    note: entry.note
+                )
+            }
+            try exportConcatenatedAudio(
+                mediaURL: sourceMediaURL,
+                segments: sourceSegments,
+                outputURL: outputURL,
+                album: album,
+                artist: artist,
+                progress: { fraction in
+                    progress(SegmentMediaExportProgress(
+                        fraction: fraction * 0.9,
+                        completedItems: 0,
+                        totalItems: 1,
+                        currentItem: outputURL.lastPathComponent,
+                        phase: "合并音频"
+                    ))
+                }
+            )
+
+            var cursor = 0.0
+            var timelineSegments: [SentenceSegment] = []
+            for (offset, entry) in ordered.enumerated() {
+                let duration = max(0.05, entry.endTime - entry.startTime)
+                let start = cursor
+                let end = cursor + duration
+                cursor += duration
+                timelineSegments.append(makeTimelineSegment(
+                    from: entry,
+                    index: offset + 1,
+                    startTime: start,
+                    endTime: end
+                ))
+            }
+            let totalDuration = max(0.05, cursor)
+            _ = try verifyEncodedAudio(
+                at: outputURL,
+                expectedDuration: totalDuration,
+                context: "合并音频"
+            )
+            let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
+                segments: timelineSegments,
+                title: outputURL.deletingPathExtension().lastPathComponent
+            )
+            let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
+                segments: timelineSegments
+            )
+            let lrcURL = outputURL.deletingPathExtension().appendingPathExtension("lrc")
+            let srtURL = outputURL.deletingPathExtension().appendingPathExtension("srt")
+            try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
+            try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
+
+            progress(SegmentMediaExportProgress(
+                fraction: 1,
+                completedItems: 1,
+                totalItems: 1,
+                currentItem: outputURL.lastPathComponent,
+                phase: "写入字幕"
+            ))
+            return SegmentMediaExportResult(
+                location: outputURL,
+                audioFileCount: 1,
+                subtitleFileCount: 2,
+                timelineSegments: timelineSegments,
+                totalDuration: totalDuration
+            )
+        }
+
         // 句库条目的 start/end 属于原始媒体，只能作为完整性校验的期望值。
         // 合并时使用每个独立 M4A 实际可解码的采样长度，避免 AAC 编码延迟
         // 或容器舍入在多句累加后造成字幕越来越靠前/靠后。
@@ -597,11 +702,6 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             )
             return (entry, sourceURL, duration)
         }
-        let outputURL = outputAudioURL.deletingPathExtension().appendingPathExtension("m4a")
-        try FileManager.default.createDirectory(
-            at: outputURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
         let totalDuration = max(0.05, verifiedEntries.reduce(0) { $0 + $1.duration })
         progress(SegmentMediaExportProgress(
             fraction: 0,
@@ -611,6 +711,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             phase: "合并句库音频"
         ))
 
+        var timelineSegments: [SentenceSegment] = []
         do {
             if verifiedEntries.count == 1, let verified = verifiedEntries.first {
                 try exportTaggedCopy(
@@ -629,6 +730,14 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                         ))
                     }
                 )
+                timelineSegments = [
+                    makeTimelineSegment(
+                        from: verified.entry,
+                        index: 1,
+                        startTime: 0,
+                        endTime: verified.duration
+                    )
+                ]
             } else {
                 let temporaryDirectory = try makeTemporaryDirectory()
                 defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -647,6 +756,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 arguments += [
                     "-/filter_complex", filterURL.path,
                     "-map", "[out]",
+                    "-t", preciseTime(totalDuration),
                     "-vn",
                     "-codec:a", "aac",
                     "-b:a", "192k",
@@ -668,6 +778,19 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                         ))
                     }
                 )
+
+                var cursor = 0.0
+                for (offset, verified) in verifiedEntries.enumerated() {
+                    let start = cursor
+                    let end = cursor + verified.duration
+                    cursor += verified.duration
+                    timelineSegments.append(makeTimelineSegment(
+                        from: verified.entry,
+                        index: offset + 1,
+                        startTime: start,
+                        endTime: end
+                    ))
+                }
             }
 
             _ = try verifyEncodedAudio(
@@ -675,19 +798,12 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 expectedDuration: totalDuration,
                 context: "合并句库音频"
             )
-            let subtitleSegments = verifiedEntries.enumerated().map {
-                librarySubtitleSegment(
-                    $0.element.entry,
-                    index: $0.offset + 1,
-                    duration: $0.element.duration
-                )
-            }
             let subtitleLRC = SubtitleExporter.shared.exportToConcatenatedLRC(
-                segments: subtitleSegments,
+                segments: timelineSegments,
                 title: outputURL.deletingPathExtension().lastPathComponent
             )
             let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
-                segments: subtitleSegments
+                segments: timelineSegments
             )
             let lrcURL = outputURL.deletingPathExtension().appendingPathExtension("lrc")
             let srtURL = outputURL.deletingPathExtension().appendingPathExtension("srt")
@@ -707,7 +823,13 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             currentItem: outputURL.lastPathComponent,
             phase: "写入字幕"
         ))
-        return SegmentMediaExportResult(location: outputURL, audioFileCount: 1, subtitleFileCount: 2)
+        return SegmentMediaExportResult(
+            location: outputURL,
+            audioFileCount: 1,
+            subtitleFileCount: 2,
+            timelineSegments: timelineSegments,
+            totalDuration: totalDuration
+        )
     }
 
     private func exportAudioRange(
@@ -732,6 +854,37 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             ],
             duration: max(0.05, segment.duration),
             progress: progress
+        )
+    }
+
+    private func makeTimelineSegment(
+        from entry: SentenceLibraryEntry,
+        index: Int,
+        startTime: Double,
+        endTime: Double
+    ) -> SentenceSegment {
+        SentenceSegment(
+            id: entry.id,
+            index: index,
+            originalIndex: entry.originalIndex,
+            startTime: startTime,
+            endTime: endTime,
+            text: entry.originalText,
+            translation: entry.translation,
+            note: entry.note,
+            isNavigationBookmarked: false,
+            isBookmarked: entry.isBookmarked,
+            speakerID: entry.speakerID,
+            speakerIDs: entry.speakerIDs,
+            isSpeakerOverlap: entry.isSpeakerOverlap,
+            speakerRole: entry.speakerRole,
+            phoneticText: entry.phoneticText,
+            associatedWords: entry.associatedWords,
+            wordTokens: entry.wordTokens,
+            contextBefore: entry.contextBefore,
+            contextAfter: entry.contextAfter,
+            sourceMediaName: entry.sourceMediaName.isEmpty ? nil : entry.sourceMediaName,
+            sourceStartTime: entry.startTime
         )
     }
 
@@ -800,7 +953,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         let filterURL = temporaryDirectory.appendingPathComponent("concat.filter")
         let sourceLabels = segments.indices.map { "[source\($0)]" }.joined()
-        var filter = "[0:a:0]asplit=\(segments.count)\(sourceLabels);\n"
+        var filter = "[0:a:0]aresample=48000,asplit=\(segments.count)\(sourceLabels);\n"
         for (index, segment) in segments.enumerated() {
             filter += "[source\(index)]atrim=start=\(preciseTime(segment.startTime)):end=\(preciseTime(segment.endTime)),asetpts=PTS-STARTPTS[a\(index)];\n"
         }

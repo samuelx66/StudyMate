@@ -528,6 +528,13 @@ public final class SentenceLibraryManager: ObservableObject {
         }
     }
 
+    /// 从播放会话同步更新内存中句子的星标难句状态
+    public func setBookmarkFromPlayback(id: UUID, isBookmarked: Bool) {
+        if let idx = entries.firstIndex(where: { $0.id == id }) {
+            entries[idx].isBookmarked = isBookmarked
+        }
+    }
+
     /// 更新单句的分类标签
     public func updateTags(id: UUID, tags: [String]) async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
@@ -770,6 +777,57 @@ public final class SentenceLibraryManager: ObservableObject {
             )
         } catch {
             MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 从播放学习会话同步更新句库条目的原文和译文。
+    /// 无论当前句库视图停留在哪个句库，均能精确写回目标句库，并在主窗口状态栏显示操作结果。
+    public func updateEntryFromPlayback(
+        id: UUID,
+        originalText: String,
+        translation: String,
+        sentenceIndex: Int? = nil,
+        in libraryID: UUID
+    ) async throws {
+        do {
+            let phonetic = PhoneticEngine.shared.phoneticText(for: originalText)
+            try await entryUpdateQueue.enqueue { [store] in
+                try await Task.detached(priority: .utility) {
+                    try store.updateEntry(
+                        id: id,
+                        originalText: originalText,
+                        translation: translation,
+                        phoneticText: phonetic,
+                        in: libraryID
+                    )
+                }.value
+            }
+            if let index = entries.firstIndex(where: { $0.id == id }) {
+                entries[index].originalText = originalText
+                entries[index].translation = translation
+                entries[index].phoneticText = phonetic
+            }
+            await reloadLibraries(createDefaultIfNeeded: false)
+            let successMessage: String
+            if let sentenceIndex {
+                successMessage = LanguageManager.shared.text(
+                    "已将第 #\(sentenceIndex) 句修改同步至句库",
+                    "Synced changes for sentence #\(sentenceIndex) to library"
+                )
+            } else {
+                successMessage = LanguageManager.shared.text(
+                    "已同步修改至句库",
+                    "Synced changes to sentence library"
+                )
+            }
+            MainStatusCenter.shared.showSuccess(successMessage)
+        } catch {
+            let errorText = LanguageManager.shared.text(
+                "同步修改至句库失败: \(error.localizedDescription)",
+                "Failed to sync changes to sentence library: \(error.localizedDescription)"
+            )
+            MainStatusCenter.shared.showError(errorText)
             throw error
         }
     }
