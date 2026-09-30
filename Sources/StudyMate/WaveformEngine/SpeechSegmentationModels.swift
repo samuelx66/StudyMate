@@ -257,6 +257,17 @@ public enum SpeechInferenceBackend: String, Sendable {
     case cpu
     case metal
     case coreML
+
+    public func localizedLabel(isChinese: Bool) -> String {
+        switch self {
+        case .cpu:
+            return isChinese ? "纯CPU" : "CPU"
+        case .metal:
+            return "Metal"
+        case .coreML:
+            return "CoreML"
+        }
+    }
 }
 
 /// 统一的推理资源预算。
@@ -298,13 +309,9 @@ public struct SpeechInferenceResourcePolicy: Equatable, Sendable {
 
         #if arch(arm64)
         let speakerAccelerated = !constrained
-        // The bundled whisper.cpp Metal backend currently aborts during
-        // process teardown on some Apple Silicon combinations. An
-        // abort cannot be caught as a normal inference error, so keep the
-        // stable CPU path as the release default. Developers can opt in after
-        // upgrading the vendor framework to a fixed build.
+        let userMetalOptIn = (UserDefaults.standard.object(forKey: "StudyMate.EnableWhisperMetal") as? Bool) ?? true
         let whisperMetalOptIn = !constrained
-            && ProcessInfo.processInfo.environment["STUDYMATE_ENABLE_WHISPER_METAL"] == "1"
+            && (userMetalOptIn || ProcessInfo.processInfo.environment["STUDYMATE_ENABLE_WHISPER_METAL"] == "1")
         #else
         let speakerAccelerated = false
         let whisperMetalOptIn = false

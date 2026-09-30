@@ -25,6 +25,7 @@ public struct IntensiveSettingsPopover: View {
     @ObservedObject var dictionaryEngine = DictionaryEngine.shared
 
     @AppStorage("StudyMate.ShowStatusBar") private var isStatusBarVisible = true
+    @AppStorage("StudyMate.EnableWhisperMetal") private var enableWhisperMetal = true
     @AppStorage(StudyMateDictionaryBridge.shortcutPreferenceDomainKey) private var createDictionaryShortcutInApplications = false
     @State private var selectedSection: SettingsSection = .general
     @State private var translationAPIKey = ""
@@ -71,14 +72,13 @@ public struct IntensiveSettingsPopover: View {
                         Text(sectionDescription(selectedSection))
                             .font(.callout)
                             .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Divider()
 
                     settingsContent(for: selectedSection)
                 }
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 30)
                 .padding(.vertical, 26)
             }
@@ -88,6 +88,14 @@ public struct IntensiveSettingsPopover: View {
         .frame(minWidth: 880, idealWidth: 960, minHeight: 640, idealHeight: 720)
         .onAppear {
             translationAPIKey = translationSettings.apiKey()
+            if modelManager.selectedModelLevel.isEnglishOnly && engine.speechRecognitionLanguage != "en" {
+                engine.speechRecognitionLanguage = "en"
+            }
+        }
+        .onChange(of: modelManager.selectedModelLevel) { _, newLevel in
+            if newLevel.isEnglishOnly {
+                engine.speechRecognitionLanguage = "en"
+            }
         }
         .onChange(of: translationSettings.selectedServiceID) { _, _ in
             translationAPIKey = translationSettings.apiKey()
@@ -389,13 +397,60 @@ public struct IntensiveSettingsPopover: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
 
             Text(modelManager.selectedModelLevel.description)
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 32, alignment: .topLeading)
+                .animation(nil, value: modelManager.selectedModelLevel)
 
             whisperModelStatus
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 32)
+                .animation(nil, value: modelManager.selectedModelLevel)
+
+            Divider()
+
+            Toggle(isOn: $enableWhisperMetal) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(lang.text("Metal GPU 硬件加速", "Metal GPU Hardware Acceleration"))
+                            .font(.body.weight(.medium))
+                        #if arch(arm64)
+                        Text("Apple Silicon")
+                            .font(.caption2.bold())
+                            .foregroundColor(.accentColor)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(Capsule())
+                        #endif
+                    }
+                    Text(lang.text(
+                        "利用 Apple Silicon 统一内存与 GPU 算力加速模型推理，大幅提升 Medium/Large 模型断句与识别速度；若 GPU 遇到异常将自动平滑回退至多核 CPU。",
+                        "Uses Apple Silicon Unified Memory and GPU to accelerate inference, significantly boosting Medium/Large model speed; automatically falls back to multi-core CPU if GPU is unavailable."
+                    ))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            #if !arch(arm64)
+            .disabled(true)
+            #endif
+            .onChange(of: enableWhisperMetal) { _, enabled in
+                Task {
+                    await NativeSpeechRuntime.shared.unloadModels()
+                    let isZh = lang.currentLanguage == .zh
+                    MainStatusCenter.shared.showSuccess(
+                        isZh
+                            ? (enabled ? "已开启 Whisper Metal GPU 硬件加速" : "已切换为 Whisper 纯 CPU 推理模式")
+                            : (enabled ? "Enabled Whisper Metal GPU hardware acceleration" : "Switched to Whisper pure CPU inference mode")
+                    )
+                }
+            }
 
             Divider()
 
@@ -404,20 +459,50 @@ public struct IntensiveSettingsPopover: View {
                 systemImage: "person.wave.2"
             )
 
-            HStack {
-                Text(lang.text("识别语言", "Recognition Language"))
-                    .font(.body.weight(.medium))
-                Spacer()
-                Picker("", selection: $engine.speechRecognitionLanguage) {
-                    Text(lang.text("自动检测", "Auto Detect")).tag("auto")
-                    Text(lang.text("中文", "Chinese")).tag("zh")
-                    Text(lang.text("英语", "English")).tag("en")
-                    Text(lang.text("日语", "Japanese")).tag("ja")
-                    Text(lang.text("韩语", "Korean")).tag("ko")
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    HStack(spacing: 4) {
+                        Text(lang.text("识别语言", "Recognition Language"))
+                            .font(.body.weight(.medium))
+                        if modelManager.selectedModelLevel.isEnglishOnly {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: {
+                            modelManager.selectedModelLevel.isEnglishOnly ? "en" : engine.speechRecognitionLanguage
+                        },
+                        set: {
+                            if !modelManager.selectedModelLevel.isEnglishOnly {
+                                engine.speechRecognitionLanguage = $0
+                            }
+                        }
+                    )) {
+                        Text(lang.text("自动检测", "Auto Detect")).tag("auto")
+                        Text(lang.text("中文", "Chinese")).tag("zh")
+                        Text(lang.text("英语", "English")).tag("en")
+                        Text(lang.text("日语", "Japanese")).tag("ja")
+                        Text(lang.text("韩语", "Korean")).tag("ko")
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                    .disabled(modelManager.selectedModelLevel.isEnglishOnly)
                 }
-                .labelsHidden()
-                .frame(width: 140)
+
+                if modelManager.selectedModelLevel.isEnglishOnly {
+                    Text(lang.text(
+                        "当前选用的模型为纯英语专版，识别语言已固定为“英语”，不可修改。",
+                        "The selected model is English-only; recognition language is locked to English and cannot be changed."
+                    ))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .animation(nil, value: modelManager.selectedModelLevel)
 
             HStack {
                 Text(lang.text("已知说话人数", "Known Speaker Count"))

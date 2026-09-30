@@ -481,6 +481,92 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
+    /// 更新单句的完整说话人角色配置（纠正多说话人复合角色为单一说话人）
+    public func updateSpeakerAssignment(
+        id: UUID,
+        speakerID: Int,
+        speakerIDs: [Int],
+        isSpeakerOverlap: Bool,
+        speakerRole: String?,
+        in libraryID: UUID
+    ) throws {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare(
+                        "UPDATE entries SET speaker_id = ?, speaker_ids = ?, is_speaker_overlap = ?, speaker_role = ? WHERE id = ?;",
+                        db: db,
+                        statement: &statement
+                    )
+                    defer { sqlite3_finalize(statement) }
+                    sqlite3_bind_int(statement, 1, Int32(speakerID))
+                    bind(Self.serializeJSON(speakerIDs), at: 2, to: statement)
+                    sqlite3_bind_int(statement, 3, isSpeakerOverlap ? 1 : 0)
+                    if let role = speakerRole {
+                        bind(role, at: 4, to: statement)
+                    } else {
+                        sqlite3_bind_null(statement, 4)
+                    }
+                    bind(id.uuidString, at: 5, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+        }
+    }
+
+    /// 批量更新具备指定角色标签的所有句子为单一说话人
+    @discardableResult
+    public func batchUpdateSpeakerAssignment(
+        matchingRole: String,
+        speakerID: Int,
+        speakerIDs: [Int],
+        isSpeakerOverlap: Bool,
+        speakerRole: String?,
+        in libraryID: UUID
+    ) throws -> Int {
+        try queue.sync {
+            try validateLibrary(id: libraryID)
+            var updatedCount = 0
+            try withDatabase(libraryID: libraryID) { db in
+                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                do {
+                    var statement: OpaquePointer?
+                    try prepare(
+                        "UPDATE entries SET speaker_id = ?, speaker_ids = ?, is_speaker_overlap = ?, speaker_role = ? WHERE speaker_role = ?;",
+                        db: db,
+                        statement: &statement
+                    )
+                    defer { sqlite3_finalize(statement) }
+                    sqlite3_bind_int(statement, 1, Int32(speakerID))
+                    bind(Self.serializeJSON(speakerIDs), at: 2, to: statement)
+                    sqlite3_bind_int(statement, 3, isSpeakerOverlap ? 1 : 0)
+                    if let role = speakerRole {
+                        bind(role, at: 4, to: statement)
+                    } else {
+                        sqlite3_bind_null(statement, 4)
+                    }
+                    bind(matchingRole, at: 5, to: statement)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                    updatedCount = Int(sqlite3_changes(db))
+                    try execute("COMMIT;", in: db)
+                } catch {
+                    try? execute("ROLLBACK;", in: db)
+                    throw error
+                }
+            }
+            try touchManifest(libraryID: libraryID)
+            return updatedCount
+        }
+    }
+
     /// 更新句子来源名称
     /// - Parameters:
     ///   - entryID: 指定当前触发修改的单句 ID

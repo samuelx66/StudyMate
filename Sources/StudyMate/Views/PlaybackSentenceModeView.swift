@@ -92,6 +92,9 @@ public struct PlaybackSentenceModeView: View {
                         translationFont: videoSubtitleSettings.makeTranslationFont(for: .sentence),
                         translationColor: videoSubtitleSettings.translationNSColor(for: .sentence),
                         language: lang.currentLanguage,
+                        availableSpeakers: engine.currentSpeakerNames,
+                        sentenceIndex: seg.index,
+                        matchingCount: engine.countSegments(withSpeakerRoleLabel: seg.speakerRoleLabel),
                         onToggleBookmark: {
                             engine.toggleBookmark(for: seg.id)
                         },
@@ -102,8 +105,8 @@ public struct PlaybackSentenceModeView: View {
                         onRegenerateTokens: {
                             engine.regenerateOriginalText(segmentIDs: [seg.id])
                         },
-                        onRenameSpeaker: { fromRole, toName in
-                            engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                        onRenameSpeaker: { fromRole, toName, scope in
+                            engine.renameSpeaker(fromRole: fromRole, toName: toName, scope: scope, segmentID: seg.id)
                         },
                         onSelect: {
                             engine.jumpToSegment(id: seg.id)
@@ -167,10 +170,13 @@ struct PlaybackSentenceCardView: View, Equatable {
     let translationFont: NSFont
     let translationColor: NSColor
     let language: AppLanguage
+    var availableSpeakers: [String: String] = [:]
+    var sentenceIndex: Int? = nil
+    var matchingCount: Int = 1
     let onToggleBookmark: () -> Void
     let onSeekToToken: (Double) -> Void
     let onRegenerateTokens: () -> Void
-    let onRenameSpeaker: ((String, String) -> Void)?
+    let onRenameSpeaker: ((String, String, SpeakerChangeScope) -> Void)?
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
 
@@ -217,6 +223,9 @@ struct PlaybackSentenceCardView: View, Equatable {
             && lhs.translationFont == rhs.translationFont
             && lhs.translationColor == rhs.translationColor
             && lhs.language == rhs.language
+            && lhs.availableSpeakers == rhs.availableSpeakers
+            && lhs.sentenceIndex == rhs.sentenceIndex
+            && lhs.matchingCount == rhs.matchingCount
     }
 
     private var origText: String {
@@ -271,8 +280,11 @@ struct PlaybackSentenceCardView: View, Equatable {
                         tintColor: StudyMateMediaStyle.accent,
                         shape: .capsule,
                         language: language,
-                        onSave: { fromRole, toName in
-                            onRenameSpeaker?(fromRole, toName)
+                        availableSpeakers: availableSpeakers,
+                        sentenceIndex: sentenceIndex,
+                        matchingCount: matchingCount,
+                        onSave: { fromRole, toName, scope in
+                            onRenameSpeaker?(fromRole, toName, scope)
                         }
                     )
                 }
@@ -531,11 +543,14 @@ struct PlaybackSentenceCardView: View, Equatable {
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: seg.speakerRoleLabel,
-                initialText: renameText,
+                initialText: SpeakerRoleManager.isCompositeRole(seg.speakerRoleLabel) ? "" : renameText,
+                sentenceIndex: sentenceIndex,
+                matchingCount: matchingCount,
                 language: language,
+                availableSpeakers: availableSpeakers,
                 isPresented: $isShowingRenamePopover,
-                onSave: { fromRole, toName in
-                    onRenameSpeaker?(fromRole, toName)
+                onSave: { fromRole, toName, scope in
+                    onRenameSpeaker?(fromRole, toName, scope)
                 }
             )
         }

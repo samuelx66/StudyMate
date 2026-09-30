@@ -112,44 +112,187 @@ public enum SpeakerBadgeShape: Sendable, Equatable {
     case roundedRectangle(CGFloat)
 }
 
-/// 说话人重命名弹窗内容（包含输入框、智能排重合并说明、取消与保存按钮）
+/// 说话人重命名弹窗内容（支持选择仅修改此句 vs 修改所有相同角色、候选单一说话人快捷选择、输入框、智能排重合并说明、取消与保存按钮）
 public struct SpeakerRenamePopoverContent: View {
     public let roleLabel: String
     @State private var renameText: String
+    @State private var changeScope: SpeakerChangeScope
+    public let sentenceIndex: Int?
+    public let matchingCount: Int
     public let language: AppLanguage
+    public var availableSpeakers: [String: String]
     @Binding public var isPresented: Bool
-    public let onSave: (String, String) -> Void
+    public let onSave: (String, String, SpeakerChangeScope) -> Void
 
     public init(
         roleLabel: String,
         initialText: String,
+        sentenceIndex: Int? = nil,
+        matchingCount: Int = 1,
         language: AppLanguage,
+        availableSpeakers: [String: String] = [:],
         isPresented: Binding<Bool>,
-        onSave: @escaping (String, String) -> Void
+        onSave: @escaping (String, String, SpeakerChangeScope) -> Void
     ) {
         self.roleLabel = roleLabel
         self._renameText = State(initialValue: initialText)
+        let isComp = SpeakerRoleManager.isCompositeRole(roleLabel)
+        self._changeScope = State(initialValue: isComp ? .thisSentenceOnly : .allMatching)
+        self.sentenceIndex = sentenceIndex
+        self.matchingCount = max(1, matchingCount)
         self.language = language
+        self.availableSpeakers = availableSpeakers
         self._isPresented = isPresented
         self.onSave = onSave
     }
 
+    private var isComposite: Bool {
+        SpeakerRoleManager.isCompositeRole(roleLabel)
+    }
+
+    private var candidates: [String] {
+        SpeakerRoleManager.extractCandidateRoles(from: roleLabel)
+    }
+
+    private var quickOptions: [String] {
+        if isComposite {
+            return candidates
+        } else {
+            let normalizedSelf = SpeakerRoleManager.normalizeRoleKey(roleLabel)
+            var others = [String]()
+            for key in availableSpeakers.keys.sorted() {
+                let norm = SpeakerRoleManager.normalizeRoleKey(key)
+                if norm != normalizedSelf && !others.contains(norm) {
+                    others.append(norm)
+                }
+            }
+            return others
+        }
+    }
+
+    private func candidateDisplayName(for cand: String) -> String {
+        let normalized = SpeakerRoleManager.normalizeRoleKey(cand)
+        if let name = availableSpeakers[normalized], !name.isEmpty, name.caseInsensitiveCompare(normalized) != .orderedSame {
+            return "\(normalized) (\(name))"
+        }
+        return normalized
+    }
+
+    private var scopeAllTitle: String {
+        if matchingCount > 1 {
+            return language == .en ? "All Matching (\(matchingCount))" : "所有相同角色 (\(matchingCount)句)"
+        } else {
+            return language == .en ? "All Matching" : "所有相同角色"
+        }
+    }
+
+    private var headerTitle: String {
+        if changeScope == .thisSentenceOnly {
+            return language == .en ? "Change Sentence Speaker" : "修改此句说话人"
+        } else {
+            if isComposite {
+                return language == .en ? "Change All Matching Speakers" : "修改所有相同角色"
+            } else {
+                return language == .en ? "Rename Speaker" : "修改说话人姓名"
+            }
+        }
+    }
+
+    private var sentenceScopeDescription: String {
+        let idxStr = sentenceIndex.map { "#\($0) " } ?? ""
+        if language == .en {
+            return "Only changes the speaker for sentence \(idxStr). Other sentences remain unchanged."
+        } else {
+            return "仅修改当前句（\(idxStr)）的角色，不影响其它任何句子。"
+        }
+    }
+
+    private var allMatchingScopeDescription: String {
+        if isComposite {
+            if language == .en {
+                return "Resolves all \(matchingCount) sentences marked as \(roleLabel) across the project."
+            } else {
+                return "将工程中所有标记为「\(roleLabel)」的句子（共 \(matchingCount) 句）全部修改为指定发言人。"
+            }
+        } else {
+            if language == .en {
+                return "Applies to all \(matchingCount) sentences marked as \(roleLabel). Existing speakers with same name will be merged."
+            } else {
+                return "将工程中所有标记为「\(roleLabel)」的句子（共 \(matchingCount) 句）全部统一修改。若与已有说话人重名将自动合并排重。"
+            }
+        }
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(language == .en ? "Rename Speaker" : "修改说话人姓名")
+            Text(headerTitle)
                 .font(.headline)
 
-            TextField(language == .en ? "Enter speaker name" : "输入说话人姓名", text: $renameText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 220)
+            // 范围选择分段控件
+            Picker("", selection: $changeScope) {
+                Text(language == .en ? "This Sentence Only" : "仅此句")
+                    .tag(SpeakerChangeScope.thisSentenceOnly)
+                Text(scopeAllTitle)
+                    .tag(SpeakerChangeScope.allMatching)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 250)
 
-            Text(language == .en
-                 ? "If changed to an existing speaker name (e.g. s1 or Jim), all sentences will be automatically merged and deduplicated."
-                 : "若修改为已存在的说话人（如 s1 或 Jim），其所属全部句子将自动合并排重。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 220)
+            if !quickOptions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(isComposite
+                         ? (language == .en ? "Quickly choose speaker:" : "快捷选择当前句发言人：")
+                         : (language == .en ? "Quickly switch to existing speaker:" : "快捷切换为已有说话人："))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: 6) {
+                        ForEach(quickOptions, id: \.self) { opt in
+                            Button {
+                                isPresented = false
+                                onSave(roleLabel, opt, changeScope)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 9))
+                                    Text(candidateDisplayName(for: opt))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(StudyMateMediaStyle.accent.opacity(0.12))
+                                .foregroundColor(StudyMateMediaStyle.accent)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help(language == .en ? "Set to \(opt)" : "设定为 \(opt)")
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(language == .en ? "Or enter speaker name / ID (e.g. s2, Jim):" : "或输入角色代号/姓名（如 s2、Jim）：")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                TextField(language == .en ? "Enter speaker name" : "输入说话人姓名", text: $renameText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+            }
+
+            Group {
+                if changeScope == .thisSentenceOnly {
+                    Text(sentenceScopeDescription)
+                } else {
+                    Text(allMatchingScopeDescription)
+                }
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 250)
 
             HStack {
                 Button(language == .en ? "Cancel" : "取消") {
@@ -160,7 +303,7 @@ public struct SpeakerRenamePopoverContent: View {
                     isPresented = false
                     let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
-                    onSave(roleLabel, trimmed)
+                    onSave(roleLabel, trimmed, changeScope)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -179,7 +322,10 @@ public struct SpeakerBadgeButton: View {
     public var tintColor: Color?
     public var shape: SpeakerBadgeShape
     public let language: AppLanguage
-    public let onSave: (String, String) -> Void
+    public var availableSpeakers: [String: String]
+    public var sentenceIndex: Int?
+    public var matchingCount: Int
+    public let onSave: (String, String, SpeakerChangeScope) -> Void
 
     @State private var isShowingRenamePopover: Bool = false
 
@@ -191,7 +337,10 @@ public struct SpeakerBadgeButton: View {
         tintColor: Color? = nil,
         shape: SpeakerBadgeShape = .capsule,
         language: AppLanguage,
-        onSave: @escaping (String, String) -> Void
+        availableSpeakers: [String: String] = [:],
+        sentenceIndex: Int? = nil,
+        matchingCount: Int = 1,
+        onSave: @escaping (String, String, SpeakerChangeScope) -> Void
     ) {
         self.speakerRoleLabel = speakerRoleLabel
         self.speakerRole = speakerRole
@@ -200,6 +349,9 @@ public struct SpeakerBadgeButton: View {
         self.tintColor = tintColor
         self.shape = shape
         self.language = language
+        self.availableSpeakers = availableSpeakers
+        self.sentenceIndex = sentenceIndex
+        self.matchingCount = matchingCount
         self.onSave = onSave
     }
 
@@ -215,12 +367,17 @@ public struct SpeakerBadgeButton: View {
             badgeLabel
         }
         .buttonStyle(.plain)
-        .help(language == .en ? "Click to rename speaker (auto-merge duplicate)" : "点击修改说话人（重名自动合并）")
+        .help(language == .en
+              ? "Click to change speaker (this sentence or all matching)"
+              : "点击修改说话人（可选择仅此句或所有相同角色）")
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: speakerRoleLabel,
-                initialText: speakerRole ?? speakerRoleLabel,
+                initialText: SpeakerRoleManager.isCompositeRole(speakerRoleLabel) ? "" : (speakerRole ?? speakerRoleLabel),
+                sentenceIndex: sentenceIndex,
+                matchingCount: matchingCount,
                 language: language,
+                availableSpeakers: availableSpeakers,
                 isPresented: $isShowingRenamePopover,
                 onSave: onSave
             )

@@ -572,7 +572,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     // MARK: - 断句与波形数据
     private let autoGenerateSubtitlesKey = "StudyMate.AutoGenerateSubtitles"
     private let speechRecognitionLanguageKey = "StudyMate.SpeechRecognitionLanguage"
+    private let selectedWhisperModelLevelKey = "StudyMate.SelectedWhisperModelLevel"
     private let expectedSpeakerCountKey = "StudyMate.ExpectedSpeakerCount"
+    private var modelChangeObserver: (any NSObjectProtocol)?
+
     @Published public var autoGenerateSubtitles: Bool {
         didSet {
             UserDefaults.standard.set(autoGenerateSubtitles, forKey: autoGenerateSubtitlesKey)
@@ -581,8 +584,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// `auto` 会由 Whisper 从音频中检测语言；也可锁定常用语言以减少误判。
     @Published public var speechRecognitionLanguage: String {
         didSet {
+            let savedModelLevel = UserDefaults.standard.string(forKey: selectedWhisperModelLevelKey)
+            if savedModelLevel == WhisperModelLevel.mediumEnQ8.rawValue && speechRecognitionLanguage != "en" {
+                speechRecognitionLanguage = "en"
+                return
+            }
             UserDefaults.standard.set(speechRecognitionLanguage, forKey: speechRecognitionLanguageKey)
         }
+    }
+
+    /// 获取当前实际生效的语音识别语言代码。
+    /// 若当前选用的 Whisper 离线模型为英语专版（medium.en-q8_0），固定返回 "en"。
+    public var effectiveSpeechRecognitionLanguage: String {
+        let savedModelLevel = UserDefaults.standard.string(forKey: selectedWhisperModelLevelKey)
+        if savedModelLevel == WhisperModelLevel.mediumEnQ8.rawValue {
+            return "en"
+        }
+        return speechRecognitionLanguage
     }
     /// Optional known speaker count. Supplying it prevents noisy recordings
     /// from being over/under-clustered by automatic diarization.
@@ -820,10 +838,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         self.projectFileManager = projectFileManager
         self.playbackHistoryStore = playbackHistoryStore
         self.autoGenerateSubtitles = (UserDefaults.standard.object(forKey: autoGenerateSubtitlesKey) as? Bool) ?? true
-        self.speechRecognitionLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
+        let savedLanguage = UserDefaults.standard.string(forKey: speechRecognitionLanguageKey) ?? "auto"
+        let savedModelLevel = UserDefaults.standard.string(forKey: selectedWhisperModelLevelKey)
+        if savedModelLevel == WhisperModelLevel.mediumEnQ8.rawValue {
+            self.speechRecognitionLanguage = "en"
+        } else {
+            self.speechRecognitionLanguage = savedLanguage
+        }
         let savedSpeakerCount = UserDefaults.standard.integer(forKey: expectedSpeakerCountKey)
         self.expectedSpeakerCount = (2...8).contains(savedSpeakerCount) ? savedSpeakerCount : nil
         super.init()
+        self.modelChangeObserver = NotificationCenter.default.addObserver(
+            forName: .whisperModelDidSelectEnglishOnly,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.speechRecognitionLanguage = "en"
+        }
         self.nativeBackend.volume = self.volume
         self.nativeBackend.playbackRate = self.playbackRate
         self.mpvBackend.volume = self.volume
@@ -840,6 +871,12 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 self?.lastErrorMessage = message
             }
+        }
+    }
+
+    deinit {
+        if let modelChangeObserver {
+            NotificationCenter.default.removeObserver(modelChangeObserver)
         }
     }
 
@@ -2109,7 +2146,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             mediaURL: mediaURL,
             mode: mode,
             whisperModelURL: modelURL,
-            recognitionLanguage: languageOverride ?? speechRecognitionLanguage,
+            recognitionLanguage: languageOverride ?? effectiveSpeechRecognitionLanguage,
             includeRecognizedText: autoGenerateSubtitles,
             numberOfSpeakers: expectedSpeakerCount,
             waveformData: suppliedWaveform ?? (waveformData.isEmpty ? nil : waveformData)
@@ -2177,6 +2214,21 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     self.aiTranscriptionProgress = 1
                     self.isAITranscribing = false
                     self.aiTranscriptionStatusText = ""
+                }
+                let isChinese = LanguageManager.shared.currentLanguage == .zh
+                if mode == .intelligent {
+                    let backendLabel = output.whisperBackend.localizedLabel(isChinese: isChinese)
+                    MainStatusCenter.shared.showSuccess(
+                        isChinese
+                            ? "智能断句已完成 (共 \(self.segments.count) 句) [\(backendLabel)]"
+                            : "Intelligent segmentation completed (\(self.segments.count) sentences) [\(backendLabel)]"
+                    )
+                } else {
+                    MainStatusCenter.shared.showSuccess(
+                        isChinese
+                            ? "快速断句已完成 (共 \(self.segments.count) 句)"
+                            : "Fast segmentation completed (\(self.segments.count) sentences)"
+                    )
                 }
                 self.scheduleIdleModelRelease()
             } catch is CancellationError {
@@ -2247,14 +2299,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let sessionID = mediaSessionID
         let requestID = UUID()
         let targetIDs = Set(targets.map(\.id))
-        let recognitionLanguage = speechRecognitionLanguage
+        let recognitionLanguage = effectiveSpeechRecognitionLanguage
         let isChinese = LanguageManager.shared.currentLanguage == .zh
+        let initialBackend: SpeechInferenceBackend = SpeechInferenceResourcePolicy.current().preferWhisperMetal ? .metal : .cpu
+        let initialBackendLabel = initialBackend.localizedLabel(isChinese: isChinese)
         let preparingStatus = isChinese
-            ? "正在准备重新生成原文…"
-            : "Preparing to regenerate original text…"
-        let recognizingStatus = isChinese
-            ? "Whisper 正在重新生成原文…"
-            : "Whisper is regenerating original text…"
+            ? "Whisper (\(initialBackendLabel)) 正在准备分词与对齐…"
+            : "Whisper (\(initialBackendLabel)) is preparing to regenerate original text…"
 
         segmentationTask?.cancel()
         segmentationRequestID = requestID
@@ -2281,7 +2332,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                       self.segmentationRequestID == requestID,
                       self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
 
-                self.aiTranscriptionStatusText = recognizingStatus
+                let currentBackend = await NativeSpeechRuntime.shared.activeWhisperBackend
+                let currentBackendLabel = currentBackend.localizedLabel(isChinese: isChinese)
+                self.aiTranscriptionStatusText = isChinese
+                    ? "Whisper (\(currentBackendLabel)) 正在重新生成原文…"
+                    : "Whisper (\(currentBackendLabel)) is regenerating original text…"
                 let speechWindows = targets.map {
                     VoiceActivitySegment(
                         startTime: $0.startTime,
@@ -2367,18 +2422,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     }
                 }
 
+                let backend = await NativeSpeechRuntime.shared.activeWhisperBackend
+                let backendLabel = backend.localizedLabel(isChinese: isChinese)
                 let totalWordTokensCount = recognizedTokens.values.reduce(0) { $0 + $1.count }
                 if totalWordTokensCount > 0 {
                     MainStatusCenter.shared.showSuccess(
                         isChinese
-                            ? "已完成 \(targets.count) 句的词级时间戳对齐 (共 \(totalWordTokensCount) 词)"
-                            : "Completed word-level timestamps alignment for \(targets.count) sentence(s) (\(totalWordTokensCount) words)"
+                            ? "已完成 \(targets.count) 句的词级时间戳对齐 [\(backendLabel)] (共 \(totalWordTokensCount) 词)"
+                            : "Completed word-level timestamps alignment [\(backendLabel)] for \(targets.count) sentence(s) (\(totalWordTokensCount) words)"
                     )
                 } else if !recognizedTexts.isEmpty {
                     MainStatusCenter.shared.showSuccess(
                         isChinese
-                            ? "已完成 \(targets.count) 句的 Whisper 文本识别"
-                            : "Completed Whisper text recognition for \(targets.count) sentence(s)"
+                            ? "已完成 \(targets.count) 句的 Whisper 文本识别 [\(backendLabel)]"
+                            : "Completed Whisper text recognition [\(backendLabel)] for \(targets.count) sentence(s)"
                     )
                 } else {
                     MainStatusCenter.shared.showWarning(
@@ -2485,19 +2542,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 texts[target.id] = joined
             }
-            let wordTokens = matchedTokens.compactMap { token -> StudyMatePackageWordToken? in
-                let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return nil }
-                let relStart = max(0, token.startTime - target.startTime)
-                let targetSpan = max(0.05, target.endTime - target.startTime)
-                let relEnd = max(relStart + 0.01, min(targetSpan, token.endTime - target.startTime))
-                return StudyMatePackageWordToken(
-                    text: trimmed,
-                    startTime: relStart,
-                    endTime: relEnd,
-                    confidence: token.confidence
-                )
-            }
+            let wordTokens = SpeechBoundaryOptimizer.shared.wordTokens(
+                from: matchedTokens,
+                sentenceStartTime: target.startTime,
+                sentenceEndTime: target.endTime
+            )
             if !wordTokens.isEmpty {
                 wordTokensMap[target.id] = wordTokens
             }
@@ -2592,7 +2641,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let requestID = UUID()
         translationRequestID = requestID
         let sessionID = mediaSessionID
-        let sourceLanguage = speechRecognitionLanguage
+        let sourceLanguage = effectiveSpeechRecognitionLanguage
         let sourceByID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0.sourceText) })
         isAutoTranslating = true
         autoTranslationProgress = 0
@@ -2685,7 +2734,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         case .decodingAudio(let progress): return min(0.20, max(0, progress) * 0.20)
         case .detectingVoice: return 0.22
         case .diarizing(let progress): return 0.24 + min(1, max(0, progress)) * 0.12
-        case .transcribing(let progress): return 0.38 + min(1, max(0, progress)) * 0.50
+        case .transcribing(let progress, _): return 0.38 + min(1, max(0, progress)) * 0.50
         case .optimizing: return 0.95
         }
     }
@@ -2702,8 +2751,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return chinese ? "Silero 正在检测真实人声与停顿…" : "Silero is detecting speech and pauses…"
         case .diarizing:
             return chinese ? "SpeakerKit 正在识别说话人与重叠语音…" : "SpeakerKit is identifying speakers and overlap…"
-        case .transcribing:
-            return chinese ? "Whisper 正在识别词级时间戳与语义…" : "Whisper is recognizing words and timestamps…"
+        case .transcribing(_, let backend):
+            let backendLabel = backend.localizedLabel(isChinese: chinese)
+            return chinese
+                ? "Whisper (\(backendLabel)) 正在识别词级时间戳与语义…"
+                : "Whisper (\(backendLabel)) is recognizing words and timestamps…"
         case .optimizing:
             return mode == .intelligent
                 ? (chinese ? "正在自适应融合语义、说话人与声学边界…" : "Adaptively fusing semantic, speaker, and acoustic boundaries…")
@@ -4387,21 +4439,87 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     /// 重命名说话人，若目标说话人已存在则自动合并排重
-    public func renameSpeaker(fromRole: String, toName: String) {
+    /// 获取当前工程所有已绑定的说话人角色名称映射表（如 ["s1": "Jim", "s2": "Tom"]）
+    public var currentSpeakerNames: [String: String] {
+        var names: [String: String] = [:]
+        for seg in segments {
+            if let sid = seg.speakerID {
+                let key = SpeakerRoleManager.roleKey(for: sid)
+                if let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    names[key] = role
+                }
+            }
+        }
+        return names
+    }
+
+    /// 统计指定角色标签在当前工程中的句子总数
+    public func countSegments(withSpeakerRoleLabel label: String) -> Int {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        let normTarget = trimmed.replacingOccurrences(of: "→", with: "->")
+        return segments.filter {
+            let segLabel = $0.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normSeg = segLabel.replacingOccurrences(of: "→", with: "->")
+            return segLabel == trimmed || normSeg == normTarget || $0.speakerRole == trimmed
+        }.count
+    }
+
+    public func renameSpeaker(
+        fromRole: String,
+        toName: String,
+        scope: SpeakerChangeScope = .allMatching,
+        segmentID: UUID? = nil
+    ) {
         let trimmed = toName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         // 收集当前使用的说话人映射
-        var currentNames: [String: String] = [:]
-        for seg in segments {
-            if let sid = seg.speakerID {
-                let key = SpeakerRoleManager.roleKey(for: sid)
-                if let role = seg.speakerRole {
-                    currentNames[key] = role
+        let currentNames = self.currentSpeakerNames
+
+        // 1. 如果指定为“仅修改此句”且具备有效的 segmentID
+        if scope == .thisSentenceOnly,
+           let targetSegID = segmentID,
+           let idx = segments.firstIndex(where: { $0.id == targetSegID }) {
+            let res = SpeakerRoleManager.shared.resolveSingleSentenceSpeaker(
+                currentSegment: segments[idx],
+                inputName: trimmed,
+                currentSpeakerNames: currentNames
+            )
+
+            segments[idx].speakerID = res.speakerID
+            segments[idx].speakerIDs = res.speakerIDs
+            segments[idx].isSpeakerOverlap = res.isOverlap
+            segments[idx].speakerRole = res.speakerRole
+
+            if let libraryID = activeSentenceLibraryID,
+               let entryID = activeSentenceLibraryEntryMap[targetSegID] {
+                Task {
+                    try? SentenceLibraryStore.shared.updateSpeakerAssignment(
+                        id: entryID,
+                        speakerID: res.speakerID,
+                        speakerIDs: res.speakerIDs,
+                        isSpeakerOverlap: res.isOverlap,
+                        speakerRole: res.speakerRole,
+                        in: libraryID
+                    )
+                    if res.updatedNames != currentNames {
+                        try? SentenceLibraryStore.shared.updateSpeakerNames(res.updatedNames, in: libraryID)
+                    }
                 }
             }
+
+            scheduleDebouncedPersistence()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已将第 #\(segments[idx].index) 句角色修改为 \(res.displayName)",
+                    "Updated sentence #\(segments[idx].index) speaker to \(res.displayName)"
+                )
+            )
+            return
         }
 
+        // 2. 以下为修改所有相同角色（scope == .allMatching 或未指定 segmentID 时）
         let resolution = SpeakerRoleManager.shared.resolveRename(
             fromRoleKey: fromRole,
             inputName: trimmed,
@@ -4411,19 +4529,76 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         switch resolution.action {
         case .unchanged:
             break
+
+        case .resolvedToSingle(_, let toKey, let unifiedName, let targetSpeakerID):
+            let roleToSet: String? = (unifiedName != toKey) ? unifiedName : nil
+            var updatedCount = 0
+
+            for i in 0..<segments.count {
+                let label = segments[i].speakerRoleLabel
+                let normalizedLabel = label.replacingOccurrences(of: "→", with: "->")
+                let normalizedFrom = fromRole.replacingOccurrences(of: "→", with: "->")
+                if segments[i].speakerRole == fromRole || label == fromRole || normalizedLabel == normalizedFrom {
+                    segments[i].speakerID = targetSpeakerID
+                    segments[i].speakerIDs = [targetSpeakerID]
+                    segments[i].isSpeakerOverlap = false
+                    segments[i].speakerRole = roleToSet
+                    updatedCount += 1
+
+                    if let libraryID = activeSentenceLibraryID,
+                       let entryID = activeSentenceLibraryEntryMap[segments[i].id] {
+                        Task {
+                            try? SentenceLibraryStore.shared.updateSpeakerAssignment(
+                                id: entryID,
+                                speakerID: targetSpeakerID,
+                                speakerIDs: [targetSpeakerID],
+                                isSpeakerOverlap: false,
+                                speakerRole: roleToSet,
+                                in: libraryID
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 若产生了新的全局角色映射，同步更新句库清单
+            if let libraryID = activeSentenceLibraryID {
+                Task {
+                    var names = resolution.updatedNames
+                    if let roleToSet {
+                        names[toKey] = roleToSet
+                    }
+                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
+                }
+            }
+
+            scheduleDebouncedPersistence()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已将所有「\(fromRole)」角色修改为 \(unifiedName)（共 \(updatedCount) 句）",
+                    "Updated all '\(fromRole)' speakers to \(unifiedName) (\(updatedCount) sentences)"
+                )
+            )
+
         case .renamed(let roleKey, let newName):
+            var updatedCount = 0
             guard let sid = SpeakerRoleManager.speakerID(from: roleKey) else {
                 for i in 0..<segments.count {
                     if segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
                         segments[i].speakerRole = newName
+                        updatedCount += 1
                     }
                 }
                 scheduleDebouncedPersistence()
+                MainStatusCenter.shared.showSuccess(
+                    LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
+                )
                 return
             }
             for i in 0..<segments.count {
                 if segments[i].speakerID == sid || segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
                     segments[i].speakerRole = newName
+                    updatedCount += 1
                 }
             }
             scheduleDebouncedPersistence()
@@ -4436,7 +4611,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
             MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text("说话人已重命名为 \(newName)", "Speaker renamed to \(newName)")
+                LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
             )
 
         case .merged(let fromKey, let toKey, let unifiedName, _):
@@ -4466,10 +4641,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
             }
             MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text(
-                    "已将说话人 \(fromKey) 合并至 \(unifiedName) (共合并 \(mergedCount) 句)",
-                    "Merged speaker \(fromKey) into \(unifiedName) (\(mergedCount) sentences)"
-                )
+                LanguageManager.shared.text("已将「\(fromKey)」合并至「\(toKey)」(\(unifiedName))，共更新 \(mergedCount) 句", "Merged '\(fromKey)' into '\(toKey)' (\(unifiedName)), updated \(mergedCount) sentences")
             )
         }
     }

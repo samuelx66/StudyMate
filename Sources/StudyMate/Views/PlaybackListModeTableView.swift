@@ -183,6 +183,7 @@ public struct PlaybackListModeTableView: View {
                     translationFont: videoSubtitleSettings.makeTranslationFont(for: .list),
                     translationColor: videoSubtitleSettings.translationNSColor(for: .list),
                     language: lang.currentLanguage,
+                    availableSpeakers: engine.currentSpeakerNames,
                     onSelect: { id in
                         engine.jumpToSegment(id: id)
                         followState.resumeFollowing()
@@ -192,8 +193,8 @@ public struct PlaybackListModeTableView: View {
                         engine.play()
                         followState.resumeFollowing()
                     },
-                    onRenameSpeaker: { fromRole, toName in
-                        engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                    onRenameSpeaker: { fromRole, toName, scope, segID in
+                        engine.renameSpeaker(fromRole: fromRole, toName: toName, scope: scope, segmentID: segID)
                     },
                     onUserScroll: {
                         markUserScroll()
@@ -272,9 +273,10 @@ private struct PlaybackListModeRowsView: View, Equatable {
     let translationFont: NSFont
     let translationColor: NSColor
     let language: AppLanguage
+    var availableSpeakers: [String: String] = [:]
     let onSelect: (UUID) -> Void
     let onDoubleClick: (UUID) -> Void
-    let onRenameSpeaker: (String, String) -> Void
+    let onRenameSpeaker: (String, String, SpeakerChangeScope, UUID) -> Void
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
 
@@ -289,12 +291,19 @@ private struct PlaybackListModeRowsView: View, Equatable {
             && lhs.translationFont == rhs.translationFont
             && lhs.translationColor == rhs.translationColor
             && lhs.language == rhs.language
+            && lhs.availableSpeakers == rhs.availableSpeakers
             && lhs.segments == rhs.segments
     }
 
     var body: some View {
         LazyVStack(spacing: 0) {
             ForEach(segments) { seg in
+                let count = segments.filter {
+                    let l = $0.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
+                    let target = seg.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
+                    return l == target || $0.speakerRole == seg.speakerRoleLabel
+                }.count
+
                 PlaybackListModeRowView(
                     seg: seg,
                     isActive: activeSegmentID == seg.id,
@@ -307,9 +316,14 @@ private struct PlaybackListModeRowsView: View, Equatable {
                     translationFont: translationFont,
                     translationColor: translationColor,
                     language: language,
+                    availableSpeakers: availableSpeakers,
+                    sentenceIndex: seg.index,
+                    matchingCount: count,
                     onSelect: { onSelect(seg.id) },
                     onDoubleClick: { onDoubleClick(seg.id) },
-                    onRenameSpeaker: onRenameSpeaker
+                    onRenameSpeaker: { fromRole, toName, scope in
+                        onRenameSpeaker(fromRole, toName, scope, seg.id)
+                    }
                 )
                 .equatable()
                 .id(seg.id)
@@ -340,9 +354,12 @@ private struct PlaybackListModeRowView: View, Equatable {
     let translationFont: NSFont
     let translationColor: NSColor
     let language: AppLanguage
+    var availableSpeakers: [String: String] = [:]
+    var sentenceIndex: Int? = nil
+    var matchingCount: Int = 1
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
-    let onRenameSpeaker: (String, String) -> Void
+    let onRenameSpeaker: (String, String, SpeakerChangeScope) -> Void
 
     @State private var isHovered: Bool = false
 
@@ -358,6 +375,9 @@ private struct PlaybackListModeRowView: View, Equatable {
             && lhs.translationFont == rhs.translationFont
             && lhs.translationColor == rhs.translationColor
             && lhs.language == rhs.language
+            && lhs.availableSpeakers == rhs.availableSpeakers
+            && lhs.sentenceIndex == rhs.sentenceIndex
+            && lhs.matchingCount == rhs.matchingCount
     }
 
     var body: some View {
@@ -402,6 +422,9 @@ private struct PlaybackListModeRowView: View, Equatable {
                             tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
                             shape: .roundedRectangle(3),
                             language: language,
+                            availableSpeakers: availableSpeakers,
+                            sentenceIndex: sentenceIndex,
+                            matchingCount: matchingCount,
                             onSave: onRenameSpeaker
                         )
                     } else {

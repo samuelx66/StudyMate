@@ -4,7 +4,7 @@ public enum SpeechSegmentationStage: Sendable {
     case decodingAudio(Double)
     case detectingVoice
     case diarizing(Double)
-    case transcribing(Double)
+    case transcribing(Double, SpeechInferenceBackend)
     case optimizing
 }
 
@@ -27,7 +27,7 @@ private final class SpeechStageProgressGate: @unchecked Sendable {
             case .decodingAudio(let progress): return (0, progress, progress >= 0.999)
             case .detectingVoice: return (1, 0, true)
             case .diarizing(let progress): return (2, progress, progress >= 0.999)
-            case .transcribing(let progress): return (3, progress, progress >= 0.999)
+            case .transcribing(let progress, _): return (3, progress, progress >= 0.999)
             case .optimizing: return (4, 1, true)
             }
         }()
@@ -89,17 +89,20 @@ public struct SpeechSegmentationOutput: Sendable {
     /// editor's optional snap assist. They do not alter the generated
     /// sentence timeline.
     public var acousticBoundaryTimes: [Double]
+    public var whisperBackend: SpeechInferenceBackend
 
     public init(
         segments: [SentenceSegment],
         detectedLanguage: String,
         warnings: [String] = [],
-        acousticBoundaryTimes: [Double] = []
+        acousticBoundaryTimes: [Double] = [],
+        whisperBackend: SpeechInferenceBackend = .cpu
     ) {
         self.segments = segments
         self.detectedLanguage = detectedLanguage
         self.warnings = warnings
         self.acousticBoundaryTimes = acousticBoundaryTimes
+        self.whisperBackend = whisperBackend
     }
 }
 
@@ -215,7 +218,8 @@ public actor SpeechSegmentationPipeline {
             throw SpeechSegmentationPipelineError.whisperModelMissing
         }
 
-        emitStage(.transcribing(0))
+        let initialBackend = await runtime.activeWhisperBackend
+        emitStage(.transcribing(0, initialBackend))
         let windowFingerprint = Self.windowFingerprint(windowPlan)
         // The external windows are part of the cache identity. The internal
         // profile name is intentionally absent because with external VAD the
@@ -226,7 +230,7 @@ public actor SpeechSegmentationPipeline {
         if let cached = transcriptionCache[transcriptionKey] {
             touch(transcriptionKey, in: &transcriptionCacheOrder)
             timeline = cached
-            emitStage(.transcribing(1))
+            emitStage(.transcribing(1, await runtime.activeWhisperBackend))
         } else {
             timeline = try await runtime.transcribe(
                 pcm: pcm,
@@ -236,7 +240,7 @@ public actor SpeechSegmentationPipeline {
                 speechWindows: speechWindows,
                 hardWindowBoundaries: windowPlan.hardBoundaries
             ) { progress in
-                emitStage(.transcribing(progress))
+                emitStage(.transcribing(progress, initialBackend))
             }
             insert(
                 timeline,
@@ -272,7 +276,8 @@ public actor SpeechSegmentationPipeline {
             segments: finalSegments,
             detectedLanguage: timeline.detectedLanguage,
             warnings: warnings,
-            acousticBoundaryTimes: acousticBoundaryTimes
+            acousticBoundaryTimes: acousticBoundaryTimes,
+            whisperBackend: await runtime.activeWhisperBackend
         )
     }
 

@@ -6,37 +6,80 @@ public enum WhisperModelLevel: String, CaseIterable, Identifiable, Codable, Send
     case tiny
     case base
     case small
-    
+    case mediumQ8 = "medium-q8_0"
+    case mediumEnQ8 = "medium.en-q8_0"
+    case largeV3TurboQ8 = "large-v3-turbo-q8_0"
+
     public var id: String { rawValue }
-    
+
+    /// 是否为仅支持英语的专版模型
+    public var isEnglishOnly: Bool {
+        self == .mediumEnQ8
+    }
+
     public var title: String {
+        let isZh = LanguageManager.shared.currentLanguage == .zh
         switch self {
-        case .tiny: return "Tiny 极速版"
-        case .base: return "Base 标准版 (推荐)"
-        case .small: return "Small 高精版"
+        case .tiny:
+            return isZh ? "Tiny 极速版" : "Tiny (Fast)"
+        case .base:
+            return isZh ? "Base 标准版" : "Base (Standard)"
+        case .small:
+            return isZh ? "Small 高精版" : "Small (Enhanced)"
+        case .mediumQ8:
+            return isZh ? "Medium 超精版" : "Medium (Ultra)"
+        case .mediumEnQ8:
+            return isZh ? "Medium 纯英语" : "Medium (English)"
+        case .largeV3TurboQ8:
+            return isZh ? "Large 旗舰版" : "Large (Flagship)"
         }
     }
-    
+
     public var description: String {
+        let isZh = LanguageManager.shared.currentLanguage == .zh
         switch self {
-        case .tiny: return "约 75 MB，识别速度极快，适合日常发音清晰的材料"
-        case .base: return "约 145 MB，速度与精度黄金平衡，适合绝大部分影视剧和播客"
-        case .small: return "约 480 MB，最高识别精度，专克复杂口音、弱读连读与嘈杂背景音"
+        case .tiny:
+            return isZh
+                ? "约 75 MB，识别速度极快且极省资源，适合发音清晰标准的简短材料。"
+                : "About 75 MB, extremely fast with minimal resource usage, best for clear and standard speech."
+        case .base:
+            return isZh
+                ? "约 145 MB，速度与精度的黄金平衡，适合绝大部分日常影视剧与播客。"
+                : "About 145 MB, golden balance of speed and accuracy, suitable for most movies and podcasts."
+        case .small:
+            return isZh
+                ? "约 480 MB，精度优秀且资源占用适中，适合语速较快、带日常连读与轻微背景音的材料。"
+                : "About 480 MB, excellent accuracy with moderate footprint, suitable for faster speech and light background noise."
+        case .mediumQ8:
+            return isZh
+                ? "约 785 MB（8-bit 高保真量化），支持中英等多语种，复杂背景音与专业词汇识别精度极高。"
+                : "About 785 MB (8-bit quantization), supports multilingual audio with very high accuracy on complex background audio and technical terms."
+        case .mediumEnQ8:
+            return isZh
+                ? "约 785 MB（8-bit 高保真量化），专为纯英语深度优化，英语发音、断句与拼写精度显著优于通用模型（仅限英语）。"
+                : "About 785 MB (8-bit quantization), dedicated to pure English with significantly superior accuracy, timing, and spelling (English only)."
+        case .largeV3TurboQ8:
+            return isZh
+                ? "约 834 MB（8-bit 高保真量化），具备 Whisper 顶级的声学抗噪与复杂吞音还原能力，兼具极速推理表现。"
+                : "About 834 MB (8-bit quantization), top-tier Whisper noise resistance and slurred speech decoding with rapid inference."
         }
     }
-    
+
     public var approximateSize: String {
         switch self {
         case .tiny: return "75 MB"
         case .base: return "145 MB"
         case .small: return "480 MB"
+        case .mediumQ8: return "785 MB"
+        case .mediumEnQ8: return "785 MB"
+        case .largeV3TurboQ8: return "834 MB"
         }
     }
-    
+
     public var filename: String {
         "ggml-\(rawValue).bin"
     }
-    
+
     public var downloadURL: URL {
         URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)")!
     }
@@ -51,6 +94,8 @@ public enum WhisperModelLevel: String, CaseIterable, Identifiable, Codable, Send
         case .tiny: return 50_000_000
         case .base: return 100_000_000
         case .small: return 300_000_000
+        case .mediumQ8, .mediumEnQ8: return 500_000_000
+        case .largeV3TurboQ8: return 600_000_000
         }
     }
 }
@@ -73,6 +118,10 @@ public final class WhisperModelManager: NSObject, ObservableObject, @preconcurre
     @Published public var selectedModelLevel: WhisperModelLevel {
         didSet {
             UserDefaults.standard.set(selectedModelLevel.rawValue, forKey: userDefaultsKey)
+            NotificationCenter.default.post(name: .whisperModelDidChange, object: selectedModelLevel)
+            if selectedModelLevel.isEnglishOnly {
+                NotificationCenter.default.post(name: .whisperModelDidSelectEnglishOnly, object: nil)
+            }
         }
     }
     
@@ -254,4 +303,9 @@ private enum ModelDownloadValidationError: LocalizedError {
             return "模型文件不完整（仅收到 \(size)），请重新下载"
         }
     }
+}
+
+extension Notification.Name {
+    public static let whisperModelDidChange = Notification.Name("StudyMate.WhisperModelDidChange")
+    public static let whisperModelDidSelectEnglishOnly = Notification.Name("StudyMate.WhisperModelDidSelectEnglishOnly")
 }

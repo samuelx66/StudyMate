@@ -700,4 +700,48 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(merged[0].endTime, 303, accuracy: 0.0001)
     }
 
+    func testJoinedRecognizedTextBpeSubwordJoining() {
+        let tokens = [
+            SpeechToken(text: " al", startTime: 0.0, endTime: 0.2),
+            SpeechToken(text: "bum", startTime: 0.2, endTime: 0.5)
+        ]
+        let joined = SpeechBoundaryOptimizer.shared.joinedRecognizedText(tokens)
+        XCTAssertEqual(joined, "album")
+
+        let walkingTokens = [
+            SpeechToken(text: " walk", startTime: 0.0, endTime: 0.3),
+            SpeechToken(text: "ing", startTime: 0.3, endTime: 0.5)
+        ]
+        XCTAssertEqual(SpeechBoundaryOptimizer.shared.joinedRecognizedText(walkingTokens), "walking")
+
+        let contractionTokens = [
+            SpeechToken(text: " don", startTime: 0.0, endTime: 0.3),
+            SpeechToken(text: "'t", startTime: 0.3, endTime: 0.5)
+        ]
+        XCTAssertEqual(SpeechBoundaryOptimizer.shared.joinedRecognizedText(contractionTokens), "don't")
+
+        let punctuationTokens = [
+            SpeechToken(text: "Hello,", startTime: 0.0, endTime: 0.4),
+            SpeechToken(text: "world", startTime: 0.4, endTime: 0.8)
+        ]
+        XCTAssertEqual(SpeechBoundaryOptimizer.shared.joinedRecognizedText(punctuationTokens), "Hello, world")
+    }
+
+    func testWordTokensBpeSubwordMerging() {
+        let tokens = [
+            SpeechToken(text: " al", startTime: 1.0, endTime: 1.2, confidence: 0.92),
+            SpeechToken(text: "bum", startTime: 1.2, endTime: 1.5, confidence: 0.96)
+        ]
+        let wordTokens = SpeechBoundaryOptimizer.shared.wordTokens(
+            from: tokens,
+            sentenceStartTime: 1.0,
+            sentenceEndTime: 2.0
+        )
+
+        XCTAssertEqual(wordTokens.count, 1)
+        XCTAssertEqual(wordTokens[0].text, "album")
+        XCTAssertEqual(wordTokens[0].startTime, 0.0, accuracy: 0.001)
+        XCTAssertEqual(wordTokens[0].endTime, 0.5, accuracy: 0.001)
+        XCTAssertEqual(wordTokens[0].confidence, 0.92, accuracy: 0.001)
+    }
 }

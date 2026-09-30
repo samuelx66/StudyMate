@@ -23,7 +23,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.7.0 release</string>
 	<key>CFBundleVersion</key>
-	<string>443</string>
+	<string>452</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.education</string>
     <key>LSMinimumSystemVersion</key>

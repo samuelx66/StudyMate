@@ -17,6 +17,17 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         joinTokenText(tokens)
     }
 
+    /// 将 Whisper 原始 Token 序列提取为结构化的单词级时间戳（Word Tokens）。
+    /// 自动对齐 BPE 子词（如 "al" + "bum" 合并为 "album"，"don" + "'t" 合并为 "don't"），
+    /// 并按句子时间跨度计算相对时间戳。
+    public func wordTokens(
+        from tokens: [SpeechToken],
+        sentenceStartTime: Double,
+        sentenceEndTime: Double? = nil
+    ) -> [StudyMatePackageWordToken] {
+        extractWordTokens(from: tokens, sentenceStartTime: sentenceStartTime, sentenceEndTime: sentenceEndTime)
+    }
+
 
     public func optimize(
         mode: SpeechSegmentationMode,
@@ -367,18 +378,7 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 speakerSegments: speakerSegments
             ).isEmpty || rangeTokens.contains { $0.speakerOverlap }
 
-            let wordTokens = rangeTokens.compactMap { token -> StudyMatePackageWordToken? in
-                let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return nil }
-                let relStart = max(0, token.startTime - start)
-                let relEnd = max(relStart + 0.01, token.endTime - start)
-                return StudyMatePackageWordToken(
-                    text: trimmed,
-                    startTime: relStart,
-                    endTime: relEnd,
-                    confidence: token.confidence
-                )
-            }
+            let wordTokens = extractWordTokens(from: rangeTokens, sentenceStartTime: start)
 
             segments.append(SentenceSegment(
                 index: rangeIndex + 1,
@@ -1769,15 +1769,22 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             let startsWithWhitespace = raw.first?.isWhitespace == true
             let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty else { continue }
-            if !output.isEmpty,
-               !startsWithWhitespace,
-               shouldInsertSpace(previous: output.last, next: clean.first) {
-                output.append(" ")
-            } else if startsWithWhitespace,
-                      !output.isEmpty,
-                      output.last?.isWhitespace != true,
-                      !isNoSpaceBeforePunctuation(clean.first) {
-                output.append(" ")
+
+            if startsWithWhitespace {
+                // Token 显式以空格开头（BPE 独立单词起点）
+                if !output.isEmpty,
+                   output.last?.isWhitespace != true,
+                   !isNoSpaceBeforePunctuation(clean.first),
+                   !"([{“‘".contains(output.last ?? " ") {
+                    output.append(" ")
+                }
+            } else {
+                // Token 没有前导空格（BPE 子词续接，或标点紧跟）
+                if !output.isEmpty,
+                   output.last?.isWhitespace != true,
+                   shouldInsertSpaceWithoutLeadingWhitespace(previous: output.last, next: clean.first) {
+                    output.append(" ")
+                }
             }
             output.append(clean)
         }
@@ -1788,17 +1795,31 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func shouldInsertSpace(previous: Character?, next: Character?) -> Bool {
+    private func shouldInsertSpaceWithoutLeadingWhitespace(previous: Character?, next: Character?) -> Bool {
         guard let previous, let next else { return false }
         if isNoSpaceBeforePunctuation(next) { return false }
         if "([{“‘".contains(previous) { return false }
         if isCJK(previous) || isCJK(next) { return false }
-        return true
+        // 句末/分句标点后若直接跟新内容（如缺少前导空格的单词），补充空格
+        if ",.?!;:…。？！；：)]}”’\"".contains(previous) {
+            if (previous == "." || previous == ",") && next.isNumber { return false }
+            return true
+        }
+        // 如果当前 token 首字母大写且前一个字符为小写（如合成测试或连写的专有名词），补充空格
+        if next.isUppercase && previous.isLowercase { return true }
+        // 前后均为字母或数字，且当前 token 无前导空格：属于 BPE 连词/子词（如 "al" + "bum"），严禁插入空格
+        if (previous.isLetter || previous.isNumber) && (next.isLetter || next.isNumber) {
+            return false
+        }
+        if previous == "'" || previous == "-" || next == "'" || next == "-" {
+            return false
+        }
+        return false
     }
 
     private func isNoSpaceBeforePunctuation(_ character: Character?) -> Bool {
         guard let character else { return false }
-        return ".,?!;:…。，“”‘’？！；：、｡．؟)]}".contains(character)
+        return ".,?!;:…。，“”‘’？！；：、｡．؟)]}'\"-".contains(character)
     }
 
     private func isCJK(_ character: Character) -> Bool {
@@ -1811,6 +1832,55 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 return false
             }
         }
+    }
+
+    private func shouldMergeWordToken(lastText: String, clean: String, startsWithWhitespace: Bool) -> Bool {
+        guard !startsWithWhitespace else { return false }
+        guard let lastChar = lastText.last, let firstChar = clean.first else { return false }
+        if clean.starts(with: "'") { return true }
+        if lastText.hasSuffix("-") || clean.starts(with: "-") { return true }
+        if lastChar.isLetter && firstChar.isLetter && firstChar.isLowercase { return true }
+        if lastChar.isLetter && firstChar.isLetter && lastText.allSatisfy(\.isUppercase) && clean.allSatisfy(\.isUppercase) { return true }
+        if lastChar.isNumber && firstChar.isNumber { return true }
+        return false
+    }
+
+    private func extractWordTokens(
+        from tokens: [SpeechToken],
+        sentenceStartTime: Double,
+        sentenceEndTime: Double? = nil
+    ) -> [StudyMatePackageWordToken] {
+        var result: [StudyMatePackageWordToken] = []
+        let span = sentenceEndTime.map { max(0.05, $0 - sentenceStartTime) }
+
+        for token in tokens {
+            let raw = token.text.replacingOccurrences(of: "\n", with: " ")
+            let startsWithWhitespace = raw.first?.isWhitespace == true
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { continue }
+
+            let relStart = max(0, token.startTime - sentenceStartTime)
+            let rawRelEnd = max(relStart + 0.01, token.endTime - sentenceStartTime)
+            let relEnd = span != nil ? min(span!, rawRelEnd) : rawRelEnd
+
+            if !result.isEmpty, shouldMergeWordToken(lastText: result[result.count - 1].text, clean: clean, startsWithWhitespace: startsWithWhitespace) {
+                let last = result.removeLast()
+                result.append(StudyMatePackageWordToken(
+                    text: last.text + clean,
+                    startTime: last.startTime,
+                    endTime: max(last.endTime, relEnd),
+                    confidence: min(last.confidence, token.confidence)
+                ))
+            } else {
+                result.append(StudyMatePackageWordToken(
+                    text: clean,
+                    startTime: relStart,
+                    endTime: relEnd,
+                    confidence: token.confidence
+                ))
+            }
+        }
+        return result
     }
 
     private func reindexed(_ segments: [SentenceSegment]) -> [SentenceSegment] {

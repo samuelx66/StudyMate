@@ -70,7 +70,7 @@ public final class SentenceLibraryAlignmentService: ObservableObject {
         }
 
         let modelURL = modelManager.modelFileURL(for: modelLevel)
-        let recognitionLanguage = languageOverride ?? PlaybackEngine.shared.speechRecognitionLanguage
+        let recognitionLanguage = languageOverride ?? PlaybackEngine.shared.effectiveSpeechRecognitionLanguage
 
         let isChinese = LanguageManager.shared.currentLanguage == .zh
         let preparingPhase = isChinese ? "正在准备句库词级时间戳对齐…" : "Preparing sentence library word timestamp alignment…"
@@ -239,7 +239,7 @@ public final class SentenceLibraryAlignmentService: ObservableObject {
         }
 
         let modelURL = modelManager.modelFileURL(for: modelLevel)
-        let recognitionLanguage = languageOverride ?? PlaybackEngine.shared.speechRecognitionLanguage
+        let recognitionLanguage = languageOverride ?? PlaybackEngine.shared.effectiveSpeechRecognitionLanguage
 
         let isChinese = LanguageManager.shared.currentLanguage == .zh
         let aligningPhase = isChinese ? "Whisper 正在对齐句库词级时间戳…" : "Whisper is aligning word timestamps…"
@@ -292,18 +292,10 @@ public final class SentenceLibraryAlignmentService: ObservableObject {
                     ) { _ in }
                     if Task.isCancelled { break }
 
-                    let wordTokens = timeline.tokens.compactMap { token -> StudyMatePackageWordToken? in
-                        let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return nil }
-                        let relStart = max(0, token.startTime)
-                        let relEnd = max(relStart + 0.01, token.endTime)
-                        return StudyMatePackageWordToken(
-                            text: trimmed,
-                            startTime: relStart,
-                            endTime: relEnd,
-                            confidence: token.confidence
-                        )
-                    }
+                    let wordTokens = SpeechBoundaryOptimizer.shared.wordTokens(
+                        from: timeline.tokens,
+                        sentenceStartTime: 0
+                    )
 
                     if !wordTokens.isEmpty {
                         try? SentenceLibraryStore.shared.updateWordTokensAndText(

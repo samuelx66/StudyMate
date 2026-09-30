@@ -69,8 +69,11 @@ public struct SubtitleEditView: View {
                             tintColor: StudyMateMediaStyle.accent,
                             shape: .roundedRectangle(4),
                             language: lang.currentLanguage,
-                            onSave: { fromRole, toName in
-                                engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                            availableSpeakers: engine.currentSpeakerNames,
+                            sentenceIndex: seg.index,
+                            matchingCount: engine.countSegments(withSpeakerRoleLabel: seg.speakerRoleLabel),
+                            onSave: { fromRole, toName, scope in
+                                engine.renameSpeaker(fromRole: fromRole, toName: toName, scope: scope, segmentID: seg.id)
                             }
                         )
                     }

@@ -75,6 +75,17 @@ public actor NativeSpeechRuntime {
         vadContext = nil
     }
 
+    public var activeWhisperBackend: SpeechInferenceBackend {
+        if whisperContext != nil {
+            return whisperBackend
+        }
+        let policy = SpeechInferenceResourcePolicy.current()
+        if policy.preferWhisperMetal && !whisperGPUUnavailable {
+            return .metal
+        }
+        return .cpu
+    }
+
     public func detectVoiceActivity(
         pcm: AudioPCMData,
         configuration: VoiceActivityConfiguration
@@ -213,6 +224,13 @@ public actor NativeSpeechRuntime {
                 // that backend unavailable and rerun the same windows on CPU
                 // once, without changing any sentence-boundary inputs.
                 await self.markWhisperGPUUnavailable()
+                Task { @MainActor in
+                    MainStatusCenter.shared.showWarning(
+                        LanguageManager.shared.currentLanguage == .zh
+                            ? "Whisper Metal GPU 发生异常，已自动回退至纯 CPU 模式"
+                            : "Whisper Metal GPU encountered an issue; automatically fell back to CPU mode"
+                    )
+                }
                 return try await self.transcribeLocked(
                     pcm: pcm,
                     modelURL: modelURL,
@@ -603,6 +621,10 @@ public actor NativeSpeechRuntime {
             mab_whisper_free(whisperContext)
             whisperContext = nil
             whisperBackend = .cpu
+        }
+        if !forceCPU && policy.preferWhisperMetal && !whisperGPUUnavailable, whisperBackend == .cpu, whisperContext != nil {
+            mab_whisper_free(whisperContext)
+            whisperContext = nil
         }
         if let whisperContext { return whisperContext }
 

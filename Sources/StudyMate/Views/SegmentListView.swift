@@ -824,8 +824,9 @@ public struct SegmentListView: View {
                                         translation: translationText
                                     )
                                 },
-                                onRenameSpeaker: { fromRole, toName in
-                                    engine.renameSpeaker(fromRole: fromRole, toName: toName)
+                                availableSpeakers: engine.currentSpeakerNames,
+                                onRenameSpeaker: { fromRole, toName, scope, segID in
+                                    engine.renameSpeaker(fromRole: fromRole, toName: toName, scope: scope, segmentID: segID)
                                 },
                                 onUserScroll: {
                                     markUserScroll()
@@ -1799,6 +1800,7 @@ private struct SegmentSegmentationPopoverView: View {
     let onFastSegmentation: () -> Void
     let onIntelligentSegmentation: () -> Void
     @ObservedObject var lang: LanguageManager
+    @ObservedObject var modelManager = WhisperModelManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1807,10 +1809,9 @@ private struct SegmentSegmentationPopoverView: View {
                 .padding(.bottom, 2)
 
             Button(action: onFastSegmentation) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bolt.fill")
-                        .frame(width: 16)
-                    Text(lang.text("快速断句（默认）", "Fast segmentation (Default)"))
+                HStack {
+                    Text(lang.text("快速断句 (默认)", "Fast segmentation (Default)"))
+                        .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -1820,10 +1821,12 @@ private struct SegmentSegmentationPopoverView: View {
             .padding(.vertical, 4)
 
             Button(action: onIntelligentSegmentation) {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .frame(width: 16)
-                    Text(lang.text("智能断句", "Intelligent segmentation"))
+                HStack {
+                    Text(lang.text(
+                        "智能断句 (\(modelManager.selectedModelLevel.title))",
+                        "Intelligent segmentation (\(modelManager.selectedModelLevel.title))"
+                    ))
+                    .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -1833,7 +1836,7 @@ private struct SegmentSegmentationPopoverView: View {
             .padding(.vertical, 4)
         }
         .padding(12)
-        .frame(minWidth: 220)
+        .frame(minWidth: 240)
         .focusable(false)
     }
 }
@@ -1998,7 +2001,8 @@ private struct SegmentListRowsView: View, Equatable {
     let onMergeNext: (UUID) -> Void
     let onDelete: (UUID) -> Void
     let onSaveText: (UUID, String, String) -> Void
-    var onRenameSpeaker: ((String, String) -> Void)? = nil
+    var availableSpeakers: [String: String] = [:]
+    var onRenameSpeaker: ((String, String, SpeakerChangeScope, UUID) -> Void)? = nil
     let onUserScroll: () -> Void
     let onScrollStateChanged: (Bool) -> Void
     let onSegmentAppear: (UUID) -> Void
@@ -2009,6 +2013,12 @@ private struct SegmentListRowsView: View, Equatable {
     var body: some View {
         LazyVStack(spacing: 2) {
             ForEach(segments) { seg in
+                let count = segments.filter {
+                    let l = $0.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
+                    let target = seg.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
+                    return l == target || $0.speakerRole == seg.speakerRoleLabel
+                }.count
+
                 SegmentRowView(
                     seg: seg,
                     isActive: activeSegmentID == seg.id,
@@ -2043,6 +2053,9 @@ private struct SegmentListRowsView: View, Equatable {
                     onSaveText: { originalText, translationText in
                         onSaveText(seg.id, originalText, translationText)
                     },
+                    availableSpeakers: availableSpeakers,
+                    sentenceIndex: seg.index,
+                    matchingCount: count,
                     onRenameSpeaker: onRenameSpeaker,
                     editRequest: $editRequest,
                     lang: lang,
@@ -2084,6 +2097,7 @@ extension SegmentListRowsView {
             && lhs.editingLayout == rhs.editingLayout
             && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
+            && lhs.availableSpeakers == rhs.availableSpeakers
     }
 }
 
@@ -2104,7 +2118,10 @@ struct SegmentRowView: View, Equatable {
     let onMergeNext: () -> Void
     let onDelete: () -> Void
     let onSaveText: (String, String) -> Void
-    var onRenameSpeaker: ((String, String) -> Void)? = nil
+    var availableSpeakers: [String: String] = [:]
+    var sentenceIndex: Int? = nil
+    var matchingCount: Int = 1
+    var onRenameSpeaker: ((String, String, SpeakerChangeScope, UUID) -> Void)? = nil
     @Binding var editRequest: UUID?
     let lang: LanguageManager
     let language: AppLanguage
@@ -2121,6 +2138,9 @@ struct SegmentRowView: View, Equatable {
             && lhs.editingLayout == rhs.editingLayout
             && lhs.totalSegmentsCount == rhs.totalSegmentsCount
             && lhs.editRequest == rhs.editRequest
+            && lhs.availableSpeakers == rhs.availableSpeakers
+            && lhs.sentenceIndex == rhs.sentenceIndex
+            && lhs.matchingCount == rhs.matchingCount
             && lhs.language == rhs.language
     }
 
@@ -2191,8 +2211,11 @@ struct SegmentRowView: View, Equatable {
                                 tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
                                 shape: .roundedRectangle(3),
                                 language: language,
-                                onSave: { fromRole, toName in
-                                    onRenameSpeaker?(fromRole, toName)
+                                availableSpeakers: availableSpeakers,
+                                sentenceIndex: sentenceIndex,
+                                matchingCount: matchingCount,
+                                onSave: { fromRole, toName, scope in
+                                    onRenameSpeaker?(fromRole, toName, scope, seg.id)
                                 }
                             )
                         }

@@ -242,6 +242,7 @@ struct StudyMateApp: App {
     @AppStorage("StudyMate.ShowPlaylist") private var showPlaylist = false
     @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
     @ObservedObject private var phoneticManager = PhoneticEngineManager.shared
+    @ObservedObject private var whisperModelManager = WhisperModelManager.shared
 
     private var engine: PlaybackEngine { PlaybackEngine.shared }
     @StateObject private var commandState = PlaybackCommandState.shared
@@ -579,7 +580,13 @@ struct StudyMateApp: App {
                     Button {
                         engine.performSegmentation(mode: .intelligent)
                     } label: {
-                        Label(languageManager.text("智能断句", "Intelligent Segmentation"), systemImage: "wand.and.stars")
+                        Label(
+                            languageManager.text(
+                                "智能断句 (\(whisperModelManager.selectedModelLevel.title))",
+                                "Intelligent Segmentation (\(whisperModelManager.selectedModelLevel.title))"
+                            ),
+                            systemImage: "wand.and.stars"
+                        )
                     }
                     .keyboardShortcut("2", modifiers: [.control, .command])
                     .disabled(engine.currentMedia == nil || engine.isAITranscribing)
