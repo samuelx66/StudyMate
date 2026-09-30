@@ -878,12 +878,13 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    /// 更新句库中一条句子的原文、译文与注音
+    /// 更新句库中一条句子的原文、译文与注音（可选同步更新词级时间戳）
     public func updateEntry(
         id: UUID,
         originalText: String,
         translation: String,
         phoneticText: String? = nil,
+        wordTokens: [StudyMatePackageWordToken]? = nil,
         in libraryID: UUID
     ) throws {
         try queue.sync {
@@ -895,6 +896,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         originalText: originalText,
                         translation: translation,
                         phoneticText: phoneticText,
+                        wordTokens: wordTokens,
                         in: db
                     )
                 } catch {
@@ -905,11 +907,13 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                         originalText: originalText,
                         translation: translation,
                         phoneticText: phoneticText,
+                        wordTokens: wordTokens,
                         in: db
                     )
                 }
             }
             try touchManifest(libraryID: libraryID)
+            syncContentJSONUnlocked(libraryID: libraryID)
         }
     }
 
@@ -959,25 +963,49 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         originalText: String,
         translation: String,
         phoneticText: String?,
+        wordTokens: [StudyMatePackageWordToken]? = nil,
         in db: OpaquePointer
     ) throws {
         try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
         do {
             var statement: OpaquePointer?
-            try prepare(
-                "UPDATE entries SET original_text = ?, translation = ?, phonetic_text = ? WHERE id = ?;",
-                db: db,
-                statement: &statement
-            )
             defer { sqlite3_finalize(statement) }
-            bind(originalText, at: 1, to: statement)
-            bind(translation, at: 2, to: statement)
-            if let phoneticText {
-                bind(phoneticText, at: 3, to: statement)
+            if let wordTokens {
+                try prepare(
+                    "UPDATE entries SET original_text = ?, translation = ?, phonetic_text = ?, word_tokens = ? WHERE id = ?;",
+                    db: db,
+                    statement: &statement
+                )
+                bind(originalText, at: 1, to: statement)
+                bind(translation, at: 2, to: statement)
+                if let phoneticText {
+                    bind(phoneticText, at: 3, to: statement)
+                } else {
+                    sqlite3_bind_null(statement, 3)
+                }
+                if !wordTokens.isEmpty,
+                   let data = try? JSONEncoder().encode(wordTokens),
+                   let json = String(data: data, encoding: .utf8) {
+                    bind(json, at: 4, to: statement)
+                } else {
+                    bind("[]", at: 4, to: statement)
+                }
+                bind(id.uuidString, at: 5, to: statement)
             } else {
-                sqlite3_bind_null(statement, 3)
+                try prepare(
+                    "UPDATE entries SET original_text = ?, translation = ?, phonetic_text = ? WHERE id = ?;",
+                    db: db,
+                    statement: &statement
+                )
+                bind(originalText, at: 1, to: statement)
+                bind(translation, at: 2, to: statement)
+                if let phoneticText {
+                    bind(phoneticText, at: 3, to: statement)
+                } else {
+                    sqlite3_bind_null(statement, 3)
+                }
+                bind(id.uuidString, at: 4, to: statement)
             }
-            bind(id.uuidString, at: 4, to: statement)
             guard sqlite3_step(statement) == SQLITE_DONE else {
                 throw databaseError(db)
             }

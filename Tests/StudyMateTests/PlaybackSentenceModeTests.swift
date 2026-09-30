@@ -425,4 +425,121 @@ final class PlaybackSentenceModeTests: XCTestCase {
         // 跨越至新单词时打破相等（立即重绘点亮新单词）
         XCTAssertFalse(card1 == card3)
     }
+
+    func testReconciledWordTokensTypoFix() {
+        let tokens = [
+            StudyMatePackageWordToken(text: "I", startTime: 0.0, endTime: 0.2, confidence: 0.95),
+            StudyMatePackageWordToken(text: "bought", startTime: 0.2, endTime: 0.6, confidence: 0.98),
+            StudyMatePackageWordToken(text: "a", startTime: 0.6, endTime: 0.7, confidence: 0.99),
+            StudyMatePackageWordToken(text: "buck", startTime: 0.7, endTime: 1.1, confidence: 0.90),
+            StudyMatePackageWordToken(text: "yesterday.", startTime: 1.1, endTime: 1.8, confidence: 0.96)
+        ]
+        let seg = SentenceSegment(
+            index: 1,
+            startTime: 0.0,
+            endTime: 2.0,
+            text: "I bought a book yesterday.",
+            wordTokens: tokens
+        )
+
+        let reconciled = seg.reconciledWordTokens()
+        XCTAssertNotNil(reconciled)
+        guard let reconciled, reconciled.count == 5 else {
+            XCTFail("Reconciled tokens count should be 5")
+            return
+        }
+
+        XCTAssertEqual(reconciled[0].text, "I")
+        XCTAssertEqual(reconciled[1].text, "bought")
+        XCTAssertEqual(reconciled[2].text, "a")
+        XCTAssertEqual(reconciled[3].text, "book") // Corrected from buck to book!
+        XCTAssertEqual(reconciled[3].startTime, 0.7, accuracy: 0.001)
+        XCTAssertEqual(reconciled[3].endTime, 1.1, accuracy: 0.001)
+        XCTAssertEqual(reconciled[4].text, "yesterday.")
+    }
+
+    func testReconciledWordTokensWordAddedAndRemoved() {
+        let tokens = [
+            StudyMatePackageWordToken(text: "I", startTime: 0.0, endTime: 0.2, confidence: 0.95),
+            StudyMatePackageWordToken(text: "bought", startTime: 0.3, endTime: 0.7, confidence: 0.98),
+            StudyMatePackageWordToken(text: "buck", startTime: 0.8, endTime: 1.2, confidence: 0.90)
+        ]
+
+        // 插入词语 "really"
+        let segAdded = SentenceSegment(
+            index: 1,
+            startTime: 0.0,
+            endTime: 1.5,
+            text: "I really bought a book",
+            wordTokens: tokens
+        )
+        let reconciledAdded = segAdded.reconciledWordTokens()
+        XCTAssertNotNil(reconciledAdded)
+        XCTAssertEqual(reconciledAdded?.count, 5)
+        XCTAssertEqual(reconciledAdded?[0].text, "I")
+        XCTAssertEqual(reconciledAdded?[1].text, "really")
+        XCTAssertEqual(reconciledAdded?[2].text, "bought")
+        XCTAssertEqual(reconciledAdded?[4].text, "book")
+
+        // 删减词语
+        let segRemoved = SentenceSegment(
+            index: 2,
+            startTime: 0.0,
+            endTime: 1.5,
+            text: "I book",
+            wordTokens: tokens
+        )
+        let reconciledRemoved = segRemoved.reconciledWordTokens()
+        XCTAssertNotNil(reconciledRemoved)
+        XCTAssertEqual(reconciledRemoved?.count, 2)
+        XCTAssertEqual(reconciledRemoved?[0].text, "I")
+        XCTAssertEqual(reconciledRemoved?[1].text, "book")
+    }
+
+    func testReconciledWordTokensDrasticChangeFallback() {
+        let tokens = [
+            StudyMatePackageWordToken(text: "Hello", startTime: 0.0, endTime: 0.4, confidence: 0.95),
+            StudyMatePackageWordToken(text: "world", startTime: 0.4, endTime: 0.8, confidence: 0.98)
+        ]
+        let seg = SentenceSegment(
+            index: 1,
+            startTime: 0.0,
+            endTime: 1.0,
+            text: "这是一句完全不同的中文句子",
+            wordTokens: tokens
+        )
+        // 差异过大时应返回 nil，优雅回退至普通文本渲染
+        let reconciled = seg.reconciledWordTokens()
+        XCTAssertNil(reconciled)
+    }
+
+    @MainActor
+    func testPlaybackEngineUpdateSegmentTextReconcilesTokens() {
+        let engine = PlaybackEngine()
+        let tokens = [
+            StudyMatePackageWordToken(text: "I", startTime: 0.0, endTime: 0.2, confidence: 0.95),
+            StudyMatePackageWordToken(text: "read", startTime: 0.2, endTime: 0.5, confidence: 0.98),
+            StudyMatePackageWordToken(text: "a", startTime: 0.5, endTime: 0.6, confidence: 0.99),
+            StudyMatePackageWordToken(text: "buck", startTime: 0.6, endTime: 1.0, confidence: 0.90)
+        ]
+        let seg = SentenceSegment(
+            index: 1,
+            startTime: 0.0,
+            endTime: 1.5,
+            text: "I read a buck",
+            wordTokens: tokens
+        )
+        engine.replaceSegmentsForUndo([seg])
+
+        // 模拟字幕编辑修改原文
+        engine.updateSegmentText(id: seg.id, text: "I read a book")
+
+        guard let updatedTokens = engine.segments.first?.wordTokens, updatedTokens.count == 4 else {
+            XCTFail("Updated tokens should exist and have count 4")
+            return
+        }
+        XCTAssertEqual(updatedTokens[3].text, "book")
+        XCTAssertEqual(updatedTokens[3].startTime, 0.6, accuracy: 0.001)
+        XCTAssertEqual(updatedTokens[3].endTime, 1.0, accuracy: 0.001)
+    }
 }

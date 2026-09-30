@@ -234,3 +234,245 @@ public struct SentenceSegment: Identifiable, Codable, Equatable, Hashable, Senda
     }
 }
 
+// MARK: - 词级时间戳调和与文本对齐（Reconciliation）
+
+extension SentenceSegment {
+    /// 对比目标原文与底层词级时间戳（Whisper wordTokens），在文本发生修改（如订正错别字 "buck" -> "book"、增删词语等）时
+    /// 自动将词级时间戳对齐映射到新文本，保留词级起止时间、卡拉OK高亮与发音音标；
+    /// 若文本发生大幅变更无法对齐，则优雅返回 nil 以回退至常规原文视图。
+    public func reconciledWordTokens(for targetText: String? = nil) -> [StudyMatePackageWordToken]? {
+        Self.reconcileWordTokens(for: targetText ?? text, baseTokens: wordTokens)
+    }
+
+    /// 静态调和方法，支持任意文本与 token 序列的对齐重构
+    public static func reconcileWordTokens(
+        for targetText: String,
+        baseTokens: [StudyMatePackageWordToken]?
+    ) -> [StudyMatePackageWordToken]? {
+        guard let baseTokens, !baseTokens.isEmpty else { return nil }
+        let resolved = targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !resolved.isEmpty else { return nil }
+
+        // 1. 分词抽取
+        let words = extractWords(from: resolved, baseTokenCount: baseTokens.count)
+        guard !words.isEmpty else { return nil }
+
+        // 2. 快速路径：分词数量与 token 数量一致
+        if words.count == baseTokens.count {
+            // 完全一致时直接复用原数组
+            if zip(words, baseTokens).allSatisfy({ $0.0 == $0.1.text }) {
+                return baseTokens
+            }
+
+            // 检查词形相似度（如错别字订正 "buck" -> "book"）
+            let matchScores = zip(words, baseTokens).map { wordSimilarity($0.0, $0.1.text) }
+            let positiveCount = matchScores.filter { $0 > 0 }.count
+            // 只要有半数以上（或至少 1 个词）相似，即可直接 1:1 投影，完美保留起止时间
+            if positiveCount >= max(1, words.count / 2) {
+                return zip(words, baseTokens).map { word, token in
+                    StudyMatePackageWordToken(
+                        text: word,
+                        startTime: token.startTime,
+                        endTime: token.endTime,
+                        confidence: token.confidence
+                    )
+                }
+            }
+        }
+
+        // 3. 通用路径：动态规划序列对齐（Needleman-Wunsch）
+        return alignWordsWithTokens(words: words, baseTokens: baseTokens)
+    }
+
+    private static func extractWords(from text: String, baseTokenCount: Int) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        if trimmed.contains(where: \.isWhitespace) {
+            return trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+        }
+        if baseTokenCount <= 1 {
+            return [trimmed]
+        }
+        // 无空格的多 token 语言（如中文、日文字符逐字对齐）
+        return trimmed.map(String.init)
+    }
+
+    private static func wordSimilarity(_ w1: String, _ w2: String) -> Double {
+        let punc = CharacterSet.punctuationCharacters.union(.symbols)
+        let s1 = w1.trimmingCharacters(in: punc).lowercased()
+        let s2 = w2.trimmingCharacters(in: punc).lowercased()
+        if s1 == s2 {
+            return 2.0
+        }
+        if s1.isEmpty || s2.isEmpty {
+            return 0.0
+        }
+        let len = max(s1.count, s2.count)
+        let dist = levenshteinDistance(s1, s2)
+        if dist == 1 {
+            return 1.4 // 极近（如单字母拼写订正）
+        }
+        if dist == 2 && len >= 4 {
+            return 1.0 // 较近（如 4 字母以上词语修正 2 个字母）
+        }
+        let simRatio = 1.0 - (Double(dist) / Double(len))
+        if simRatio >= 0.5 {
+            return 0.8
+        }
+        return -1.0
+    }
+
+    private static func levenshteinDistance(_ s1: String, _ s2: String) -> Int {
+        let a = Array(s1)
+        let b = Array(s2)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var prev = Array(0...b.count)
+        var curr = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            curr[0] = i
+            for j in 1...b.count {
+                let cost = (a[i - 1] == b[j - 1]) ? 0 : 1
+                curr[j] = min(
+                    prev[j] + 1,
+                    curr[j - 1] + 1,
+                    prev[j - 1] + cost
+                )
+            }
+            prev = curr
+        }
+        return prev[b.count]
+    }
+
+    private static func alignWordsWithTokens(
+        words: [String],
+        baseTokens: [StudyMatePackageWordToken]
+    ) -> [StudyMatePackageWordToken]? {
+        let n = words.count
+        let m = baseTokens.count
+        guard n > 0 && m > 0 else { return nil }
+
+        let gapPenalty = -0.8
+        var dp = [[Double]](repeating: [Double](repeating: 0, count: m + 1), count: n + 1)
+
+        for i in 0...n { dp[i][0] = Double(i) * gapPenalty }
+        for j in 0...m { dp[0][j] = Double(j) * gapPenalty }
+
+        for i in 1...n {
+            for j in 1...m {
+                let sim = wordSimilarity(words[i - 1], baseTokens[j - 1].text)
+                let match = dp[i - 1][j - 1] + sim
+                let insertWord = dp[i - 1][j] + gapPenalty
+                let deleteToken = dp[i][j - 1] + gapPenalty
+                dp[i][j] = max(match, insertWord, deleteToken)
+            }
+        }
+
+        // 回溯找出对齐关系 (wordIndex -> tokenIndex)
+        var i = n
+        var j = m
+        var alignedMap: [Int: Int] = [:]
+        var positiveCount = 0
+
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 {
+                let sim = wordSimilarity(words[i - 1], baseTokens[j - 1].text)
+                if abs(dp[i][j] - (dp[i - 1][j - 1] + sim)) < 1e-6 {
+                    if sim > 0 {
+                        alignedMap[i - 1] = j - 1
+                        positiveCount += 1
+                    }
+                    i -= 1
+                    j -= 1
+                    continue
+                }
+            }
+            if i > 0 && abs(dp[i][j] - (dp[i - 1][j] + gapPenalty)) < 1e-6 {
+                i -= 1
+            } else if j > 0 {
+                j -= 1
+            } else {
+                break
+            }
+        }
+
+        // 若正向匹配度极低（低于 25% 且不足 1 个匹配），说明原句被完全重写，返回 nil 优雅降级
+        let maxLen = max(n, m)
+        guard positiveCount > 0, (Double(positiveCount) / Double(maxLen)) >= 0.25 else {
+            return nil
+        }
+
+        // 重建对齐 tokens，针对未对齐的插入词平滑插值时间戳
+        var result: [StudyMatePackageWordToken] = []
+        result.reserveCapacity(n)
+
+        for wIdx in 0..<n {
+            let wordText = words[wIdx]
+            if let tIdx = alignedMap[wIdx] {
+                let base = baseTokens[tIdx]
+                result.append(StudyMatePackageWordToken(
+                    text: wordText,
+                    startTime: base.startTime,
+                    endTime: base.endTime,
+                    confidence: base.confidence
+                ))
+            } else {
+                // 寻找前后最近的对齐时间点
+                let prevTime: Double = {
+                    for prevIdx in stride(from: wIdx - 1, through: 0, by: -1) {
+                        if let prevT = alignedMap[prevIdx] {
+                            return baseTokens[prevT].endTime
+                        }
+                    }
+                    if let firstAligned = alignedMap.keys.sorted().first,
+                       let tIdx = alignedMap[firstAligned] {
+                        let distance = Double(firstAligned - wIdx)
+                        return max(0, baseTokens[tIdx].startTime - 0.25 * distance)
+                    }
+                    return 0
+                }()
+
+                let nextTime: Double = {
+                    for nextIdx in (wIdx + 1)..<n {
+                        if let nextT = alignedMap[nextIdx] {
+                            return baseTokens[nextT].startTime
+                        }
+                    }
+                    if let lastAligned = alignedMap.keys.sorted().last,
+                       let tIdx = alignedMap[lastAligned] {
+                        let distance = Double(wIdx - lastAligned)
+                        return baseTokens[tIdx].endTime + 0.25 * distance
+                    }
+                    return prevTime + 0.3
+                }()
+
+                let start = max(0, prevTime)
+                let end = max(start + 0.05, nextTime)
+                result.append(StudyMatePackageWordToken(
+                    text: wordText,
+                    startTime: start,
+                    endTime: end,
+                    confidence: 0.8
+                ))
+            }
+        }
+
+        // 保证时间戳单调递增
+        var finalTokens: [StudyMatePackageWordToken] = []
+        var lastEnd: Double = 0
+        for token in result {
+            let start = max(token.startTime, lastEnd)
+            let end = max(start + 0.05, token.endTime)
+            lastEnd = end
+            finalTokens.append(StudyMatePackageWordToken(
+                text: token.text,
+                startTime: start,
+                endTime: end,
+                confidence: token.confidence
+            ))
+        }
+
+        return finalTokens
+    }
+}
+

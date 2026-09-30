@@ -4624,6 +4624,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             var changed = false
             if segments[idx].text != text {
                 segments[idx].text = text
+                segments[idx].wordTokens = segments[idx].reconciledWordTokens(for: text)
                 changed = true
             }
             if let t = translation, segments[idx].translation != t {
@@ -4637,12 +4638,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 let entryID = activeSentenceLibraryEntryMap[id] ?? id
                 let finalTranslation = translation ?? self.segments[idx].translation
                 let sentenceIndex = self.segments[idx].index
+                let updatedTokens = self.segments[idx].wordTokens
                 Task { @MainActor in
                     do {
                         try await SentenceLibraryManager.shared.updateEntryFromPlayback(
                             id: entryID,
                             originalText: text,
                             translation: finalTranslation,
+                            wordTokens: updatedTokens,
                             sentenceIndex: sentenceIndex,
                             in: libraryID
                         )
@@ -5009,6 +5012,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     if let entry = validEntries.first(where: { $0.id == entryID }) {
                         if self.segments[i].text != entry.originalText {
                             self.segments[i].text = entry.originalText
+                            self.segments[i].wordTokens = self.segments[i].reconciledWordTokens(for: entry.originalText)
+                            didChange = true
+                        }
+                        if let entryTokens = entry.wordTokens, self.segments[i].wordTokens != entryTokens {
+                            self.segments[i].wordTokens = entryTokens
                             didChange = true
                         }
                         if self.segments[i].translation != entry.translation {

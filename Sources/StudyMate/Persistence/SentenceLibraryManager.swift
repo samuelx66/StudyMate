@@ -801,6 +801,8 @@ public final class SentenceLibraryManager: ObservableObject {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         do {
             let phonetic = PhoneticEngine.shared.phoneticText(for: originalText)
+            let existingTokens = entries.first(where: { $0.id == id })?.wordTokens
+            let reconciledTokens = SentenceSegment.reconcileWordTokens(for: originalText, baseTokens: existingTokens)
             try await entryUpdateQueue.enqueue { [store] in
                 try await Task.detached(priority: .utility) {
                     try store.updateEntry(
@@ -808,6 +810,7 @@ public final class SentenceLibraryManager: ObservableObject {
                         originalText: originalText,
                         translation: translation,
                         phoneticText: phonetic,
+                        wordTokens: reconciledTokens,
                         in: libraryID
                     )
                 }.value
@@ -816,6 +819,9 @@ public final class SentenceLibraryManager: ObservableObject {
                 entries[index].originalText = originalText
                 entries[index].translation = translation
                 entries[index].phoneticText = phonetic
+                if let reconciledTokens {
+                    entries[index].wordTokens = reconciledTokens
+                }
             }
             await reloadLibraries(createDefaultIfNeeded: false)
             MainStatusCenter.shared.showSuccess(
@@ -833,11 +839,14 @@ public final class SentenceLibraryManager: ObservableObject {
         id: UUID,
         originalText: String,
         translation: String,
+        wordTokens: [StudyMatePackageWordToken]? = nil,
         sentenceIndex: Int? = nil,
         in libraryID: UUID
     ) async throws {
         do {
             let phonetic = PhoneticEngine.shared.phoneticText(for: originalText)
+            let existingTokens = wordTokens ?? entries.first(where: { $0.id == id })?.wordTokens
+            let reconciledTokens = SentenceSegment.reconcileWordTokens(for: originalText, baseTokens: existingTokens)
             try await entryUpdateQueue.enqueue { [store] in
                 try await Task.detached(priority: .utility) {
                     try store.updateEntry(
@@ -845,6 +854,7 @@ public final class SentenceLibraryManager: ObservableObject {
                         originalText: originalText,
                         translation: translation,
                         phoneticText: phonetic,
+                        wordTokens: reconciledTokens,
                         in: libraryID
                     )
                 }.value
@@ -853,6 +863,9 @@ public final class SentenceLibraryManager: ObservableObject {
                 entries[index].originalText = originalText
                 entries[index].translation = translation
                 entries[index].phoneticText = phonetic
+                if let reconciledTokens {
+                    entries[index].wordTokens = reconciledTokens
+                }
             }
             await reloadLibraries(createDefaultIfNeeded: false)
             let successMessage: String

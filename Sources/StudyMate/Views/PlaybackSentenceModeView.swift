@@ -211,10 +211,14 @@ struct PlaybackSentenceCardView: View, Equatable {
         return nil
     }
 
+    private var activeTokens: [StudyMatePackageWordToken]? {
+        seg.reconciledWordTokens()
+    }
+
     static func == (lhs: PlaybackSentenceCardView, rhs: PlaybackSentenceCardView) -> Bool {
         lhs.seg == rhs.seg
-            && Self.activeTokenIndex(for: lhs.seg.wordTokens, baseTime: lhs.seg.startTime, time: lhs.currentTime)
-                == Self.activeTokenIndex(for: rhs.seg.wordTokens, baseTime: rhs.seg.startTime, time: rhs.currentTime)
+            && Self.activeTokenIndex(for: lhs.activeTokens, baseTime: lhs.seg.startTime, time: lhs.currentTime)
+                == Self.activeTokenIndex(for: rhs.activeTokens, baseTime: rhs.seg.startTime, time: rhs.currentTime)
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
             && lhs.showPhonetics == rhs.showPhonetics
@@ -376,7 +380,7 @@ struct PlaybackSentenceCardView: View, Equatable {
                 .buttonStyle(.plain)
                 .help(language == .en ? "Toggle phonetics (⌥⌘P)" : "切换注音显示 (⌥⌘P)")
 
-                if let tokens = seg.wordTokens, !tokens.isEmpty {
+                if let tokens = activeTokens, !tokens.isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "waveform.and.mic")
                             .font(.system(size: 10))
@@ -560,7 +564,7 @@ struct PlaybackSentenceCardView: View, Equatable {
 
     @ViewBuilder
     private func renderOriginalSection() -> some View {
-        if let tokens = seg.wordTokens, !tokens.isEmpty {
+        if let tokens = activeTokens, !tokens.isEmpty {
             wordTokensKaraokeView(tokens: tokens)
         } else if showPhonetics && !origText.isEmpty {
             RubyTextView(
