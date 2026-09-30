@@ -374,4 +374,45 @@ final class PlaybackFullTextModeTests: XCTestCase {
         XCTAssertEqual(multiReordered[2].id, movieB_seg2.id)
         XCTAssertEqual(multiReordered[3].id, movieB_seg5.id)
     }
+
+    @MainActor
+    func testBilingualMultiSentenceParagraphConcatenation() async throws {
+        let alice1 = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Hello Alice.", translation: "你好爱丽丝。", speakerID: 1)
+        let alice2 = SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "How are you doing?", translation: "你最近怎么样？", speakerID: 1)
+        let bob1 = SentenceSegment(index: 3, startTime: 4, endTime: 6, text: "I am doing fine.", translation: "我很好。", speakerID: 2)
+
+        let engine = PlaybackEngine()
+        engine.segments = [alice1, alice2, bob1]
+        engine.activeSegmentIndex = 0
+
+        let settings = VideoSubtitleSettings.shared
+        let original = settings.showOriginal
+        let translation = settings.showTranslation
+        settings.showOriginal = true
+        settings.showTranslation = true
+        defer { settings.showOriginal = original; settings.showTranslation = translation }
+
+        let hosting = NSHostingView(rootView: PlaybackFullTextModeView(engine: engine, videoSubtitleSettings: settings).frame(width: 600, height: 400))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(300))
+
+        func allTextViews(_ view: NSView) -> [FullTextNSTextView] {
+            (view as? FullTextNSTextView).map { [$0] } ?? view.subviews.flatMap { allTextViews($0) }
+        }
+
+        let views = allTextViews(hosting)
+        // Alice has 2 sentences concatenated into 1 original + 1 translation view.
+        // Bob has 1 sentence into 1 original + 1 translation view.
+        // Total should be 4 text views (2 per speaker), NOT 6 (which would occur if broken sentence-by-sentence).
+        XCTAssertEqual(views.count, 4)
+
+        let aliceOrigView = try XCTUnwrap(views.first { $0.string.contains("Hello Alice.") })
+        XCTAssertTrue(aliceOrigView.string.contains("How are you doing?"), "Alice's original sentences must be concatenated into a single paragraph")
+
+        let aliceTransView = try XCTUnwrap(views.first { $0.string.contains("你好爱丽丝。") })
+        XCTAssertTrue(aliceTransView.string.contains("你最近怎么样？"), "Alice's translation sentences must be concatenated into a single paragraph")
+    }
 }

@@ -235,7 +235,6 @@ public struct PlaybackFullTextModeView: View {
     @ObservedObject private var phoneticManager: PhoneticEngineManager = .shared
 
     @State private var cachedParagraphs: [FullTextParagraph] = []
-    @State private var bilingualParagraphs: [FullTextParagraph] = []
     @State private var followPlayback: Bool = true
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
@@ -281,11 +280,6 @@ public struct PlaybackFullTextModeView: View {
         .background(StudyMateMediaStyle.windowBackground)
         .onChange(of: engine.segments, initial: true) { _, segments in
             cachedParagraphs = FullTextParagraphBuilder.buildParagraphs(from: segments)
-            bilingualParagraphs = cachedParagraphs.flatMap { paragraph in
-                paragraph.segments.enumerated().map { offset, segment in
-                    FullTextParagraph(id: segment.id, speakerRole: offset == 0 ? paragraph.speakerRole : nil, segments: [segment])
-                }
-            }
         }
     }
 
@@ -356,33 +350,25 @@ public struct PlaybackFullTextModeView: View {
 
     // MARK: - 全文滚动视窗
 
-    private var isBilingual: Bool {
-        videoSubtitleSettings.isOriginalVisible(for: .fullText) && videoSubtitleSettings.isTranslationVisible(for: .fullText)
+    private var activeParagraphID: UUID? {
+        guard let activeID = activeSegmentID else { return nil }
+        return cachedParagraphs.first { $0.segments.contains { $0.id == activeID } }?.id
     }
 
     private var articleScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                if isBilingual {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        paragraphRows(bilingualParagraphs)
-                    }
-                    .padding(.horizontal, 48)
-                    .padding(.vertical, 24)
-                } else {
-                    VStack(alignment: .leading, spacing: 20) {
-                        paragraphRows(cachedParagraphs)
-                    }
-                    .padding(.horizontal, 48)
-                    .padding(.vertical, 24)
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    paragraphRows(cachedParagraphs)
                 }
+                .padding(.horizontal, 48)
+                .padding(.vertical, 24)
             }
-            .onChange(of: FullTextScrollRequest(id: activeSegmentID, enabled: followPlayback, bilingual: isBilingual, count: bilingualParagraphs.count), initial: true) { _, request in
-                guard request.enabled, request.bilingual, let id = request.id else { return }
-                // Materialize an offscreen lazy sentence before native range following.
+            .onChange(of: FullTextScrollRequest(paragraphID: activeParagraphID, enabled: followPlayback), initial: true) { _, request in
+                guard request.enabled, let paragraphID = request.paragraphID else { return }
                 DispatchQueue.main.async {
-                    guard followPlayback, activeSegmentID == id, isBilingual else { return }
-                    proxy.scrollTo(id, anchor: .center)
+                    guard followPlayback else { return }
+                    proxy.scrollTo(paragraphID, anchor: .center)
                 }
             }
             .onScrollPhaseChange { _, phase in
@@ -504,11 +490,12 @@ private struct FullTextParagraphRowView: View, Equatable {
             }
 
             if showOriginal && showTranslation {
-                // 原文和译文同时显示：每一行原文下面显示对应的译文（逐句成对对照展示）
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(paragraph.segments) { seg in
-                        bilingualSentencePairView(for: seg)
-                    }
+                // 原文和译文同时显示：同一角色多句连续的原文拼接成整段，译文也拼接成整段
+                if !origData.text.isEmpty {
+                    originalTextView
+                }
+                if !transData.text.isEmpty {
+                    translationTextView
                 }
             } else if showOriginal {
                 // 仅显示原文
@@ -533,63 +520,35 @@ private struct FullTextParagraphRowView: View, Equatable {
     }
 
     @ViewBuilder
-    private func bilingualSentencePairView(for seg: SentenceSegment) -> some View {
-        let isSegActive = (seg.id == activeSegmentID)
-        let origTrimmed = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transTrimmed = seg.translation.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pairContext = [origTrimmed, transTrimmed].filter { !$0.isEmpty }.joined(separator: "\n")
-
-        VStack(alignment: .leading, spacing: 4) {
-            if showPhonetics && !origTrimmed.isEmpty {
-                RubyTextView(
-                    text: origTrimmed,
-                    fontSize: originalFont.pointSize,
-                    textColor: Color(originalColor),
-                    phoneticColor: StudyMateMediaStyle.accent,
-                    isPhoneticsVisible: true
-                )
-                .contentShape(Rectangle())
-                .onTapGesture { onSelect(seg.id) }
-            } else if !origTrimmed.isEmpty {
-                FullTextParagraphTextView(
-                    text: origTrimmed, font: originalFont, color: originalColor, lineSpacing: 4,
-                    activeSegmentID: activeSegmentID,
-                    ranges: [(id: seg.id, range: NSRange(location: 0, length: (origTrimmed as NSString).length))],
-                    followSegmentID: followPlayback && isSegActive ? activeSegmentID : nil,
-                    contextText: pairContext,
-                    onSelect: onSelect,
-                    onDoubleClick: onDoubleClick
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if !transTrimmed.isEmpty {
-                FullTextParagraphTextView(
-                    text: transTrimmed, font: translationFont, color: translationColor, lineSpacing: 4,
-                    activeSegmentID: activeSegmentID,
-                    ranges: [(id: seg.id, range: NSRange(location: 0, length: (transTrimmed as NSString).length))],
-                    followSegmentID: followPlayback && isSegActive && origTrimmed.isEmpty ? activeSegmentID : nil,
-                    contextText: pairContext,
-                    onSelect: onSelect,
-                    onDoubleClick: onDoubleClick
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var originalTextView: some View {
-        return FullTextParagraphTextView(
-            text: origData.text, font: originalFont, color: originalColor, lineSpacing: 6,
-            activeSegmentID: activeSegmentID,
-            ranges: origData.ranges,
-            followSegmentID: followPlayback ? activeSegmentID : nil,
-            contextText: paragraphContext,
-            onSelect: onSelect,
-            onDoubleClick: onDoubleClick
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
+        if showPhonetics && !origData.text.isEmpty {
+            RubyTextView(
+                text: origData.text,
+                fontSize: originalFont.pointSize,
+                textColor: Color(originalColor),
+                phoneticColor: StudyMateMediaStyle.accent,
+                isPhoneticsVisible: true
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if let activeID = activeSegmentID, origData.ranges.contains(where: { $0.id == activeID }) {
+                    onSelect(activeID)
+                } else if let first = paragraph.segments.first {
+                    onSelect(first.id)
+                }
+            }
+        } else {
+            FullTextParagraphTextView(
+                text: origData.text, font: originalFont, color: originalColor, lineSpacing: 6,
+                activeSegmentID: activeSegmentID,
+                ranges: origData.ranges,
+                followSegmentID: followPlayback ? activeSegmentID : nil,
+                contextText: paragraphContext,
+                onSelect: onSelect,
+                onDoubleClick: onDoubleClick
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var translationTextView: some View {
@@ -811,10 +770,8 @@ class FullTextFollowingTextView: NSTextView {
 }
 
 private struct FullTextScrollRequest: Equatable {
-    let id: UUID?
+    let paragraphID: UUID?
     let enabled: Bool
-    let bilingual: Bool
-    let count: Int
 }
 
 /// Keeps the base text intact while moving only the two affected highlight ranges.

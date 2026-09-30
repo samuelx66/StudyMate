@@ -247,8 +247,15 @@ final class ModeAuditRegressionTests: XCTestCase {
         XCTAssertLessThan(texts(hosting).count, 180)
         engine.activeSegmentIndex = 130
         try await Task.sleep(for: .milliseconds(500))
-        let active = try XCTUnwrap(texts(hosting).first { $0.string == engine.segments[130].text })
-        XCTAssertTrue(hosting.bounds.insetBy(dx: 0, dy: 45).intersects(active.convert(active.bounds, to: hosting)))
+        let active = try XCTUnwrap(texts(hosting).first { $0.string.contains(engine.segments[130].text) })
+        let data = FullTextParagraphBuilder.concatenate(segments: engine.segments, useTranslation: false)
+        let range = data.ranges[130].range
+        let layout = try XCTUnwrap(active.layoutManager)
+        let container = try XCTUnwrap(active.textContainer)
+        let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let rect = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: active.textContainerOrigin.x, dy: active.textContainerOrigin.y)
+        let inWindow = active.convert(rect, to: hosting)
+        XCTAssertTrue(hosting.bounds.insetBy(dx: 0, dy: 45).intersects(inWindow))
     }
 
     func testReadingDefaultsAdaptButVideoAndCustomColorsStayIntact() {
