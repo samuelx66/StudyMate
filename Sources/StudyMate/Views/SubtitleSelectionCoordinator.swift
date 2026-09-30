@@ -141,6 +141,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
     private var keyDownMonitor: Any?
+    private var scrollWheelMonitor: Any?
     private var selectionUpdateTask: Task<Void, Never>?
     private weak var pendingSelectionTextView: NSTextView?
     private var mainApplicationActivationObserver: NSObjectProtocol?
@@ -249,6 +250,14 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
             }
             return event
         }
+
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self else { return event }
+            if self.selectedText != nil, !self.isLookupPresented {
+                self.clearSelectionAndDeselect()
+            }
+            return event
+        }
     }
 
     deinit {
@@ -256,6 +265,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         if let mouseUpMonitor { NSEvent.removeMonitor(mouseUpMonitor) }
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
         if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
+        if let scrollWheelMonitor { NSEvent.removeMonitor(scrollWheelMonitor) }
         if let mainApplicationActivationObserver {
             NotificationCenter.default.removeObserver(mainApplicationActivationObserver)
         }
@@ -526,14 +536,27 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
               range.location <= length,
               range.length >= 0,
               range.length <= length - range.location else { return }
-        let value: String?
+        let value: String
+        let effectiveRange: NSRange
         if range.length > 0 {
             value = (textView.string as NSString).substring(with: range)
+            effectiveRange = range
         } else {
-            value = Self.wordAtCaret(in: textView)
+            guard let (word, wordRange) = Self.wordAndRangeAtCaret(in: textView) else { return }
+            value = word
+            effectiveRange = wordRange
         }
-        guard let value else { return }
-        updateSelection(text: value, screenPoint: NSEvent.mouseLocation)
+        let cleaned = cleanSubtitleQueryWord(value)
+        guard !cleaned.isEmpty else { return }
+        activeTextView = textView
+
+        let geometry = Self.screenGeometry(for: effectiveRange, in: textView)
+        updateSelection(
+            text: cleaned,
+            context: objc_getAssociatedObject(textView, &subtitleTextContextAssociationKey) as? String,
+            screenPoint: geometry.screenPoint ?? NSEvent.mouseLocation,
+            screenRect: geometry.screenRect
+        )
         lookupSelected()
     }
 
@@ -774,18 +797,25 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
               range.length >= 0,
               range.length <= length - range.location else { return false }
         let value: String
+        let effectiveRange: NSRange
         if range.length > 0 {
             value = (textView.string as NSString).substring(with: range)
+            effectiveRange = range
         } else {
-            guard let word = Self.wordAtCaret(in: textView) else { return false }
+            guard let (word, wordRange) = Self.wordAndRangeAtCaret(in: textView) else { return false }
             value = word
+            effectiveRange = wordRange
         }
         let cleaned = cleanSubtitleQueryWord(value)
         guard !cleaned.isEmpty else { return false }
+        activeTextView = textView
+
+        let geometry = Self.screenGeometry(for: effectiveRange, in: textView)
         updateSelection(
             text: cleaned,
             context: objc_getAssociatedObject(textView, &subtitleTextContextAssociationKey) as? String,
-            screenPoint: NSEvent.mouseLocation
+            screenPoint: geometry.screenPoint ?? NSEvent.mouseLocation,
+            screenRect: geometry.screenRect
         )
         return true
     }
@@ -849,30 +879,14 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         }
         activeTextView = textView
 
-        var calculatedScreenPoint: NSPoint?
-        var calculatedScreenRect: NSRect?
-
-        let firstRect = textView.firstRect(forCharacterRange: range, actualRange: nil)
-        if firstRect.width > 0 && firstRect.height > 0 {
-            calculatedScreenRect = firstRect
-            calculatedScreenPoint = NSPoint(x: firstRect.midX, y: firstRect.midY)
-        } else if let layoutManager = textView.layoutManager, let textContainer = textView.textContainer {
-            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            let rectInView = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            if let window = textView.window {
-                let rectInWindow = textView.convert(rectInView, to: nil)
-                calculatedScreenRect = window.convertToScreen(rectInWindow)
-                calculatedScreenPoint = NSPoint(x: calculatedScreenRect!.midX, y: calculatedScreenRect!.midY)
-            }
-        }
-
+        let geometry = Self.screenGeometry(for: range, in: textView)
         let selected = (textView.string as NSString).substring(with: range)
         let context = objc_getAssociatedObject(textView, &subtitleTextContextAssociationKey) as? String
         updateSelection(
             text: selected,
             context: context,
-            screenPoint: calculatedScreenPoint ?? screenPoint,
-            screenRect: calculatedScreenRect
+            screenPoint: geometry.screenPoint ?? screenPoint,
+            screenRect: geometry.screenRect
         )
     }
 
@@ -922,7 +936,7 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
         (objc_getAssociatedObject(textView, &subtitleSelectableTextMarkerKey) as? NSNumber)?.boolValue == true
     }
 
-    private static func wordAtCaret(in textView: NSTextView) -> String? {
+    static func wordAndRangeAtCaret(in textView: NSTextView) -> (String, NSRange)? {
         let string = textView.string as NSString
         guard string.length > 0 else { return nil }
         let location = textView.selectedRange().location
@@ -936,7 +950,41 @@ public final class SubtitleSelectionCoordinator: ObservableObject {
               wordRange.location + wordRange.length <= string.length else { return nil }
         let rawWord = string.substring(with: wordRange)
         let cleaned = cleanSubtitleQueryWord(rawWord)
-        return cleaned.isEmpty ? nil : cleaned
+        return cleaned.isEmpty ? nil : (cleaned, wordRange)
+    }
+
+    private static func wordAtCaret(in textView: NSTextView) -> String? {
+        wordAndRangeAtCaret(in: textView)?.0
+    }
+
+    static func screenGeometry(
+        for range: NSRange,
+        in textView: NSTextView
+    ) -> (screenRect: NSRect?, screenPoint: NSPoint?) {
+        guard range.location != NSNotFound,
+              range.length > 0,
+              range.location + range.length <= (textView.string as NSString).length else {
+            return (nil, nil)
+        }
+
+        let firstRect = textView.firstRect(forCharacterRange: range, actualRange: nil)
+        if firstRect.width > 0 && firstRect.height > 0 {
+            return (firstRect, NSPoint(x: firstRect.midX, y: firstRect.midY))
+        }
+
+        if let layoutManager = textView.layoutManager, let textContainer = textView.textContainer {
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let rectInContainer = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            let origin = textView.textContainerOrigin
+            let rectInView = rectInContainer.offsetBy(dx: origin.x, dy: origin.y)
+            if let window = textView.window {
+                let rectInWindow = textView.convert(rectInView, to: nil)
+                let calculatedScreenRect = window.convertToScreen(rectInWindow)
+                return (calculatedScreenRect, NSPoint(x: calculatedScreenRect.midX, y: calculatedScreenRect.midY))
+            }
+        }
+
+        return (nil, nil)
     }
 }
 
@@ -1643,7 +1691,21 @@ public struct SubtitleSelectableText: NSViewRepresentable {
 
         @objc func lookup(_ sender: Any?) {
             let coordinator = SubtitleSelectionCoordinator.shared
-            coordinator.updateSelection(text: selectedValue, context: context, screenPoint: NSEvent.mouseLocation)
+            var screenRect: NSRect?
+            var screenPoint: NSPoint?
+            if let textView {
+                let range = textView.selectedRange()
+                let effectiveRange = range.length > 0 ? range : (SubtitleSelectionCoordinator.wordAndRangeAtCaret(in: textView)?.1 ?? range)
+                let geo = SubtitleSelectionCoordinator.screenGeometry(for: effectiveRange, in: textView)
+                screenRect = geo.screenRect
+                screenPoint = geo.screenPoint
+            }
+            coordinator.updateSelection(
+                text: selectedValue,
+                context: context,
+                screenPoint: screenPoint ?? NSEvent.mouseLocation,
+                screenRect: screenRect
+            )
             coordinator.lookupSelected()
         }
 
@@ -1822,7 +1884,7 @@ public struct SubtitleLookupOverlay: View {
             ZStack {
                 Color.clear.allowsHitTesting(false)
                 if coordinator.selectedText != nil, !coordinator.isLookupPresented {
-                    let pos = actionBarPosition(in: geometry.size)
+                    let pos = actionBarPosition(in: geometry)
                     SubtitleSelectionActionBar(playbackEngine: playbackEngine)
                         .position(pos)
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
@@ -1837,28 +1899,89 @@ public struct SubtitleLookupOverlay: View {
         }
     }
 
-    private func targetAnchorPosition(in size: CGSize) -> CGPoint {
-        guard let screenPoint = coordinator.anchorScreenPoint,
-              let window = coordinator.activeTextView?.window ?? NSApp.mainWindow ?? NSApp.keyWindow ?? NSApp.windows.first,
-              let contentView = window.contentView else {
-            return CGPoint(x: size.width / 2, y: size.height / 2)
-        }
-        let windowPoint = window.convertPoint(fromScreen: screenPoint)
-        let pointInContentView = contentView.convert(windowPoint, from: nil)
-        let localX = pointInContentView.x
-        let localY = contentView.isFlipped ? pointInContentView.y : (contentView.bounds.height - pointInContentView.y)
-        return CGPoint(
-            x: min(max(10, localX), size.width - 10),
-            y: min(max(10, localY), size.height - 10)
+    private func targetAnchorRect(in geometry: GeometryProxy) -> CGRect {
+        Self.calculateTargetAnchorRect(
+            coordinator: coordinator,
+            containerSize: geometry.size,
+            containerGlobalOrigin: geometry.frame(in: .global).origin
         )
     }
 
-    private func actionBarPosition(in size: CGSize) -> CGPoint {
-        let anchor = targetAnchorPosition(in: size)
-        return CGPoint(
-            x: min(size.width - 120, max(120, anchor.x)),
-            y: max(24, anchor.y - 34)
-        )
+    private func actionBarPosition(in geometry: GeometryProxy) -> CGPoint {
+        let targetRect = targetAnchorRect(in: geometry)
+        return Self.calculateActionBarPosition(targetRect: targetRect, containerSize: geometry.size)
+    }
+
+    public static func calculateTargetAnchorRect(
+        coordinator: SubtitleSelectionCoordinator,
+        window: NSWindow? = nil,
+        containerSize: CGSize,
+        containerGlobalOrigin: CGPoint = .zero
+    ) -> CGRect {
+        guard let window = window ?? coordinator.activeTextView?.window ?? NSApp.mainWindow ?? NSApp.keyWindow ?? NSApp.windows.first,
+              let contentView = window.contentView else {
+            return CGRect(x: containerSize.width / 2 - 20, y: containerSize.height / 2 - 10, width: 40, height: 20)
+        }
+
+        if let screenRect = coordinator.anchorScreenRect, screenRect.width > 0, screenRect.height > 0 {
+            let windowRect = window.convertFromScreen(screenRect)
+            let rectInContentView = contentView.convert(windowRect, from: nil)
+            let localTop: CGFloat
+            let localBottom: CGFloat
+            if contentView.isFlipped {
+                localTop = rectInContentView.minY
+                localBottom = rectInContentView.maxY
+            } else {
+                localTop = contentView.bounds.height - rectInContentView.maxY
+                localBottom = contentView.bounds.height - rectInContentView.minY
+            }
+            let x = rectInContentView.minX - containerGlobalOrigin.x
+            let y = localTop - containerGlobalOrigin.y
+            let width = rectInContentView.width
+            let height = max(16, localBottom - localTop)
+            return CGRect(x: x, y: y, width: width, height: height)
+        }
+
+        if let screenPoint = coordinator.anchorScreenPoint {
+            let windowPoint = window.convertPoint(fromScreen: screenPoint)
+            let pointInContentView = contentView.convert(windowPoint, from: nil)
+            let localX = pointInContentView.x - containerGlobalOrigin.x
+            let localY = (contentView.isFlipped ? pointInContentView.y : (contentView.bounds.height - pointInContentView.y)) - containerGlobalOrigin.y
+            return CGRect(x: localX - 20, y: localY - 10, width: 40, height: 20)
+        }
+
+        return CGRect(x: containerSize.width / 2 - 20, y: containerSize.height / 2 - 10, width: 40, height: 20)
+    }
+
+    public static func calculateActionBarPosition(targetRect: CGRect, containerSize: CGSize) -> CGPoint {
+        let barHalfHeight: CGFloat = 19
+        let gap: CGFloat = 10
+
+        // 水平居中对齐被查词，并做左右边界安全保护（操作条半宽约 50pt，左右各预留 10pt 净边距）
+        let minX: CGFloat = 60
+        let maxX: CGFloat = max(minX, containerSize.width - minX)
+        let clampedX = min(max(minX, targetRect.midX), maxX)
+
+        // 计算单词上方与下方的候选位置
+        let yAbove = targetRect.minY - gap - barHalfHeight
+        let yBelow = targetRect.maxY + gap + barHalfHeight
+
+        // 优先显示在单词上方；如果上方空间不足（靠近窗口或工具栏顶部），则自适应翻转至单词下方显示
+        let finalY: CGFloat
+        if yAbove - barHalfHeight >= 10 {
+            finalY = yAbove
+        } else if yBelow + barHalfHeight <= containerSize.height - 10 {
+            finalY = yBelow
+        } else {
+            // 在极度紧凑的容器中，若上下都放不下，选择空间较大的一侧并安全钳制
+            if targetRect.minY >= (containerSize.height - targetRect.maxY) {
+                finalY = max(barHalfHeight + 6, yAbove)
+            } else {
+                finalY = min(containerSize.height - barHalfHeight - 6, yBelow)
+            }
+        }
+
+        return CGPoint(x: clampedX, y: finalY)
     }
 }
 

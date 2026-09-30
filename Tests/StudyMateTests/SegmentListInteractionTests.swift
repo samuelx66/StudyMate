@@ -570,5 +570,90 @@ final class SegmentListInteractionTests: XCTestCase {
         XCTAssertFalse(engine.canMergeActiveSegmentWithPrevious, "单句不可合并上一句")
         XCTAssertFalse(engine.canMergeActiveSegmentWithNext, "单句不可合并下一句")
     }
+
+    @MainActor
+    func testSubtitleActionBarPositionAboveWordWhenSufficientSpace() {
+        let container = CGSize(width: 800, height: 600)
+        let targetRect = CGRect(x: 300, y: 400, width: 80, height: 24)
+
+        let pos = SubtitleLookupOverlay.calculateActionBarPosition(targetRect: targetRect, containerSize: container)
+
+        // 操作条半高为 19pt，间隙为 10pt
+        let barHalfHeight: CGFloat = 19
+        let barBottom = pos.y + barHalfHeight
+        let barTop = pos.y - barHalfHeight
+
+        // 验证操作条位于被查词正上方，且绝对不与被查词重叠（至少 10pt 净间隙）
+        XCTAssertLessThanOrEqual(barBottom, targetRect.minY - 9.9)
+        XCTAssertGreaterThanOrEqual(barTop, 10.0)
+        XCTAssertEqual(pos.x, targetRect.midX, accuracy: 0.1)
+    }
+
+    @MainActor
+    func testSubtitleActionBarPositionBelowWordWhenNearTop() {
+        let container = CGSize(width: 800, height: 600)
+        // 靠近窗口顶部（y: 20...44）
+        let targetRect = CGRect(x: 300, y: 20, width: 80, height: 24)
+
+        let pos = SubtitleLookupOverlay.calculateActionBarPosition(targetRect: targetRect, containerSize: container)
+
+        let barHalfHeight: CGFloat = 19
+        let barTop = pos.y - barHalfHeight
+        let barBottom = pos.y + barHalfHeight
+
+        // 验证上方空间不足时自动翻转到被查词下方，且绝对不与被查词重叠（至少 10pt 净间隙）
+        XCTAssertGreaterThanOrEqual(barTop, targetRect.maxY + 9.9)
+        XCTAssertLessThanOrEqual(barBottom, container.height - 10.0)
+        XCTAssertEqual(pos.x, targetRect.midX, accuracy: 0.1)
+    }
+
+    @MainActor
+    func testSubtitleActionBarHorizontalClamping() {
+        let container = CGSize(width: 800, height: 600)
+
+        // 单词靠最左侧
+        let leftRect = CGRect(x: 10, y: 300, width: 40, height: 20)
+        let leftPos = SubtitleLookupOverlay.calculateActionBarPosition(targetRect: leftRect, containerSize: container)
+        XCTAssertGreaterThanOrEqual(leftPos.x, 60.0)
+
+        // 单词靠最右侧
+        let rightRect = CGRect(x: 770, y: 300, width: 40, height: 20)
+        let rightPos = SubtitleLookupOverlay.calculateActionBarPosition(targetRect: rightRect, containerSize: container)
+        XCTAssertLessThanOrEqual(rightPos.x, container.width - 60.0)
+    }
+
+    @MainActor
+    func testTargetAnchorRectCalculatesContainerGlobalOriginOffset() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let coordinator = SubtitleSelectionCoordinator.shared
+        let screenRect = NSRect(x: 200, y: 400, width: 60, height: 20)
+        coordinator.updateSelection(text: "test", screenRect: screenRect)
+
+        let targetWithoutOffset = SubtitleLookupOverlay.calculateTargetAnchorRect(
+            coordinator: coordinator,
+            window: window,
+            containerSize: CGSize(width: 800, height: 600),
+            containerGlobalOrigin: .zero
+        )
+
+        let targetWithOffset = SubtitleLookupOverlay.calculateTargetAnchorRect(
+            coordinator: coordinator,
+            window: window,
+            containerSize: CGSize(width: 800, height: 600),
+            containerGlobalOrigin: CGPoint(x: 50, y: 66)
+        )
+
+        XCTAssertEqual(targetWithOffset.minX, targetWithoutOffset.minX - 50, accuracy: 0.1)
+        XCTAssertEqual(targetWithOffset.minY, targetWithoutOffset.minY - 66, accuracy: 0.1)
+        XCTAssertEqual(targetWithOffset.width, targetWithoutOffset.width, accuracy: 0.1)
+        XCTAssertEqual(targetWithOffset.height, targetWithoutOffset.height, accuracy: 0.1)
+
+        coordinator.clearSelection()
+    }
 }
 
