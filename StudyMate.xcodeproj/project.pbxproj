@@ -17,6 +17,7 @@
 		A9E8F5F8366D435BEB3E06C8 /* MediaPlayerBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */; };
 		74ADA67823175D9813A695B2 /* PlaybackEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */; };
 		B48779FFA10DC800918DFDB1 /* SentenceLibraryPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */; };
+		E0605836CADDC666CE43C16B /* WordPronunciationSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709098BD467F58D571D80E0D /* WordPronunciationSpeaker.swift */; };
 		EFF0628C4DE7C28216632EA8 /* DictionaryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D24B35573C79AFE4116ADBA6 /* DictionaryEngine.swift */; };
 		D39066AC5F6464B3205C30E5 /* DictionaryFindCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D681B66776320E5D8DE8C282 /* DictionaryFindCoordinator.swift */; };
 		93FB0CECC49AB89E919D5E95 /* DictionaryHTMLView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */; };
@@ -78,6 +79,7 @@
 		CA6A8FF5B8B2BEB72FB81BCB /* VocabularyNotebookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A783AD1A8016B8FF6F6E8EA3 /* VocabularyNotebookView.swift */; };
 		5AF473CF3B1546BC7582DA07 /* WaveformComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */; };
 		152DA9C3FED0B1C9EAEA3320 /* WelcomeScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */; };
+		5A6AF3DF76A838166C75653F /* WindowFloatingStatusToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33773AE18744BD6A550FCDC /* WindowFloatingStatusToast.swift */; };
 		4B9C4EBCD8A569080E4DA386 /* WindowTextInputFocusDismissalBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */; };
 		2B283B0961F0CF2338CF0CE4 /* AudioPCMExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */; };
 		BB273B9B23ECB1EBE45E46AC /* NativeSpeechRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */; };
@@ -111,6 +113,7 @@
 		A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/MediaPlayerBackend.swift"; sourceTree = "<group>"; };
 		A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/PlaybackEngine.swift"; sourceTree = "<group>"; };
 		EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/SentenceLibraryPlayer.swift"; sourceTree = "<group>"; };
+		709098BD467F58D571D80E0D /* WordPronunciationSpeaker.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/AudioEngine/WordPronunciationSpeaker.swift"; sourceTree = "<group>"; };
 		D24B35573C79AFE4116ADBA6 /* DictionaryEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryEngine.swift"; sourceTree = "<group>"; };
 		D681B66776320E5D8DE8C282 /* DictionaryFindCoordinator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryFindCoordinator.swift"; sourceTree = "<group>"; };
 		09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Dictionary/DictionaryHTMLView.swift"; sourceTree = "<group>"; };
@@ -172,6 +175,7 @@
 		A783AD1A8016B8FF6F6E8EA3 /* VocabularyNotebookView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/VocabularyNotebookView.swift"; sourceTree = "<group>"; };
 		B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WaveformComponents.swift"; sourceTree = "<group>"; };
 		60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WelcomeScreenView.swift"; sourceTree = "<group>"; };
+		D33773AE18744BD6A550FCDC /* WindowFloatingStatusToast.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WindowFloatingStatusToast.swift"; sourceTree = "<group>"; };
 		6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/WindowTextInputFocusDismissalBridge.swift"; sourceTree = "<group>"; };
 		BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/AudioPCMExtractor.swift"; sourceTree = "<group>"; };
 		56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/WaveformEngine/NativeSpeechRuntime.swift"; sourceTree = "<group>"; };
@@ -238,6 +242,7 @@
 				A58E10E3BACFD79EC76F3F25 /* MediaPlayerBackend.swift */,
 				A130AA579570620BE1CD1CF1 /* PlaybackEngine.swift */,
 				EAB971254B09393B4A808F33 /* SentenceLibraryPlayer.swift */,
+				709098BD467F58D571D80E0D /* WordPronunciationSpeaker.swift */,
 				D24B35573C79AFE4116ADBA6 /* DictionaryEngine.swift */,
 				D681B66776320E5D8DE8C282 /* DictionaryFindCoordinator.swift */,
 				09E30F80E58D9E9BED405AFE /* DictionaryHTMLView.swift */,
@@ -299,6 +304,7 @@
 				A783AD1A8016B8FF6F6E8EA3 /* VocabularyNotebookView.swift */,
 				B33DA7890E7667EFA6A7ECB8 /* WaveformComponents.swift */,
 				60D6952FE397D5A459DC82FF /* WelcomeScreenView.swift */,
+				D33773AE18744BD6A550FCDC /* WindowFloatingStatusToast.swift */,
 				6E7DBF1F189D3C149F8FF801 /* WindowTextInputFocusDismissalBridge.swift */,
 				BDE83A25D03B089E87676C7A /* AudioPCMExtractor.swift */,
 				56461B37D2D9F5A09CA36653 /* NativeSpeechRuntime.swift */,
@@ -422,6 +428,7 @@
 				A9E8F5F8366D435BEB3E06C8 /* MediaPlayerBackend.swift in Sources */,
 				74ADA67823175D9813A695B2 /* PlaybackEngine.swift in Sources */,
 				B48779FFA10DC800918DFDB1 /* SentenceLibraryPlayer.swift in Sources */,
+				E0605836CADDC666CE43C16B /* WordPronunciationSpeaker.swift in Sources */,
 				EFF0628C4DE7C28216632EA8 /* DictionaryEngine.swift in Sources */,
 				D39066AC5F6464B3205C30E5 /* DictionaryFindCoordinator.swift in Sources */,
 				93FB0CECC49AB89E919D5E95 /* DictionaryHTMLView.swift in Sources */,
@@ -479,6 +486,7 @@
 				CA6A8FF5B8B2BEB72FB81BCB /* VocabularyNotebookView.swift in Sources */,
 				5AF473CF3B1546BC7582DA07 /* WaveformComponents.swift in Sources */,
 				152DA9C3FED0B1C9EAEA3320 /* WelcomeScreenView.swift in Sources */,
+				5A6AF3DF76A838166C75653F /* WindowFloatingStatusToast.swift in Sources */,
 				4B9C4EBCD8A569080E4DA386 /* WindowTextInputFocusDismissalBridge.swift in Sources */,
 				2B283B0961F0CF2338CF0CE4 /* AudioPCMExtractor.swift in Sources */,
 				BB273B9B23ECB1EBE45E46AC /* NativeSpeechRuntime.swift in Sources */,
@@ -588,7 +596,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 464;
+				CURRENT_PROJECT_VERSION = 467;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -598,7 +606,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.7.1 release";
+				MARKETING_VERSION = "1.7.3 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -613,7 +621,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 464;
+				CURRENT_PROJECT_VERSION = 467;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
@@ -622,7 +630,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.7.1 release";
+				MARKETING_VERSION = "1.7.3 release";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;

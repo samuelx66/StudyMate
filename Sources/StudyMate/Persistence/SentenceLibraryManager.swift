@@ -55,6 +55,7 @@ public final class SentenceLibraryManager: ObservableObject {
     public static let shared = SentenceLibraryManager()
 
     @Published public private(set) var libraries: [SentenceLibraryDescriptor] = []
+    @Published public private(set) var librarySentenceCounts: [UUID: Int] = [:]
     @Published public private(set) var currentLibraryID: UUID?
     @Published public private(set) var entries: [SentenceLibraryEntry] = []
     @Published public private(set) var availableSources: [String] = []
@@ -210,6 +211,26 @@ public final class SentenceLibraryManager: ObservableObject {
             selectLibrary(descriptor.id)
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text("句库“\(name)”创建成功", "Library “\(name)” created successfully")
+            )
+        } catch {
+            MainStatusCenter.shared.showError(error.localizedDescription)
+            throw error
+        }
+    }
+
+    public func renameLibrary(id: UUID, newName: String) async throws {
+        guard !isWorking else { throw SentenceLibraryError.operationInProgress }
+        isWorking = true
+        defer { isWorking = false }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw SentenceLibraryError.invalidName }
+        do {
+            try await Task.detached(priority: .utility) { [store] in
+                try store.renameLibrary(id: id, newName: trimmed)
+            }.value
+            await reloadLibraries(createDefaultIfNeeded: false)
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text("句库已重命名为“\(trimmed)”", "Library renamed to “\(trimmed)”")
             )
         } catch {
             MainStatusCenter.shared.showError(error.localizedDescription)
@@ -1134,6 +1155,15 @@ public final class SentenceLibraryManager: ObservableObject {
             return
         }
         libraries = available
+        Task.detached(priority: .utility) { [store, available] in
+            var counts: [UUID: Int] = [:]
+            for lib in available {
+                counts[lib.id] = store.entryCount(libraryID: lib.id)
+            }
+            await MainActor.run { [weak self] in
+                self?.librarySentenceCounts = counts
+            }
+        }
         let savedID = defaults.string(forKey: currentLibraryKey).flatMap(UUID.init(uuidString:))
         if let currentLibraryID, available.contains(where: { $0.id == currentLibraryID }) {
             // Keep the current selection.

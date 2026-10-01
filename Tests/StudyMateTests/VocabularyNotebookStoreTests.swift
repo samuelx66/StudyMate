@@ -246,4 +246,40 @@ final class VocabularyNotebookStoreTests: XCTestCase {
         XCTAssertEqual(content, expectedContent)
         XCTAssertTrue(manager.statusMessage?.contains("已导出") == true)
     }
+
+    func testRenameNotebook() throws {
+        let notebook = try store.createNotebook(name: "旧笔记本")
+        let renamed = try store.renameNotebook(id: notebook.id, newName: "新笔记本")
+        XCTAssertEqual(renamed.name, "新笔记本")
+
+        let all = store.listNotebooks()
+        XCTAssertTrue(all.contains(where: { $0.id == notebook.id && $0.name == "新笔记本" }))
+
+        // 空白名称报错
+        XCTAssertThrowsError(try store.renameNotebook(id: notebook.id, newName: "   "))
+
+        // 重名报错
+        _ = try store.createNotebook(name: "另一个本子")
+        XCTAssertThrowsError(try store.renameNotebook(id: notebook.id, newName: "另一个本子"))
+    }
+
+    func testEntryCount() throws {
+        let notebook = try store.createNotebook(name: "计数测试")
+        XCTAssertEqual(store.entryCount(notebookID: notebook.id), 0)
+
+        try store.add(VocabularyWordEntry(word: "one"), to: notebook.id)
+        try store.add(VocabularyWordEntry(word: "two"), to: notebook.id)
+        XCTAssertEqual(store.entryCount(notebookID: notebook.id), 2)
+    }
+
+    func testAlphabeticalSortOrder() throws {
+        let notebook = try store.createNotebook(name: "字母排序")
+        try store.add(VocabularyWordEntry(word: "zebra"), to: notebook.id)
+        try store.add(VocabularyWordEntry(word: "Apple"), to: notebook.id)
+        try store.add(VocabularyWordEntry(word: "banana"), to: notebook.id)
+
+        let sorted = try store.entries(notebookID: notebook.id, sortOrder: .originalIndexFirst)
+        XCTAssertEqual(sorted.map(\.word), ["Apple", "banana", "zebra"])
+    }
 }
+

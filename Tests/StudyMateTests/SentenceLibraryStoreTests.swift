@@ -646,5 +646,34 @@ final class SentenceLibraryStoreTests: XCTestCase {
         let entry1JSON = packageContent.entries.first(where: { $0.id == entryID1 })
         XCTAssertEqual(entry1JSON?.source?.mediaTitle, "老友记 精选")
     }
+
+    func testRenameLibraryAndEntryCount() throws {
+        let library = try store.createLibrary(name: "原始库名")
+        XCTAssertEqual(store.entryCount(libraryID: library.id), 0)
+
+        let entryID = UUID()
+        let audioURL = temporaryDirectory.appendingPathComponent("test.m4a")
+        try Data("dummy audio".utf8).write(to: audioURL)
+        let entry = SentenceLibraryEntry(
+            id: entryID,
+            originalText: "Hello world",
+            translation: "你好世界",
+            sourceMediaName: "test.mp4",
+            sourceMediaPath: "/test.mp4",
+            startTime: 0,
+            endTime: 1,
+            mediaFilename: "\(entryID.uuidString).m4a"
+        )
+        try store.add(entries: [entry], previewData: [:], to: library.id, mediaURLs: [entryID: audioURL])
+        XCTAssertEqual(store.entryCount(libraryID: library.id), 1)
+
+        try store.renameLibrary(id: library.id, newName: "新句库名称")
+        let libraries = store.listLibraries()
+        let renamed = libraries.first(where: { $0.id == library.id })
+        XCTAssertEqual(renamed?.name, "新句库名称")
+
+        let manifest = store.readManifest(at: store.packageURL(for: library.id))
+        XCTAssertEqual(manifest?.name, "新句库名称")
+    }
 }
 

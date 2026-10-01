@@ -107,6 +107,42 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func renameNotebook(id: UUID, newName: String) throws -> VocabularyNotebookDescriptor {
+        try queue.sync {
+            let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw VocabularyNotebookError.invalidName }
+            try validateNotebook(id: id)
+            let normalized = trimmed.lowercased()
+            if listNotebooksUnlocked().contains(where: { $0.id != id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }) {
+                throw VocabularyNotebookError.notebookAlreadyExists
+            }
+            let package = packageURL(for: id)
+            guard var descriptor = readManifest(at: package) else {
+                throw VocabularyNotebookError.invalidNotebook
+            }
+            descriptor.name = trimmed
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: package)
+            return descriptor
+        }
+    }
+
+    public func entryCount(notebookID: UUID) -> Int {
+        queue.sync {
+            guard (try? validateNotebook(id: notebookID)) != nil else { return 0 }
+            return (try? withDatabase(notebookID: notebookID) { db in
+                var statement: OpaquePointer?
+                try prepare("SELECT count(*) FROM entries;", db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    return Int(sqlite3_column_int64(statement, 0))
+                }
+                return 0
+            }) ?? 0
+        }
+    }
+
     public func entries(
         notebookID: UUID,
         searchText: String = "",
@@ -125,9 +161,15 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 if createdBefore != nil { clauses.append("added_at < ?") }
                 if !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { clauses.append("source = ?") }
                 let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
-                let orderSQL = sortOrder == .newestFirst
-                    ? "added_at DESC, rowid DESC"
-                    : "added_at ASC, rowid ASC"
+                let orderSQL: String
+                switch sortOrder {
+                case .newestFirst:
+                    orderSQL = "added_at DESC, rowid DESC"
+                case .oldestFirst:
+                    orderSQL = "added_at ASC, rowid ASC"
+                case .originalIndexFirst:
+                    orderSQL = "word COLLATE NOCASE ASC, rowid ASC"
+                }
                 let sql = """
                 SELECT id, word, added_at, example_sentence, source
                 FROM entries\(whereSQL)

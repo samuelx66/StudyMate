@@ -113,6 +113,46 @@ public final class SentenceLibraryPlayer: ObservableObject {
         activeBackend.seek(to: playbackStartTime + clamped, completion: nil)
     }
 
+    public var hasNext: Bool {
+        guard let currentEntry, !playlist.isEmpty,
+              let index = playlist.firstIndex(where: { $0.entry.id == currentEntry.id }) else {
+            return !playlist.isEmpty
+        }
+        return index + 1 < playlist.count
+    }
+
+    public var hasPrevious: Bool {
+        guard let currentEntry, !playlist.isEmpty,
+              let index = playlist.firstIndex(where: { $0.entry.id == currentEntry.id }) else {
+            return false
+        }
+        return index > 0
+    }
+
+    public func playNext() {
+        guard !playlist.isEmpty else { return }
+        if let currentEntry,
+           let index = playlist.firstIndex(where: { $0.entry.id == currentEntry.id }) {
+            let nextIndex = (index + 1) % playlist.count
+            let next = playlist[nextIndex]
+            play(next.entry, mediaURL: next.mediaURL)
+        } else if let first = playlist.first {
+            play(first.entry, mediaURL: first.mediaURL)
+        }
+    }
+
+    public func playPrevious() {
+        guard !playlist.isEmpty else { return }
+        if let currentEntry,
+           let index = playlist.firstIndex(where: { $0.entry.id == currentEntry.id }) {
+            let prevIndex = (index - 1 + playlist.count) % playlist.count
+            let prev = playlist[prevIndex]
+            play(prev.entry, mediaURL: prev.mediaURL)
+        } else if let last = playlist.last {
+            play(last.entry, mediaURL: last.mediaURL)
+        }
+    }
+
     public func stop() {
         playbackGeneration = UUID()
         loadTask?.cancel()

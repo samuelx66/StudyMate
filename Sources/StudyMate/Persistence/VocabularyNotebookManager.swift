@@ -6,6 +6,7 @@ public final class VocabularyNotebookManager: ObservableObject {
     public static let shared = VocabularyNotebookManager()
 
     @Published public private(set) var notebooks: [VocabularyNotebookDescriptor] = []
+    @Published public private(set) var notebookCounts: [UUID: Int] = [:]
     @Published public private(set) var currentNotebookID: UUID?
     @Published public private(set) var entries: [VocabularyWordEntry] = []
     @Published public private(set) var availableSources: [String] = []
@@ -84,6 +85,64 @@ public final class VocabularyNotebookManager: ObservableObject {
             await reloadNotebooks(createDefaultIfNeeded: false)
             selectNotebook(descriptor.id)
             publishSuccess("已创建生词本“" + descriptor.name + "”")
+        } catch {
+            publishFailure(error)
+            throw error
+        }
+    }
+
+    public func renameNotebook(id: UUID, newName: String) async throws {
+        guard !isWorking else { throw VocabularyNotebookError.operationInProgress }
+        isWorking = true
+        defer { isWorking = false }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw VocabularyNotebookError.invalidName }
+        do {
+            try await Task.detached(priority: .utility) { [store] in
+                try store.renameNotebook(id: id, newName: trimmed)
+            }.value
+            await reloadNotebooks(createDefaultIfNeeded: false)
+            publishSuccess("生词本已重命名为“" + trimmed + "”")
+        } catch {
+            publishFailure(error)
+            throw error
+        }
+    }
+
+    @discardableResult
+    public func addWord(
+        word: String,
+        exampleSentence: String = "",
+        source: String = ""
+    ) async throws -> VocabularyWordEntry {
+        if currentNotebookID == nil {
+            await reloadNotebooks(createDefaultIfNeeded: true)
+        }
+        guard let notebookID = currentNotebookID else { throw VocabularyNotebookError.notebookUnavailable }
+        let trimmedWord = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedWord.isEmpty else { throw VocabularyNotebookError.emptyWord }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let result = try await Task.detached(priority: .userInitiated) { [store] in
+                let entry = try store.add(
+                    VocabularyWordEntry(
+                        word: trimmedWord,
+                        exampleSentence: exampleSentence,
+                        source: source
+                    ),
+                    to: notebookID
+                )
+                return (entry, store.consumeWriteWarnings())
+            }.value
+            let (entry, writeWarnings) = result
+            let wordKey = VocabularyNotebookStore.normalizedWord(trimmedWord)
+            savedWordKeys.insert(wordKey)
+            markNotebooksUpdated([notebookID])
+            refreshAfterWrite(notebookID: notebookID)
+            publishSuccess("已添加生词“\(trimmedWord)”")
+            publishWriteWarnings(writeWarnings)
+            return entry
         } catch {
             publishFailure(error)
             throw error
@@ -357,6 +416,15 @@ public final class VocabularyNotebookManager: ObservableObject {
                 return result
             }.value
             notebooks = available
+            Task.detached(priority: .utility) { [store, available] in
+                var counts: [UUID: Int] = [:]
+                for nb in available {
+                    counts[nb.id] = store.entryCount(notebookID: nb.id)
+                }
+                await MainActor.run { [weak self] in
+                    self?.notebookCounts = counts
+                }
+            }
             let previousNotebookID = currentNotebookID
             let savedID = defaults.string(forKey: currentNotebookKey).flatMap(UUID.init(uuidString:))
             if let currentNotebookID, available.contains(where: { $0.id == currentNotebookID }) {

@@ -122,6 +122,37 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
+    public func renameLibrary(id: UUID, newName: String) throws {
+        try queue.sync {
+            let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw SentenceLibraryError.invalidName }
+            try validateLibrary(id: id)
+            let packageURL = packageURL(for: id)
+            guard var descriptor = readManifest(at: packageURL) else {
+                throw SentenceLibraryError.invalidLibrary
+            }
+            descriptor.name = trimmed
+            descriptor.updatedAt = Date()
+            try writeManifest(descriptor, to: packageURL)
+            syncContentJSONUnlocked(libraryID: id)
+        }
+    }
+
+    public func entryCount(libraryID: UUID) -> Int {
+        queue.sync {
+            guard (try? validateLibrary(id: libraryID)) != nil else { return 0 }
+            return (try? withDatabase(libraryID: libraryID) { db in
+                var statement: OpaquePointer?
+                try prepare("SELECT count(*) FROM entries;", db: db, statement: &statement)
+                defer { sqlite3_finalize(statement) }
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    return Int(sqlite3_column_int64(statement, 0))
+                }
+                return 0
+            }) ?? 0
+        }
+    }
+
     public func entries(
         libraryID: UUID,
         searchText: String = "",

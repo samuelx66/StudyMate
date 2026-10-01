@@ -292,6 +292,61 @@ final class SentenceLibraryPlayerTests: XCTestCase {
         }
     }
 
+    func testPlayNextAndPlayPrevious() async throws {
+        let urls = try (0..<3).map { index -> URL in
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("StudyMate-NavTest-\(index)-\(UUID().uuidString).m4a")
+            try Data("audio-\(index)".utf8).write(to: url)
+            return url
+        }
+        defer {
+            for url in urls { try? FileManager.default.removeItem(at: url) }
+        }
+
+        let backend = TestMediaPlayerBackend(duration: 2)
+        let player = SentenceLibraryPlayer(nativeBackend: backend)
+        let entries = (0..<3).map { index in
+            SentenceLibraryEntry(
+                originalText: "Sentence \(index)",
+                translation: "句子 \(index)",
+                sourceMediaName: "test.mp4",
+                sourceMediaPath: "/test.mp4",
+                startTime: Double(index),
+                endTime: Double(index + 1),
+                mediaFilename: "clip-\(index).m4a"
+            )
+        }
+        player.setPlaylist(
+            entries: entries,
+            mediaURLs: Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($1.id, urls[$0]) })
+        )
+
+        XCTAssertTrue(player.hasNext)
+        XCTAssertFalse(player.hasPrevious)
+
+        player.play(entries[0], mediaURL: urls[0])
+        await Task.yield()
+        XCTAssertEqual(player.currentEntry?.id, entries[0].id)
+        XCTAssertTrue(player.hasNext)
+        XCTAssertFalse(player.hasPrevious)
+
+        player.playNext()
+        await Task.yield()
+        XCTAssertEqual(player.currentEntry?.id, entries[1].id)
+        XCTAssertTrue(player.hasNext)
+        XCTAssertTrue(player.hasPrevious)
+
+        player.playNext()
+        await Task.yield()
+        XCTAssertEqual(player.currentEntry?.id, entries[2].id)
+        XCTAssertFalse(player.hasNext)
+        XCTAssertTrue(player.hasPrevious)
+
+        player.playPrevious()
+        await Task.yield()
+        XCTAssertEqual(player.currentEntry?.id, entries[1].id)
+    }
+
     private func makeEntry(path: String, start: Double, end: Double) -> SentenceLibraryEntry {
         SentenceLibraryEntry(
             originalText: "Original",
