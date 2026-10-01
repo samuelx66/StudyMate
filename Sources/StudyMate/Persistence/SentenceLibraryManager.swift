@@ -207,6 +207,7 @@ public final class SentenceLibraryManager: ObservableObject {
             let descriptor = try await Task.detached(priority: .utility) { [store] in
                 try store.createLibrary(name: name)
             }.value
+            librarySentenceCounts[descriptor.id] = 0
             await reloadLibraries(createDefaultIfNeeded: false)
             selectLibrary(descriptor.id)
             MainStatusCenter.shared.showSuccess(
@@ -555,6 +556,7 @@ public final class SentenceLibraryManager: ObservableObject {
             return (count: entries.count, missingTargets: missingAlignmentTargets)
         }.value
 
+        librarySentenceCounts[libraryID] = (librarySentenceCounts[libraryID] ?? 0) + prepared.count
         operationProgress = SentenceLibraryOperationProgress(fraction: 1, phase: "句库保存完成")
         await reloadLibraries(createDefaultIfNeeded: false)
         reloadSources(for: libraryID)
@@ -795,6 +797,7 @@ public final class SentenceLibraryManager: ObservableObject {
             let cleanupFailures = try await Task.detached(priority: .utility) { [store] in
                 try store.deleteEntries(ids: ids, from: libraryID)
             }.value
+            librarySentenceCounts[libraryID] = max(0, (librarySentenceCounts[libraryID] ?? entries.count) - ids.count)
             await reloadLibraries(createDefaultIfNeeded: false)
             reloadSources(for: libraryID)
             reloadEntries()
@@ -919,6 +922,7 @@ public final class SentenceLibraryManager: ObservableObject {
             try await Task.detached(priority: .utility) { [store] in
                 try store.deleteLibrary(id: libraryID)
             }.value
+            librarySentenceCounts.removeValue(forKey: libraryID)
             currentLibraryID = nil
             await reloadLibraries(createDefaultIfNeeded: true)
             let msg = libraryName.isEmpty
@@ -966,6 +970,8 @@ public final class SentenceLibraryManager: ObservableObject {
                     progress: report
                 )
             }.value
+            librarySentenceCounts[sourceLibraryID] = max(0, (librarySentenceCounts[sourceLibraryID] ?? ids.count) - ids.count)
+            librarySentenceCounts[destinationLibraryID] = (librarySentenceCounts[destinationLibraryID] ?? 0) + ids.count
             await reloadLibraries(createDefaultIfNeeded: false)
             reloadSources(for: sourceLibraryID)
             reloadEntries()
@@ -1177,6 +1183,15 @@ public final class SentenceLibraryManager: ObservableObject {
             reloadSources(for: currentLibraryID)
         }
         reloadEntries()
+    }
+
+    public func refreshLibraryCount(for libraryID: UUID) {
+        Task.detached(priority: .utility) { [store] in
+            let count = store.entryCount(libraryID: libraryID)
+            await MainActor.run { [weak self] in
+                self?.librarySentenceCounts[libraryID] = count
+            }
+        }
     }
 
     private func reloadSources(for libraryID: UUID) {

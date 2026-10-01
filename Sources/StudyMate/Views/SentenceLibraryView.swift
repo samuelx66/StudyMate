@@ -73,7 +73,7 @@ public struct SentenceLibraryView: View {
                             Label(library.name, systemImage: "books.vertical")
                                 .lineLimit(1)
                             Spacer(minLength: 4)
-                            let count = manager.librarySentenceCounts[library.id] ?? 0
+                            let count = manager.librarySentenceCounts[library.id] ?? (library.id == manager.currentLibraryID ? manager.entries.count : 0)
                             Text("\(count)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
@@ -559,6 +559,7 @@ public struct SentenceLibraryView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
+                    let sourceCounts = Dictionary(grouping: manager.entries, by: \.sourceMediaName).mapValues(\.count)
                     ScrollView {
                         LazyVStack(spacing: 8) {
                             ForEach(Array(manager.entries.enumerated()), id: \.element.id) { offset, entry in
@@ -571,7 +572,7 @@ public struct SentenceLibraryView: View {
                                     isCurrentlyPlaying: libraryPlayer.isPlaying && libraryPlayer.currentEntry?.id == entry.id,
                                     availableTags: manager.availableTags,
                                     availableSources: manager.availableSources,
-                                    matchingSourceCount: entry.sourceMediaName.isEmpty ? 0 : manager.entries.filter { $0.sourceMediaName == entry.sourceMediaName }.count,
+                                    matchingSourceCount: entry.sourceMediaName.isEmpty ? 0 : (sourceCounts[entry.sourceMediaName] ?? 0),
                                     onToggleCheck: { toggleSelection(entry.id) },
                                     onToggleBookmark: {
                                         Task {
@@ -1542,6 +1543,20 @@ private struct SentenceLibraryEntryRow: View {
     @State private var showSourcePopover = false
     @State private var isHoveringSource = false
     @State private var isHoveringRow = false
+    @State private var lastClickTime: Date?
+
+    private func handleTap() {
+        guard !isEditing else { return }
+        let now = Date()
+        let interval = NSEvent.doubleClickInterval
+        if let last = lastClickTime, now.timeIntervalSince(last) < interval {
+            lastClickTime = nil
+            onTogglePlay()
+        } else {
+            lastClickTime = now
+            onSelect()
+        }
+    }
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -1772,13 +1787,6 @@ private struct SentenceLibraryEntryRow: View {
                     .font(.caption2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) {
-                    onTogglePlay()
-                }
-                .onTapGesture(count: 1) {
-                    onSelect()
-                }
             }
 
             Spacer(minLength: 0)
@@ -1869,6 +1877,10 @@ private struct SentenceLibraryEntryRow: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isActive ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.1), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture {
+            handleTap()
         }
         .onHover { isHoveringRow = $0 }
         .contextMenu {

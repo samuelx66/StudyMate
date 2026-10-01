@@ -82,6 +82,7 @@ public final class VocabularyNotebookManager: ObservableObject {
             let descriptor = try await Task.detached(priority: .utility) { [store] in
                 try store.createNotebook(name: name)
             }.value
+            notebookCounts[descriptor.id] = 0
             await reloadNotebooks(createDefaultIfNeeded: false)
             selectNotebook(descriptor.id)
             publishSuccess("已创建生词本“" + descriptor.name + "”")
@@ -138,6 +139,7 @@ public final class VocabularyNotebookManager: ObservableObject {
             let (entry, writeWarnings) = result
             let wordKey = VocabularyNotebookStore.normalizedWord(trimmedWord)
             savedWordKeys.insert(wordKey)
+            notebookCounts[notebookID] = (notebookCounts[notebookID] ?? 0) + 1
             markNotebooksUpdated([notebookID])
             refreshAfterWrite(notebookID: notebookID)
             publishSuccess("已添加生词“\(trimmedWord)”")
@@ -174,6 +176,7 @@ public final class VocabularyNotebookManager: ObservableObject {
             try await Task.detached(priority: .utility) { [store] in
                 try store.deleteNotebook(id: notebook.id)
             }.value
+            notebookCounts.removeValue(forKey: notebook.id)
             await reloadNotebooks(createDefaultIfNeeded: true)
             publishSuccess("已删除生词本“" + notebook.name + "”")
         } catch {
@@ -291,8 +294,10 @@ public final class VocabularyNotebookManager: ObservableObject {
             let wordKey = VocabularyNotebookStore.normalizedWord(trimmedWord)
             if added {
                 savedWordKeys.insert(wordKey)
+                notebookCounts[notebookID] = (notebookCounts[notebookID] ?? 0) + 1
             } else {
                 savedWordKeys.remove(wordKey)
+                notebookCounts[notebookID] = max(0, (notebookCounts[notebookID] ?? 1) - 1)
             }
             markNotebooksUpdated([notebookID])
             refreshAfterWrite(notebookID: notebookID)
@@ -322,6 +327,7 @@ public final class VocabularyNotebookManager: ObservableObject {
                 return (count, store.consumeWriteWarnings())
             }.value
             let (count, writeWarnings) = result
+            notebookCounts[notebookID] = max(0, (notebookCounts[notebookID] ?? count) - count)
             guard currentNotebookID == notebookID,
                   notebookSelectionGeneration == selectionGeneration else {
                 publishSuccess("已删除 " + String(count) + " 个生词")
@@ -361,14 +367,18 @@ public final class VocabularyNotebookManager: ObservableObject {
                 return (count, store.consumeWriteWarnings())
             }.value
             let (count, writeWarnings) = result
+            notebookCounts[sourceNotebookID] = max(0, (notebookCounts[sourceNotebookID] ?? count) - count)
+            notebookCounts[destinationNotebookID] = (notebookCounts[destinationNotebookID] ?? 0) + count
             guard currentNotebookID == sourceNotebookID,
                   notebookSelectionGeneration == selectionGeneration else {
+                refreshNotebookCount(for: destinationNotebookID)
                 publishSuccess("已移动 " + String(count) + " 个生词")
                 publishWriteWarnings(writeWarnings)
                 return count
             }
             savedWordKeys.subtract(movedWordKeys)
             markNotebooksUpdated([sourceNotebookID, destinationNotebookID])
+            refreshNotebookCount(for: destinationNotebookID)
             refreshAfterWrite(notebookID: sourceNotebookID)
             publishSuccess("已移动 " + String(count) + " 个生词")
             publishWriteWarnings(writeWarnings)
@@ -504,7 +514,17 @@ public final class VocabularyNotebookManager: ObservableObject {
         }
     }
 
+    public func refreshNotebookCount(for notebookID: UUID) {
+        Task.detached(priority: .utility) { [store] in
+            let count = store.entryCount(notebookID: notebookID)
+            await MainActor.run { [weak self] in
+                self?.notebookCounts[notebookID] = count
+            }
+        }
+    }
+
     private func refreshAfterWrite(notebookID: UUID) {
+        refreshNotebookCount(for: notebookID)
         guard currentNotebookID == notebookID else { return }
         reloadSources(for: notebookID)
         reloadEntries()

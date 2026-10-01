@@ -33,10 +33,6 @@ public struct VocabularyNotebookView: View {
         selectedEntryIDs.intersection(visibleIDs)
     }
 
-    private var entryNumbers: [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: manager.entries.enumerated().map { ($1.id, $0 + 1) })
-    }
-
     public var body: some View {
         NavigationSplitView {
             // MARK: - 左侧生词本列表 (Sidebar)
@@ -50,7 +46,7 @@ public struct VocabularyNotebookView: View {
                             Label(notebook.name, systemImage: notebook.isDefault ? "book.closed.fill" : "book.closed")
                                 .lineLimit(1)
                             Spacer(minLength: 4)
-                            let count = manager.notebookCounts[notebook.id] ?? 0
+                            let count = manager.notebookCounts[notebook.id] ?? (notebook.id == manager.currentNotebookID ? manager.entries.count : 0)
                             Text("\(count)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
@@ -435,12 +431,13 @@ public struct VocabularyNotebookView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
+                    let otherNotebooks = manager.notebooks.filter { $0.id != manager.currentNotebookID }
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(manager.entries) { entry in
+                            ForEach(Array(manager.entries.enumerated()), id: \.element.id) { offset, entry in
                                 VocabularyWordCardRow(
                                     entry: entry,
-                                    number: entryNumbers[entry.id] ?? 0,
+                                    number: offset + 1,
                                     isActive: selectedEntryID == entry.id,
                                     isChecked: selectedEntryIDs.contains(entry.id),
                                     isSpeaking: speaker.speakingWordID == entry.id,
@@ -457,7 +454,7 @@ public struct VocabularyNotebookView: View {
                                             try? await manager.moveEntries(ids: [entry.id], to: targetID)
                                         }
                                     },
-                                    notebooks: manager.notebooks.filter { $0.id != manager.currentNotebookID }
+                                    notebooks: otherNotebooks
                                 )
                             }
                         }
@@ -682,6 +679,19 @@ private struct VocabularyWordCardRow: View {
     let notebooks: [VocabularyNotebookDescriptor]
 
     @State private var isHoveringRow = false
+    @State private var lastClickTime: Date?
+
+    private func handleTap() {
+        let now = Date()
+        let interval = NSEvent.doubleClickInterval
+        if let last = lastClickTime, now.timeIntervalSince(last) < interval {
+            lastClickTime = nil
+            onSpeak()
+        } else {
+            lastClickTime = now
+            onSelect()
+        }
+    }
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -772,13 +782,6 @@ private struct VocabularyWordCardRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                onSpeak()
-            }
-            .onTapGesture(count: 1) {
-                onSelect()
-            }
 
             Spacer(minLength: 0)
 
@@ -862,6 +865,10 @@ private struct VocabularyWordCardRow: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isActive ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.1), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture {
+            handleTap()
         }
         .onHover { isHoveringRow = $0 }
         .contextMenu {
