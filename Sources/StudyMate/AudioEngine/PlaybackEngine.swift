@@ -964,9 +964,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
             self.isPlaying = false
             if self.loopMode == .all {
-                // 全篇循环是一次不连续的时间跳转。媒体结束时主波形通常还停在
-                // 文件尾部视口；如果只 Seek 而不先重置视口，回到 0 秒后波形
-                // 仍会按尾部时间范围映射，直到用户缩放才被动触发正确重绘。
+                // 全篇循环（Aboboo 单首循环风格）：
+                // 媒体播放到物理文件末尾后，整篇平滑无损重新从 0.0 秒开始循环播放。
+                self.wantsPlayback = true
                 self.resetPrimaryViewportForLoopRestart()
                 self.seek(to: 0.0) {
                     Task { @MainActor [weak self] in
@@ -1497,9 +1497,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
               // 边界处理可能在同一时钟回调内完成一次 Seek。此时传入的
               // `current` 仍是旧句末尾时间，不能再用它把已重置的视口推回尾部。
               abs(current - currentTime) <= 0.001 else { return }
-        // 最后一条断句没有可继续跟随的下一条内容。保持当前主波形视口
-        // 不动，避免播放尾句时无意义地把视口推进到文件末端。
-        if let activeSegmentIndex,
+        // 普通断句模式下，最后一条断句没有可继续跟随的下一条内容，保持视口不动；
+        // 全篇循环模式下，播放需要平滑穿过最后一句一直到达文件物理末端，视口正常向右推进。
+        if loopMode != .all,
+           let activeSegmentIndex,
            segments.indices.contains(activeSegmentIndex),
            activeSegmentIndex == segments.count - 1 {
             return
@@ -3318,6 +3319,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        if loopMode == .all, !isPlaying, duration > 0, currentTime >= duration - 0.08 {
+            resetPrimaryViewportForLoopRestart()
+            seek(to: 0.0) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.beginPlayback()
+                }
+            }
+            return
+        }
+
         if isShadowingPaused && shadowingCountdownRemaining > 0 {
             resumeShadowingPause()
             return
@@ -3573,6 +3584,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // UI work can delay both backends' main-thread boundary callbacks.
         // Arm the decoder ahead of time; the callback then decides whether
         // to repeat, wait, or advance after the media has safely stopped.
+        guard loopMode != .all else {
+            activeBackend.setPlaybackEndTime(nil)
+            return
+        }
         let needsStop = loopMode == .singleSegment || loopMode == .pauseAfterSegment
             || repeatCountLimit == 0 || currentRepeatCount < repeatCountLimit
             || shadowingPauseRatio > 0 || shadowingPauseSeconds > 0
@@ -3689,6 +3704,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 // 反译模式的完成播放是一次性动作，完成后直接复用统一的
                 // “下一句并暂停”路径，不让普通循环模式再次介入。
                 advanceToNextSentenceAfterCompletion(playNextSentence: false)
+                return
+            }
+            guard loopMode != .all else {
+                // 全篇循环模式（Aboboo 单首循环风格）：
+                // 媒体流按绝对时间平滑自然播放，贯穿整个音频，不被断句截断、拦截或重复；
+                // 只有当整个媒体物理文件播放到真正结束时，才由 onFinished 触发回到 0.0s 循环。
+                // 此处不做任何句尾跳转或复读，直接放行，让时钟继续自然向前流淌。
                 return
             }
             let needsRepeat = (repeatCountLimit == 0) || (currentRepeatCount < repeatCountLimit) || (loopMode == .singleSegment)
@@ -3837,14 +3859,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 }
                 index += 1
             }
-            if targetIndex == nil && loopMode == .all {
-                targetIndex = segments.firstIndex(where: { $0.isBookmarked })
-            }
         } else {
             targetIndex = currentIndex + 1 < segments.count ? currentIndex + 1 : nil
-            if targetIndex == nil && loopMode == .all {
-                targetIndex = 0
-            }
         }
 
         if loopMode == .pauseAfterSegment {
@@ -3906,13 +3922,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     currentRepeatCount = 1
                     ensureSegmentVisibleInPrimaryViewport(at: nextIdx, animated: false)
                 } else {
-                    // 最后一条断句结束时，全篇循环可能先于媒体的 finished
-                    // 回调直接跳回第一条；同步重置主波形，避免仍保留文件尾部视口。
-                    if loopMode == .all,
-                       nextIdx == 0,
-                       currentIndex == segments.count - 1 {
-                        resetPrimaryViewportForLoopRestart()
-                    }
                     jumpToSegment(at: nextIdx)
                 }
             }

@@ -1455,7 +1455,7 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
-    func testLoopAllModeResetsPrimaryViewportWhenLastSentenceWraps() async throws {
+    func testLoopAllModePlaysThroughToEndOfMedia() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let mediaURL = directory.appendingPathComponent("loop-boundary-viewport.mp4")
@@ -1477,8 +1477,17 @@ final class PlaybackEngineTests: XCTestCase {
         engine.play()
         engine.panPrimaryViewport(by: 20)
 
-        // 最后一条字幕先于媒体结束，循环应在句子边界直接回到第一句。
+        // 全篇循环（Aboboo 单首循环风格）：
+        // 最后一条断句结束时（19.0s），不提前截断跳回第一句，而是继续自然播放到媒体文件末尾（20.0s）
         native.emitTime(19.0)
+        for _ in 0..<4 { await Task.yield() }
+
+        XCTAssertEqual(native.currentTime, 19.0, accuracy: 0.001)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
+
+        // 媒体物理文件播放到真正结束时，才由 onFinished 触发回到 0.0 秒重新循环播放
+        native.onFinished?()
         for _ in 0..<4 { await Task.yield() }
 
         XCTAssertEqual(engine.activeSegmentIndex, 0)
