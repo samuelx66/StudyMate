@@ -21,8 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         StudyMateDictionaryBridge.synchronizeShortcutIfNeeded()
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-            guard event.keyCode == 49, modifiers.isEmpty else { return event }
+            guard StudyMateShortcutManager.shared.matches(event: event, for: .playPause) else { return event }
             // 输入字幕、搜索框或在任何输入法/编辑框中时，空格必须留给文本编辑器，不能误触播放。
             if let responder = NSApp.keyWindow?.firstResponder {
                 if responder is NSTextView || responder is NSTextField || responder is NSTextInputClient {
@@ -256,6 +255,7 @@ struct StudyMateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var languageManager = LanguageManager.shared
     @StateObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
+    @StateObject private var shortcutManager = StudyMateShortcutManager.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("StudyMate.ShowStatusBar") private var showStatusBar = true
@@ -349,17 +349,17 @@ struct StudyMateApp: App {
                 Button(languageManager.text("打开词典…", "Open Dictionary…")) {
                     openDictionaryAction()
                 }
-                .keyboardShortcut("d", modifiers: [.command, .control])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .openDictionary))
 
                 Button(languageManager.text("打开句库…", "Open Sentence Library…")) {
                     openWindow(id: "sentence-library")
                 }
-                .keyboardShortcut("l", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .openSentenceLibrary))
 
                 Button(languageManager.text("打开生词本…", "Open Vocabulary…")) {
                     openWindow(id: "vocabulary")
                 }
-                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .openVocabulary))
             }
 
             // 文件菜单
@@ -367,7 +367,7 @@ struct StudyMateApp: App {
                 Button(languageManager.localized(.openFile)) {
                     openFileAction()
                 }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .openMedia))
             }
 
             CommandGroup(replacing: .saveItem) {
@@ -395,7 +395,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("/", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleStatusBar))
 
                 Menu {
                     ForEach(PlaybackInterfaceMode.allCases) { mode in
@@ -410,7 +410,7 @@ struct StudyMateApp: App {
                                 }
                             }
                         }
-                        .keyboardShortcut(mode.shortcutKey, modifiers: [.command, .option])
+                        .keyboardShortcut(shortcutManager.keyboardShortcut(for: mode.shortcutID))
                     }
                 } label: {
                     Label(languageManager.text("界面模式", "Interface Mode"), systemImage: playbackInterfaceMode.iconName)
@@ -431,7 +431,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("o", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleVideoOriginalSubtitle))
 
                 Button {
                     videoSubtitleSettings.toggleTranslation(for: playbackInterfaceMode)
@@ -448,13 +448,13 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("t", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleVideoTranslationSubtitle))
                 .disabled(playbackInterfaceMode == .reverseTranslation)
 
                 Button(languageManager.text("字幕字体设置…", "Subtitle Font Settings…")) {
                     openWindow(id: "subtitle-font-settings")
                 }
-                .keyboardShortcut("f", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .videoSubtitleFontSettings))
 
                 Button {
                     phoneticManager.togglePhonetics()
@@ -469,7 +469,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("p", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .togglePhonetics))
 
                 Divider()
 
@@ -489,7 +489,7 @@ struct StudyMateApp: App {
                             }
                         }
                     }
-                    .keyboardShortcut("w", modifiers: [.option])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleWaveforms))
 
                     Button {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -506,7 +506,7 @@ struct StudyMateApp: App {
                             }
                         }
                     }
-                    .keyboardShortcut("w", modifiers: [.option, .shift])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleSecondaryWaveform))
                     .disabled(!showWaveforms)
                 } label: {
                     Text(languageManager.text("波形图", "Waveforms"))
@@ -528,7 +528,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("s", modifiers: [.option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleSubtitleEditor))
                 .disabled(playbackInterfaceMode.isFillInBlankStyle)
 
                 Button {
@@ -544,7 +544,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("p", modifiers: [.option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .togglePlaylist))
 
                 Button {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -561,7 +561,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("l", modifiers: [.option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleSegmentList))
 
                 Menu {
                     if navigationBookmarks.isEmpty {
@@ -587,7 +587,7 @@ struct StudyMateApp: App {
                     : languageManager.text("进入全屏幕", "Enter Full Screen")) {
                     engine.toggleFullScreen()
                 }
-                .keyboardShortcut("f", modifiers: [.control, .command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleFullScreen))
                 .disabled(engine.currentMedia == nil)
             }
             
@@ -599,7 +599,7 @@ struct StudyMateApp: App {
                     } label: {
                         Label(languageManager.text("快速断句", "Fast Segmentation"), systemImage: "bolt.fill")
                     }
-                    .keyboardShortcut("1", modifiers: [.control, .command])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .fastSegmentation))
                     .disabled(engine.currentMedia == nil || engine.isAITranscribing)
 
                     Button {
@@ -613,7 +613,7 @@ struct StudyMateApp: App {
                             systemImage: "wand.and.stars"
                         )
                     }
-                    .keyboardShortcut("2", modifiers: [.control, .command])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .intelligentSegmentation))
                     .disabled(engine.currentMedia == nil || engine.isAITranscribing)
                 } label: {
                     Label(languageManager.text("断句模式", "Segmentation Mode"), systemImage: "scissors")
@@ -625,7 +625,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("重新生成原文…", "Regenerate Original Text…"), systemImage: "waveform.and.mic")
                 }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .regenerateOriginalText))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
 
                 Button {
@@ -634,7 +634,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("翻译句子…", "Translate Sentences…"), systemImage: "translate")
                 }
-                .keyboardShortcut("t", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .translateSentences))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
@@ -643,7 +643,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("导入字幕…", "Import Subtitles…"), systemImage: "arrow.down.doc")
                 }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .importSubtitles))
                 .disabled(engine.currentMedia == nil)
 
                 Menu {
@@ -653,7 +653,7 @@ struct StudyMateApp: App {
                     } label: {
                         Label(languageManager.text("逐句导出 M4A 与 LRC/SRT…", "Export Separate M4A and LRC/SRT…"), systemImage: "doc.on.doc")
                     }
-                    .keyboardShortcut("e", modifiers: [.command])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .exportSeparate))
                     .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                     Button {
@@ -662,7 +662,7 @@ struct StudyMateApp: App {
                     } label: {
                         Label(languageManager.text("合并导出 M4A 与 LRC/SRT…", "Export Merged M4A and LRC/SRT…"), systemImage: "rectangle.stack")
                     }
-                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcutManager.keyboardShortcut(for: .exportMerged))
                     .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
                 } label: {
                     Label(languageManager.text("导出已选句子", "Export Selected Sentences"), systemImage: "square.and.arrow.up")
@@ -675,7 +675,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("加入句库", "Add to Sentence Library"), systemImage: "text.badge.plus")
                 }
-                .keyboardShortcut("a", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .addToSentenceLibrary))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Divider()
@@ -692,7 +692,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .followActiveSentence))
 
                 Button {
                     ensureSentenceListVisible()
@@ -700,7 +700,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("筛选与搜索句子…", "Filter and Search Sentences…"), systemImage: "line.3.horizontal.decrease.circle")
                 }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .filterSentences))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
@@ -709,7 +709,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("全选当前显示句子", "Select All Visible Sentences"), systemImage: "checkmark.circle")
                 }
-                .keyboardShortcut("a", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .selectAllVisibleSentences))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
@@ -718,7 +718,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("反选当前显示句子", "Invert Visible Sentence Selection"), systemImage: "arrow.2.squarepath")
                 }
-                .keyboardShortcut("i", modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .invertVisibleSentenceSelection))
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Divider()
@@ -729,7 +729,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("编辑当前句原文和译文…", "Edit Current Sentence…"), systemImage: "pencil")
                 }
-                .keyboardShortcut("y", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .editSentence))
                 .disabled(activeSegment == nil)
 
                 Button {
@@ -740,7 +740,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("拆分当前句", "Split Current Sentence"), systemImage: "scissors")
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .splitSentence))
                 .disabled(activeSegment == nil)
 
                 Button {
@@ -751,7 +751,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("合并上一句", "Merge with Previous Sentence"), systemImage: "arrow.up.and.line.horizontal.and.arrow.down")
                 }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .mergePreviousSentence))
                 .disabled(!engine.canMergeActiveSegmentWithPrevious)
 
                 Button {
@@ -762,7 +762,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("合并下一句", "Merge with Next Sentence"), systemImage: "arrow.down.and.line.horizontal.and.arrow.up")
                 }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .mergeNextSentence))
                 .disabled(!engine.canMergeActiveSegmentWithNext)
 
                 Divider()
@@ -785,7 +785,7 @@ struct StudyMateApp: App {
                         systemImage: activeSegment?.isNavigationBookmarked == true ? "bookmark.fill" : "bookmark"
                     )
                 }
-                .keyboardShortcut("b", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleNavigationBookmark))
                 .disabled(activeSegment == nil)
 
                 Button {
@@ -806,7 +806,7 @@ struct StudyMateApp: App {
                         systemImage: activeSegment?.isBookmarked == true ? "star.fill" : "star"
                     )
                 }
-                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleDifficultyBookmark))
                 .disabled(activeSegment == nil)
 
                 Button {
@@ -817,7 +817,7 @@ struct StudyMateApp: App {
                 } label: {
                     Label(languageManager.text("删除当前句", "Delete Current Sentence"), systemImage: "trash")
                 }
-                .keyboardShortcut(.delete, modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .deleteSentence))
                 .disabled(activeSegment == nil)
             }
             
@@ -826,7 +826,7 @@ struct StudyMateApp: App {
                 Button(languageManager.text("播放 / 暂停", "Play / Pause")) {
                     engine.togglePlayPause()
                 }
-                .keyboardShortcut(.space, modifiers: [])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playPause))
                 
                 Divider()
 
@@ -839,7 +839,7 @@ struct StudyMateApp: App {
                         systemImage: PlaybackLoopMode.normal.iconName
                     )
                 }
-                .keyboardShortcut("1", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackModeContinuous))
 
                 Button {
                     engine.loopMode = .singleSegment
@@ -849,7 +849,7 @@ struct StudyMateApp: App {
                         systemImage: PlaybackLoopMode.singleSegment.iconName
                     )
                 }
-                .keyboardShortcut("2", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackModeSingleRepeat))
 
                 Button {
                     engine.loopMode = .pauseAfterSegment
@@ -859,7 +859,7 @@ struct StudyMateApp: App {
                         systemImage: PlaybackLoopMode.pauseAfterSegment.iconName
                     )
                 }
-                .keyboardShortcut("3", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackModePauseAfter))
 
                 Button {
                     engine.loopMode = .all
@@ -869,7 +869,7 @@ struct StudyMateApp: App {
                         systemImage: PlaybackLoopMode.all.iconName
                     )
                 }
-                .keyboardShortcut("4", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackModeLoopAll))
 
                 Button {
                     engine.toggleMute()
@@ -879,24 +879,24 @@ struct StudyMateApp: App {
                         systemImage: engine.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill"
                     )
                 }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .mute))
 
                 Divider()
                 
                 Button(languageManager.localized(.previousSentence)) {
                     engine.previousSegment()
                 }
-                .keyboardShortcut(.leftArrow, modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .previousSegment))
                 
                 Button(languageManager.localized(.nextSentence)) {
                     engine.nextSegment()
                 }
-                .keyboardShortcut(.rightArrow, modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .nextSegment))
                 
                 Button(languageManager.localized(.repeatSentence)) {
                     engine.repeatCurrentSegment()
                 }
-                .keyboardShortcut("r", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .repeatCurrentSegment))
                 
                 Divider()
                 
@@ -905,19 +905,19 @@ struct StudyMateApp: App {
                     let next = round((current + 0.1) * 10) / 10
                     engine.playbackRate = min(2.0, next)
                 }
-                .keyboardShortcut(.upArrow, modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackRateUp))
                 
                 Button(languageManager.text("减速（-0.1x）", "Slow Down (-0.1x)")) {
                     let current = engine.playbackRate
                     let next = round((current - 0.1) * 10) / 10
                     engine.playbackRate = max(0.5, next)
                 }
-                .keyboardShortcut(.downArrow, modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackRateDown))
                 
                 Button(languageManager.text("重置为原速（1.0x）", "Reset Speed (1.0x)")) {
                     engine.playbackRate = 1.0
                 }
-                .keyboardShortcut("0", modifiers: [.command])
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .playbackRateReset))
 
                 Divider()
 
@@ -1039,7 +1039,7 @@ struct StudyMateApp: App {
         Window(languageManager.text("快捷键", "Keyboard Shortcuts"), id: "shortcuts") {
             ShortcutHelpView()
         }
-        .defaultSize(width: 560, height: 600)
+        .defaultSize(width: 620, height: 640)
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
 

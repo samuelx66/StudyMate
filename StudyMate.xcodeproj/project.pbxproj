@@ -71,6 +71,7 @@
 		846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6029D149A5A0818174471465 /* ShortcutCatalog.swift */; };
 		8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */; };
 		BF218AE2CD465CD28DCB8AF6 /* StudyMateHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */; };
+		0CD95655B0B0F29DC11AFE0B /* StudyMateShortcutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAD3F15C013B0C1CD493DCCC /* StudyMateShortcutManager.swift */; };
 		9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */; };
 		AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */; };
 		3B4585FD3EA6BFA535A9761D /* SubtitleSelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF300B4AE3CC8A65C6C6CE6 /* SubtitleSelectionCoordinator.swift */; };
@@ -167,6 +168,7 @@
 		6029D149A5A0818174471465 /* ShortcutCatalog.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutCatalog.swift"; sourceTree = "<group>"; };
 		FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/ShortcutHelpView.swift"; sourceTree = "<group>"; };
 		E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/StudyMateHelpView.swift"; sourceTree = "<group>"; };
+		FAD3F15C013B0C1CD493DCCC /* StudyMateShortcutManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/StudyMateShortcutManager.swift"; sourceTree = "<group>"; };
 		2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleEditView.swift"; sourceTree = "<group>"; };
 		F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleImportSheet.swift"; sourceTree = "<group>"; };
 		EFF300B4AE3CC8A65C6C6CE6 /* SubtitleSelectionCoordinator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Views/SubtitleSelectionCoordinator.swift"; sourceTree = "<group>"; };
@@ -296,6 +298,7 @@
 				6029D149A5A0818174471465 /* ShortcutCatalog.swift */,
 				FA2085411CA671D1C6AF32AA /* ShortcutHelpView.swift */,
 				E9FCDA8EEC13095FC736133A /* StudyMateHelpView.swift */,
+				FAD3F15C013B0C1CD493DCCC /* StudyMateShortcutManager.swift */,
 				2C389D3D07B6B5434CC7284A /* SubtitleEditView.swift */,
 				F6AAC297B849D04C409A4C6D /* SubtitleImportSheet.swift */,
 				EFF300B4AE3CC8A65C6C6CE6 /* SubtitleSelectionCoordinator.swift */,
@@ -478,6 +481,7 @@
 				846FB8CB17ABCD3D52E11AD0 /* ShortcutCatalog.swift in Sources */,
 				8EFB44796002376A61353EA1 /* ShortcutHelpView.swift in Sources */,
 				BF218AE2CD465CD28DCB8AF6 /* StudyMateHelpView.swift in Sources */,
+				0CD95655B0B0F29DC11AFE0B /* StudyMateShortcutManager.swift in Sources */,
 				9CE43D5F3E0F434237F04CF2 /* SubtitleEditView.swift in Sources */,
 				AFF8603AD20681F92C475D1B /* SubtitleImportSheet.swift in Sources */,
 				3B4585FD3EA6BFA535A9761D /* SubtitleSelectionCoordinator.swift in Sources */,
@@ -596,7 +600,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 471;
+				CURRENT_PROJECT_VERSION = 473;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -621,7 +625,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 471;
+				CURRENT_PROJECT_VERSION = 473;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;

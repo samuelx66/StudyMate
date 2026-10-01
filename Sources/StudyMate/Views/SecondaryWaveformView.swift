@@ -62,7 +62,7 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
-                            .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
+                            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .nudgeSentenceStartBackward))
                             .help(StudyMateShortcutCatalog.help(
                                 lang.text("句首提前 50 毫秒", "Move sentence start earlier by 50 ms"),
                                 shortcut: .nudgeSentenceStartBackward
@@ -77,7 +77,7 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
-                            .keyboardShortcut(.rightArrow, modifiers: [.control, .option])
+                            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .nudgeSentenceStartForward))
                             .help(StudyMateShortcutCatalog.help(
                                 lang.text("句首延后 50 毫秒", "Move sentence start later by 50 ms"),
                                 shortcut: .nudgeSentenceStartForward
@@ -97,7 +97,7 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
-                            .keyboardShortcut(.downArrow, modifiers: [.control, .option])
+                            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .nudgeSentenceEndBackward))
                             .help(StudyMateShortcutCatalog.help(
                                 lang.text("句尾提前 50 毫秒", "Move sentence end earlier by 50 ms"),
                                 shortcut: .nudgeSentenceEndBackward
@@ -112,7 +112,7 @@ public struct SecondaryWaveformView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
-                            .keyboardShortcut(.upArrow, modifiers: [.control, .option])
+                            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .nudgeSentenceEndForward))
                             .help(StudyMateShortcutCatalog.help(
                                 lang.text("句尾延后 50 毫秒", "Move sentence end later by 50 ms"),
                                 shortcut: .nudgeSentenceEndForward
@@ -128,7 +128,7 @@ public struct SecondaryWaveformView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
-                        .keyboardShortcut("v", modifiers: [.command, .option])
+                        .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .previewCurrentSegment))
                         .help(StudyMateShortcutCatalog.help(
                             lang.text("试听当前句", "Preview current sentence"),
                             shortcut: .previewCurrentSegment

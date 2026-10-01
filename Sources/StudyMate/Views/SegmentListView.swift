@@ -1117,10 +1117,10 @@ public struct SegmentListView: View {
     private var listKeyboardShortcuts: some View {
         Group {
             Button(action: toggleActiveSentenceSelection) { EmptyView() }
-                .keyboardShortcut(.space, modifiers: [.command, .shift])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleSentenceSelection))
 
             Button(action: selectActiveSentence) { EmptyView() }
-                .keyboardShortcut(.return, modifiers: [.command])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .selectSentence))
         }
         .frame(width: 0, height: 0)
         .opacity(0)

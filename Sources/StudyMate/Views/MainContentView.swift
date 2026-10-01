@@ -882,21 +882,21 @@ private struct MainWindowToolbar: ToolbarContent {
                 ))
                 .accessibilityLabel(lang.text("打开词典", "Open dictionary"))
                 .accessibilityHint(lang.text("打开当前选中文本的词典释义", "Open dictionary definitions for the current selection"))
-                .keyboardShortcut("d", modifiers: [.command, .control])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .openDictionary))
 
                 Button(action: onOpenLibrary) {
                     Label(lang.text("句库", "Sentence Library"), systemImage: "books.vertical")
                 }
                 .help(StudyMateShortcutCatalog.help(lang.text("打开句库", "Open sentence library"), shortcut: .openSentenceLibrary))
                 .accessibilityLabel(lang.text("打开句库", "Open sentence library"))
-                .keyboardShortcut("l", modifiers: [.command])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .openSentenceLibrary))
 
                 Button(action: onOpenVocabulary) {
                     Label(lang.text("生词本", "Vocabulary"), systemImage: "book.closed")
                 }
                 .help(StudyMateShortcutCatalog.help(lang.text("打开生词本", "Open vocabulary"), shortcut: .openVocabulary))
                 .accessibilityLabel(lang.text("打开生词本", "Open vocabulary"))
-                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .openVocabulary))
             } label: {
                 Label(lang.text("学习资源", "Resources"), systemImage: "books.vertical")
             }
@@ -972,7 +972,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityValue(videoSubtitleSettings.isOriginalVisible(for: playbackInterfaceMode) ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
                 .accessibilityHint(lang.text("切换画面原文字幕", "Toggle original subtitles"))
                 .accessibilityAddTraits(videoSubtitleSettings.isOriginalVisible(for: playbackInterfaceMode) ? .isSelected : [])
-                .keyboardShortcut("o", modifiers: [.command, .option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleVideoOriginalSubtitle))
 
                 Toggle(isOn: Binding(
                     get: { videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) },
@@ -995,7 +995,7 @@ private struct MainWindowToolbar: ToolbarContent {
                                    ? lang.text("反译模式中译文固定显示", "Translation is fixed on in Reverse Translation mode")
                                    : lang.text("切换画面译文字幕", "Toggle translated subtitles"))
                 .accessibilityAddTraits(videoSubtitleSettings.isTranslationVisible(for: playbackInterfaceMode) ? .isSelected : [])
-                .keyboardShortcut("t", modifiers: [.command, .option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleVideoTranslationSubtitle))
                 .disabled(playbackInterfaceMode == .reverseTranslation)
 
                 Button(action: onOpenSubtitleFontSettings) {
@@ -1004,7 +1004,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .help(StudyMateShortcutCatalog.help(lang.text("设置字幕字体", "Set subtitle fonts"), shortcut: .videoSubtitleFontSettings))
                 .accessibilityLabel(lang.text("设置字幕字体", "Set subtitle fonts"))
                 .accessibilityHint(lang.text("打开字幕字体、字号和颜色设置", "Open subtitle font, size, and color settings"))
-                .keyboardShortcut("f", modifiers: [.command, .option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .videoSubtitleFontSettings))
             }
 
             // 播放列表按钮
@@ -1014,7 +1014,7 @@ private struct MainWindowToolbar: ToolbarContent {
             .help(StudyMateShortcutCatalog.help(lang.text("显示或隐藏播放列表", "Show or hide playlist"), shortcut: .togglePlaylist))
             .accessibilityLabel(lang.text("播放列表", "Playlist"))
             .accessibilityHint(lang.text("显示或隐藏播放列表", "Show or hide playlist"))
-            .keyboardShortcut("p", modifiers: [.option])
+            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .togglePlaylist))
 
             // Xcode / Logic Pro 风格标准三段面板切换开关（波形图、字幕编辑区、断句列表）
             ControlGroup {
@@ -1036,7 +1036,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityValue(isWaveformsVisible ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
                 .accessibilityHint(lang.text("切换波形图工作区", "Toggle waveform workspace"))
                 .accessibilityAddTraits(isWaveformsVisible ? .isSelected : [])
-                .keyboardShortcut("w", modifiers: [.option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleWaveforms))
 
                 let effectiveSubtitleEditVisible = isSubtitleEditVisible && !playbackInterfaceMode.isFillInBlankStyle
                 Toggle(isOn: Binding(
@@ -1057,7 +1057,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityValue(effectiveSubtitleEditVisible ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
                 .accessibilityHint(lang.text("切换字幕双语编辑区", "Toggle subtitle bilingual editor"))
                 .accessibilityAddTraits(effectiveSubtitleEditVisible ? .isSelected : [])
-                .keyboardShortcut("s", modifiers: [.option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleSubtitleEditor))
                 .disabled(playbackInterfaceMode.isFillInBlankStyle)
 
                 Toggle(isOn: Binding(
@@ -1075,7 +1075,7 @@ private struct MainWindowToolbar: ToolbarContent {
                 .accessibilityValue(isSidebarVisible ? lang.text("已显示", "Shown") : lang.text("已隐藏", "Hidden"))
                 .accessibilityHint(lang.text("切换断句列表", "Toggle sentence list"))
                 .accessibilityAddTraits(isSidebarVisible ? .isSelected : [])
-                .keyboardShortcut("l", modifiers: [.option])
+                .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .toggleSegmentList))
                 .disabled(playbackInterfaceMode != .video)
             }
         }
@@ -1156,7 +1156,7 @@ private struct PlaybackAdjustmentCapsule: View {
             .help(StudyMateShortcutCatalog.help(lang.text("调节播放语速", "Playback rate"), shortcut: .playbackRateMenu))
             .accessibilityLabel(lang.text("播放速度", "Playback speed"))
             .accessibilityValue(String(format: "%.2fx", toolbarState.playbackRate))
-            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .playbackRateMenu))
 
             Divider()
                 .frame(height: 12)
@@ -1228,6 +1228,7 @@ private struct PlaybackAdjustmentCapsule: View {
             .help(StudyMateShortcutCatalog.help(lang.text("设置单句复读", "Set sentence repeat"), shortcut: .repeatCountMenu))
             .accessibilityLabel(lang.text("单句复读", "Sentence repeat"))
             .accessibilityValue(repeatLabel)
+            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .repeatCountMenu))
 
             Divider()
                 .frame(height: 12)
@@ -1300,6 +1301,7 @@ private struct PlaybackAdjustmentCapsule: View {
             .help(StudyMateShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
             .accessibilityLabel(lang.text("句末跟读停顿", "Shadowing pause"))
             .accessibilityValue(pauseLabel)
+            .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .shadowingPauseMenu))
         }
         .padding(.horizontal, 8)
         .frame(height: 24)
