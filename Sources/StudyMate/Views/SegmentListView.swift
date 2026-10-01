@@ -532,8 +532,9 @@ public struct SegmentListView: View {
                     editingLayout.toggle()
                 } label: {
                     Image(systemName: editingLayout ? "slider.horizontal.3" : "book")
+                        .font(.system(size: 13, weight: .medium))
                         .frame(width: 24, height: 24)
-                        .foregroundColor(editingLayout ? StudyMateMediaStyle.accent : .secondary)
+                        .foregroundColor(editingLayout ? StudyMateMediaStyle.accent : .primary)
                 }
                 .studymateChromeButton(shape: .circle)
                 .focusable(false)
@@ -564,8 +565,9 @@ public struct SegmentListView: View {
                         showImportSheet = true
                     } label: {
                         Image(systemName: "arrow.down.doc")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -579,8 +581,9 @@ public struct SegmentListView: View {
                         showRegenerateOriginalConfirmation = true
                     } label: {
                         Image(systemName: "waveform.and.mic")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(engine.isAITranscribing ? StudyMateMediaStyle.accent : .primary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -594,8 +597,9 @@ public struct SegmentListView: View {
                         Image(systemName: (filterCriteria.hasActiveFilters || !searchText.isEmpty)
                             ? "line.3.horizontal.decrease.circle.fill"
                             : "line.3.horizontal.decrease.circle")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor((filterCriteria.hasActiveFilters || !searchText.isEmpty) ? StudyMateMediaStyle.accent : .secondary)
+                            .foregroundColor((filterCriteria.hasActiveFilters || !searchText.isEmpty) ? StudyMateMediaStyle.accent : .primary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -624,8 +628,9 @@ public struct SegmentListView: View {
                         showTranslationPopover = true
                     } label: {
                         Image(systemName: "translate")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor(translationSettings.isAutomaticTranslationEnabled ? .secondary : .secondary.opacity(0.45))
+                            .foregroundColor(engine.isAutoTranslating ? StudyMateMediaStyle.accent : (translationSettings.isAutomaticTranslationEnabled ? .primary : .secondary.opacity(0.45)))
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -651,8 +656,9 @@ public struct SegmentListView: View {
                             showExportPopover = true
                         } label: {
                             Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .medium))
                                 .frame(width: 24, height: 24)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.primary)
                         }
                         .studymateChromeButton(shape: .circle)
                         .focusable(false)
@@ -681,8 +687,9 @@ public struct SegmentListView: View {
                         showAddToLibraryPopover = true
                     } label: {
                         Image(systemName: "text.badge.plus")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor(isAddingToLibrary ? StudyMateMediaStyle.accent : .secondary)
+                            .foregroundColor(isAddingToLibrary ? StudyMateMediaStyle.accent : .primary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -723,8 +730,9 @@ public struct SegmentListView: View {
                         showSegmentationPopover = true
                     } label: {
                         Image(systemName: "wand.and.stars")
+                            .font(.system(size: 13, weight: .medium))
                             .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary)
                     }
                     .studymateChromeButton(shape: .circle)
                     .focusable(false)
@@ -2175,11 +2183,12 @@ struct SegmentRowView: View, Equatable {
                         // 难句收藏星标按钮
                         Button(action: onToggleBookmark) {
                             Image(systemName: seg.isBookmarked ? "star.fill" : "star")
-                                .font(.system(size: 10))
+                                .font(.system(size: 12, weight: seg.isBookmarked ? .semibold : .medium))
                                 .frame(width: 20, height: 20)
-                                .foregroundColor(seg.isBookmarked ? .yellow : .gray.opacity(0.4))
+                                .foregroundColor(seg.isBookmarked ? Color.yellow : Color(nsColor: .systemYellow).opacity(0.85))
+                                .contentShape(Rectangle())
                         }
-                        .studymateChromeButton(shape: .circle)
+                        .buttonStyle(.plain)
                         .segmentListHelp(StudyMateShortcutCatalog.help(
                             lang.text("切换难句星标", "Toggle difficulty star"),
                             shortcut: .toggleDifficultyBookmark

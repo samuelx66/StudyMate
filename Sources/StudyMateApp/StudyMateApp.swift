@@ -1015,9 +1015,9 @@ struct StudyMateApp: App {
         Window(languageManager.text("字幕字体设置", "Subtitle Font Settings"), id: "subtitle-font-settings") {
             VideoSubtitleFontSettingsPopover(initialMode: playbackInterfaceMode)
         }
-        .defaultSize(width: 470, height: 520)
+        .defaultSize(width: 580, height: 580)
         .windowStyle(.titleBar)
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
 
         Window(languageManager.text("句库", "Sentence Library"), id: "sentence-library") {
             // 句库窗口独立按需创建；欢迎页启动时不读取数据库或创建默认句库。

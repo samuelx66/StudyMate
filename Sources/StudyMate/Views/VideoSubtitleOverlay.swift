@@ -1152,12 +1152,12 @@ public struct VideoSubtitleOverlay: View {
     }
 }
 
-/// 工具栏“字体设置”按钮打开的紧凑配置面板。
-/// 支持六种界面模式的字体独立调优。
+/// 字幕字体设置面板。
+/// 支持六种界面模式的字体独立调优，使用自适应滚动视图与 macOS 26 原生风格排版。
 @MainActor
 public struct VideoSubtitleFontSettingsPopover: View {
-    // 弹窗使用本地草稿，不订阅整个全局设置对象；这样字幕实时预览仍然生效，
-    // 但字体设置对象的其它变化不会让弹窗整棵视图树重新计算。
+    // 设置使用本地草稿，不订阅整个全局设置对象；这样字幕实时预览仍然生效，
+    // 但字体设置对象的其它变化不会让设置窗口整棵视图树重新计算。
     private let settings: VideoSubtitleSettings
     @ObservedObject private var lang = LanguageManager.shared
     @State private var selectedMode: PlaybackInterfaceMode
@@ -1172,97 +1172,129 @@ public struct VideoSubtitleFontSettingsPopover: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(lang.text("播放区字幕字体设置", "Subtitle Font Settings"))
-                .font(.headline)
-
-            // 模式选择分段器
-            Picker("", selection: $selectedMode) {
-                ForEach(PlaybackInterfaceMode.allCases) { mode in
-                    Label(mode.localized(with: lang), systemImage: mode.iconName)
-                        .tag(mode)
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 16) {
+                // 顶部标题与说明
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(lang.text("字幕字体与样式设置", "Subtitle Font & Style Settings"))
+                        .font(.title3.weight(.semibold))
+                    Text(lang.text("为不同的播放与学习模式独立定制字幕字体、字号与颜色样式。", "Customize subtitle fonts, sizes, and colors independently for different playback and study modes."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel(lang.text("设置界面模式", "Settings interface mode"))
 
-            subtitleGroup(
-                title: lang.text("原文", "Original"),
-                fontName: Binding(
-                    get: { draftSettings.originalFontName },
-                    set: { val in updateDraft { $0.originalFontName = val } }
-                ),
-                fontSize: Binding(
-                    get: { draftSettings.originalFontSize },
-                    set: { val in updateDraft({ $0.originalFontSize = val }, persist: !isAdjustingFontSize) }
-                ),
-                bold: Binding(
-                    get: { draftSettings.originalBold },
-                    set: { val in updateDraft { $0.originalBold = val } }
-                ),
-                italic: Binding(
-                    get: { draftSettings.originalItalic },
-                    set: { val in updateDraft { $0.originalItalic = val } }
-                ),
-                color: Binding(
-                    get: { draftSettings.originalColor },
-                    set: { val in updateDraft { $0.originalColor = val } }
-                ),
-                onFontSizeEditingChanged: handleFontSizeEditingChanged
-            )
+                // 模式选择分段器
+                Picker("", selection: $selectedMode) {
+                    ForEach(PlaybackInterfaceMode.allCases) { mode in
+                        Label(mode.localized(with: lang), systemImage: mode.iconName)
+                            .tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel(lang.text("设置界面模式", "Settings interface mode"))
 
-            Divider()
+                // 原文字幕配置卡片
+                subtitleGroupCard(
+                    title: lang.text("原文字幕", "Original Subtitle"),
+                    icon: "text.quote",
+                    previewSample: "The quick brown fox jumps over the lazy dog.",
+                    fontName: Binding(
+                        get: { draftSettings.originalFontName },
+                        set: { val in updateDraft { $0.originalFontName = val } }
+                    ),
+                    fontSize: Binding(
+                        get: { draftSettings.originalFontSize },
+                        set: { val in updateDraft({ $0.originalFontSize = val }, persist: !isAdjustingFontSize) }
+                    ),
+                    bold: Binding(
+                        get: { draftSettings.originalBold },
+                        set: { val in updateDraft { $0.originalBold = val } }
+                    ),
+                    italic: Binding(
+                        get: { draftSettings.originalItalic },
+                        set: { val in updateDraft { $0.originalItalic = val } }
+                    ),
+                    color: Binding(
+                        get: { draftSettings.originalColor },
+                        set: { val in updateDraft { $0.originalColor = val } }
+                    ),
+                    onFontSizeEditingChanged: handleFontSizeEditingChanged
+                )
 
-            subtitleGroup(
-                title: lang.text("译文", "Translation"),
-                fontName: Binding(
-                    get: { draftSettings.translationFontName },
-                    set: { val in updateDraft { $0.translationFontName = val } }
-                ),
-                fontSize: Binding(
-                    get: { draftSettings.translationFontSize },
-                    set: { val in updateDraft({ $0.translationFontSize = val }, persist: !isAdjustingFontSize) }
-                ),
-                bold: Binding(
-                    get: { draftSettings.translationBold },
-                    set: { val in updateDraft { $0.translationBold = val } }
-                ),
-                italic: Binding(
-                    get: { draftSettings.translationItalic },
-                    set: { val in updateDraft { $0.translationItalic = val } }
-                ),
-                color: Binding(
-                    get: { draftSettings.translationColor },
-                    set: { val in updateDraft { $0.translationColor = val } }
-                ),
-                onFontSizeEditingChanged: handleFontSizeEditingChanged
-            )
+                // 译文字幕配置卡片
+                subtitleGroupCard(
+                    title: lang.text("译文字幕", "Translation Subtitle"),
+                    icon: "character.bubble",
+                    previewSample: "敏捷的棕色狐狸跳过懒惰的狗。",
+                    fontName: Binding(
+                        get: { draftSettings.translationFontName },
+                        set: { val in updateDraft { $0.translationFontName = val } }
+                    ),
+                    fontSize: Binding(
+                        get: { draftSettings.translationFontSize },
+                        set: { val in updateDraft({ $0.translationFontSize = val }, persist: !isAdjustingFontSize) }
+                    ),
+                    bold: Binding(
+                        get: { draftSettings.translationBold },
+                        set: { val in updateDraft { $0.translationBold = val } }
+                    ),
+                    italic: Binding(
+                        get: { draftSettings.translationItalic },
+                        set: { val in updateDraft { $0.translationItalic = val } }
+                    ),
+                    color: Binding(
+                        get: { draftSettings.translationColor },
+                        set: { val in updateDraft { $0.translationColor = val } }
+                    ),
+                    onFontSizeEditingChanged: handleFontSizeEditingChanged
+                )
 
-            if selectedMode != .video {
-                HStack {
-                    Text(lang.text("自动配色随浅色与深色外观调整", "Automatic colors adapt to Light and Dark Mode"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button(lang.text("恢复自动配色", "Use automatic colors")) {
-                        updateDraft {
-                            $0.originalColorHex = StudyMateSubtitleColorToken.label
-                            $0.translationColorHex = StudyMateSubtitleColorToken.secondaryLabel
+                // 底部模式特有操作
+                if selectedMode != .video {
+                    HStack(spacing: 8) {
+                        Image(systemName: "circle.lefthalf.filled")
+                            .foregroundStyle(.secondary)
+                        Text(lang.text("自动配色随浅色与深色外观自适应", "Automatic colors adapt to Light and Dark Mode"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(lang.text("恢复自动配色", "Use automatic colors")) {
+                            updateDraft {
+                                $0.originalColorHex = StudyMateSubtitleColorToken.label
+                                $0.translationColorHex = StudyMateSubtitleColorToken.secondaryLabel
+                            }
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
                 }
-            }
 
-            if selectedMode == .video {
-                HStack {
-                    Spacer()
-                    Button(lang.text("重置字幕位置", "Reset subtitle positions")) {
-                        settings.resetPositions()
+                if selectedMode == .video {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .foregroundStyle(.secondary)
+                        Text(lang.text("若画面字幕位置被拖动偏移，可一键复位", "Reset overlay subtitle positions if moved"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(lang.text("重置字幕位置", "Reset subtitle positions")) {
+                            settings.resetPositions()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
                 }
             }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(16)
-        .frame(width: 450)
+        .frame(minWidth: 540, idealWidth: 580, maxWidth: .infinity, minHeight: 480, idealHeight: 560, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             draftSettings = settings.fontSettings(for: selectedMode)
         }
@@ -1294,9 +1326,17 @@ public struct VideoSubtitleFontSettingsPopover: View {
         }
     }
 
+    private func previewFont(name: String, size: Double, isBold: Bool, isItalic: Bool) -> Font {
+        let clampedSize = min(max(size, 13), 22)
+        let nsFont = VideoSubtitleSettings.makeFont(name: name, size: clampedSize, isBold: isBold, isItalic: isItalic)
+        return Font(nsFont)
+    }
+
     @ViewBuilder
-    private func subtitleGroup(
+    private func subtitleGroupCard(
         title: String,
+        icon: String,
+        previewSample: String,
         fontName: Binding<String>,
         fontSize: Binding<Double>,
         bold: Binding<Bool>,
@@ -1304,32 +1344,77 @@ public struct VideoSubtitleFontSettingsPopover: View {
         color: Binding<Color>,
         onFontSizeEditingChanged: @escaping (Bool) -> Void
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: icon)
+                .font(.headline)
 
+            // 字体选择行
             HStack {
                 Text(lang.text("字体", "Font"))
                     .frame(width: 48, alignment: .leading)
+                    .foregroundStyle(.secondary)
                 SubtitleFontFamilyMenu(selection: fontName)
-                    .frame(maxWidth: .infinity)
             }
 
+            // 字号调节行
             HStack {
                 Text(lang.text("大小", "Size"))
                     .frame(width: 48, alignment: .leading)
+                    .foregroundStyle(.secondary)
                 Slider(value: fontSize, in: 10...72, step: 1, onEditingChanged: onFontSizeEditingChanged)
-                Text("\(Int(fontSize.wrappedValue))")
+                Text("\(Int(fontSize.wrappedValue)) pt")
                     .monospacedDigit()
-                    .frame(width: 28, alignment: .trailing)
+                    .frame(width: 44, alignment: .trailing)
+                    .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 14) {
+            // 样式与颜色
+            HStack(spacing: 20) {
                 Toggle(lang.text("粗体", "Bold"), isOn: bold)
                 Toggle(lang.text("斜体", "Italic"), isOn: italic)
                 ColorPicker(lang.text("颜色", "Color"), selection: color, supportsOpacity: false)
+                Spacer()
             }
             .toggleStyle(.checkbox)
+
+            // 实时效果预览卡片
+            let previewTextFont = previewFont(
+                name: fontName.wrappedValue,
+                size: fontSize.wrappedValue,
+                isBold: bold.wrappedValue,
+                isItalic: italic.wrappedValue
+            )
+            let previewTextColor = color.wrappedValue
+
+            HStack {
+                Text(previewSample)
+                    .font(previewTextFont)
+                    .foregroundColor(previewTextColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(selectedMode == .video ? Color.black.opacity(0.85) : Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+            )
         }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
     }
 }
 
@@ -1353,10 +1438,11 @@ private struct SubtitleFontFamilyMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text(selection)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .foregroundColor(.primary)
                 Spacer(minLength: 4)
                 Text("Aa")
                     .font(.custom(selection, size: 12))
@@ -1365,7 +1451,17 @@ private struct SubtitleFontFamilyMenu: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+            )
         }
         .menuStyle(.borderlessButton)
         .accessibilityLabel(lang.text("字幕字体", "Subtitle font"))

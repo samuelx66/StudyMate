@@ -60,7 +60,6 @@ public struct MainContentView: View {
     @AppStorage("StudyMate.ShowWaveforms") private var isWaveformsVisible: Bool = true
     @AppStorage("StudyMate.ShowSecondaryWaveform") private var isSecondaryWaveformVisible: Bool = true
     @AppStorage("StudyMate.ShowSubtitleEditor") private var isSubtitleEditVisible: Bool = true
-    @State private var isVideoSubtitleFontSettingsPresented: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var isClosingCurrentMedia: Bool = false
     @State private var isProjectRecoveryDialogPresented: Bool = false
@@ -177,11 +176,11 @@ public struct MainContentView: View {
             dictionaryCoordinator: dictionaryCoordinator,
             isWaveformsVisible: $isWaveformsVisible,
             isSubtitleEditVisible: $isSubtitleEditVisible,
-            isVideoSubtitleFontSettingsPresented: $isVideoSubtitleFontSettingsPresented,
             isSidebarVisible: $isSidebarVisible,
             playbackInterfaceMode: $playbackInterfaceMode,
             onOpenLibrary: { openWindow(id: "sentence-library") },
             onOpenVocabulary: { openWindow(id: "vocabulary") },
+            onOpenSubtitleFontSettings: { openWindow(id: "subtitle-font-settings") },
             onOpenDictionary: {
                 _ = dictionaryCoordinator.captureCurrentSelectionForDictionary()
                 dictionaryCoordinator.bindPlaybackEngine(engine)
@@ -850,11 +849,11 @@ private struct MainWindowToolbar: ToolbarContent {
     @ObservedObject var dictionaryCoordinator: DictionaryInteractionCoordinator
     @Binding var isWaveformsVisible: Bool
     @Binding var isSubtitleEditVisible: Bool
-    @Binding var isVideoSubtitleFontSettingsPresented: Bool
     @Binding var isSidebarVisible: Bool
     @Binding var playbackInterfaceMode: PlaybackInterfaceMode
     let onOpenLibrary: () -> Void
     let onOpenVocabulary: () -> Void
+    let onOpenSubtitleFontSettings: () -> Void
     let onOpenDictionary: () -> Void
     let onOpenMedia: () -> Void
     let onTogglePlaylist: () -> Void
@@ -999,18 +998,13 @@ private struct MainWindowToolbar: ToolbarContent {
                 .keyboardShortcut("t", modifiers: [.command, .option])
                 .disabled(playbackInterfaceMode == .reverseTranslation)
 
-                Button {
-                    isVideoSubtitleFontSettingsPresented.toggle()
-                } label: {
+                Button(action: onOpenSubtitleFontSettings) {
                     Image(systemName: "textformat.size").studymateToolbarIcon()
                 }
                 .help(StudyMateShortcutCatalog.help(lang.text("设置字幕字体", "Set subtitle fonts"), shortcut: .videoSubtitleFontSettings))
                 .accessibilityLabel(lang.text("设置字幕字体", "Set subtitle fonts"))
                 .accessibilityHint(lang.text("打开字幕字体、字号和颜色设置", "Open subtitle font, size, and color settings"))
                 .keyboardShortcut("f", modifiers: [.command, .option])
-                .popover(isPresented: $isVideoSubtitleFontSettingsPresented, arrowEdge: .bottom) {
-                    VideoSubtitleFontSettingsPopover(initialMode: playbackInterfaceMode)
-                }
             }
 
             // 播放列表按钮

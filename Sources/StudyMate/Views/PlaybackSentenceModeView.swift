@@ -295,8 +295,8 @@ struct PlaybackSentenceCardView: View, Equatable {
 
                 Button(action: onToggleBookmark) {
                     Image(systemName: seg.isBookmarked ? "star.fill" : "star")
-                        .font(.system(size: 12))
-                        .foregroundColor(seg.isBookmarked ? .yellow : .secondary.opacity(0.4))
+                        .font(.system(size: 12, weight: seg.isBookmarked ? .semibold : .medium))
+                        .foregroundColor(seg.isBookmarked ? Color.yellow : Color(nsColor: .systemYellow).opacity(0.85))
                 }
                 .buttonStyle(.plain)
                 .help(language == .en ? "Toggle bookmark" : "切换星标难句")

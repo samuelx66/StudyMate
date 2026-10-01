@@ -1575,8 +1575,8 @@ private struct SentenceLibraryEntryRow: View {
 
                 Button(action: onToggleBookmark) {
                     Image(systemName: entry.isBookmarked ? "star.fill" : "star")
-                        .foregroundStyle(entry.isBookmarked ? Color.yellow : Color.secondary.opacity(0.35))
-                        .font(.caption)
+                        .font(.caption.weight(entry.isBookmarked ? .bold : .medium))
+                        .foregroundStyle(entry.isBookmarked ? Color.yellow : Color(nsColor: .systemYellow).opacity(0.85))
                 }
                 .buttonStyle(.plain)
                 .help(entry.isBookmarked ? lang.text("取消星标难句", "Unstar") : lang.text("加入星标难句", "Star"))
