@@ -146,27 +146,35 @@ public struct SpeakerRenamePopoverContent: View {
         self.onSave = onSave
     }
 
+    private var isUnassigned: Bool {
+        roleLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var isComposite: Bool {
-        SpeakerRoleManager.isCompositeRole(roleLabel)
+        !isUnassigned && SpeakerRoleManager.isCompositeRole(roleLabel)
     }
 
     private var candidates: [String] {
-        SpeakerRoleManager.extractCandidateRoles(from: roleLabel)
+        isUnassigned ? [] : SpeakerRoleManager.extractCandidateRoles(from: roleLabel)
     }
 
     private var quickOptions: [String] {
-        if isComposite {
+        if isUnassigned {
+            return availableSpeakers.keys.sorted()
+        } else if isComposite {
             return candidates
         } else {
             let normalizedSelf = SpeakerRoleManager.normalizeRoleKey(roleLabel)
             var others = [String]()
-            for key in availableSpeakers.keys.sorted() {
+            for (key, name) in availableSpeakers {
                 let norm = SpeakerRoleManager.normalizeRoleKey(key)
-                if norm != normalizedSelf && !others.contains(norm) {
+                if norm == normalizedSelf { continue }
+                if name.caseInsensitiveCompare(roleLabel) == .orderedSame { continue }
+                if !others.contains(norm) {
                     others.append(norm)
                 }
             }
-            return others
+            return others.sorted()
         }
     }
 
@@ -179,7 +187,13 @@ public struct SpeakerRenamePopoverContent: View {
     }
 
     private var scopeAllTitle: String {
-        if matchingCount > 1 {
+        if isUnassigned {
+            if matchingCount > 1 {
+                return language == .en ? "All Unassigned (\(matchingCount))" : "所有未分配角色 (\(matchingCount)句)"
+            } else {
+                return language == .en ? "All Unassigned" : "所有未分配角色"
+            }
+        } else if matchingCount > 1 {
             return language == .en ? "All Matching (\(matchingCount))" : "所有相同角色 (\(matchingCount)句)"
         } else {
             return language == .en ? "All Matching" : "所有相同角色"
@@ -187,7 +201,9 @@ public struct SpeakerRenamePopoverContent: View {
     }
 
     private var headerTitle: String {
-        if changeScope == .thisSentenceOnly {
+        if isUnassigned {
+            return language == .en ? "Assign Speaker" : "指定说话人"
+        } else if changeScope == .thisSentenceOnly {
             return language == .en ? "Change Sentence Speaker" : "修改此句说话人"
         } else {
             if isComposite {
@@ -200,6 +216,13 @@ public struct SpeakerRenamePopoverContent: View {
 
     private var sentenceScopeDescription: String {
         let idxStr = sentenceIndex.map { "#\($0) " } ?? ""
+        if isUnassigned {
+            if language == .en {
+                return "Only assigns the speaker for sentence \(idxStr). Other sentences remain unchanged."
+            } else {
+                return "仅为当前句（\(idxStr)）指定角色，不影响其它任何句子。"
+            }
+        }
         if language == .en {
             return "Only changes the speaker for sentence \(idxStr). Other sentences remain unchanged."
         } else {
@@ -208,7 +231,13 @@ public struct SpeakerRenamePopoverContent: View {
     }
 
     private var allMatchingScopeDescription: String {
-        if isComposite {
+        if isUnassigned {
+            if language == .en {
+                return "Assigns the speaker for all \(matchingCount) unassigned sentences across the project."
+            } else {
+                return "将工程中所有未分配角色的句子（共 \(matchingCount) 句）全部统一指定为该角色。"
+            }
+        } else if isComposite {
             if language == .en {
                 return "Resolves all \(matchingCount) sentences marked as \(roleLabel) across the project."
             } else {
@@ -241,9 +270,11 @@ public struct SpeakerRenamePopoverContent: View {
 
             if !quickOptions.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(isComposite
-                         ? (language == .en ? "Quickly choose speaker:" : "快捷选择当前句发言人：")
-                         : (language == .en ? "Quickly switch to existing speaker:" : "快捷切换为已有说话人："))
+                    Text(isUnassigned
+                         ? (language == .en ? "Quickly choose existing speaker:" : "快捷指定为已有说话人：")
+                         : (isComposite
+                            ? (language == .en ? "Quickly choose speaker:" : "快捷选择当前句发言人：")
+                            : (language == .en ? "Quickly switch to existing speaker:" : "快捷切换为已有说话人：")))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -316,7 +347,7 @@ public struct SpeakerRenamePopoverContent: View {
         guard !trimmed.isEmpty else { return }
 
         // 若未做任何更改，直接关闭
-        if trimmed.caseInsensitiveCompare(roleLabel) == .orderedSame {
+        if !isUnassigned && trimmed.caseInsensitiveCompare(roleLabel) == .orderedSame {
             isPresented = false
             return
         }
@@ -333,10 +364,16 @@ public struct SpeakerRenamePopoverContent: View {
     private func confirmBatchSpeakerChange(targetName: String) {
         DispatchQueue.main.async {
             let alert = NSAlert()
-            alert.messageText = language == .en ? "Confirm Speaker Change" : "确认修改角色"
-            alert.informativeText = language == .en
-                ? "Are you sure you want to change '\(roleLabel)' to '\(targetName)', for all \(matchingCount) sentences?"
-                : "你确定要修改 \(roleLabel) 为 \(targetName), 共 \(matchingCount) 句吗?"
+            alert.messageText = isUnassigned
+                ? (language == .en ? "Confirm Speaker Assignment" : "确认指定角色")
+                : (language == .en ? "Confirm Speaker Change" : "确认修改角色")
+            alert.informativeText = isUnassigned
+                ? (language == .en
+                    ? "Are you sure you want to assign '\(targetName)' for all \(matchingCount) unassigned sentences?"
+                    : "你确定要为所有未分配角色的句子（共 \(matchingCount) 句）统一指定角色为 \(targetName) 吗?")
+                : (language == .en
+                    ? "Are you sure you want to change '\(roleLabel)' to '\(targetName)', for all \(matchingCount) sentences?"
+                    : "你确定要修改 \(roleLabel) 为 \(targetName), 共 \(matchingCount) 句吗?")
             alert.alertStyle = .warning
             alert.addButton(withTitle: language == .en ? "Confirm" : "确定")
             alert.addButton(withTitle: language == .en ? "Cancel" : "取消")
@@ -403,6 +440,10 @@ public struct SpeakerBadgeButton: View {
         self.onSave = onSave
     }
 
+    public var isUnassigned: Bool {
+        speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var effectiveColor: Color {
         if let tintColor { return tintColor }
         return isOverlap ? StudyMateMediaStyle.warning : StudyMateMediaStyle.accent
@@ -415,13 +456,13 @@ public struct SpeakerBadgeButton: View {
             badgeLabel
         }
         .buttonStyle(.plain)
-        .help(language == .en
-              ? "Click to change speaker (this sentence or all matching)"
-              : "点击修改说话人（可选择仅此句或所有相同角色）")
+        .help(isUnassigned
+              ? (language == .en ? "Click to assign speaker" : "点击为当前句指定说话人")
+              : (language == .en ? "Click to change speaker (this sentence or all matching)" : "点击修改说话人（可选择仅此句或所有相同角色）"))
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: speakerRoleLabel,
-                initialText: SpeakerRoleManager.isCompositeRole(speakerRoleLabel) ? "" : (speakerRole ?? speakerRoleLabel),
+                initialText: isUnassigned ? "" : (SpeakerRoleManager.isCompositeRole(speakerRoleLabel) ? "" : (speakerRole ?? speakerRoleLabel)),
                 sentenceIndex: sentenceIndex,
                 matchingCount: matchingCount,
                 language: language,
@@ -434,18 +475,28 @@ public struct SpeakerBadgeButton: View {
 
     @ViewBuilder
     private var badgeLabel: some View {
-        let text = Text(speakerRoleLabel)
-            .font(font)
-            .foregroundStyle(effectiveColor)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(effectiveColor.opacity(0.12))
+        if isUnassigned {
+            Text("—")
+                .font(font)
+                .foregroundStyle(Color.secondary.opacity(0.45))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+        } else {
+            let text = Text(speakerRoleLabel)
+                .font(font)
+                .foregroundStyle(effectiveColor)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(effectiveColor.opacity(0.12))
 
-        switch shape {
-        case .capsule:
-            text.clipShape(Capsule())
-        case .roundedRectangle(let radius):
-            text.clipShape(RoundedRectangle(cornerRadius: radius))
+            switch shape {
+            case .capsule:
+                text.clipShape(Capsule())
+            case .roundedRectangle(let radius):
+                text.clipShape(RoundedRectangle(cornerRadius: radius))
+            }
         }
     }
 }

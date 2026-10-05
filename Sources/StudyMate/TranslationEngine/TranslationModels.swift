@@ -269,6 +269,7 @@ public struct TranslationServiceProfile: Codable, Equatable, Identifiable, Senda
 }
 
 public struct TranslationConfiguration: Sendable, Equatable {
+    public let serviceName: String
     public let provider: TranslationProviderID
     public let model: String
     public let apiKey: String
@@ -283,6 +284,7 @@ public struct TranslationConfiguration: Sendable, Equatable {
     public let targetLanguage: TranslationTargetLanguage
 
     public init(
+        serviceName: String? = nil,
         provider: TranslationProviderID,
         model: String,
         apiKey: String,
@@ -296,6 +298,8 @@ public struct TranslationConfiguration: Sendable, Equatable {
         modelIDJSONPath: String? = nil,
         translationResponseJSONPath: String? = nil
     ) {
+        let normalizedServiceName = serviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.serviceName = (normalizedServiceName?.isEmpty == false) ? normalizedServiceName! : provider.displayName
         self.provider = provider
         self.model = model
         self.apiKey = apiKey

@@ -335,5 +335,87 @@ final class SpeakerRoleManagerTests: XCTestCase {
         let resExact = manager.resolveRename(fromRoleKey: "Jim", inputName: "Jim", currentSpeakerNames: names)
         XCTAssertEqual(resExact.action, .unchanged)
     }
+
+    func testResolveRenameRevertToDefaultRole() {
+        let manager = SpeakerRoleManager()
+        var names = ["s1": "Alice", "s2": "Bob"]
+
+        // 1. 将 Alice 重命名回 s1
+        let res = manager.resolveRename(fromRoleKey: "Alice", inputName: "s1", currentSpeakerNames: names)
+        if case .renamed(let roleKey, let newName) = res.action {
+            XCTAssertEqual(roleKey, "s1")
+            XCTAssertEqual(newName, "s1")
+            XCTAssertNil(res.updatedNames["s1"])
+            XCTAssertNil(res.updatedNames["Alice"])
+        } else {
+            XCTFail("Expected renamed back to s1, got \(res.action)")
+        }
+
+        // 2. 将 s1（当前名称 Alice）通过 key 重置为 "s1"
+        let res2 = manager.resolveRename(fromRoleKey: "s1", inputName: "s1", currentSpeakerNames: names)
+        if case .renamed(let roleKey, let newName) = res2.action {
+            XCTAssertEqual(roleKey, "s1")
+            XCTAssertEqual(newName, "s1")
+            XCTAssertNil(res2.updatedNames["s1"])
+        } else {
+            XCTFail("Expected renamed back to s1, got \(res2.action)")
+        }
+    }
+
+    func testResolveRenameSecondaryRenameCleansOldKey() {
+        let manager = SpeakerRoleManager()
+        let names = ["s1": "Alice", "s2": "Bob"]
+
+        // 将 Alice 改为 Carol，更新的 names 应该保存 s1: Carol，且不能有 Alice: Carol
+        let res = manager.resolveRename(fromRoleKey: "Alice", inputName: "Carol", currentSpeakerNames: names)
+        if case .renamed(let roleKey, let newName) = res.action {
+            XCTAssertEqual(roleKey, "s1")
+            XCTAssertEqual(newName, "Carol")
+            XCTAssertEqual(res.updatedNames["s1"], "Carol")
+            XCTAssertNil(res.updatedNames["Alice"])
+        } else {
+            XCTFail("Expected renamed to Carol, got \(res.action)")
+        }
+    }
+
+    func testResolveSingleSentenceSpeakerDoesNotPolluteExistingKeys() {
+        let manager = SpeakerRoleManager()
+        let names = ["s1": "Alice"]
+        let allIDs: Set<Int> = [0]
+
+        // 针对某一句单独指定新名字 "David"，不应修改 s1 的 Alice
+        let res = manager.resolveSingleSentenceSpeaker(
+            currentRoleLabel: "Alice",
+            currentRole: "Alice",
+            currentSpeakerIDs: [0],
+            newName: "David",
+            currentSpeakerNames: names,
+            allExistingSpeakerIDs: allIDs
+        )
+
+        XCTAssertEqual(res.speakerRole, "David")
+        XCTAssertEqual(res.speakerID, 1)
+        XCTAssertEqual(res.speakerIDs, [1])
+        XCTAssertEqual(res.updatedNames["s1"], "Alice")
+        XCTAssertEqual(res.updatedNames["s2"], "David")
+    }
+
+    func testEngineAssignUnassignedSentenceToSpeaker() {
+        let engine = PlaybackEngine()
+
+        let seg1 = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Hello", speakerID: 0, speakerIDs: [0], speakerRole: "Alice")
+        let seg2 = SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "Unassigned", speakerID: nil, speakerIDs: [], speakerRole: nil)
+        engine.segments = [seg1, seg2]
+
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "Alice")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "")
+
+        // 为 seg2 分配 Alice (仅此句)
+        engine.renameSpeaker(fromRole: "", toName: "Alice", scope: .thisSentenceOnly, segmentID: seg2.id)
+
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "Alice")
+        XCTAssertEqual(engine.segments[1].speakerID, 0)
+        XCTAssertEqual(engine.segments[1].speakerIDs, [0])
+    }
 }
 

@@ -299,4 +299,54 @@ final class TranslationTests: XCTestCase {
         XCTAssertEqual(box.items[0][0].translatedText, "译文_One")
         XCTAssertEqual(box.items[1][0].translatedText, "译文_Three")
     }
+
+    func testTranslationConfigurationPreservesCustomServiceName() {
+        let customProfile = TranslationServiceProfile(
+            name: "nvidia",
+            provider: .openAICompatible,
+            model: "meta/llama-3.3-70b-instruct",
+            serverURL: "https://integrate.api.nvidia.com/v1"
+        )
+        let config = TranslationConfiguration(
+            serviceName: customProfile.name,
+            provider: customProfile.provider,
+            model: customProfile.model,
+            apiKey: "nvapi-test",
+            targetLanguage: .simplifiedChinese,
+            serverURL: customProfile.serverURL
+        )
+        XCTAssertEqual(config.serviceName, "nvidia")
+        XCTAssertEqual(config.provider, .openAICompatible)
+    }
+
+    func testTranslationConfigurationDefaultsToProviderDisplayName() {
+        let config = TranslationConfiguration(
+            provider: .openAICompatible,
+            model: "gpt-4o",
+            apiKey: "key",
+            targetLanguage: .simplifiedChinese
+        )
+        XCTAssertEqual(config.serviceName, "OpenAI")
+    }
+
+    @MainActor
+    func testRefreshModelsAsyncFailsWhenNoAPIKey() async {
+        let settings = TranslationSettings.shared
+        let customID = settings.addCustomModel(
+            modelName: "test-nvidia",
+            protocolID: .openAICompatible,
+            baseURL: "https://api.test/v1",
+            apiKey: ""
+        )
+        defer { settings.removeService(id: customID) }
+
+        let result = await settings.refreshModelsAsync(for: customID)
+        switch result {
+        case .success:
+            XCTFail("Expected failure for missing API key")
+        case .failure(let error):
+            XCTAssertTrue(error is TranslationProviderError)
+            XCTAssertEqual(settings.modelFetchState(for: customID), .failed(TranslationProviderError.missingAPIKey.localizedDescription))
+        }
+    }
 }

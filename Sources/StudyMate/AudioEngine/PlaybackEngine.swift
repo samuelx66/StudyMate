@@ -1907,24 +1907,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
 
             // 同名字幕接管断句时间轴，但句库生成的材料工程作为单一真实源，拥有角色、生词、难句等完整元数据，
-            // 绝不被同目录伴随生成的简化版 .lrc/.srt 覆盖。
-            let isSentenceSession = self.isSentenceLibrarySessionMedia(mediaURL)
-                || compatibleProject?.sentenceLibraryID != nil
-                || self.activeSentenceLibraryID != nil
-
-            if let sidecarItems, !sidecarItems.isEmpty, !(isSentenceSession && compatibleProject != nil) {
+            // 只有当本地尚未保存兼容工程时，才由同名伴随字幕接管初始断句；
+            // 若工程已存在并成功恢复（已包含用户编辑的角色、生词等元数据），绝不被简化字幕覆盖。
+            if let sidecarItems, !sidecarItems.isEmpty, compatibleProject == nil {
                 self.projectRecoveryRequired = false
                 self.pendingProjectForExplicitRecovery = nil
                 self.canUseExistingProject = false
                 self.applySubtitleItems(sidecarItems, origin: .sidecar, persist: true)
-                if let compatibleProject,
-                   let savedWaveform = compatibleProject.waveformData,
-                   !savedWaveform.isEmpty {
-                    self.waveformData = savedWaveform
-                    self.waveformExtractionProgress = 1
-                    if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
-                    return
-                }
                 self.extractWaveform(from: mediaURL, sessionID: sessionID)
                 return
             }
@@ -2678,7 +2667,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let sourceByID = Dictionary(uniqueKeysWithValues: units.map { ($0.id, $0.sourceText) })
         isAutoTranslating = true
         autoTranslationProgress = 0
-        autoTranslationStatusText = "正在使用 \(configuration.provider.displayName) 生成译文…"
+        autoTranslationStatusText = "正在使用 \(configuration.serviceName) 生成译文…"
         translationErrorMessage = nil
 
         automaticTranslationTask = Task { @MainActor [weak self] in
@@ -2734,6 +2723,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.autoTranslationProgress = 1
                 self.isAutoTranslating = false
                 self.autoTranslationStatusText = ""
+                MainStatusCenter.shared.showSuccess("已使用 \(configuration.serviceName) 完成翻译")
             } catch is CancellationError {
                 guard let self, self.translationRequestID == requestID else { return }
                 self.isAutoTranslating = false
@@ -2745,6 +2735,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.isAutoTranslating = false
                 self.autoTranslationStatusText = ""
                 self.translationErrorMessage = error.localizedDescription
+                MainStatusCenter.shared.showError("翻译失败：\(error.localizedDescription)")
             }
         }
     }
@@ -4690,21 +4681,43 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 获取当前工程所有已绑定的说话人角色名称映射表（如 ["s1": "Jim", "s2": "Tom"]）
     public var currentSpeakerNames: [String: String] {
         var names: [String: String] = [:]
+        var maxSpeakerID = -1
+
         for seg in segments {
             if let sid = seg.speakerID {
+                maxSpeakerID = max(maxSpeakerID, sid)
                 let key = SpeakerRoleManager.roleKey(for: sid)
                 if let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     names[key] = role
                 }
             }
+            for sid in seg.speakerIDs {
+                maxSpeakerID = max(maxSpeakerID, sid)
+            }
         }
+
+        // 收集拥有自定义 speakerRole 但 speakerID 尚未初始化的条目，补全全局角色名映射
+        for seg in segments {
+            guard seg.speakerID == nil, seg.speakerIDs.isEmpty else { continue }
+            if let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let trimmedRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !names.values.contains(where: { $0.caseInsensitiveCompare(trimmedRole) == .orderedSame }) {
+                    maxSpeakerID += 1
+                    let newKey = SpeakerRoleManager.roleKey(for: maxSpeakerID)
+                    names[newKey] = trimmedRole
+                }
+            }
+        }
+
         return names
     }
 
-    /// 统计指定角色标签在当前工程中的句子总数
+    /// 统计指定角色标签在当前工程中的句子总数（若传空字符串，则统计所有尚未分配角色的句子总数）
     public func countSegments(withSpeakerRoleLabel label: String) -> Int {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return 0 }
+        if trimmed.isEmpty {
+            return segments.filter { $0.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        }
         let normTarget = trimmed.replacingOccurrences(of: "→", with: "->")
         return segments.filter {
             let segLabel = $0.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4767,7 +4780,53 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
 
-        // 2. 以下为修改所有相同角色（scope == .allMatching 或未指定 segmentID 时）
+        // 2. 如果 fromRole 为空，表示为工程中所有未分配角色的句子统一批量指定角色
+        if fromRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let singleRes = SpeakerRoleManager.shared.resolveSingleSentenceSpeaker(
+                currentSegment: SentenceSegment(index: 1, startTime: 0, endTime: 1),
+                inputName: trimmed,
+                currentSpeakerNames: currentNames
+            )
+            var updatedCount = 0
+            for i in 0..<segments.count {
+                if segments[i].speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    segments[i].speakerID = singleRes.speakerID
+                    segments[i].speakerIDs = singleRes.speakerIDs
+                    segments[i].isSpeakerOverlap = false
+                    segments[i].speakerRole = singleRes.speakerRole
+                    updatedCount += 1
+
+                    if let libraryID = activeSentenceLibraryID {
+                        let entryID = activeSentenceLibraryEntryMap[segments[i].id] ?? segments[i].id
+                        Task {
+                            try? SentenceLibraryStore.shared.updateSpeakerAssignment(
+                                id: entryID,
+                                speakerID: singleRes.speakerID,
+                                speakerIDs: singleRes.speakerIDs,
+                                isSpeakerOverlap: false,
+                                speakerRole: singleRes.speakerRole,
+                                in: libraryID
+                            )
+                        }
+                    }
+                }
+            }
+            if let libraryID = activeSentenceLibraryID, singleRes.updatedNames != currentNames {
+                Task {
+                    try? SentenceLibraryStore.shared.updateSpeakerNames(singleRes.updatedNames, in: libraryID)
+                }
+            }
+            scheduleDebouncedPersistence()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已为所有未分配角色句子指定为 \(singleRes.displayName)（共 \(updatedCount) 句）",
+                    "Assigned '\(singleRes.displayName)' to \(updatedCount) unassigned sentences"
+                )
+            )
+            return
+        }
+
+        // 3. 以下为修改所有相同角色（scope == .allMatching 或未指定 segmentID 时）
         let resolution = SpeakerRoleManager.shared.resolveRename(
             fromRoleKey: fromRole,
             inputName: trimmed,
@@ -4779,7 +4838,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             break
 
         case .resolvedToSingle(_, let toKey, let unifiedName, let targetSpeakerID):
-            let roleToSet: String? = (unifiedName != toKey) ? unifiedName : nil
+            let roleToSet: String? = (unifiedName.caseInsensitiveCompare(toKey) == .orderedSame) ? nil : unifiedName
             var updatedCount = 0
 
             for i in 0..<segments.count {
@@ -4815,7 +4874,10 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     var names = resolution.updatedNames
                     if let roleToSet {
                         names[toKey] = roleToSet
+                    } else {
+                        names.removeValue(forKey: toKey)
                     }
+                    names.removeValue(forKey: fromRole)
                     try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
                 }
             }
@@ -4831,9 +4893,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         case .renamed(let roleKey, let newName):
             var updatedCount = 0
             let sid = SpeakerRoleManager.speakerID(from: roleKey)
+            let isResettingToDefault = (newName.caseInsensitiveCompare(roleKey) == .orderedSame)
+            let effectiveNewRole: String? = isResettingToDefault ? nil : newName
+
             for i in 0..<segments.count {
-                if (sid != nil && segments[i].speakerID == sid) || segments[i].speakerRole == fromRole || segments[i].speakerRoleLabel == fromRole {
-                    segments[i].speakerRole = newName
+                let label = segments[i].speakerRoleLabel
+                let role = segments[i].speakerRole
+                let isMatch = (sid != nil && segments[i].speakerID == sid)
+                    || role == fromRole
+                    || label == fromRole
+                    || (sid != nil && segments[i].speakerIDs.contains(sid!))
+                if isMatch {
+                    segments[i].speakerRole = effectiveNewRole
+                    if let sid {
+                        segments[i].speakerID = sid
+                        if segments[i].speakerIDs.isEmpty {
+                            segments[i].speakerIDs = [sid]
+                        }
+                    }
                     updatedCount += 1
                 }
             }
@@ -4842,17 +4919,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if let libraryID = activeSentenceLibraryID {
                 Task {
                     var names = resolution.updatedNames
-                    names[roleKey] = newName
-                    for seg in self.segments where seg.speakerRole == newName {
-                        if let id = seg.speakerID {
-                            names[SpeakerRoleManager.roleKey(for: id)] = newName
-                        }
+                    if let effectiveNewRole {
+                        names[roleKey] = effectiveNewRole
+                    } else {
+                        names.removeValue(forKey: roleKey)
                     }
+                    names.removeValue(forKey: fromRole)
                     try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
                 }
             }
             MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
+                isResettingToDefault
+                    ? LanguageManager.shared.text("已将所有「\(fromRole)」恢复为默认角色 \(roleKey)（共 \(updatedCount) 句）", "Reset all '\(fromRole)' to default \(roleKey) (\(updatedCount) sentences)")
+                    : LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
             )
 
         case .merged(let fromKey, let toKey, let unifiedName, _):
@@ -4880,7 +4959,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     }
                     var names = resolution.updatedNames
                     let targetKey = SpeakerRoleManager.roleKey(for: targetSpeakerID)
-                    names[targetKey] = unifiedName
+                    if unifiedName.caseInsensitiveCompare(targetKey) != .orderedSame {
+                        names[targetKey] = unifiedName
+                    } else {
+                        names.removeValue(forKey: targetKey)
+                    }
                     names.removeValue(forKey: fromRole)
                     names.removeValue(forKey: fromKey)
                     for srcID in affectedSourceIDs {

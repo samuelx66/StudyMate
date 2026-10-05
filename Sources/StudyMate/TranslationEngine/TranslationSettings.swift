@@ -202,6 +202,7 @@ public final class TranslationSettings: ObservableObject {
         let model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, !model.isEmpty else { return nil }
         return TranslationConfiguration(
+            serviceName: profile.name,
             provider: profile.provider,
             model: model,
             apiKey: key,
@@ -229,19 +230,32 @@ public final class TranslationSettings: ObservableObject {
     /// 覆盖用户随后修改过的地址、Key 或服务配置。
     public func refreshModels(for serviceID: UUID) {
         modelFetchTasks[serviceID]?.cancel()
+        let task = Task { @MainActor [weak self] in
+            _ = await self?.refreshModelsAsync(for: serviceID)
+        }
+        modelFetchTasks[serviceID] = task
+    }
+
+    @discardableResult
+    public func refreshModelsAsync(for serviceID: UUID) async -> Result<[TranslationModelDescriptor], Error> {
+        modelFetchTasks[serviceID]?.cancel()
         modelFetchTasks[serviceID] = nil
-        guard let profile = services.first(where: { $0.id == serviceID }) else { return }
+        guard let profile = services.first(where: { $0.id == serviceID }) else {
+            return .failure(TranslationProviderError.invalidEndpoint)
+        }
         let apiKey = apiKey(for: serviceID).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             availableModels[serviceID] = []
-            modelFetchStates[serviceID] = .failed(TranslationProviderError.missingAPIKey.localizedDescription)
-            return
+            let err = TranslationProviderError.missingAPIKey
+            modelFetchStates[serviceID] = .failed(err.localizedDescription)
+            return .failure(err)
         }
 
         let model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? profile.provider.defaultModel
             : profile.model
         let configuration = TranslationConfiguration(
+            serviceName: profile.name,
             provider: profile.provider,
             model: model,
             apiKey: apiKey,
@@ -259,37 +273,36 @@ public final class TranslationSettings: ObservableObject {
         modelFetchRequestIDs[serviceID] = requestID
         modelFetchStates[serviceID] = .loading
 
-        let task = Task { @MainActor [weak self] in
-            do {
-                let models = try await TranslationService.shared.listModels(configuration: configuration)
-                try Task.checkCancellation()
-                guard let self,
-                      self.modelFetchRequestIDs[serviceID] == requestID,
-                      self.matchesModelFetchProfile(
-                          self.services.first(where: { $0.id == serviceID }),
-                          captured: profile
-                      ),
-                      self.apiKey(for: serviceID) == apiKey else { return }
-                self.availableModels[serviceID] = models
-                self.modelFetchStates[serviceID] = .loaded(count: models.count)
-                if let current = self.services.first(where: { $0.id == serviceID })?.model,
-                   (current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || current == profile.provider.defaultModel),
-                   let first = models.first {
-                    self.updateService(id: serviceID, model: first.id)
-                }
-                self.modelFetchTasks[serviceID] = nil
-            } catch is CancellationError {
-                // 用户修改地址/Key 或主动刷新时，旧请求无需显示错误。
-            } catch {
-                guard let self,
-                      self.modelFetchRequestIDs[serviceID] == requestID else { return }
-                self.availableModels[serviceID] = []
-                self.modelFetchStates[serviceID] = .failed(error.localizedDescription)
-                self.modelFetchTasks[serviceID] = nil
+        do {
+            let models = try await TranslationService.shared.listModels(configuration: configuration)
+            try Task.checkCancellation()
+            guard self.modelFetchRequestIDs[serviceID] == requestID,
+                  self.matchesModelFetchProfile(
+                      self.services.first(where: { $0.id == serviceID }),
+                      captured: profile
+                  ),
+                  self.apiKey(for: serviceID) == apiKey else {
+                return .failure(CancellationError())
             }
+            self.availableModels[serviceID] = models
+            self.modelFetchStates[serviceID] = .loaded(count: models.count)
+            if let current = self.services.first(where: { $0.id == serviceID })?.model,
+               (current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || current == profile.provider.defaultModel),
+               let first = models.first {
+                self.updateService(id: serviceID, model: first.id)
+            }
+            return .success(models)
+        } catch is CancellationError {
+            return .failure(CancellationError())
+        } catch {
+            guard self.modelFetchRequestIDs[serviceID] == requestID else {
+                return .failure(error)
+            }
+            self.availableModels[serviceID] = []
+            self.modelFetchStates[serviceID] = .failed(error.localizedDescription)
+            return .failure(error)
         }
-        modelFetchTasks[serviceID] = task
     }
 
     @discardableResult

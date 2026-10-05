@@ -275,7 +275,7 @@ struct PlaybackSentenceCardView: View, Equatable {
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
 
-                if !seg.speakerRoleLabel.isEmpty {
+                if !seg.speakerRoleLabel.isEmpty || !availableSpeakers.isEmpty {
                     SpeakerBadgeButton(
                         speakerRoleLabel: seg.speakerRoleLabel,
                         speakerRole: seg.speakerRole,
@@ -512,14 +512,19 @@ struct PlaybackSentenceCardView: View, Equatable {
                 )
             }
 
-            if !seg.speakerRoleLabel.isEmpty {
-                Button {
-                    renameText = seg.speakerRole ?? seg.speakerRoleLabel
-                    isShowingRenamePopover = true
-                } label: {
+            Button {
+                renameText = seg.speakerRole ?? seg.speakerRoleLabel
+                isShowingRenamePopover = true
+            } label: {
+                if !seg.speakerRoleLabel.isEmpty {
                     Label(
                         language == .en ? "Rename Speaker (\(seg.speakerRoleLabel))…" : "修改说话人 (\(seg.speakerRoleLabel))…",
                         systemImage: "person.crop.circle.badge.checkmark"
+                    )
+                } else {
+                    Label(
+                        language == .en ? "Set Speaker…" : "设置说话人…",
+                        systemImage: "person.crop.circle.badge.plus"
                     )
                 }
             }

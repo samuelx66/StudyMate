@@ -58,7 +58,7 @@ public struct PlaybackListModeTableView: View {
     }
 
     private func updateHasSpeakers() {
-        hasSpeakers = engine.segments.contains { !$0.speakerIDs.isEmpty }
+        hasSpeakers = engine.segments.contains { !$0.speakerRoleLabel.isEmpty }
     }
 
     private func markUserScroll() {
@@ -299,6 +299,9 @@ private struct PlaybackListModeRowsView: View, Equatable {
         LazyVStack(spacing: 0) {
             ForEach(segments) { seg in
                 let count = segments.filter {
+                    if seg.speakerRoleLabel.isEmpty {
+                        return $0.speakerRoleLabel.isEmpty
+                    }
                     let l = $0.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
                     let target = seg.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
                     return l == target || $0.speakerRole == seg.speakerRoleLabel
@@ -413,25 +416,19 @@ private struct PlaybackListModeRowView: View, Equatable {
             // 角色
             if hasSpeakers {
                 HStack {
-                    if !seg.speakerRoleLabel.isEmpty {
-                        SpeakerBadgeButton(
-                            speakerRoleLabel: seg.speakerRoleLabel,
-                            speakerRole: seg.speakerRole,
-                            isOverlap: seg.isSpeakerOverlap,
-                            font: .system(size: 10, weight: .semibold),
-                            tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
-                            shape: .roundedRectangle(3),
-                            language: language,
-                            availableSpeakers: availableSpeakers,
-                            sentenceIndex: sentenceIndex,
-                            matchingCount: matchingCount,
-                            onSave: onRenameSpeaker
-                        )
-                    } else {
-                        Text("—")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary.opacity(0.35))
-                    }
+                    SpeakerBadgeButton(
+                        speakerRoleLabel: seg.speakerRoleLabel,
+                        speakerRole: seg.speakerRole,
+                        isOverlap: seg.isSpeakerOverlap,
+                        font: .system(size: 10, weight: .semibold),
+                        tintColor: seg.isSpeakerOverlap ? StudyMateMediaStyle.warning : Color.purple,
+                        shape: .roundedRectangle(3),
+                        language: language,
+                        availableSpeakers: availableSpeakers,
+                        sentenceIndex: sentenceIndex,
+                        matchingCount: matchingCount,
+                        onSave: onRenameSpeaker
+                    )
                 }
                 .frame(width: 65, alignment: .center)
                 .padding(.top, 8)

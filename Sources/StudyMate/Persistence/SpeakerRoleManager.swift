@@ -110,16 +110,28 @@ public final class SpeakerRoleManager: @unchecked Sendable {
             return (.unchanged, currentSpeakerNames)
         }
 
-        // 0. 如果输入与当前角色标签或已绑定的角色名相同，直接返回未修改
+        // 0. 如果输入与当前角色标签相同，直接返回未修改
         if trimmedInput.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
-            return (.unchanged, currentSpeakerNames)
-        }
-        if let existing = currentSpeakerNames[normalizedSource],
-           existing.caseInsensitiveCompare(trimmedInput) == .orderedSame {
             return (.unchanged, currentSpeakerNames)
         }
 
         var names = currentSpeakerNames
+
+        // 反查源角色的标准代号键（例如从自定义姓名 "Alice" 反查出 "s1"）
+        var resolvedSourceKey = Self.normalizeRoleKey(fromRoleKey)
+        if Self.speakerID(from: resolvedSourceKey) == nil {
+            for (key, name) in names {
+                if name.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
+                    resolvedSourceKey = Self.normalizeRoleKey(key)
+                    break
+                }
+            }
+        }
+
+        if let existing = names[resolvedSourceKey],
+           existing.caseInsensitiveCompare(trimmedInput) == .orderedSame {
+            return (.unchanged, currentSpeakerNames)
+        }
 
         // 1. 如果源角色是一个复合/多说话人标签（如 "s1+s2", "s1->s2", "s1→s2"）
         if Self.isCompositeRole(fromRoleKey) {
@@ -160,36 +172,54 @@ public final class SpeakerRoleManager: @unchecked Sendable {
             return (.resolvedToSingle(fromRoleKey: fromRoleKey, toRoleKey: targetKey, unifiedName: trimmedInput, targetSpeakerID: targetID), names)
         }
 
-        // 2. 普通单说话人重命名或合并
-        // 检查输入是否是一个已有的角色标识符（例如输入了 "s1"）
+        // 2. 普通单说话人重命名、合并或恢复默认
         let normalizedInputKey = Self.normalizeRoleKey(trimmedInput)
-        if normalizedInputKey != normalizedSource,
-           let targetID = Self.speakerID(from: normalizedInputKey) {
-            let targetKey = Self.roleKey(for: targetID)
-            let unifiedName = names[targetKey] ?? names[normalizedSource] ?? targetKey
-            names.removeValue(forKey: normalizedSource)
-            for (k, v) in names where v == fromRoleKey {
+
+        // 2.1 用户输入了自身对应的默认代号（例如把 Alice 改回 "s1" 或 "1"），恢复为默认编号并清除自定义名
+        if normalizedInputKey == resolvedSourceKey {
+            names.removeValue(forKey: resolvedSourceKey)
+            names.removeValue(forKey: fromRoleKey)
+            for (k, v) in names where v.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
                 names.removeValue(forKey: k)
             }
-            names[targetKey] = unifiedName
+            return (.renamed(roleKey: resolvedSourceKey, newName: resolvedSourceKey), names)
+        }
+
+        // 2.2 用户输入了另一个角色的标识符（例如输入了 "s2"）
+        if let targetID = Self.speakerID(from: normalizedInputKey) {
+            let targetKey = Self.roleKey(for: targetID)
+            let unifiedName = names[targetKey] ?? targetKey
+            names.removeValue(forKey: resolvedSourceKey)
+            names.removeValue(forKey: fromRoleKey)
+            for (k, v) in names where v.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
+                names.removeValue(forKey: k)
+            }
+            if unifiedName != targetKey {
+                names[targetKey] = unifiedName
+            }
             return (.merged(fromRoleKey: fromRoleKey, toRoleKey: targetKey, unifiedName: unifiedName, updatedCount: 0), names)
         }
 
-        // 检查输入的姓名是否已绑定到另一个角色（例如把 s10 改名为 "Richard"，而 s11 已经是 "Richard"）
+        // 2.3 检查输入的姓名是否已绑定到另一个角色（例如把 s10 改名为 "Richard"，而 s11 已经是 "Richard"）
         for (existingKey, existingName) in names {
-            if existingKey != normalizedSource && existingName.caseInsensitiveCompare(trimmedInput) == .orderedSame {
+            if existingKey != resolvedSourceKey && existingName.caseInsensitiveCompare(trimmedInput) == .orderedSame {
                 // 触发智能合并！
-                names.removeValue(forKey: normalizedSource)
-                for (k, v) in names where v == fromRoleKey {
+                names.removeValue(forKey: resolvedSourceKey)
+                names.removeValue(forKey: fromRoleKey)
+                for (k, v) in names where v.caseInsensitiveCompare(fromRoleKey) == .orderedSame {
                     names.removeValue(forKey: k)
                 }
                 return (.merged(fromRoleKey: fromRoleKey, toRoleKey: existingKey, unifiedName: existingName, updatedCount: 0), names)
             }
         }
 
-        // 普通重命名
-        names[normalizedSource] = trimmedInput
-        return (.renamed(roleKey: fromRoleKey, newName: trimmedInput), names)
+        // 2.4 普通重命名为全新姓名（如 "Alice"）
+        names.removeValue(forKey: fromRoleKey)
+        for (k, v) in names where v.caseInsensitiveCompare(fromRoleKey) == .orderedSame && k != resolvedSourceKey {
+            names.removeValue(forKey: k)
+        }
+        names[resolvedSourceKey] = trimmedInput
+        return (.renamed(roleKey: resolvedSourceKey, newName: trimmedInput), names)
     }
 
     /// 解析对单个断句修改发言人的结果（仅作用于当前句，不修改全局其它同角色句子）
@@ -281,24 +311,7 @@ public final class SpeakerRoleManager: @unchecked Sendable {
             )
         }
 
-        // 4.2 如果当前句子是单人角色
-        if let currentID = currentSegment.speakerID {
-            let currentKey = Self.roleKey(for: currentID)
-            // 若当前角色代号尚未有自定义名字（例如仅为 s1），则将其绑定为输入的名字
-            if names[currentKey] == nil || names[currentKey] == currentKey {
-                names[currentKey] = trimmedInput
-                return SingleSentenceSpeakerResult(
-                    speakerID: currentID,
-                    speakerIDs: [currentID],
-                    isOverlap: false,
-                    speakerRole: trimmedInput,
-                    displayName: trimmedInput,
-                    updatedNames: names
-                )
-            }
-        }
-
-        // 当前角色已有其它名字，且仅改此句：为新角色分配一个新的 speakerID
+        // 4.2 单独修改本句为一个新名字：为该单句的新角色分配一个新的独立 speakerID，绝不覆盖绑架原角色的全局映射
         let existingIDs = names.keys.compactMap { Self.speakerID(from: $0) }
         let currentID = currentSegment.speakerID ?? 0
         let maxID = max(existingIDs.max() ?? 0, currentID)

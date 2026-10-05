@@ -1302,13 +1302,23 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
 
                 var speakerRef: StudyMatePackageSpeakerReference? = nil
-                if let sid = entry.speakerID {
-                    let defaultLabel = "s\(sid + 1)"
-                    let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? defaultLabel
+                let resolvedIDs = entry.speakerIDs.isEmpty ? (entry.speakerID.map { [$0] } ?? []) : entry.speakerIDs
+                let resolvedID = entry.speakerID ?? resolvedIDs.first ?? 0
+                let defaultLabel = "s\(resolvedID + 1)"
+                let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
+
+                if let roleName, !roleName.isEmpty {
                     speakerRef = StudyMatePackageSpeakerReference(
-                        id: sid,
+                        id: resolvedID,
                         name: roleName,
-                        ids: entry.speakerIDs.isEmpty ? [sid] : entry.speakerIDs,
+                        ids: resolvedIDs.isEmpty ? [resolvedID] : resolvedIDs,
+                        isOverlap: entry.isSpeakerOverlap
+                    )
+                } else if !resolvedIDs.isEmpty {
+                    speakerRef = StudyMatePackageSpeakerReference(
+                        id: resolvedID,
+                        name: defaultLabel,
+                        ids: resolvedIDs,
                         isOverlap: entry.isSpeakerOverlap
                     )
                 }
@@ -1686,13 +1696,23 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         var portableEntries: [StudyMatePackageEntry] = []
         for (order, entry) in dbEntries.enumerated() {
             var speakerRef: StudyMatePackageSpeakerReference? = nil
-            if let sid = entry.speakerID {
-                let defaultLabel = "s\(sid + 1)"
-                let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? defaultLabel
+            let resolvedIDs = entry.speakerIDs.isEmpty ? (entry.speakerID.map { [$0] } ?? []) : entry.speakerIDs
+            let resolvedID = entry.speakerID ?? resolvedIDs.first ?? 0
+            let defaultLabel = "s\(resolvedID + 1)"
+            let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
+
+            if let roleName, !roleName.isEmpty {
                 speakerRef = StudyMatePackageSpeakerReference(
-                    id: sid,
+                    id: resolvedID,
                     name: roleName,
-                    ids: entry.speakerIDs.isEmpty ? [sid] : entry.speakerIDs,
+                    ids: resolvedIDs.isEmpty ? [resolvedID] : resolvedIDs,
+                    isOverlap: entry.isSpeakerOverlap
+                )
+            } else if !resolvedIDs.isEmpty {
+                speakerRef = StudyMatePackageSpeakerReference(
+                    id: resolvedID,
+                    name: defaultLabel,
+                    ids: resolvedIDs,
                     isOverlap: entry.isSpeakerOverlap
                 )
             }

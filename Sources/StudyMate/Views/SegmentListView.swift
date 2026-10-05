@@ -2619,6 +2619,28 @@ private struct TranslationExecutionSheet: View {
                 .onChange(of: serviceID) { _, value in
                     settings.rememberTranslationService(value)
                 }
+
+                Button {
+                    guard let serviceID else { return }
+                    testServiceConnectivity(serviceID: serviceID)
+                } label: {
+                    if let serviceID, settings.modelFetchState(for: serviceID) == .loading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: "bolt.badge.checkmark")
+                    }
+                    Text(lang.text("测试", "Test"))
+                }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+                .disabled(
+                    serviceID == nil
+                        || (serviceID != nil && !settings.hasAPIKey(for: serviceID!))
+                        || (serviceID != nil && settings.modelFetchState(for: serviceID!) == .loading)
+                )
+                .help(lang.text("测试服务连通性并拉取可用模型", "Test service connectivity and fetch available models"))
             }
 
             HStack(spacing: 8) {
@@ -2626,12 +2648,21 @@ private struct TranslationExecutionSheet: View {
                     .font(.body.weight(.medium))
                     .frame(width: 88, alignment: .leading)
                 let models = serviceID.map { settings.availableModels(for: $0) } ?? []
-                if !models.isEmpty, let serviceID {
+                let currentModel = serviceID.flatMap { id in settings.services.first(where: { $0.id == id })?.model } ?? ""
+                let selectableModels: [TranslationModelDescriptor] = {
+                    var list = models
+                    if !currentModel.isEmpty && !list.contains(where: { $0.id == currentModel }) {
+                        list.insert(TranslationModelDescriptor(id: currentModel, displayName: currentModel), at: 0)
+                    }
+                    return list
+                }()
+
+                if !selectableModels.isEmpty, let serviceID {
                     Picker("", selection: Binding(
                         get: { settings.services.first(where: { $0.id == serviceID })?.model ?? "" },
                         set: { settings.updateService(id: serviceID, model: $0) }
                     )) {
-                        ForEach(models) { model in
+                        ForEach(selectableModels) { model in
                             Text(model.displayName).tag(model.id)
                         }
                     }
@@ -2641,6 +2672,40 @@ private struct TranslationExecutionSheet: View {
                     Text(selectedService?.model ?? "—")
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if let serviceID {
+                switch settings.modelFetchState(for: serviceID) {
+                case .idle:
+                    EmptyView()
+                case .loading:
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 12, height: 12)
+                        Text(lang.text("正在测试连接并拉取模型列表…", "Testing connection and loading models…"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.leading, 96)
+                case let .loaded(count):
+                    Label(
+                        lang.text("连通性测试成功，已拉取 \(count) 个可用模型", "Connected successfully, loaded \(count) available models"),
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(StudyMateMediaStyle.success)
+                    .padding(.leading, 96)
+                case let .failed(message):
+                    Label(
+                        lang.text("连通性测试失败：\(message)", "Connectivity test failed: \(message)"),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(StudyMateMediaStyle.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 96)
                 }
             }
 
@@ -2667,7 +2732,7 @@ private struct TranslationExecutionSheet: View {
                         : "exclamationmark.triangle.fill")
                         .foregroundStyle(settings.hasAPIKey(for: selectedService.id) ? StudyMateMediaStyle.success : StudyMateMediaStyle.warning)
                     Text(settings.hasAPIKey(for: selectedService.id)
-                        ? lang.text("API Key 已配置，将使用 \(selectedService.provider.displayName) / \(selectedService.model)。", "API key is configured. Using \(selectedService.provider.displayName) / \(selectedService.model).")
+                        ? lang.text("API Key 已配置，将使用 \(selectedService.name) / \(selectedService.model)。", "API key is configured. Using \(selectedService.name) / \(selectedService.model).")
                         : lang.text("当前服务尚未配置 API Key，请先在设置中填写。", "This service has no API key. Add it in Settings first."))
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -2717,6 +2782,24 @@ private struct TranslationExecutionSheet: View {
             batchSize: requestedBatchSize
         )
         dismiss()
+    }
+
+    private func testServiceConnectivity(serviceID: UUID) {
+        Task {
+            let result = await settings.refreshModelsAsync(for: serviceID)
+            switch result {
+            case .success(let models):
+                MainStatusCenter.shared.showSuccess(
+                    lang.text("服务连通成功，已拉取 \(models.count) 个可用模型", "Service connected, loaded \(models.count) available models")
+                )
+            case .failure(let error):
+                if !(error is CancellationError) {
+                    MainStatusCenter.shared.showError(
+                        lang.text("连通性测试失败：\(error.localizedDescription)", "Connectivity test failed: \(error.localizedDescription)")
+                    )
+                }
+            }
+        }
     }
 }
 
