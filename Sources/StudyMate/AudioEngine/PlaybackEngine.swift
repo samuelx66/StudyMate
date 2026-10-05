@@ -309,9 +309,11 @@ public final class MenuTrackingState: ObservableObject {
 public final class ActiveSegmentPresentationState: ObservableObject {
     @Published public fileprivate(set) var index: Int?
     @Published public fileprivate(set) var explicitSelectionRevision: Int = 0
+    @Published public fileprivate(set) var isWithinSegmentTimeRange: Bool = true
 
-    fileprivate init(index: Int? = nil) {
+    fileprivate init(index: Int? = nil, isWithinSegmentTimeRange: Bool = true) {
         self.index = index
+        self.isWithinSegmentTimeRange = isWithinSegmentTimeRange
     }
 
     fileprivate func updateIndex(_ index: Int?) {
@@ -321,6 +323,11 @@ public final class ActiveSegmentPresentationState: ObservableObject {
 
     fileprivate func updateExplicitSelectionRevision(_ revision: Int) {
         explicitSelectionRevision = revision
+    }
+
+    fileprivate func updateIsWithinSegmentTimeRange(_ within: Bool) {
+        guard isWithinSegmentTimeRange != within else { return }
+        isWithinSegmentTimeRange = within
     }
 }
 
@@ -632,6 +639,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             if activeSegmentIndex != oldValue {
                 activeSegmentState.updateIndex(activeSegmentIndex)
                 updateSecondaryViewportForActiveSegment()
+                updateSubtitleTimeRangeState(at: currentTime)
                 if let libraryID = activeSentenceLibraryID, let idx = activeSegmentIndex {
                     let entryID = idx < segments.count ? activeSentenceLibraryEntryMap[segments[idx].id] : nil
                     Task {
@@ -3489,6 +3497,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         self.currentTime = clampedTime
         updateActiveSegment(for: clampedTime)
+        updateSubtitleTimeRangeState(at: clampedTime)
 
         guard isBackendReady else {
             pendingResumeTime = clampedTime
@@ -3603,6 +3612,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func handlePlaybackBoundary(at time: Double) {
+        defer { updateSubtitleTimeRangeState(at: time) }
         guard !isWaveformFrozenAtNaturalEnd else { return }
 
         if !isPlaying,
@@ -3698,19 +3708,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // Only an explicit pause clears wantsPlayback; isPlaying is an
         // observation and must not disable the repeat decision here.
         // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
-        if time >= currentSeg.endTime - 0.005 && wantsPlayback && !isShadowingPaused {
+        // 全篇循环模式（Aboboo 单首循环风格）：
+        // 媒体流按绝对时间平滑自然播放，贯穿整个音频，不被断句截断、拦截或重复；
+        // 只有当整个媒体物理文件播放到真正结束时，才由 onFinished 触发回到 0.0s 循环。
+        // 此处不做任何句尾跳转或复读，放行进入下方的包含判断与活跃句自然更新。
+        if loopMode != .all && time >= currentSeg.endTime - 0.005 && wantsPlayback && !isShadowingPaused {
             if shouldAdvanceAfterCurrentSegmentPlayback {
                 shouldAdvanceAfterCurrentSegmentPlayback = false
                 // 反译模式的完成播放是一次性动作，完成后直接复用统一的
                 // “下一句并暂停”路径，不让普通循环模式再次介入。
                 advanceToNextSentenceAfterCompletion(playNextSentence: false)
-                return
-            }
-            guard loopMode != .all else {
-                // 全篇循环模式（Aboboo 单首循环风格）：
-                // 媒体流按绝对时间平滑自然播放，贯穿整个音频，不被断句截断、拦截或重复；
-                // 只有当整个媒体物理文件播放到真正结束时，才由 onFinished 触发回到 0.0s 循环。
-                // 此处不做任何句尾跳转或复读，直接放行，让时钟继续自然向前流淌。
                 return
             }
             let needsRepeat = (repeatCountLimit == 0) || (currentRepeatCount < repeatCountLimit) || (loopMode == .singleSegment)
@@ -3756,6 +3763,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         // 3. 游标在静音区间或外部时更新活跃句
         updateActiveSegment(for: time)
+    }
+
+    private func updateSubtitleTimeRangeState(at time: Double) {
+        let inRange: Bool
+        if isShadowingPaused {
+            inRange = true
+        } else if let idx = activeSegmentIndex, segments.indices.contains(idx) {
+            let seg = segments[idx]
+            inRange = time >= seg.startTime && time <= seg.endTime
+        } else {
+            inRange = false
+        }
+        activeSegmentState.updateIsWithinSegmentTimeRange(inRange)
     }
 
     private func triggerSentenceRepeat(for segment: SentenceSegment) {

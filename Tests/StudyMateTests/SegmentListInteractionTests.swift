@@ -469,6 +469,7 @@ final class SegmentListInteractionTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testSentenceMenuShortcutsAreAllRegisteredInCatalog() {
         let catalog = StudyMateShortcutCatalog.all
         let expectedShortcutIDs: [StudyMateShortcutID] = [
@@ -502,6 +503,7 @@ final class SegmentListInteractionTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testViewAndWindowMenuShortcutsAreRegisteredInCatalog() {
         let catalog = StudyMateShortcutCatalog.all
 
@@ -511,7 +513,7 @@ final class SegmentListInteractionTests: XCTestCase {
 
         let vocabDesc = catalog.first(where: { $0.id == .openVocabulary })
         XCTAssertNotNil(vocabDesc)
-        XCTAssertEqual(vocabDesc?.keyDisplay, "⌘⇧V")
+        XCTAssertEqual(vocabDesc?.keyDisplay, "⇧⌘V")
 
         let expectedModes: [(PlaybackInterfaceMode, String, String)] = [
             (.video, "1", "⌥⌘1"),

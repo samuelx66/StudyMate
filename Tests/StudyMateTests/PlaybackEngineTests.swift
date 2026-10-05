@@ -111,7 +111,7 @@ final class PlaybackEngineTests: XCTestCase {
     }
 
     func testDelayedBoundaryStillRepeatsAfterBackendReportsPaused() async throws {
-        for mode: PlaybackLoopMode in [.singleSegment, .normal, .all, .pauseAfterSegment] {
+        for mode: PlaybackLoopMode in [.singleSegment, .normal, .pauseAfterSegment] {
             let directory = temporaryTestDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
             let media = directory.appendingPathComponent("delayed.mp4")
@@ -1495,6 +1495,65 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(engine.primaryViewport.start, 0.0, accuracy: 0.001)
         XCTAssertEqual(engine.primaryViewport.end, 15.0, accuracy: 0.001)
         XCTAssertTrue(native.isPlaying)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testLoopAllModeSubtitlesFollowSegmentTimestampsAndHideDuringGaps() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("loop-subtitles.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .all
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 1.0, endTime: 3.0, text: "First sentence", translation: "第一句"),
+            SentenceSegment(index: 2, startTime: 5.0, endTime: 8.0, text: "Second sentence", translation: "第二句")
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // 1. 在第 1 句之前的静音期 (0.5s)：应预选第 1 句，但不在时间区间内，隐藏字幕
+        native.emitTime(0.5)
+        for _ in 0..<2 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertFalse(engine.activeSegmentState.isWithinSegmentTimeRange)
+
+        // 2. 进入第 1 句时间范围 (1.5s)：处于区间 [1.0, 3.0] 内，显示字幕
+        native.emitTime(1.5)
+        for _ in 0..<2 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertTrue(engine.activeSegmentState.isWithinSegmentTimeRange)
+
+        // 3. 第 1 句播完后的静音间隙 (3.5s)：活跃句推进到第 2 句，但不在第 2 句时间区间内，隐藏字幕
+        native.emitTime(3.5)
+        for _ in 0..<2 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertFalse(engine.activeSegmentState.isWithinSegmentTimeRange)
+
+        // 4. 进入第 2 句时间范围 (6.0s)：处于区间 [5.0, 8.0] 内，显示字幕
+        native.emitTime(6.0)
+        for _ in 0..<2 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertTrue(engine.activeSegmentState.isWithinSegmentTimeRange)
+
+        // 5. 第 2 句结束后的音频尾端 (9.0s~20.0s)：仍在末句索引，但超出时间戳，隐藏字幕
+        native.emitTime(9.0)
+        for _ in 0..<2 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertFalse(engine.activeSegmentState.isWithinSegmentTimeRange)
+
+        // 6. 到达媒体物理末端后触发全篇循环回到 0.0s：0.0s 仍在第 1 句起始时间前，隐藏字幕
+        native.onFinished?()
+        for _ in 0..<4 { await Task.yield() }
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertFalse(engine.activeSegmentState.isWithinSegmentTimeRange)
         XCTAssertTrue(engine.isPlaying)
     }
 

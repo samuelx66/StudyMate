@@ -1098,6 +1098,10 @@ public struct VideoSubtitleOverlay: View {
                let index = activeSegmentState.index,
                engine.segments.indices.contains(index) {
                 let segment = engine.segments[index]
+                let isSubtitleVisible = isSubtitleVisibleForCurrentTime
+                let isOriginalVisible = settings.showOriginal && isSubtitleVisible && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let isTranslationVisible = settings.showTranslation && isSubtitleVisible && !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
                 ZStack {
                     // Always keep one native NSTextView mounted for each track.
                     // A cue with empty text or a temporarily hidden track is
@@ -1115,9 +1119,9 @@ public struct VideoSubtitleOverlay: View {
                         isOSDVisible: isOSDVisible
                     )
                     .id("video-subtitle-original-track")
-                    .opacity(settings.showOriginal && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
-                    .allowsHitTesting(settings.showOriginal && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityHidden(!settings.showOriginal || segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isOriginalVisible ? 1 : 0)
+                    .allowsHitTesting(isOriginalVisible)
+                    .accessibilityHidden(!isOriginalVisible)
                     // Keep the original subtitle's move affordance above
                     // the translation layer when the two cards approach.
                     .zIndex(2)
@@ -1133,15 +1137,22 @@ public struct VideoSubtitleOverlay: View {
                         isOSDVisible: isOSDVisible
                     )
                     .id("video-subtitle-translation-track")
-                    .opacity(settings.showTranslation && !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
-                    .allowsHitTesting(settings.showTranslation && !segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityHidden(!settings.showTranslation || segment.translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isTranslationVisible ? 1 : 0)
+                    .allowsHitTesting(isTranslationVisible)
+                    .accessibilityHidden(!isTranslationVisible)
                     .zIndex(1)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
         .allowsHitTesting(true)
+    }
+
+    private var isSubtitleVisibleForCurrentTime: Bool {
+        if engine.isVideoSubtitleDragging {
+            return true
+        }
+        return activeSegmentState.isWithinSegmentTimeRange
     }
 
     private func segmentContext(_ segment: SentenceSegment) -> String {
