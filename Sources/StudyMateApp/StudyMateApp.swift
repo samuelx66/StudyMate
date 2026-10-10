@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         memoryPressureSource?.cancel()
         PlaybackEngine.shared.flushPendingPersistence()
+        NativeSpeechRuntime.shared.shutdownSynchronously()
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -273,6 +274,9 @@ struct StudyMateApp: App {
     @StateObject private var commandState = PlaybackCommandState.shared
     
     init() {
+        // 禁用 Metal residency sets，防止在退出程序时 whisper.framework (ggml-metal) 触发断言异常崩溃 (SIGABRT)
+        setenv("GGML_METAL_NO_RESIDENCY", "1", 1)
+
         // AppKit release notes: opt out before didFinishLaunching. Our explicit
         // SwiftUI command owns full screen; never mutate an open NSMenu to dedupe.
         UserDefaults.standard.set(false, forKey: "NSFullScreenMenuItemEverywhere")

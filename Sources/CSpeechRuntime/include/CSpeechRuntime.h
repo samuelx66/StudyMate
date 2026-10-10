@@ -71,6 +71,8 @@ MABWhisperContext *mab_whisper_create(
 
 void mab_whisper_free(MABWhisperContext *context);
 
+void mab_whisper_shutdown(void);
+
 int32_t mab_whisper_transcribe(
     MABWhisperContext *context,
     const char *vad_model_path,

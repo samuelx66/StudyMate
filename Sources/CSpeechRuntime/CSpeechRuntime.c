@@ -7,10 +7,62 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <pthread.h>
+
+__attribute__((constructor))
+static void mab_init_speech_environment(void) {
+    // 禁用 Metal residency sets，防止 macOS 上退出程序时 ggml_metal_rsets_free 触发断言异常崩溃 (SIGABRT)
+    setenv("GGML_METAL_NO_RESIDENCY", "1", 1);
+}
 
 struct MABWhisperContext {
     struct whisper_context *value;
 };
+
+#define MAB_MAX_ACTIVE_CONTEXTS 16
+static pthread_mutex_t s_whisper_mutex = PTHREAD_MUTEX_INITIALIZER;
+static MABWhisperContext *s_active_contexts[MAB_MAX_ACTIVE_CONTEXTS];
+static int s_active_context_count = 0;
+
+static void mab_register_context(MABWhisperContext *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&s_whisper_mutex);
+    if (s_active_context_count < MAB_MAX_ACTIVE_CONTEXTS) {
+        s_active_contexts[s_active_context_count++] = ctx;
+    }
+    pthread_mutex_unlock(&s_whisper_mutex);
+}
+
+static void mab_unregister_context(MABWhisperContext *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&s_whisper_mutex);
+    for (int i = 0; i < s_active_context_count; ++i) {
+        if (s_active_contexts[i] == ctx) {
+            s_active_contexts[i] = s_active_contexts[s_active_context_count - 1];
+            s_active_contexts[s_active_context_count - 1] = NULL;
+            s_active_context_count--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_whisper_mutex);
+}
+
+void mab_whisper_shutdown(void) {
+    pthread_mutex_lock(&s_whisper_mutex);
+    for (int i = 0; i < s_active_context_count; ++i) {
+        MABWhisperContext *ctx = s_active_contexts[i];
+        if (ctx != NULL && ctx->value != NULL) {
+            whisper_free(ctx->value);
+            ctx->value = NULL;
+        }
+    }
+    s_active_context_count = 0;
+    pthread_mutex_unlock(&s_whisper_mutex);
+}
 
 struct MABVADContext {
     struct whisper_vad_context *value;
@@ -116,6 +168,9 @@ MABWhisperContext *mab_whisper_create(
     char *error_buffer,
     size_t error_capacity
 ) {
+    // 确保禁用 Metal residency sets，彻底消除进程退出时的 assertion 崩溃
+    setenv("GGML_METAL_NO_RESIDENCY", "1", 1);
+
     if (model_path == NULL || model_path[0] == '\0') {
         mab_set_error(error_buffer, error_capacity, "Whisper model path is empty");
         return NULL;
@@ -138,6 +193,7 @@ MABWhisperContext *mab_whisper_create(
         return NULL;
     }
     context->value = raw_context;
+    mab_register_context(context);
     return context;
 }
 
@@ -145,8 +201,10 @@ void mab_whisper_free(MABWhisperContext *context) {
     if (context == NULL) {
         return;
     }
+    mab_unregister_context(context);
     if (context->value != NULL) {
         whisper_free(context->value);
+        context->value = NULL;
     }
     free(context);
 }

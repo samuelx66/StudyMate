@@ -57,6 +57,11 @@ public actor NativeSpeechRuntime {
         mab_vad_free(vadContext)
     }
 
+    /// Synchronously cleans up all active Whisper and Metal contexts before process exit.
+    public nonisolated func shutdownSynchronously() {
+        mab_whisper_shutdown()
+    }
+
     /// Release model contexts under system memory pressure. They are loaded
     /// lazily with the same configuration on the next segmentation request.
     public func unloadModels() async {
