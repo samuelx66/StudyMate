@@ -358,7 +358,7 @@ public actor SpeechSegmentationPipeline {
         warnings: [String]
     ) {
         let voiceKey = "\(mediaKey)|vad|\(request.mode.rawValue)"
-        let diarizationKey = "\(mediaKey)|speaker|\(request.numberOfSpeakers.map { String($0) } ?? "auto")"
+        let diarizationKey = "\(mediaKey)|speaker-v2-w32a32|\(request.numberOfSpeakers.map { String($0) } ?? "auto")"
         let cachedVoice = voiceCache[voiceKey]
         let cachedDiarization = request.enableSpeakerDiarization
             ? diarizationCache[diarizationKey]

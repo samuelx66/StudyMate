@@ -744,4 +744,131 @@ final class SpeechBoundaryOptimizerTests: XCTestCase {
         XCTAssertEqual(wordTokens[0].endTime, 0.5, accuracy: 0.001)
         XCTAssertEqual(wordTokens[0].confidence, 0.92, accuracy: 0.001)
     }
+
+    func testSentenceDominantSpeakerVotingSuppressesBriefBoundaryBleed() {
+        let speakers = [
+            SpeakerDiarizationSegment(startTime: 0.0, endTime: 0.22, speakerIDs: [1]),
+            SpeakerDiarizationSegment(startTime: 0.22, endTime: 3.0, speakerIDs: [0])
+        ]
+        let voice = [VoiceActivitySegment(startTime: 0.0, endTime: 3.0)]
+        let timeline = SpeechRecognitionTimeline(
+            tokens: [
+                SpeechToken(text: " Well", startTime: 0.05, endTime: 0.25),
+                SpeechToken(text: " I", startTime: 0.30, endTime: 0.55),
+                SpeechToken(text: " really", startTime: 0.60, endTime: 1.10),
+                SpeechToken(text: " think", startTime: 1.15, endTime: 1.65),
+                SpeechToken(text: " this", startTime: 1.70, endTime: 2.15),
+                SpeechToken(text: " works.", startTime: 2.20, endTime: 2.90)
+            ],
+            voiceSegments: voice,
+            detectedLanguage: "en",
+            speakerSegments: speakers
+        )
+
+        let result = SpeechBoundaryOptimizer.shared.optimize(
+            mode: .intelligent,
+            timeline: timeline,
+            voiceSegments: voice,
+            waveform: .empty,
+            duration: 3.0,
+            includeRecognizedText: true,
+            speakerSegments: speakers
+        )
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].speakerID, 0)
+        XCTAssertEqual(result[0].speakerIDs, [0])
+        XCTAssertFalse(result[0].isSpeakerOverlap)
+    }
+
+    func testRefineDiarizationConsolidatesOverSplitVoiceprintClustersWhenCountUnknown() {
+        let raw = SpeakerDiarizationTimeline(segments: [
+            SpeakerDiarizationSegment(startTime: 0.0, endTime: 4.5, speakerIDs: [0], confidence: 0, hasCalibratedConfidence: false),
+            SpeakerDiarizationSegment(startTime: 4.8, endTime: 9.0, speakerIDs: [1], confidence: 0, hasCalibratedConfidence: false),
+            SpeakerDiarizationSegment(startTime: 9.3, endTime: 10.6, speakerIDs: [2], confidence: 0, hasCalibratedConfidence: false)
+        ])
+        // Speaker 0 and Speaker 2 have nearly identical voiceprints; Speaker 1 is orthogonal.
+        let centroids: [Int: [Float]] = [
+            0: [0.98, 0.15, 0.0],
+            1: [0.0, 0.99, 0.10],
+            2: [0.95, 0.25, 0.0]
+        ]
+
+        let refined = SpeakerDiarizationEngine.refineDiarizationTimeline(
+            raw,
+            centroids: centroids,
+            duration: 11.0,
+            requestedSpeakerCount: nil
+        )
+
+        XCTAssertEqual(refined.speakerCount, 2)
+        XCTAssertEqual(refined.segments.map(\.speakerIDs), [[0], [1], [0]])
+    }
+
+    func testRefineDiarizationAbsorbsMicroClustersAndSmoothsSandwichFlicker() {
+        let raw = SpeakerDiarizationTimeline(segments: [
+            SpeakerDiarizationSegment(startTime: 0.0, endTime: 2.0, speakerIDs: [0], confidence: 0, hasCalibratedConfidence: false),
+            // 0.25s sandwich flicker of speaker 1 inside speaker 0's continuous turn
+            SpeakerDiarizationSegment(startTime: 2.05, endTime: 2.30, speakerIDs: [1], confidence: 0, hasCalibratedConfidence: false),
+            SpeakerDiarizationSegment(startTime: 2.35, endTime: 4.5, speakerIDs: [0], confidence: 0, hasCalibratedConfidence: false),
+            SpeakerDiarizationSegment(startTime: 4.8, endTime: 7.5, speakerIDs: [1], confidence: 0, hasCalibratedConfidence: false),
+            // 0.25s phantom micro-cluster (speaker 4, e.g. cough/laugh) right after speaker 1
+            SpeakerDiarizationSegment(startTime: 7.55, endTime: 7.80, speakerIDs: [4], confidence: 0, hasCalibratedConfidence: false)
+        ])
+
+        let refined = SpeakerDiarizationEngine.refineDiarizationTimeline(
+            raw,
+            centroids: [:],
+            duration: 8.0,
+            requestedSpeakerCount: nil
+        )
+
+        XCTAssertEqual(refined.speakerCount, 2)
+        XCTAssertEqual(refined.segments.count, 2)
+        XCTAssertEqual(refined.segments[0].speakerIDs, [0])
+        XCTAssertEqual(refined.segments[0].startTime, 0.0, accuracy: 0.001)
+        XCTAssertEqual(refined.segments[0].endTime, 4.5, accuracy: 0.001)
+        XCTAssertEqual(refined.segments[1].speakerIDs, [1])
+        XCTAssertEqual(refined.segments[1].startTime, 4.8, accuracy: 0.001)
+        XCTAssertEqual(refined.segments[1].endTime, 7.80, accuracy: 0.001)
+    }
+
+    func testGlobalBestFirstChunkReconciliationAvoidsSequentialGreedySteal() {
+        let local = SpeakerDiarizationTimeline(segments: [
+            SpeakerDiarizationSegment(startTime: 900, endTime: 905, speakerIDs: [0]),
+            SpeakerDiarizationSegment(startTime: 906, endTime: 912, speakerIDs: [1])
+        ])
+        // Local 0 is a mediocre match to Global 10 (and also matches Global 11),
+        // whereas Local 1 is an almost exact match to Global 10.
+        // Global best-first matching must assign Local 1 -> 10 and Local 0 -> 11.
+        let localCentroids: [Int: [Float]] = [
+            0: [0.75, 0.66],
+            1: [0.999, 0.04]
+        ]
+        let globalCentroids: [Int: ([Float], Double)] = [
+            10: ([1.0, 0.0], 10.0),
+            11: ([0.60, 0.80], 10.0)
+        ]
+        var nextID = 12
+        let mapping = SpeakerDiarizationEngine.reconcileSpeakerIDs(
+            localTimeline: local,
+            localCentroids: localCentroids,
+            accepted: [],
+            overlapStart: 885,
+            overlapEnd: 900,
+            globalCentroids: globalCentroids,
+            nextSpeakerID: &nextID,
+            maximumSpeakerCount: nil
+        )
+
+        XCTAssertEqual(mapping[1], 10)
+        XCTAssertEqual(mapping[0], 11)
+        XCTAssertEqual(nextID, 12)
+    }
+
+    func testPreferredSegmenterVariantSelectsFullPrecisionW32A32() {
+        let folder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Sources/StudyMate/Resources/SpeakerKitModels/speakerkit-coreml", isDirectory: true)
+        XCTAssertEqual(SpeakerDiarizationEngine.preferredSegmenterVariant(in: folder), "W32A32")
+    }
 }

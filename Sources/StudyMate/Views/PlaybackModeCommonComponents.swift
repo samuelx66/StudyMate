@@ -115,6 +115,7 @@ public enum SpeakerBadgeShape: Sendable, Equatable {
 /// 说话人重命名弹窗内容（支持选择仅修改此句 vs 修改所有相同角色、候选单一说话人快捷选择、输入框、智能排重合并说明、取消与保存按钮）
 public struct SpeakerRenamePopoverContent: View {
     public let roleLabel: String
+    public let initialText: String
     @State private var renameText: String
     @State private var changeScope: SpeakerChangeScope
     public let sentenceIndex: Int?
@@ -135,6 +136,7 @@ public struct SpeakerRenamePopoverContent: View {
         onSave: @escaping (String, String, SpeakerChangeScope) -> Void
     ) {
         self.roleLabel = roleLabel
+        self.initialText = initialText
         self._renameText = State(initialValue: initialText)
         let isComp = SpeakerRoleManager.isCompositeRole(roleLabel)
         self._changeScope = State(initialValue: isComp ? .thisSentenceOnly : .allMatching)
@@ -155,7 +157,18 @@ public struct SpeakerRenamePopoverContent: View {
     }
 
     private var candidates: [String] {
-        isUnassigned ? [] : SpeakerRoleManager.extractCandidateRoles(from: roleLabel)
+        guard !isUnassigned else { return [] }
+        let parts = SpeakerRoleManager.extractRawCompositeParts(from: roleLabel)
+        var result = [String]()
+        for part in parts {
+            let item = SpeakerRoleManager.speakerID(from: part) != nil
+                ? SpeakerRoleManager.normalizeRoleKey(part)
+                : part
+            if !item.isEmpty && !result.contains(item) {
+                result.append(item)
+            }
+        }
+        return result
     }
 
     private var quickOptions: [String] {
@@ -169,7 +182,7 @@ public struct SpeakerRenamePopoverContent: View {
             for (key, name) in availableSpeakers {
                 let norm = SpeakerRoleManager.normalizeRoleKey(key)
                 if norm == normalizedSelf { continue }
-                if name.caseInsensitiveCompare(roleLabel) == .orderedSame { continue }
+                if name == roleLabel { continue }
                 if !others.contains(norm) {
                     others.append(norm)
                 }
@@ -179,11 +192,14 @@ public struct SpeakerRenamePopoverContent: View {
     }
 
     private func candidateDisplayName(for cand: String) -> String {
-        let normalized = SpeakerRoleManager.normalizeRoleKey(cand)
-        if let name = availableSpeakers[normalized], !name.isEmpty, name.caseInsensitiveCompare(normalized) != .orderedSame {
-            return "\(normalized) (\(name))"
+        if SpeakerRoleManager.speakerID(from: cand) != nil {
+            let normalized = SpeakerRoleManager.normalizeRoleKey(cand)
+            if let name = availableSpeakers[normalized], !name.isEmpty, name != normalized {
+                return "\(normalized) (\(name))"
+            }
+            return normalized
         }
-        return normalized
+        return cand
     }
 
     private var scopeAllTitle: String {
@@ -340,16 +356,29 @@ public struct SpeakerRenamePopoverContent: View {
             }
         }
         .padding(14)
+        .onAppear {
+            renameText = initialText
+            let isComp = SpeakerRoleManager.isCompositeRole(roleLabel)
+            changeScope = isComp ? .thisSentenceOnly : .allMatching
+        }
     }
 
     private func handleSave(target: String) {
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        // 若未做任何更改，直接关闭
-        if !isUnassigned && trimmed.caseInsensitiveCompare(roleLabel) == .orderedSame {
-            isPresented = false
-            return
+        // 若未做任何更改（对于默认角色 s1/S1 忽略大小写，对于自定义角色如 jim vs Jim 严格区分大小写），直接关闭
+        if !isUnassigned {
+            if SpeakerRoleManager.speakerID(from: roleLabel) != nil,
+               SpeakerRoleManager.speakerID(from: trimmed) != nil,
+               SpeakerRoleManager.normalizeRoleKey(trimmed) == SpeakerRoleManager.normalizeRoleKey(roleLabel) {
+                isPresented = false
+                return
+            }
+            if trimmed == roleLabel {
+                isPresented = false
+                return
+            }
         }
 
         if changeScope == .allMatching {
@@ -462,7 +491,7 @@ public struct SpeakerBadgeButton: View {
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: speakerRoleLabel,
-                initialText: isUnassigned ? "" : (SpeakerRoleManager.isCompositeRole(speakerRoleLabel) ? "" : (speakerRole ?? speakerRoleLabel)),
+                initialText: isUnassigned ? "" : (SpeakerRoleManager.isDefaultCompositeRole(speakerRoleLabel) ? "" : (speakerRole ?? speakerRoleLabel)),
                 sentenceIndex: sentenceIndex,
                 matchingCount: matchingCount,
                 language: language,

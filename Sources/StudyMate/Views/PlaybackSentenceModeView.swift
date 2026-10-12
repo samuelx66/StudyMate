@@ -552,7 +552,7 @@ struct PlaybackSentenceCardView: View, Equatable {
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: seg.speakerRoleLabel,
-                initialText: SpeakerRoleManager.isCompositeRole(seg.speakerRoleLabel) ? "" : renameText,
+                initialText: SpeakerRoleManager.isDefaultCompositeRole(seg.speakerRoleLabel) ? "" : renameText,
                 sentenceIndex: sentenceIndex,
                 matchingCount: matchingCount,
                 language: language,

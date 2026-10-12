@@ -372,11 +372,14 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             // be identical for both toggle states; clear it only at the end.
             let rangeTokens = Array(tokens[range])
             let text = joinTokenText(rangeTokens)
-            let speakerIDs = Array(Set(rangeTokens.flatMap(\.speakerIDs))).sorted()
-            let speakerOverlap = !speakerOverlapIDs(
-                in: first.startTime...last.endTime,
+            let speakerMeta = resolveSentenceSpeakerMetadata(
+                tokens: rangeTokens,
+                startTime: first.startTime,
+                endTime: last.endTime,
                 speakerSegments: speakerSegments
-            ).isEmpty || rangeTokens.contains { $0.speakerOverlap }
+            )
+            let speakerIDs = speakerMeta.ids
+            let speakerOverlap = speakerMeta.isOverlap
 
             let wordTokens = extractWordTokens(from: rangeTokens, sentenceStartTime: start)
 
@@ -478,10 +481,14 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             segments[index].endTime = next.endTime
             segments[index].text = joinSegmentTexts(current.text, next.text)
             segments[index].translation = joinSegmentTexts(current.translation, next.translation)
-            let ids = Array(Set(current.speakerIDs + next.speakerIDs)).sorted()
-            segments[index].speakerIDs = ids
-            segments[index].speakerID = ids.count == 1 ? ids[0] : nil
-            segments[index].isSpeakerOverlap = current.isSpeakerOverlap || next.isSpeakerOverlap
+            let mergedSpeaker = mergeSegmentSpeakerMetadata(
+                left: current,
+                right: next,
+                speakerSegments: speakerSegments
+            )
+            segments[index].speakerIDs = mergedSpeaker.ids
+            segments[index].speakerID = mergedSpeaker.ids.count == 1 ? mergedSpeaker.ids[0] : nil
+            segments[index].isSpeakerOverlap = mergedSpeaker.isOverlap
             segments[index].wordTokens = mergeWordTokens(left: current, right: next)
             segments.remove(at: index + 1)
         }
@@ -1474,6 +1481,8 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
 
     /// Assign speaker labels to Whisper tokens by time overlap, using a
     /// midpoint fallback for very small timestamp errors at turn edges.
+    /// When there is no simultaneous overlap inside the token, boundary
+    /// grazing from an adjacent turn is suppressed in favor of the dominant speaker.
     private func assignSpeakerMetadata(
         to tokens: [SpeechToken],
         speakerSegments: [SpeakerDiarizationSegment]
@@ -1517,20 +1526,109 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
                 continue
             }
             let maxOverlap = overlapBySpeaker.values.max() ?? 0
-            let threshold = max(0.02, maxOverlap * 0.35)
-            let ids = overlapBySpeaker
-                .filter { $0.value >= threshold }
-                .map(\.key)
-                .sorted()
-            copy.speakerIDs = ids
-            copy.speakerConfidence = Float(min(1.0, maxOverlap / tokenDuration))
-            copy.speakerOverlap = !speakerOverlapIDs(
+            let simultaneousOverlapIDs = speakerOverlapIDs(
                 in: token.startTime...token.endTime,
                 speakerSegments: activeSpeakers
-            ).isEmpty
+            )
+            let ids = overlapBySpeaker.filter { id, value in
+                if value >= maxOverlap * 0.999 { return true }
+                if simultaneousOverlapIDs.contains(id) {
+                    return value >= max(0.02, maxOverlap * 0.35)
+                }
+                return value >= max(0.18, maxOverlap * 0.75)
+            }.map(\.key).sorted()
+            copy.speakerIDs = ids
+            copy.speakerConfidence = Float(min(1.0, maxOverlap / tokenDuration))
+            copy.speakerOverlap = ids.count > 1 && !simultaneousOverlapIDs.intersection(ids).isEmpty
             result.append(copy)
         }
         return result
+    }
+
+    /// Resolve sentence-level speaker assignment by duration-weighted dominant
+    /// speaker voting across tokens and diarization intervals, preventing brief
+    /// boundary bleed or single-token flicker from turning a single-speaker
+    /// sentence into `s1+s2` or `s1→s2`.
+    private func resolveSentenceSpeakerMetadata(
+        tokens: [SpeechToken],
+        startTime: Double,
+        endTime: Double,
+        speakerSegments: [SpeakerDiarizationSegment]
+    ) -> (ids: [Int], isOverlap: Bool) {
+        var weightedDurations: [Int: Double] = [:]
+        var rawDurations: [Int: Double] = [:]
+        for token in tokens where !token.speakerIDs.isEmpty {
+            let span = max(0.02, token.endTime - token.startTime)
+            let confidence = max(0.25, Double(token.speakerConfidence))
+            let count = Double(max(1, token.speakerIDs.count))
+            let weightedShare = (span * confidence) / count
+            let rawShare = span / count
+            for id in token.speakerIDs {
+                weightedDurations[id, default: 0] += weightedShare
+                rawDurations[id, default: 0] += rawShare
+            }
+        }
+
+        if weightedDurations.isEmpty {
+            return speakerMetadata(start: startTime, end: endTime, speakerSegments: speakerSegments)
+        }
+
+        let maxWeight = weightedDurations.values.max() ?? 0
+        let maxRawDuration = rawDurations.values.max() ?? 0
+        guard maxWeight > 0 else { return ([], false) }
+
+        let simultaneousOverlapIDs = speakerOverlapIDs(
+            in: startTime...max(startTime, endTime),
+            speakerSegments: speakerSegments
+        )
+        let tokenOverlapIDs = Set(tokens.filter(\.speakerOverlap).flatMap(\.speakerIDs))
+        let allOverlapIDs = simultaneousOverlapIDs.union(tokenOverlapIDs)
+
+        let ids = weightedDurations.filter { id, weight in
+            if weight >= maxWeight * 0.999 { return true }
+            let raw = rawDurations[id] ?? 0
+            if allOverlapIDs.contains(id) {
+                return weight >= maxWeight * 0.35 && raw >= max(0.08, maxRawDuration * 0.30)
+            }
+            return weight >= maxWeight * 0.35 && raw >= 0.45
+        }.map(\.key).sorted()
+
+        let isOverlap = ids.count > 1 && !allOverlapIDs.intersection(ids).isEmpty
+        return (ids, isOverlap)
+    }
+
+    private func mergeSegmentSpeakerMetadata(
+        left: SentenceSegment,
+        right: SentenceSegment,
+        speakerSegments: [SpeakerDiarizationSegment]
+    ) -> (ids: [Int], isOverlap: Bool) {
+        let start = min(left.startTime, right.startTime)
+        let end = max(left.endTime, right.endTime)
+        if !speakerSegments.isEmpty {
+            let fromTimeline = speakerMetadata(start: start, end: end, speakerSegments: speakerSegments)
+            if !fromTimeline.ids.isEmpty {
+                return fromTimeline
+            }
+        }
+
+        var weights: [Int: Double] = [:]
+        let leftShare = max(0.05, left.duration) / Double(max(1, left.speakerIDs.count))
+        for id in left.speakerIDs { weights[id, default: 0] += leftShare }
+        let rightShare = max(0.05, right.duration) / Double(max(1, right.speakerIDs.count))
+        for id in right.speakerIDs { weights[id, default: 0] += rightShare }
+
+        guard let maximum = weights.values.max(), maximum > 0 else {
+            return ([], false)
+        }
+        let hasOverlap = left.isSpeakerOverlap || right.isSpeakerOverlap
+        let ids = weights.filter { _, weight in
+            if weight >= maximum * 0.999 { return true }
+            if hasOverlap {
+                return weight >= max(0.08, maximum * 0.35)
+            }
+            return weight >= max(0.45, maximum * 0.35)
+        }.map(\.key).sorted()
+        return (ids, ids.count > 1 && hasOverlap)
     }
 
     private func speakerMetadata(
@@ -1546,13 +1644,19 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
             let share = intersection / Double(max(1, speaker.speakerIDs.count))
             for id in speaker.speakerIDs { weights[id, default: 0] += share }
         }
-        let maximum = weights.values.max() ?? 0
-        let ids = weights.filter { $0.value >= max(0.02, maximum * 0.35) }.map(\.key).sorted()
+        guard let maximum = weights.values.max(), maximum > 0 else { return ([], false) }
         let overlapIDs = speakerOverlapIDs(
             in: start...end,
             speakerSegments: speakerSegments
         )
-        return (ids, !overlapIDs.isEmpty)
+        let ids = weights.filter { id, weight in
+            if weight >= maximum * 0.999 { return true }
+            if overlapIDs.contains(id) {
+                return weight >= max(0.02, maximum * 0.35)
+            }
+            return weight >= max(0.45, maximum * 0.35)
+        }.map(\.key).sorted()
+        return (ids, ids.count > 1 && !overlapIDs.intersection(ids).isEmpty)
     }
 
     private func normalizeVoiceSegments(

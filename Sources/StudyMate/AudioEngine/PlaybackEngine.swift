@@ -4528,7 +4528,34 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let seg1 = segments[index]
         let seg2 = segments[index + 1]
 
-        let role = (seg1.speakerRole == seg2.speakerRole) ? seg1.speakerRole : nil
+        let ids1 = seg1.speakerIDs.isEmpty ? (seg1.speakerID.map { [$0] } ?? []) : seg1.speakerIDs
+        let ids2 = seg2.speakerIDs.isEmpty ? (seg2.speakerID.map { [$0] } ?? []) : seg2.speakerIDs
+        var mergedSpeakerIDs = [Int]()
+        for sid in ids1 + ids2 where !mergedSpeakerIDs.contains(sid) {
+            mergedSpeakerIDs.append(sid)
+        }
+        let mergedOverlap = seg1.isSpeakerOverlap || seg2.isSpeakerOverlap
+        let role: String? = {
+            if seg1.speakerRoleLabel == seg2.speakerRoleLabel {
+                return seg1.speakerRole
+            }
+            guard seg1.speakerRole != nil || seg2.speakerRole != nil else {
+                return nil
+            }
+            let l1 = seg1.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let l2 = seg2.speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !l1.isEmpty && !l2.isEmpty {
+                let parts1 = SpeakerRoleManager.extractRawCompositeParts(from: l1)
+                let parts2 = SpeakerRoleManager.extractRawCompositeParts(from: l2)
+                var combinedParts = [String]()
+                for p in parts1 + parts2 where !combinedParts.contains(p) {
+                    combinedParts.append(p)
+                }
+                let sep = mergedOverlap ? "+" : "→"
+                return combinedParts.joined(separator: sep)
+            }
+            return seg1.speakerRole ?? seg2.speakerRole
+        }()
         let mergedTokens: [StudyMatePackageWordToken]? = {
             if let t1 = seg1.wordTokens ?? (seg2.wordTokens != nil ? [] : nil),
                let t2 = seg2.wordTokens {
@@ -4557,9 +4584,9 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             note: [seg1.note, seg2.note].filter { !$0.isEmpty }.joined(separator: "\n"),
             isNavigationBookmarked: seg1.isNavigationBookmarked || seg2.isNavigationBookmarked,
             isBookmarked: seg1.isBookmarked || seg2.isBookmarked,
-            speakerID: nil,
-            speakerIDs: Array(Set(seg1.speakerIDs + seg2.speakerIDs)).sorted(),
-            isSpeakerOverlap: seg1.isSpeakerOverlap || seg2.isSpeakerOverlap,
+            speakerID: mergedSpeakerIDs.first,
+            speakerIDs: mergedSpeakerIDs,
+            isSpeakerOverlap: mergedOverlap,
             speakerRole: role,
             phoneticText: [seg1.phoneticText, seg2.phoneticText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "),
             associatedWords: Array(Set((seg1.associatedWords ?? []) + (seg2.associatedWords ?? []))),
@@ -4678,17 +4705,22 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     /// 重命名说话人，若目标说话人已存在则自动合并排重
-    /// 获取当前工程所有已绑定的说话人角色名称映射表（如 ["s1": "Jim", "s2": "Tom"]）
+    /// 获取当前工程所有已绑定的说话人角色名称映射表（如 ["s1": "Jim", "s2": "Tom"]，严格区分大小写）
     public var currentSpeakerNames: [String: String] {
         var names: [String: String] = [:]
         var maxSpeakerID = -1
 
         for seg in segments {
-            if let sid = seg.speakerID {
+            if let sid = seg.speakerID ?? (seg.speakerIDs.count == 1 ? seg.speakerIDs.first : nil) {
                 maxSpeakerID = max(maxSpeakerID, sid)
                 let key = SpeakerRoleManager.roleKey(for: sid)
-                if let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    names[key] = role
+                let isSingle = !seg.isSpeakerOverlap && seg.speakerIDs.count <= 1
+                if isSingle, let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let trimmedRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !SpeakerRoleManager.isCompositeRole(trimmedRole),
+                       SpeakerRoleManager.speakerID(from: trimmedRole) == nil {
+                        names[key] = trimmedRole
+                    }
                 }
             }
             for sid in seg.speakerIDs {
@@ -4696,12 +4728,14 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
-        // 收集拥有自定义 speakerRole 但 speakerID 尚未初始化的条目，补全全局角色名映射
+        // 收集拥有自定义 speakerRole 但 speakerID 尚未初始化的条目，补全全局角色名映射（严格区分大小写）
         for seg in segments {
             guard seg.speakerID == nil, seg.speakerIDs.isEmpty else { continue }
             if let role = seg.speakerRole, !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let trimmedRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !names.values.contains(where: { $0.caseInsensitiveCompare(trimmedRole) == .orderedSame }) {
+                guard !SpeakerRoleManager.isCompositeRole(trimmedRole),
+                      SpeakerRoleManager.speakerID(from: trimmedRole) == nil else { continue }
+                if !names.values.contains(trimmedRole) {
                     maxSpeakerID += 1
                     let newKey = SpeakerRoleManager.roleKey(for: maxSpeakerID)
                     names[newKey] = trimmedRole
@@ -4712,7 +4746,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         return names
     }
 
-    /// 统计指定角色标签在当前工程中的句子总数（若传空字符串，则统计所有尚未分配角色的句子总数）
+    /// 统计指定角色标签在当前工程中的句子总数（若传空字符串，则统计所有尚未分配角色的句子总数；自定义姓名严格区分大小写）
     public func countSegments(withSpeakerRoleLabel label: String) -> Int {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -4726,6 +4760,38 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }.count
     }
 
+    /// 将播放引擎中的说话人变更原子化同步至关联句库
+    private func syncSpeakerChangesToActiveSentenceLibrary(
+        modifiedIndices: [Int],
+        previousNames: [String: String]
+    ) {
+        guard let libraryID = activeSentenceLibraryID else { return }
+        let updatedNames = self.currentSpeakerNames
+        let namesToSave: [String: String]? = (updatedNames != previousNames) ? updatedNames : nil
+        let batchUpdates: [(id: UUID, speakerID: Int, speakerIDs: [Int], isSpeakerOverlap: Bool, speakerRole: String?)] = modifiedIndices.compactMap { idx in
+            guard segments.indices.contains(idx) else { return nil }
+            let seg = segments[idx]
+            let entryID = activeSentenceLibraryEntryMap[seg.id] ?? seg.id
+            let sid = seg.speakerID ?? seg.speakerIDs.first ?? 0
+            let sids = seg.speakerIDs.isEmpty ? [sid] : seg.speakerIDs
+            return (
+                id: entryID,
+                speakerID: sid,
+                speakerIDs: sids,
+                isSpeakerOverlap: seg.isSpeakerOverlap,
+                speakerRole: seg.speakerRole
+            )
+        }
+        guard !batchUpdates.isEmpty || namesToSave != nil else { return }
+        Task {
+            try? SentenceLibraryStore.shared.batchUpdateSpeakerAssignments(
+                batchUpdates,
+                speakerNames: namesToSave,
+                in: libraryID
+            )
+        }
+    }
+
     public func renameSpeaker(
         fromRole: String,
         toName: String,
@@ -4735,17 +4801,36 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let trimmed = toName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        // 收集当前使用的说话人映射
+        // 收集当前使用的说话人映射与所有已占用的 speakerID
         let currentNames = self.currentSpeakerNames
+        var allUsedSpeakerIDs = Set<Int>()
+        var standaloneSpeakerIDs = Set<Int>()
+        for seg in segments {
+            if let sid = seg.speakerID { allUsedSpeakerIDs.insert(sid) }
+            for sid in seg.speakerIDs { allUsedSpeakerIDs.insert(sid) }
+            if !seg.isSpeakerOverlap && seg.speakerIDs.count <= 1 && !SpeakerRoleManager.isCompositeRole(seg.speakerRoleLabel) {
+                if let sid = seg.speakerID ?? seg.speakerIDs.first {
+                    standaloneSpeakerIDs.insert(sid)
+                }
+            }
+        }
 
         // 1. 如果指定为“仅修改此句”且具备有效的 segmentID
         if scope == .thisSentenceOnly,
            let targetSegID = segmentID,
            let idx = segments.firstIndex(where: { $0.id == targetSegID }) {
+            var otherUsedSpeakerIDs = Set<Int>()
+            for (segIdx, seg) in segments.enumerated() where segIdx != idx {
+                if let sid = seg.speakerID { otherUsedSpeakerIDs.insert(sid) }
+                for sid in seg.speakerIDs { otherUsedSpeakerIDs.insert(sid) }
+            }
+
             let res = SpeakerRoleManager.shared.resolveSingleSentenceSpeaker(
                 currentSegment: segments[idx],
                 inputName: trimmed,
-                currentSpeakerNames: currentNames
+                currentSpeakerNames: currentNames,
+                allExistingSpeakerIDs: allUsedSpeakerIDs,
+                otherSegmentsSpeakerIDs: otherUsedSpeakerIDs
             )
 
             segments[idx].speakerID = res.speakerID
@@ -4753,23 +4838,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             segments[idx].isSpeakerOverlap = res.isOverlap
             segments[idx].speakerRole = res.speakerRole
 
-            if let libraryID = activeSentenceLibraryID {
-                let entryID = activeSentenceLibraryEntryMap[targetSegID] ?? targetSegID
-                Task {
-                    try? SentenceLibraryStore.shared.updateSpeakerAssignment(
-                        id: entryID,
-                        speakerID: res.speakerID,
-                        speakerIDs: res.speakerIDs,
-                        isSpeakerOverlap: res.isOverlap,
-                        speakerRole: res.speakerRole,
-                        in: libraryID
-                    )
-                    if res.updatedNames != currentNames {
-                        try? SentenceLibraryStore.shared.updateSpeakerNames(res.updatedNames, in: libraryID)
-                    }
-                }
-            }
-
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: [idx], previousNames: currentNames)
             scheduleDebouncedPersistence()
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text(
@@ -4785,42 +4854,25 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             let singleRes = SpeakerRoleManager.shared.resolveSingleSentenceSpeaker(
                 currentSegment: SentenceSegment(index: 1, startTime: 0, endTime: 1),
                 inputName: trimmed,
-                currentSpeakerNames: currentNames
+                currentSpeakerNames: currentNames,
+                allExistingSpeakerIDs: allUsedSpeakerIDs
             )
-            var updatedCount = 0
+            var modifiedIndices = [Int]()
             for i in 0..<segments.count {
                 if segments[i].speakerRoleLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     segments[i].speakerID = singleRes.speakerID
                     segments[i].speakerIDs = singleRes.speakerIDs
-                    segments[i].isSpeakerOverlap = false
+                    segments[i].isSpeakerOverlap = singleRes.isOverlap
                     segments[i].speakerRole = singleRes.speakerRole
-                    updatedCount += 1
-
-                    if let libraryID = activeSentenceLibraryID {
-                        let entryID = activeSentenceLibraryEntryMap[segments[i].id] ?? segments[i].id
-                        Task {
-                            try? SentenceLibraryStore.shared.updateSpeakerAssignment(
-                                id: entryID,
-                                speakerID: singleRes.speakerID,
-                                speakerIDs: singleRes.speakerIDs,
-                                isSpeakerOverlap: false,
-                                speakerRole: singleRes.speakerRole,
-                                in: libraryID
-                            )
-                        }
-                    }
+                    modifiedIndices.append(i)
                 }
             }
-            if let libraryID = activeSentenceLibraryID, singleRes.updatedNames != currentNames {
-                Task {
-                    try? SentenceLibraryStore.shared.updateSpeakerNames(singleRes.updatedNames, in: libraryID)
-                }
-            }
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: modifiedIndices, previousNames: currentNames)
             scheduleDebouncedPersistence()
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text(
-                    "已为所有未分配角色句子指定为 \(singleRes.displayName)（共 \(updatedCount) 句）",
-                    "Assigned '\(singleRes.displayName)' to \(updatedCount) unassigned sentences"
+                    "已为所有未分配角色句子指定为 \(singleRes.displayName)（共 \(modifiedIndices.count) 句）",
+                    "Assigned '\(singleRes.displayName)' to \(modifiedIndices.count) unassigned sentences"
                 )
             )
             return
@@ -4830,79 +4882,90 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let resolution = SpeakerRoleManager.shared.resolveRename(
             fromRoleKey: fromRole,
             inputName: trimmed,
-            currentSpeakerNames: currentNames
+            currentSpeakerNames: currentNames,
+            allExistingSpeakerIDs: standaloneSpeakerIDs
         )
 
         switch resolution.action {
         case .unchanged:
             break
 
-        case .resolvedToSingle(_, let toKey, let unifiedName, let targetSpeakerID):
-            let roleToSet: String? = (unifiedName.caseInsensitiveCompare(toKey) == .orderedSame) ? nil : unifiedName
-            var updatedCount = 0
+        case .resolvedToComposite(_, let speakerIDs, let isOverlap, let roleToSet, let displayName):
+            var modifiedIndices = [Int]()
+            let normalizedFrom = fromRole.replacingOccurrences(of: "→", with: "->")
+            let sourceHasDefaultIDs = !SpeakerRoleManager.extractCandidateRoles(from: fromRole).compactMap({ SpeakerRoleManager.speakerID(from: $0) }).isEmpty
 
             for i in 0..<segments.count {
                 let label = segments[i].speakerRoleLabel
                 let normalizedLabel = label.replacingOccurrences(of: "→", with: "->")
-                let normalizedFrom = fromRole.replacingOccurrences(of: "→", with: "->")
+                if segments[i].speakerRole == fromRole || label == fromRole || normalizedLabel == normalizedFrom {
+                    let finalIDs: [Int]
+                    if !SpeakerRoleManager.isDefaultCompositeRole(trimmed)
+                        && !sourceHasDefaultIDs
+                        && segments[i].speakerIDs.count == speakerIDs.count {
+                        finalIDs = segments[i].speakerIDs
+                    } else {
+                        finalIDs = speakerIDs
+                    }
+                    let primaryID = finalIDs.first ?? 0
+                    segments[i].speakerID = primaryID
+                    segments[i].speakerIDs = finalIDs
+                    segments[i].isSpeakerOverlap = isOverlap
+                    segments[i].speakerRole = roleToSet
+                    modifiedIndices.append(i)
+                }
+            }
+
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: modifiedIndices, previousNames: currentNames)
+            scheduleDebouncedPersistence()
+            MainStatusCenter.shared.showSuccess(
+                LanguageManager.shared.text(
+                    "已将所有「\(fromRole)」角色修改为 \(displayName)（共 \(modifiedIndices.count) 句）",
+                    "Updated all '\(fromRole)' speakers to \(displayName) (\(modifiedIndices.count) sentences)"
+                )
+            )
+
+        case .resolvedToSingle(_, let toKey, let unifiedName, let targetSpeakerID):
+            let roleToSet: String? = (unifiedName == toKey) ? nil : unifiedName
+            var modifiedIndices = [Int]()
+            let normalizedFrom = fromRole.replacingOccurrences(of: "→", with: "->")
+
+            for i in 0..<segments.count {
+                let label = segments[i].speakerRoleLabel
+                let normalizedLabel = label.replacingOccurrences(of: "→", with: "->")
                 if segments[i].speakerRole == fromRole || label == fromRole || normalizedLabel == normalizedFrom {
                     segments[i].speakerID = targetSpeakerID
                     segments[i].speakerIDs = [targetSpeakerID]
                     segments[i].isSpeakerOverlap = false
                     segments[i].speakerRole = roleToSet
-                    updatedCount += 1
-
-                    if let libraryID = activeSentenceLibraryID {
-                        let entryID = activeSentenceLibraryEntryMap[segments[i].id] ?? segments[i].id
-                        Task {
-                            try? SentenceLibraryStore.shared.updateSpeakerAssignment(
-                                id: entryID,
-                                speakerID: targetSpeakerID,
-                                speakerIDs: [targetSpeakerID],
-                                isSpeakerOverlap: false,
-                                speakerRole: roleToSet,
-                                in: libraryID
-                            )
-                        }
-                    }
+                    modifiedIndices.append(i)
                 }
             }
 
-            // 若产生了新的全局角色映射，同步更新句库清单
-            if let libraryID = activeSentenceLibraryID {
-                Task {
-                    var names = resolution.updatedNames
-                    if let roleToSet {
-                        names[toKey] = roleToSet
-                    } else {
-                        names.removeValue(forKey: toKey)
-                    }
-                    names.removeValue(forKey: fromRole)
-                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
-                }
-            }
-
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: modifiedIndices, previousNames: currentNames)
             scheduleDebouncedPersistence()
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text(
-                    "已将所有「\(fromRole)」角色修改为 \(unifiedName)（共 \(updatedCount) 句）",
-                    "Updated all '\(fromRole)' speakers to \(unifiedName) (\(updatedCount) sentences)"
+                    "已将所有「\(fromRole)」角色修改为 \(unifiedName)（共 \(modifiedIndices.count) 句）",
+                    "Updated all '\(fromRole)' speakers to \(unifiedName) (\(modifiedIndices.count) sentences)"
                 )
             )
 
         case .renamed(let roleKey, let newName):
-            var updatedCount = 0
+            var modifiedIndices = [Int]()
             let sid = SpeakerRoleManager.speakerID(from: roleKey)
-            let isResettingToDefault = (newName.caseInsensitiveCompare(roleKey) == .orderedSame)
+            let isResettingToDefault = (newName == roleKey)
             let effectiveNewRole: String? = isResettingToDefault ? nil : newName
 
             for i in 0..<segments.count {
                 let label = segments[i].speakerRoleLabel
                 let role = segments[i].speakerRole
-                let isMatch = (sid != nil && segments[i].speakerID == sid)
-                    || role == fromRole
+                let isSingleSegment = !segments[i].isSpeakerOverlap
+                    && segments[i].speakerIDs.count <= 1
+                    && !SpeakerRoleManager.isCompositeRole(label)
+                let isMatch = role == fromRole
                     || label == fromRole
-                    || (sid != nil && segments[i].speakerIDs.contains(sid!))
+                    || (isSingleSegment && sid != nil && (role == nil || role == roleKey) && (segments[i].speakerID == sid || segments[i].speakerIDs == [sid!]))
                 if isMatch {
                     segments[i].speakerRole = effectiveNewRole
                     if let sid {
@@ -4911,30 +4974,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             segments[i].speakerIDs = [sid]
                         }
                     }
-                    updatedCount += 1
+                    modifiedIndices.append(i)
                 }
             }
-            scheduleDebouncedPersistence()
 
-            if let libraryID = activeSentenceLibraryID {
-                Task {
-                    var names = resolution.updatedNames
-                    if let effectiveNewRole {
-                        names[roleKey] = effectiveNewRole
-                    } else {
-                        names.removeValue(forKey: roleKey)
-                    }
-                    names.removeValue(forKey: fromRole)
-                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
-                }
-            }
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: modifiedIndices, previousNames: currentNames)
+            scheduleDebouncedPersistence()
             MainStatusCenter.shared.showSuccess(
                 isResettingToDefault
-                    ? LanguageManager.shared.text("已将所有「\(fromRole)」恢复为默认角色 \(roleKey)（共 \(updatedCount) 句）", "Reset all '\(fromRole)' to default \(roleKey) (\(updatedCount) sentences)")
-                    : LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(updatedCount) 句）", "Renamed all '\(fromRole)' to \(newName) (\(updatedCount) sentences)")
+                    ? LanguageManager.shared.text("已将所有「\(fromRole)」恢复为默认角色 \(roleKey)（共 \(modifiedIndices.count) 句）", "Reset all '\(fromRole)' to default \(roleKey) (\(modifiedIndices.count) sentences)")
+                    : LanguageManager.shared.text("已将所有「\(fromRole)」重命名为 \(newName)（共 \(modifiedIndices.count) 句）", "Renamed all '\(fromRole)' to \(newName) (\(modifiedIndices.count) sentences)")
             )
 
-        case .merged(let fromKey, let toKey, let unifiedName, _):
+        case .merged(_, let toKey, let unifiedName, _):
+            let beforeSnapshots = segments.map { ($0.speakerID, $0.speakerIDs, $0.isSpeakerOverlap, $0.speakerRole) }
             let result = SpeakerRoleManager.shared.mergeSpeakerEx(
                 fromRoleKey: fromRole,
                 toRoleKey: toKey,
@@ -4942,36 +4995,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 in: &self.segments
             )
             let mergedCount = result.updatedCount
-            let targetSpeakerID = result.targetSpeakerID
-            let affectedSourceIDs = result.affectedSourceIDs
-
-            scheduleDebouncedPersistence()
-
-            if let libraryID = activeSentenceLibraryID {
-                Task {
-                    for srcID in affectedSourceIDs {
-                        try? SentenceLibraryStore.shared.batchMergeSpeaker(
-                            sourceSpeakerID: srcID,
-                            targetSpeakerID: targetSpeakerID,
-                            targetName: unifiedName,
-                            in: libraryID
-                        )
-                    }
-                    var names = resolution.updatedNames
-                    let targetKey = SpeakerRoleManager.roleKey(for: targetSpeakerID)
-                    if unifiedName.caseInsensitiveCompare(targetKey) != .orderedSame {
-                        names[targetKey] = unifiedName
-                    } else {
-                        names.removeValue(forKey: targetKey)
-                    }
-                    names.removeValue(forKey: fromRole)
-                    names.removeValue(forKey: fromKey)
-                    for srcID in affectedSourceIDs {
-                        names.removeValue(forKey: SpeakerRoleManager.roleKey(for: srcID))
-                    }
-                    try? SentenceLibraryStore.shared.updateSpeakerNames(names, in: libraryID)
+            var modifiedIndices = [Int]()
+            for i in 0..<segments.count {
+                let before = beforeSnapshots[i]
+                let after = segments[i]
+                if before.0 != after.speakerID
+                    || before.1 != after.speakerIDs
+                    || before.2 != after.isSpeakerOverlap
+                    || before.3 != after.speakerRole {
+                    modifiedIndices.append(i)
                 }
             }
+
+            syncSpeakerChangesToActiveSentenceLibrary(modifiedIndices: modifiedIndices, previousNames: currentNames)
+            scheduleDebouncedPersistence()
             MainStatusCenter.shared.showSuccess(
                 LanguageManager.shared.text(
                     "已将「\(fromRole)」合并至「\(toKey)」(\(unifiedName))，共更新 \(mergedCount) 句",

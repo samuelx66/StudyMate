@@ -665,25 +665,6 @@ public final class SentenceLibraryManager: ObservableObject {
         }
     }
 
-    /// 更新单句的独立说话人角色显示
-    public func updateSpeakerRole(id: UUID, speakerRole: String?) async throws {
-        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        do {
-            try await Task.detached(priority: .userInitiated) { [store] in
-                try store.updateSpeakerRole(id: id, speakerRole: speakerRole, in: libraryID)
-            }.value
-            if let idx = entries.firstIndex(where: { $0.id == id }) {
-                entries[idx].speakerRole = speakerRole
-            }
-            MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text("说话人角色已更新", "Speaker role updated")
-            )
-        } catch {
-            MainStatusCenter.shared.showError(error.localizedDescription)
-            throw error
-        }
-    }
-
     /// 修改单句或同来源所有句子的来源名称
     public func updateSourceMediaName(
         entryID: UUID,
@@ -742,33 +723,6 @@ public final class SentenceLibraryManager: ObservableObject {
                 "Successfully updated source name for \(count) sentence(s)"
             )
             MainStatusCenter.shared.showSuccess(msg)
-        } catch {
-            MainStatusCenter.shared.showError(error.localizedDescription)
-            throw error
-        }
-    }
-
-    /// 说话人重命名与合并排重
-    public func batchMergeSpeaker(
-        sourceSpeakerID: Int,
-        targetSpeakerID: Int,
-        targetName: String?
-    ) async throws {
-        guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
-        do {
-            try await Task.detached(priority: .userInitiated) { [store] in
-                try store.batchMergeSpeaker(
-                    sourceSpeakerID: sourceSpeakerID,
-                    targetSpeakerID: targetSpeakerID,
-                    targetName: targetName,
-                    in: libraryID
-                )
-            }.value
-            await reloadLibraries(createDefaultIfNeeded: false)
-            reloadEntries()
-            MainStatusCenter.shared.showSuccess(
-                LanguageManager.shared.text("说话人已成功合并排重", "Speaker successfully merged and deduplicated")
-            )
         } catch {
             MainStatusCenter.shared.showError(error.localizedDescription)
             throw error

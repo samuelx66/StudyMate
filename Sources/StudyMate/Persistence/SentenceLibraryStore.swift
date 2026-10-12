@@ -485,34 +485,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    /// 更新单句的独立说话人角色显示
-    public func updateSpeakerRole(id: UUID, speakerRole: String?, in libraryID: UUID) throws {
-        try queue.sync {
-            try validateLibrary(id: libraryID)
-            try withDatabase(libraryID: libraryID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    var statement: OpaquePointer?
-                    try prepare("UPDATE entries SET speaker_role = ? WHERE id = ?;", db: db, statement: &statement)
-                    defer { sqlite3_finalize(statement) }
-                    if let role = speakerRole {
-                        bind(role, at: 1, to: statement)
-                    } else {
-                        sqlite3_bind_null(statement, 1)
-                    }
-                    bind(id.uuidString, at: 2, to: statement)
-                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
-                }
-            }
-            try touchManifest(libraryID: libraryID)
-        }
-    }
-
-    /// 更新单句的完整说话人角色配置（纠正多说话人复合角色为单一说话人）
+    /// 更新单句的完整说话人角色配置
     public func updateSpeakerAssignment(
         id: UUID,
         speakerID: Int,
@@ -521,80 +494,63 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         speakerRole: String?,
         in libraryID: UUID
     ) throws {
-        try queue.sync {
-            try validateLibrary(id: libraryID)
-            try withDatabase(libraryID: libraryID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    var statement: OpaquePointer?
-                    try prepare(
-                        "UPDATE entries SET speaker_id = ?, speaker_ids = ?, is_speaker_overlap = ?, speaker_role = ? WHERE id = ?;",
-                        db: db,
-                        statement: &statement
-                    )
-                    defer { sqlite3_finalize(statement) }
-                    sqlite3_bind_int(statement, 1, Int32(speakerID))
-                    bind(Self.serializeJSON(speakerIDs), at: 2, to: statement)
-                    sqlite3_bind_int(statement, 3, isSpeakerOverlap ? 1 : 0)
-                    if let role = speakerRole {
-                        bind(role, at: 4, to: statement)
-                    } else {
-                        sqlite3_bind_null(statement, 4)
-                    }
-                    bind(id.uuidString, at: 5, to: statement)
-                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
-                }
-            }
-            try touchManifest(libraryID: libraryID)
-        }
+        try batchUpdateSpeakerAssignments(
+            [(id: id, speakerID: speakerID, speakerIDs: speakerIDs, isSpeakerOverlap: isSpeakerOverlap, speakerRole: speakerRole)],
+            in: libraryID
+        )
     }
 
-    /// 批量更新具备指定角色标签的所有句子为单一说话人
-    @discardableResult
-    public func batchUpdateSpeakerAssignment(
-        matchingRole: String,
-        speakerID: Int,
-        speakerIDs: [Int],
-        isSpeakerOverlap: Bool,
-        speakerRole: String?,
+    /// 在单个数据库事务中批量更新多条句子的完整说话人配置，并可选同步更新句库 manifest.json 的角色映射表
+    public func batchUpdateSpeakerAssignments(
+        _ updates: [(id: UUID, speakerID: Int, speakerIDs: [Int], isSpeakerOverlap: Bool, speakerRole: String?)],
+        speakerNames: [String: String]? = nil,
         in libraryID: UUID
-    ) throws -> Int {
+    ) throws {
+        guard !updates.isEmpty || speakerNames != nil else { return }
         try queue.sync {
             try validateLibrary(id: libraryID)
-            var updatedCount = 0
-            try withDatabase(libraryID: libraryID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    var statement: OpaquePointer?
-                    try prepare(
-                        "UPDATE entries SET speaker_id = ?, speaker_ids = ?, is_speaker_overlap = ?, speaker_role = ? WHERE speaker_role = ?;",
-                        db: db,
-                        statement: &statement
-                    )
-                    defer { sqlite3_finalize(statement) }
-                    sqlite3_bind_int(statement, 1, Int32(speakerID))
-                    bind(Self.serializeJSON(speakerIDs), at: 2, to: statement)
-                    sqlite3_bind_int(statement, 3, isSpeakerOverlap ? 1 : 0)
-                    if let role = speakerRole {
-                        bind(role, at: 4, to: statement)
-                    } else {
-                        sqlite3_bind_null(statement, 4)
+            if !updates.isEmpty {
+                try withDatabase(libraryID: libraryID) { db in
+                    try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
+                    do {
+                        var statement: OpaquePointer?
+                        try prepare(
+                            "UPDATE entries SET speaker_id = ?, speaker_ids = ?, is_speaker_overlap = ?, speaker_role = ? WHERE id = ?;",
+                            db: db,
+                            statement: &statement
+                        )
+                        defer { sqlite3_finalize(statement) }
+                        for item in updates {
+                            sqlite3_reset(statement)
+                            sqlite3_clear_bindings(statement)
+                            sqlite3_bind_int(statement, 1, Int32(item.speakerID))
+                            bind(Self.serializeJSON(item.speakerIDs), at: 2, to: statement)
+                            sqlite3_bind_int(statement, 3, item.isSpeakerOverlap ? 1 : 0)
+                            if let role = item.speakerRole {
+                                bind(role, at: 4, to: statement)
+                            } else {
+                                sqlite3_bind_null(statement, 4)
+                            }
+                            bind(item.id.uuidString, at: 5, to: statement)
+                            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
+                        }
+                        try execute("COMMIT;", in: db)
+                    } catch {
+                        try? execute("ROLLBACK;", in: db)
+                        throw error
                     }
-                    bind(matchingRole, at: 5, to: statement)
-                    guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError(db) }
-                    updatedCount = Int(sqlite3_changes(db))
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
-            return updatedCount
+            if let speakerNames {
+                guard var descriptor = readManifest(at: packageURL(for: libraryID)) else {
+                    throw SentenceLibraryError.invalidLibrary
+                }
+                descriptor.speakerNames = speakerNames
+                descriptor.updatedAt = Date()
+                try writeManifest(descriptor, to: packageURL(for: libraryID))
+            } else {
+                try touchManifest(libraryID: libraryID)
+            }
         }
     }
 
@@ -680,86 +636,6 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             }
             try touchManifest(libraryID: libraryID)
             return count
-        }
-    }
-
-    /// 说话人重命名与合并排重：
-    /// 当 sourceSpeakerID (如 s2) 重命名为 targetSpeakerID (如 s1，对应名称 targetName) 时，
-    /// 数据库中所有指向 sourceSpeakerID 的句子统一变更为 targetSpeakerID，
-    /// 并在 manifest.json 中移除旧 key、记录合并后的角色名。
-    public func batchMergeSpeaker(
-        sourceSpeakerID: Int,
-        targetSpeakerID: Int,
-        targetName: String?,
-        in libraryID: UUID
-    ) throws {
-        try queue.sync {
-            try validateLibrary(id: libraryID)
-            try withDatabase(libraryID: libraryID) { db in
-                try execute("BEGIN IMMEDIATE TRANSACTION;", in: db)
-                do {
-                    // 1. 更新单个 speaker_id 匹配的条目
-                    var updateSingleStmt: OpaquePointer?
-                    try prepare("UPDATE entries SET speaker_id = ?, speaker_role = ? WHERE speaker_id = ?;", db: db, statement: &updateSingleStmt)
-                    defer { sqlite3_finalize(updateSingleStmt) }
-                    sqlite3_bind_int(updateSingleStmt, 1, Int32(targetSpeakerID))
-                    if let targetName {
-                        bind(targetName, at: 2, to: updateSingleStmt)
-                    } else {
-                        sqlite3_bind_null(updateSingleStmt, 2)
-                    }
-                    sqlite3_bind_int(updateSingleStmt, 3, Int32(sourceSpeakerID))
-                    guard sqlite3_step(updateSingleStmt) == SQLITE_DONE else { throw databaseError(db) }
-
-                    // 2. 更新包含多说话人的 speaker_ids
-                    var selectListStmt: OpaquePointer?
-                    try prepare("SELECT id, speaker_ids FROM entries WHERE speaker_ids LIKE ?;", db: db, statement: &selectListStmt)
-                    defer { sqlite3_finalize(selectListStmt) }
-                    bind("%\(sourceSpeakerID)%", at: 1, to: selectListStmt)
-                    var updates: [(id: String, ids: [Int])] = []
-                    while sqlite3_step(selectListStmt) == SQLITE_ROW {
-                        let id = text(selectListStmt, 0)
-                        let idsJson = text(selectListStmt, 1)
-                        if var ids = Self.deserializeJSON([Int].self, from: idsJson) {
-                            if let idx = ids.firstIndex(of: sourceSpeakerID) {
-                                ids[idx] = targetSpeakerID
-                                let deduplicated = Array(NSOrderedSet(array: ids)) as? [Int] ?? ids
-                                updates.append((id, deduplicated))
-                            }
-                        }
-                    }
-
-                    if !updates.isEmpty {
-                        var updateListStmt: OpaquePointer?
-                        try prepare("UPDATE entries SET speaker_ids = ? WHERE id = ?;", db: db, statement: &updateListStmt)
-                        defer { sqlite3_finalize(updateListStmt) }
-                        for item in updates {
-                            sqlite3_reset(updateListStmt)
-                            sqlite3_clear_bindings(updateListStmt)
-                            bind(Self.serializeJSON(item.ids), at: 1, to: updateListStmt)
-                            bind(item.id, at: 2, to: updateListStmt)
-                            guard sqlite3_step(updateListStmt) == SQLITE_DONE else { throw databaseError(db) }
-                        }
-                    }
-
-                    try execute("COMMIT;", in: db)
-                } catch {
-                    try? execute("ROLLBACK;", in: db)
-                    throw error
-                }
-            }
-
-            guard var descriptor = readManifest(at: packageURL(for: libraryID)) else { return }
-            var names = descriptor.speakerNames ?? [:]
-            let sourceKey = "s\(sourceSpeakerID + 1)"
-            let targetKey = "s\(targetSpeakerID + 1)"
-            names.removeValue(forKey: sourceKey)
-            if let targetName {
-                names[targetKey] = targetName
-            }
-            descriptor.speakerNames = names
-            descriptor.updatedAt = Date()
-            try writeManifest(descriptor, to: packageURL(for: libraryID))
         }
     }
 
@@ -1304,8 +1180,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 var speakerRef: StudyMatePackageSpeakerReference? = nil
                 let resolvedIDs = entry.speakerIDs.isEmpty ? (entry.speakerID.map { [$0] } ?? []) : entry.speakerIDs
                 let resolvedID = entry.speakerID ?? resolvedIDs.first ?? 0
-                let defaultLabel = "s\(resolvedID + 1)"
-                let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
+                let isMulti = resolvedIDs.count > 1 || entry.isSpeakerOverlap
+                let defaultLabel: String = {
+                    if isMulti && !resolvedIDs.isEmpty {
+                        let labels = resolvedIDs.map { "s\($0 + 1)" }
+                        return entry.isSpeakerOverlap ? labels.joined(separator: "+") : labels.joined(separator: "→")
+                    }
+                    return "s\(resolvedID + 1)"
+                }()
+                let roleName = entry.speakerRole ?? (isMulti ? nil : descriptor?.speakerNames?[defaultLabel]) ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
 
                 if let roleName, !roleName.isEmpty {
                     speakerRef = StudyMatePackageSpeakerReference(
@@ -1698,8 +1581,15 @@ public final class SentenceLibraryStore: @unchecked Sendable {
             var speakerRef: StudyMatePackageSpeakerReference? = nil
             let resolvedIDs = entry.speakerIDs.isEmpty ? (entry.speakerID.map { [$0] } ?? []) : entry.speakerIDs
             let resolvedID = entry.speakerID ?? resolvedIDs.first ?? 0
-            let defaultLabel = "s\(resolvedID + 1)"
-            let roleName = entry.speakerRole ?? descriptor?.speakerNames?[defaultLabel] ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
+            let isMulti = resolvedIDs.count > 1 || entry.isSpeakerOverlap
+            let defaultLabel: String = {
+                if isMulti && !resolvedIDs.isEmpty {
+                    let labels = resolvedIDs.map { "s\($0 + 1)" }
+                    return entry.isSpeakerOverlap ? labels.joined(separator: "+") : labels.joined(separator: "→")
+                }
+                return "s\(resolvedID + 1)"
+            }()
+            let roleName = entry.speakerRole ?? (isMulti ? nil : descriptor?.speakerNames?[defaultLabel]) ?? (resolvedIDs.isEmpty ? nil : defaultLabel)
 
             if let roleName, !roleName.isEmpty {
                 speakerRef = StudyMatePackageSpeakerReference(

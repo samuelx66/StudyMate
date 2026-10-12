@@ -163,9 +163,9 @@ public actor SpeakerDiarizationEngine {
             numberOfSpeakers: numberOfSpeakers,
             // Suppress frame-level identity flicker while still preserving
             // normal short replies and overlap regions.
-            minActiveOffset: 0.08,
-            clusterDistanceThreshold: 0.60,
-            minClusterSize: nil,
+            minActiveOffset: 0.12,
+            clusterDistanceThreshold: 0.64,
+            minClusterSize: numberOfSpeakers == nil ? 2 : nil,
             // Keep raw overlap information. The sentence optimizer performs the
             // exclusive token assignment after Whisper timestamps are available.
             useExclusiveReconciliation: false,
@@ -197,18 +197,18 @@ public actor SpeakerDiarizationEngine {
         return timeline
     }
 
-    /// SpeakerKit currently accepts an owned `[Float]`. Short media retains
-    /// the original single-call path. Long media is supplied in bounded
-    /// five-minute windows, with context overlap and centroid reconciliation
-    /// preserving speaker identity across window seams.
+    /// SpeakerKit currently accepts an owned `[Float]`. Media up to 15 minutes
+    /// is diarized in a single global pass so VBx clustering sees all speaker
+    /// turns at once. Longer recordings use 15-minute windows with 15-second
+    /// context overlap and duration-weighted centroid reconciliation.
     private func diarizePCM(
         _ pcm: AudioPCMData,
         with kit: SpeakerKit,
         options: PyannoteDiarizationOptions,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> SpeakerDiarizationTimeline {
-        let chunkDuration = 5.0 * 60.0
-        let contextOverlap = 4.0
+        let chunkDuration = 15.0 * 60.0
+        let contextOverlap = 15.0
         guard pcm.duration > chunkDuration + contextOverlap else {
             let audio = pcm.samples(in: 0..<pcm.sampleCount)
             let result = try await SpeechInferenceResourceScheduler.shared.withExclusiveStage {
@@ -220,7 +220,13 @@ public actor SpeakerDiarizationEngine {
                     }
                 )
             }
-            return Self.makeTimeline(from: result, duration: pcm.duration)
+            let rawTimeline = Self.makeTimeline(from: result, duration: pcm.duration)
+            return Self.refineDiarizationTimeline(
+                rawTimeline,
+                centroids: result.speakerCentroidEmbeddings,
+                duration: pcm.duration,
+                requestedSpeakerCount: options.numberOfSpeakers
+            )
         }
 
         let chunkCount = max(1, Int(ceil(pcm.duration / chunkDuration)))
@@ -282,14 +288,21 @@ public actor SpeakerDiarizationEngine {
             }
             Self.mergeCentroids(
                 result.speakerCentroidEmbeddings,
+                localTimeline: localTimeline,
                 mapping: mapping,
                 into: &globalCentroids
             )
         }
 
-        return SpeakerDiarizationTimeline(
+        let mergedTimeline = SpeakerDiarizationTimeline(
             segments: Self.mergeChunkSeams(accepted),
             speakerCount: nextSpeakerID
+        )
+        return Self.refineDiarizationTimeline(
+            mergedTimeline,
+            centroids: globalCentroids.mapValues(\.0),
+            duration: pcm.duration,
+            requestedSpeakerCount: options.numberOfSpeakers
         )
     }
 
@@ -334,16 +347,17 @@ public actor SpeakerDiarizationEngine {
             concurrentEmbedderWorkers: policy.speakerEmbedderWorkers
         )
 
-        if useCoreML {
-            // Keep PLDA on CPU (it is small); schedule the neural segmenter
-            // and embedder on Core ML so Apple Silicon can use GPU/ANE.
-            config.diarizer = SpeakerKitDiarizer.pyannote(
-                config: config,
-                segmenterModelInfo: .segmenter(computeUnits: .all),
-                embedderModelInfo: .embedder(computeUnits: .all),
-                pldaModelInfo: .plda()
-            )
-        }
+        let segmenterVariant = Self.preferredSegmenterVariant(in: modelFolder)
+        let computeUnits: MLComputeUnits = useCoreML ? .all : .cpuOnly
+        // Keep PLDA on CPU (it is small); schedule the neural segmenter
+        // (preferring full-precision W32A32 when bundled) and embedder on
+        // Core ML when available so Apple Silicon can use GPU/ANE.
+        config.diarizer = SpeakerKitDiarizer.pyannote(
+            config: config,
+            segmenterModelInfo: .segmenter(variant: segmenterVariant, computeUnits: computeUnits),
+            embedderModelInfo: .embedder(computeUnits: computeUnits),
+            pldaModelInfo: .plda()
+        )
         let newSpeakerKit = try await SpeakerKit(config)
         speakerKit = newSpeakerKit
         loadedModelFolder = modelFolder
@@ -379,35 +393,315 @@ public actor SpeakerDiarizationEngine {
             return SpeakerDiarizationTimeline(segments: [], speakerCount: result.speakerCount)
         }
 
-        // SpeakerKit can return one segment per speaker. Mark cross-segment
-        // overlaps with a sweep instead of an O(n²) all-pairs comparison.
-        var segments = rawSegments.sorted {
-            if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
-            return $0.startTime < $1.startTime
-        }
-        var active: [(index: Int, end: Double, speakerIDs: Set<Int>)] = []
-        var overlapFlags = [Bool](repeating: false, count: segments.count)
+        let segments = recomputeOverlapsAndCoalesce(rawSegments)
+        return SpeakerDiarizationTimeline(segments: segments, speakerCount: result.speakerCount)
+    }
 
-        for index in segments.indices {
-            let start = segments[index].startTime
+    /// Automatic post-diarization refinement for real study media where the
+    /// exact number of speakers is usually unknown:
+    /// 1. Consolidate over-split clusters whose voiceprint centroids are close.
+    /// 2. Absorb transient micro-clusters (coughs, laughs, noisy interjections).
+    /// 3. Smooth frame-level `A -> brief B -> A` sandwich flickers.
+    /// 4. Compact surviving speaker IDs into contiguous `0..<N` order.
+    static func refineDiarizationTimeline(
+        _ timeline: SpeakerDiarizationTimeline,
+        centroids: [Int: [Float]] = [:],
+        duration: Double,
+        requestedSpeakerCount: Int? = nil
+    ) -> SpeakerDiarizationTimeline {
+        guard !timeline.segments.isEmpty else { return timeline }
+        var segments = recomputeOverlapsAndCoalesce(timeline.segments)
+        guard !segments.isEmpty else { return timeline }
+
+        var workingCentroids: [Int: (vector: [Float], weight: Double)] = [:]
+        let initialDurations = speakingDurations(in: segments)
+        let totalSpeechDuration = initialDurations.values.reduce(0, +)
+        for (speakerID, vector) in centroids where !vector.isEmpty {
+            let weight = max(0.2, initialDurations[speakerID] ?? 1.0)
+            workingCentroids[speakerID] = (normalizedVector(vector), weight)
+        }
+
+        // Stage 1: Over-split voiceprint cluster consolidation when speaker count is unknown.
+        if requestedSpeakerCount == nil, workingCentroids.count > 1 {
+            var speakerRemap: [Int: Int] = [:]
+            var currentDurations = initialDurations
+
+            func resolve(_ id: Int) -> Int {
+                var current = id
+                while let next = speakerRemap[current], next != current {
+                    current = next
+                }
+                return current
+            }
+
+            while workingCentroids.count > 1 {
+                let activeIDs = workingCentroids.keys.sorted()
+                var bestMerge: (major: Int, minor: Int, distance: Float)?
+
+                for i in 0..<activeIDs.count {
+                    for j in (i + 1)..<activeIDs.count {
+                        let first = activeIDs[i]
+                        let second = activeIDs[j]
+                        guard let c1 = workingCentroids[first],
+                              let c2 = workingCentroids[second],
+                              let dist = cosineDistance(c1.vector, c2.vector) else { continue }
+                        let d1 = currentDurations[first] ?? 0
+                        let d2 = currentDurations[second] ?? 0
+                        let (major, minor, minorDuration) = d1 >= d2
+                            ? (first, second, d2)
+                            : (second, first, d1)
+                        let minorIsSmall = minorDuration < max(3.0, totalSpeechDuration * 0.10)
+                        let threshold: Float = minorIsSmall ? 0.36 : 0.28
+                        guard dist <= threshold else { continue }
+                        if bestMerge == nil || dist < bestMerge!.distance {
+                            bestMerge = (major, minor, dist)
+                        }
+                    }
+                }
+
+                guard let merge = bestMerge,
+                      let majorEntry = workingCentroids[merge.major],
+                      let minorEntry = workingCentroids[merge.minor] else {
+                    break
+                }
+                speakerRemap[merge.minor] = merge.major
+                let combinedWeight = majorEntry.weight + minorEntry.weight
+                let combinedVector = normalizedVector(
+                    zip(majorEntry.vector, minorEntry.vector).map {
+                        Float((Double($0.0) * majorEntry.weight + Double($0.1) * minorEntry.weight) / max(0.001, combinedWeight))
+                    }
+                )
+                workingCentroids[merge.major] = (combinedVector, combinedWeight)
+                workingCentroids.removeValue(forKey: merge.minor)
+                currentDurations[merge.major, default: 0] += currentDurations[merge.minor] ?? 0
+                currentDurations.removeValue(forKey: merge.minor)
+            }
+
+            if !speakerRemap.isEmpty {
+                segments = segments.map { segment in
+                    var copy = segment
+                    copy.speakerIDs = Array(Set(segment.speakerIDs.map(resolve))).sorted()
+                    return copy
+                }
+                segments = recomputeOverlapsAndCoalesce(segments)
+            }
+        }
+
+        // Stage 2: Micro-cluster absorption when speaker count is unknown.
+        if requestedSpeakerCount == nil {
+            let durations = speakingDurations(in: segments)
+            let maxSegmentBySpeaker = maxSegmentDurations(in: segments)
+            let totalDuration = durations.values.reduce(0, +)
+            let majorSpeakers = durations.compactMap { id, dur -> Int? in
+                dur >= 1.5 || (dur >= 0.80 && dur >= totalDuration * 0.18) ? id : nil
+            }.sorted()
+
+            if !majorSpeakers.isEmpty, durations.count > majorSpeakers.count {
+                let microThreshold = min(1.5, max(0.35, totalDuration * 0.04))
+                let microSpeakers = Set(durations.compactMap { id, dur -> Int? in
+                    guard !majorSpeakers.contains(id) else { return nil }
+                    let maxSeg = maxSegmentBySpeaker[id] ?? 0
+                    if dur < 0.35 || (dur < microThreshold && maxSeg < 0.90) {
+                        return id
+                    }
+                    return nil
+                })
+
+                if !microSpeakers.isEmpty {
+                    let dominantMajor = majorSpeakers.max { (durations[$0] ?? 0) < (durations[$1] ?? 0) } ?? majorSpeakers[0]
+                    var globalMicroTarget: [Int: Int] = [:]
+                    for microID in microSpeakers {
+                        guard let microCentroid = workingCentroids[microID]?.vector else { continue }
+                        if let best = majorSpeakers.compactMap({ majorID -> (Int, Float)? in
+                            guard let majorCentroid = workingCentroids[majorID]?.vector,
+                                  let dist = cosineDistance(microCentroid, majorCentroid) else { return nil }
+                            return (majorID, dist)
+                        }).min(by: { $0.1 < $1.1 }), best.1 <= 0.58 {
+                            globalMicroTarget[microID] = best.0
+                        }
+                    }
+
+                    for index in segments.indices {
+                        let currentIDs = segments[index].speakerIDs
+                        guard currentIDs.contains(where: { microSpeakers.contains($0) }) else { continue }
+                        let mapped = currentIDs.map { id -> Int in
+                            guard microSpeakers.contains(id) else { return id }
+                            if let target = globalMicroTarget[id] { return target }
+                            return nearestMajorSpeaker(
+                                to: index,
+                                in: segments,
+                                majorSpeakers: Set(majorSpeakers),
+                                fallback: dominantMajor
+                            )
+                        }
+                        segments[index].speakerIDs = Array(Set(mapped)).sorted()
+                    }
+                    segments = recomputeOverlapsAndCoalesce(segments)
+                }
+            }
+        }
+
+        // Stage 3: Sandwich de-flickering (A -> brief B -> A).
+        for _ in 0..<2 {
+            guard segments.count >= 3 else { break }
+            var changed = false
+            for index in 1..<(segments.count - 1) {
+                let previous = segments[index - 1]
+                let current = segments[index]
+                let next = segments[index + 1]
+                guard !previous.isOverlap,
+                      !current.isOverlap,
+                      !next.isOverlap,
+                      let prevID = previous.primarySpeakerID,
+                      let currID = current.primarySpeakerID,
+                      let nextID = next.primarySpeakerID,
+                      prevID == nextID,
+                      currID != prevID else { continue }
+                let gapBefore = max(0, current.startTime - previous.endTime)
+                let gapAfter = max(0, next.startTime - current.endTime)
+                guard current.duration <= 0.35,
+                      gapBefore <= 0.16,
+                      gapAfter <= 0.16,
+                      previous.duration + next.duration >= max(0.80, current.duration * 3.0) else { continue }
+                segments[index].speakerIDs = [prevID]
+                changed = true
+            }
+            if changed {
+                segments = recomputeOverlapsAndCoalesce(segments)
+            } else {
+                break
+            }
+        }
+
+        // Stage 4: Compact speaker IDs into contiguous 0..<N in order of first appearance.
+        var compactMapping: [Int: Int] = [:]
+        var nextCompactID = 0
+        for segment in segments {
+            for id in segment.speakerIDs where compactMapping[id] == nil {
+                compactMapping[id] = nextCompactID
+                nextCompactID += 1
+            }
+        }
+        if compactMapping.contains(where: { $0.key != $0.value }) {
+            segments = segments.map { segment in
+                var copy = segment
+                copy.speakerIDs = Array(Set(segment.speakerIDs.compactMap { compactMapping[$0] })).sorted()
+                return copy
+            }
+            segments = recomputeOverlapsAndCoalesce(segments)
+        }
+
+        return SpeakerDiarizationTimeline(
+            segments: segments,
+            speakerCount: max(nextCompactID, segments.flatMap(\.speakerIDs).max().map { $0 + 1 } ?? 0)
+        )
+    }
+
+    private static func speakingDurations(in segments: [SpeakerDiarizationSegment]) -> [Int: Double] {
+        var durations: [Int: Double] = [:]
+        for segment in segments {
+            let share = segment.duration / Double(max(1, segment.speakerIDs.count))
+            for id in segment.speakerIDs {
+                durations[id, default: 0] += share
+            }
+        }
+        return durations
+    }
+
+    private static func maxSegmentDurations(in segments: [SpeakerDiarizationSegment]) -> [Int: Double] {
+        var maxDurations: [Int: Double] = [:]
+        for segment in segments {
+            for id in segment.speakerIDs {
+                maxDurations[id] = max(maxDurations[id] ?? 0, segment.duration)
+            }
+        }
+        return maxDurations
+    }
+
+    private static func nearestMajorSpeaker(
+        to targetIndex: Int,
+        in segments: [SpeakerDiarizationSegment],
+        majorSpeakers: Set<Int>,
+        fallback: Int
+    ) -> Int {
+        let target = segments[targetIndex]
+        var bestID: Int?
+        var bestDistance = Double.greatestFiniteMagnitude
+        for (index, candidate) in segments.enumerated() where index != targetIndex {
+            let candidateMajors = candidate.speakerIDs.filter { majorSpeakers.contains($0) }
+            guard let majorID = candidateMajors.first else { continue }
+            let temporalGap: Double
+            if candidate.endTime <= target.startTime {
+                temporalGap = target.startTime - candidate.endTime
+            } else if candidate.startTime >= target.endTime {
+                temporalGap = candidate.startTime - target.endTime
+            } else {
+                temporalGap = 0
+            }
+            if temporalGap < bestDistance {
+                bestDistance = temporalGap
+                bestID = majorID
+            }
+        }
+        if let bestID, bestDistance <= 3.0 {
+            return bestID
+        }
+        return fallback
+    }
+
+    private static func recomputeOverlapsAndCoalesce(
+        _ input: [SpeakerDiarizationSegment]
+    ) -> [SpeakerDiarizationSegment] {
+        let sorted = input
+            .filter { $0.endTime - $0.startTime >= 0.02 && !$0.speakerIDs.isEmpty }
+            .sorted {
+                if $0.startTime == $1.startTime { return $0.endTime < $1.endTime }
+                return $0.startTime < $1.startTime
+            }
+        guard !sorted.isEmpty else { return [] }
+
+        // First collapse overlapping or near-adjacent intervals that belong to
+        // the exact same single speaker.
+        var collapsed: [SpeakerDiarizationSegment] = []
+        collapsed.reserveCapacity(sorted.count)
+        for var segment in sorted {
+            segment.speakerIDs = Array(Set(segment.speakerIDs)).sorted()
+            if let last = collapsed.last,
+               last.speakerIDs.count == 1,
+               last.speakerIDs == segment.speakerIDs,
+               segment.startTime - last.endTime <= 0.08 {
+                collapsed[collapsed.count - 1].endTime = max(last.endTime, segment.endTime)
+                collapsed[collapsed.count - 1].confidence = max(last.confidence, segment.confidence)
+                collapsed[collapsed.count - 1].hasCalibratedConfidence =
+                    last.hasCalibratedConfidence && segment.hasCalibratedConfidence
+            } else {
+                collapsed.append(segment)
+            }
+        }
+
+        // Sweep to determine true multi-speaker overlap.
+        var active: [(index: Int, end: Double, speakerIDs: Set<Int>)] = []
+        var overlapFlags = [Bool](repeating: false, count: collapsed.count)
+
+        for index in collapsed.indices {
+            let start = collapsed[index].startTime
             active.removeAll { $0.end <= start + 0.02 }
-            let currentIDs = Set(segments[index].speakerIDs)
+            let currentIDs = Set(collapsed[index].speakerIDs)
+            if currentIDs.count > 1 {
+                overlapFlags[index] = true
+            }
             for item in active {
-                // Overlapping intervals belonging to the same speaker are
-                // usually diarization window artifacts, not two voices. Only
-                // mark true overlap when the active identity sets contain more
-                // than one distinct speaker.
                 guard item.speakerIDs.union(currentIDs).count > 1 else { continue }
                 overlapFlags[index] = true
                 overlapFlags[item.index] = true
             }
-            active.append((index, segments[index].endTime, currentIDs))
+            active.append((index, collapsed[index].endTime, currentIDs))
         }
 
-        for index in segments.indices where overlapFlags[index] {
-            segments[index].isOverlap = true
+        for index in collapsed.indices {
+            collapsed[index].isOverlap = overlapFlags[index]
         }
-        return SpeakerDiarizationTimeline(segments: segments, speakerCount: result.speakerCount)
+        return mergeChunkSeams(collapsed)
     }
 
     static func reconcileSpeakerIDs(
@@ -424,6 +718,13 @@ public actor SpeakerDiarizationEngine {
         var mapping: [Int: Int] = [:]
         var usedGlobalIDs = Set<Int>()
 
+        // Step 1: Global best-first temporal overlap assignment in the seam window.
+        struct OverlapCandidate {
+            let localID: Int
+            let globalID: Int
+            let overlap: Double
+        }
+        var overlapCandidates: [OverlapCandidate] = []
         for localID in localIDs {
             var overlapByGlobal: [Int: Double] = [:]
             for local in localTimeline.segments where local.speakerIDs.contains(localID) {
@@ -433,28 +734,56 @@ public actor SpeakerDiarizationEngine {
                 for global in accepted {
                     let amount = min(localEnd, global.endTime) - max(localStart, global.startTime)
                     guard amount > 0 else { continue }
-                    for globalID in global.speakerIDs where !usedGlobalIDs.contains(globalID) {
+                    for globalID in global.speakerIDs {
                         overlapByGlobal[globalID, default: 0] += amount
                     }
                 }
             }
-            if let temporal = overlapByGlobal.max(by: { $0.value < $1.value }), temporal.value >= 0.18 {
-                mapping[localID] = temporal.key
-                usedGlobalIDs.insert(temporal.key)
-                continue
+            for (globalID, amount) in overlapByGlobal where amount >= 0.18 {
+                overlapCandidates.append(OverlapCandidate(localID: localID, globalID: globalID, overlap: amount))
             }
+        }
+        overlapCandidates.sort {
+            if abs($0.overlap - $1.overlap) > 1e-6 { return $0.overlap > $1.overlap }
+            if $0.localID != $1.localID { return $0.localID < $1.localID }
+            return $0.globalID < $1.globalID
+        }
+        for candidate in overlapCandidates {
+            guard mapping[candidate.localID] == nil,
+                  !usedGlobalIDs.contains(candidate.globalID) else { continue }
+            mapping[candidate.localID] = candidate.globalID
+            usedGlobalIDs.insert(candidate.globalID)
+        }
 
-            if let centroid = localCentroids[localID],
-               let nearest = globalCentroids.compactMap({ globalID, stored -> (Int, Float)? in
-                   guard !usedGlobalIDs.contains(globalID),
-                         let distance = cosineDistance(centroid, stored.0) else { return nil }
-                   return (globalID, distance)
-               }).min(by: { $0.1 < $1.1 }), nearest.1 <= 0.38 {
-                mapping[localID] = nearest.0
-                usedGlobalIDs.insert(nearest.0)
-                continue
+        // Step 2: Global best-first voiceprint centroid matching across remaining speakers.
+        struct CentroidCandidate {
+            let localID: Int
+            let globalID: Int
+            let distance: Float
+        }
+        var centroidCandidates: [CentroidCandidate] = []
+        for localID in localIDs where mapping[localID] == nil {
+            guard let centroid = localCentroids[localID] else { continue }
+            for (globalID, stored) in globalCentroids where !usedGlobalIDs.contains(globalID) {
+                guard let distance = cosineDistance(centroid, stored.0),
+                      distance <= 0.48 else { continue }
+                centroidCandidates.append(CentroidCandidate(localID: localID, globalID: globalID, distance: distance))
             }
+        }
+        centroidCandidates.sort {
+            if abs($0.distance - $1.distance) > 1e-6 { return $0.distance < $1.distance }
+            if $0.localID != $1.localID { return $0.localID < $1.localID }
+            return $0.globalID < $1.globalID
+        }
+        for candidate in centroidCandidates {
+            guard mapping[candidate.localID] == nil,
+                  !usedGlobalIDs.contains(candidate.globalID) else { continue }
+            mapping[candidate.localID] = candidate.globalID
+            usedGlobalIDs.insert(candidate.globalID)
+        }
 
+        // Step 3: Allocate new speaker IDs or clamp to maximumSpeakerCount.
+        for localID in localIDs where mapping[localID] == nil {
             if let maximumSpeakerCount,
                globalCentroids.count >= maximumSpeakerCount,
                let centroid = localCentroids[localID],
@@ -474,23 +803,41 @@ public actor SpeakerDiarizationEngine {
         return mapping
     }
 
-    private static func mergeCentroids(
+    static func mergeCentroids(
         _ localCentroids: [Int: [Float]],
+        localTimeline: SpeakerDiarizationTimeline? = nil,
         mapping: [Int: Int],
         into globalCentroids: inout [Int: ([Float], Double)]
     ) {
-        for (localID, centroid) in localCentroids {
-            guard let globalID = mapping[localID], !centroid.isEmpty else { continue }
+        let localDurations = localTimeline.map { speakingDurations(in: $0.segments) } ?? [:]
+        for (localID, rawCentroid) in localCentroids {
+            guard let globalID = mapping[localID], !rawCentroid.isEmpty else { continue }
+            let centroid = normalizedVector(rawCentroid)
+            let localWeight = max(1.0, localDurations[localID] ?? 1.0)
             guard let existing = globalCentroids[globalID], existing.0.count == centroid.count else {
-                globalCentroids[globalID] = (centroid, 1)
+                globalCentroids[globalID] = (centroid, localWeight)
                 continue
             }
-            let newWeight = existing.1 + 1
-            let merged = zip(existing.0, centroid).map {
-                Float((Double($0.0) * existing.1 + Double($0.1)) / newWeight)
-            }
+            let existingNorm = normalizedVector(existing.0)
+            let newWeight = existing.1 + localWeight
+            let merged = normalizedVector(
+                zip(existingNorm, centroid).map {
+                    Float((Double($0.0) * existing.1 + Double($0.1) * localWeight) / newWeight)
+                }
+            )
             globalCentroids[globalID] = (merged, newWeight)
         }
+    }
+
+    private static func normalizedVector(_ vector: [Float]) -> [Float] {
+        var normSquared: Double = 0
+        for value in vector {
+            let d = Double(value)
+            normSquared += d * d
+        }
+        let norm = sqrt(normSquared)
+        guard norm > 1e-12 else { return vector }
+        return vector.map { Float(Double($0) / norm) }
     }
 
     private static func cosineDistance(_ lhs: [Float], _ rhs: [Float]) -> Float? {
@@ -567,17 +914,30 @@ public actor SpeakerDiarizationEngine {
         throw SpeakerDiarizationEngineError.modelMissing
     }
 
+    static func preferredSegmenterVariant(in folder: URL) -> String {
+        let fullPrecision = folder.appendingPathComponent(
+            "speaker_segmenter/pyannote-v3/W32A32/SpeakerSegmenter.mlmodelc"
+        )
+        if FileManager.default.fileExists(atPath: fullPrecision.path) {
+            return "W32A32"
+        }
+        return "W8A16"
+    }
+
     private static func isUsableModelFolder(_ folder: URL) -> Bool {
-        // macOS 26 uses the Apple Silicon optimized W8A16 segmenter. Keep the
-        // model selection deterministic so release and SwiftPM builds behave
-        let segmenterVariant = "W8A16"
+        let hasSegmenter = ["W32A32", "W8A16"].contains { variant in
+            FileManager.default.fileExists(
+                atPath: folder.appendingPathComponent(
+                    "speaker_segmenter/pyannote-v3/\(variant)/SpeakerSegmenter.mlmodelc"
+                ).path
+            )
+        }
         let requiredPaths = [
-            "speaker_segmenter/pyannote-v3/\(segmenterVariant)/SpeakerSegmenter.mlmodelc",
             "speaker_embedder/pyannote-v3/W8A16/SpeakerEmbedder.mlmodelc",
             "speaker_embedder/pyannote-v3/W8A16/SpeakerEmbedderPreprocessor.mlmodelc",
             "speaker_clusterer/pyannote-v4/W32A32/PldaProjector.mlmodelc"
         ]
-        return requiredPaths.allSatisfy {
+        return hasSegmenter && requiredPaths.allSatisfy {
             FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path)
         }
     }

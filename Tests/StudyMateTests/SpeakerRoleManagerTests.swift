@@ -382,13 +382,12 @@ final class SpeakerRoleManagerTests: XCTestCase {
         let manager = SpeakerRoleManager()
         let names = ["s1": "Alice"]
         let allIDs: Set<Int> = [0]
+        let seg = SentenceSegment(index: 1, startTime: 0, endTime: 2, speakerID: 0, speakerIDs: [0], speakerRole: "Alice")
 
         // 针对某一句单独指定新名字 "David"，不应修改 s1 的 Alice
         let res = manager.resolveSingleSentenceSpeaker(
-            currentRoleLabel: "Alice",
-            currentRole: "Alice",
-            currentSpeakerIDs: [0],
-            newName: "David",
+            currentSegment: seg,
+            inputName: "David",
             currentSpeakerNames: names,
             allExistingSpeakerIDs: allIDs
         )
@@ -417,5 +416,164 @@ final class SpeakerRoleManagerTests: XCTestCase {
         XCTAssertEqual(engine.segments[1].speakerID, 0)
         XCTAssertEqual(engine.segments[1].speakerIDs, [0])
     }
-}
 
+    func testRenameCompositeRoleToCustomCompositeRoleSingleAndRepeated() {
+        let engine = PlaybackEngine()
+
+        let seg1 = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 2,
+            text: "Overlap sentence",
+            speakerID: 1,
+            speakerIDs: [1, 2],
+            isSpeakerOverlap: true
+        )
+        let seg2 = SentenceSegment(
+            index: 2,
+            startTime: 2,
+            endTime: 4,
+            text: "Single s2 sentence",
+            speakerID: 1,
+            speakerIDs: [1],
+            isSpeakerOverlap: false
+        )
+        engine.segments = [seg1, seg2]
+
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "s2+s3")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "s2")
+
+        // 1. 仅此句：将 s2+s3 改为 jim+lily，应当显示 jim+lily 而不是变成 s1
+        engine.renameSpeaker(fromRole: "s2+s3", toName: "jim+lily", scope: .thisSentenceOnly, segmentID: seg1.id)
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "jim+lily")
+        XCTAssertEqual(engine.segments[0].speakerRole, "jim+lily")
+        XCTAssertEqual(engine.segments[0].speakerIDs, [1, 2])
+        XCTAssertTrue(engine.segments[0].isSpeakerOverlap)
+        // 不污染其它单人 s2 句子
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "s2")
+        XCTAssertNil(engine.currentSpeakerNames["s2"])
+
+        // 2. 再次仅此句：将 jim+lily 修改为 tom+jerry
+        engine.renameSpeaker(fromRole: "jim+lily", toName: "tom+jerry", scope: .thisSentenceOnly, segmentID: seg1.id)
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "tom+jerry")
+        XCTAssertEqual(engine.segments[0].speakerRole, "tom+jerry")
+        XCTAssertEqual(engine.segments[0].speakerIDs, [1, 2])
+        XCTAssertTrue(engine.segments[0].isSpeakerOverlap)
+
+        // 3. 再次仅此句：将 tom+jerry 恢复为默认 s2+s3
+        engine.renameSpeaker(fromRole: "tom+jerry", toName: "s2+s3", scope: .thisSentenceOnly, segmentID: seg1.id)
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "s2+s3")
+        XCTAssertNil(engine.segments[0].speakerRole)
+        XCTAssertEqual(engine.segments[0].speakerIDs, [1, 2])
+        XCTAssertTrue(engine.segments[0].isSpeakerOverlap)
+
+        // 4. 所有相同角色：将 s2+s3 批量修改为 jim+lily
+        engine.renameSpeaker(fromRole: "s2+s3", toName: "jim+lily", scope: .allMatching, segmentID: seg1.id)
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "jim+lily")
+        XCTAssertEqual(engine.segments[0].speakerRole, "jim+lily")
+        XCTAssertEqual(engine.segments[0].speakerIDs, [1, 2])
+        XCTAssertTrue(engine.segments[0].isSpeakerOverlap)
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "s2")
+    }
+
+    func testCaseSensitiveSpeakerNamesDistinguishJimAndLowercaseJim() {
+        let engine = PlaybackEngine()
+
+        let seg1 = SentenceSegment(
+            index: 1,
+            startTime: 0,
+            endTime: 2,
+            text: "Hello from Jim",
+            speakerID: 0,
+            speakerIDs: [0]
+        )
+        let seg2 = SentenceSegment(
+            index: 2,
+            startTime: 2,
+            endTime: 4,
+            text: "Hello from jim",
+            speakerID: 1,
+            speakerIDs: [1]
+        )
+        engine.segments = [seg1, seg2]
+
+        // 1. 将 s1 改名为 "Jim"，将 s2 改名为 "jim"：二者大小写不同，应当明确区分为两个不同的人，绝不自动合并
+        engine.renameSpeaker(fromRole: "s1", toName: "Jim", scope: .allMatching)
+        engine.renameSpeaker(fromRole: "s2", toName: "jim", scope: .allMatching)
+
+        XCTAssertEqual(engine.segments[0].speakerID, 0)
+        XCTAssertEqual(engine.segments[0].speakerRole, "Jim")
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "Jim")
+
+        XCTAssertEqual(engine.segments[1].speakerID, 1)
+        XCTAssertEqual(engine.segments[1].speakerRole, "jim")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "jim")
+
+        XCTAssertEqual(engine.currentSpeakerNames["s1"], "Jim")
+        XCTAssertEqual(engine.currentSpeakerNames["s2"], "jim")
+        XCTAssertEqual(engine.countSegments(withSpeakerRoleLabel: "Jim"), 1)
+        XCTAssertEqual(engine.countSegments(withSpeakerRoleLabel: "jim"), 1)
+
+        // 2. 将小写的 "jim" 直接改名为首字母大写的 "Jimmy"（或单独把唯一一个 "jim" 改为 "JIM"）
+        engine.renameSpeaker(fromRole: "jim", toName: "JIM", scope: .allMatching)
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "JIM")
+        XCTAssertEqual(engine.currentSpeakerNames["s2"], "JIM")
+
+        // 3. 当仅存在小写的 "jim" 时，将其直接重命名为 "Jim"（仅大小写改变），必须成功生效而不能被忽略
+        let engine2 = PlaybackEngine()
+        let segLower = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Test", speakerID: 0, speakerIDs: [0], speakerRole: "jim")
+        engine2.segments = [segLower]
+        engine2.renameSpeaker(fromRole: "jim", toName: "Jim", scope: .allMatching, segmentID: segLower.id)
+        XCTAssertEqual(engine2.segments[0].speakerRole, "Jim")
+        XCTAssertEqual(engine2.segments[0].speakerRoleLabel, "Jim")
+        XCTAssertEqual(engine2.currentSpeakerNames["s1"], "Jim")
+
+        // 仅此句模式下将 "Jim" 改为 "jim" 也必须成功生效
+        engine2.renameSpeaker(fromRole: "Jim", toName: "jim", scope: .thisSentenceOnly, segmentID: segLower.id)
+        XCTAssertEqual(engine2.segments[0].speakerRole, "jim")
+        XCTAssertEqual(engine2.segments[0].speakerRoleLabel, "jim")
+    }
+
+    func testSingleSentenceResetCustomSpeakerBackToDefaultKey() {
+        let engine = PlaybackEngine()
+        let seg1 = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "One", speakerID: 0, speakerIDs: [0], speakerRole: "Alice")
+        let seg2 = SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "Two", speakerID: 0, speakerIDs: [0], speakerRole: "Alice")
+        engine.segments = [seg1, seg2]
+
+        // 仅将第 1 句从 "Alice" 恢复为 "s1"，第 2 句保持 "Alice"
+        engine.renameSpeaker(fromRole: "Alice", toName: "s1", scope: .thisSentenceOnly, segmentID: seg1.id)
+        XCTAssertEqual(engine.segments[0].speakerID, 0)
+        XCTAssertNil(engine.segments[0].speakerRole)
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "s1")
+        XCTAssertEqual(engine.segments[1].speakerRoleLabel, "Alice")
+    }
+
+    func testSingleSentenceCompositeToNewNameDoesNotHijackInUseDefaultSpeaker() {
+        let engine = PlaybackEngine()
+        let seg1 = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Standalone s2", speakerID: 1, speakerIDs: [1])
+        let seg2 = SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "Standalone s3", speakerID: 2, speakerIDs: [2])
+        let seg3 = SentenceSegment(index: 3, startTime: 4, endTime: 6, text: "Composite s2+s3", speakerID: 1, speakerIDs: [1, 2], isSpeakerOverlap: true)
+        engine.segments = [seg1, seg2, seg3]
+
+        // 仅此句：将第 3 句 (s2+s3) 改为新名字 "Alice"，由于 s2 和 s3 均已被其它单句使用，不应污染 s2 或 s3 的全局映射
+        engine.renameSpeaker(fromRole: "s2+s3", toName: "Alice", scope: .thisSentenceOnly, segmentID: seg3.id)
+        XCTAssertEqual(engine.segments[2].speakerRoleLabel, "Alice")
+        XCTAssertEqual(engine.segments[2].speakerID, 3)
+        XCTAssertNil(engine.currentSpeakerNames["s2"])
+        XCTAssertNil(engine.currentSpeakerNames["s3"])
+        XCTAssertEqual(engine.currentSpeakerNames["s4"], "Alice")
+    }
+
+    func testMergeSegmentWithNextPreservesCustomSpeakerRoles() {
+        let engine = PlaybackEngine()
+        let seg1 = SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "Hello", speakerID: 0, speakerIDs: [0], speakerRole: "Jim")
+        let seg2 = SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "Hi there", speakerID: 1, speakerIDs: [1], speakerRole: "Lily")
+        engine.segments = [seg1, seg2]
+
+        engine.mergeSegmentWithNext(at: 0)
+        XCTAssertEqual(engine.segments.count, 1)
+        XCTAssertEqual(engine.segments[0].speakerID, 0)
+        XCTAssertEqual(engine.segments[0].speakerIDs, [0, 1])
+        XCTAssertEqual(engine.segments[0].speakerRoleLabel, "Jim→Lily")
+    }
+}
