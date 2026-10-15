@@ -33,6 +33,13 @@ public struct SentenceLibraryView: View {
         UTType(exportedAs: "com.studymate.learning-package", conformingTo: .data)
     }
 
+    private var effectiveSelectedSource: String {
+        if !selectedSource.isEmpty {
+            return selectedSource
+        }
+        return manager.selectedSource
+    }
+
     public init(manager: SentenceLibraryManager) {
         self.manager = manager
         self._libraryPlayer = StateObject(wrappedValue: SentenceLibraryPlayer())
@@ -208,7 +215,7 @@ public struct SentenceLibraryView: View {
                         } label: {
                             HStack {
                                 Text(lang.text("全部来源", "All Sources"))
-                                if selectedSource.isEmpty {
+                                if effectiveSelectedSource.isEmpty {
                                     Image(systemName: "checkmark")
                                 }
                             }
@@ -220,7 +227,7 @@ public struct SentenceLibraryView: View {
                             } label: {
                                 HStack {
                                     Text(source)
-                                    if selectedSource == source {
+                                    if effectiveSelectedSource == source {
                                         Image(systemName: "checkmark")
                                     }
                                 }
@@ -229,7 +236,7 @@ public struct SentenceLibraryView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "film")
-                            Text(selectedSource.isEmpty ? lang.text("来源", "Source") : selectedSource)
+                            Text(effectiveSelectedSource.isEmpty ? lang.text("来源", "Source") : effectiveSelectedSource)
                                 .lineLimit(1)
                         }
                         .font(.callout)
@@ -462,7 +469,11 @@ public struct SentenceLibraryView: View {
                                 availableSources: manager.availableSources,
                                 isPresented: $showBatchSourcePopover,
                                 onSave: { newSource in
+                                    let trimmedNew = newSource.trimmingCharacters(in: .whitespacesAndNewlines)
                                     let selectedIDs = selectedEntryIDs.intersection(visibleIDs)
+                                    if !selectedSource.isEmpty {
+                                        selectedSource = trimmedNew
+                                    }
                                     Task {
                                         try? await manager.batchUpdateSourceMediaName(
                                             for: selectedIDs,
@@ -596,6 +607,13 @@ public struct SentenceLibraryView: View {
                                         try? await manager.updateTags(id: entry.id, tags: tags)
                                     },
                                     onUpdateSource: { newSource, applyToAll in
+                                        let oldSource = entry.sourceMediaName
+                                        let trimmedNew = newSource.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        if selectedSource == oldSource {
+                                            if applyToAll || (sourceCounts[oldSource] ?? 0) <= 1 {
+                                                selectedSource = trimmedNew
+                                            }
+                                        }
                                         try? await manager.updateSourceMediaName(
                                             entryID: entry.id,
                                             oldSourceName: entry.sourceMediaName,
@@ -660,11 +678,14 @@ public struct SentenceLibraryView: View {
         }
         .frame(minWidth: 840, minHeight: 580)
         .onAppear {
+            if !manager.selectedSource.isEmpty && selectedSource.isEmpty {
+                selectedSource = manager.selectedSource
+            }
             manager.updateFilter(
                 searchText: searchText,
                 dateFilter: dateFilter,
                 selectedDate: selectedDate,
-                sourceMediaName: selectedSource,
+                sourceMediaName: selectedSource.isEmpty ? manager.selectedSource : selectedSource,
                 sortOrder: sortOrder
             )
             refreshPlayerPlaylist()
@@ -728,6 +749,16 @@ public struct SentenceLibraryView: View {
             sortOrder = .newestFirst
             libraryPlayer.stop()
             refreshPlayerPlaylist()
+        }
+        .onChange(of: manager.selectedSource) { _, newSource in
+            if selectedSource != newSource {
+                selectedSource = newSource
+            }
+        }
+        .onChange(of: manager.availableSources) { _, sources in
+            if !selectedSource.isEmpty && !sources.contains(selectedSource) {
+                selectedSource = manager.selectedSource
+            }
         }
         .onChange(of: manager.entries.map(\.id)) { _, currentIDs in
             refreshPlayerPlaylist()

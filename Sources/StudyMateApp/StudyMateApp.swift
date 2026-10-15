@@ -940,6 +940,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .disabled(engine.loopMode != .normal)
 
                 Menu(languageManager.text("句末跟读停顿", "Shadowing Pause")) {
                     Button {
@@ -981,6 +982,7 @@ struct StudyMateApp: App {
                         }
                     }
                 }
+                .disabled(engine.loopMode == .all)
 
                 Menu(languageManager.text("播放速度", "Playback Speed")) {
                     ForEach([0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] as [Float], id: \.self) { speed in

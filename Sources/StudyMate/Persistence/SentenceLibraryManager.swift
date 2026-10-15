@@ -285,6 +285,11 @@ public final class SentenceLibraryManager: ObservableObject {
         reloadEntries(debounceNanoseconds: 50_000_000)
     }
 
+    public func setSelectedSource(_ source: String) {
+        self.selectedSource = source
+        reloadEntries(debounceNanoseconds: 50_000_000)
+    }
+
     public func reloadEntries(debounceNanoseconds: UInt64 = 0) {
         queryTask?.cancel()
         entryQueryGeneration &+= 1
@@ -673,22 +678,23 @@ public final class SentenceLibraryManager: ObservableObject {
         applyToAllWithSameSource: Bool
     ) async throws {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
+        let trimmedOld = oldSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let updatedCount = try await Task.detached(priority: .userInitiated) { [store] in
                 try store.updateSourceMediaName(
                     entryID: entryID,
-                    oldSourceName: oldSourceName,
+                    oldSourceName: trimmedOld,
                     newSourceName: trimmedNew,
                     applyToAllWithSameSource: applyToAllWithSameSource,
                     in: libraryID
                 )
             }.value
 
-            if selectedSource == oldSourceName && applyToAllWithSameSource {
+            if selectedSource == trimmedOld && applyToAllWithSameSource {
                 selectedSource = trimmedNew
             }
-            reloadSources(for: libraryID)
+            reloadSources(for: libraryID, preferredSource: trimmedNew, ifReplacing: trimmedOld)
             reloadEntries()
 
             let msg = LanguageManager.shared.text(
@@ -710,12 +716,16 @@ public final class SentenceLibraryManager: ObservableObject {
         guard let libraryID = currentLibraryID else { throw SentenceLibraryError.libraryUnavailable }
         guard !ids.isEmpty else { return }
         let trimmedNew = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousSelected = selectedSource
         do {
             let count = try await Task.detached(priority: .userInitiated) { [store] in
                 try store.batchUpdateSourceMediaName(ids: ids, newSourceName: trimmedNew, in: libraryID)
             }.value
 
-            reloadSources(for: libraryID)
+            if !selectedSource.isEmpty && !trimmedNew.isEmpty {
+                selectedSource = trimmedNew
+            }
+            reloadSources(for: libraryID, preferredSource: trimmedNew, ifReplacing: previousSelected)
             reloadEntries()
 
             let msg = LanguageManager.shared.text(
@@ -1148,7 +1158,11 @@ public final class SentenceLibraryManager: ObservableObject {
         }
     }
 
-    private func reloadSources(for libraryID: UUID) {
+    private func reloadSources(
+        for libraryID: UUID,
+        preferredSource: String? = nil,
+        ifReplacing oldSource: String? = nil
+    ) {
         Task { [weak self, store] in
             do {
                 let sources = try await Task.detached(priority: .utility) {
@@ -1160,7 +1174,18 @@ public final class SentenceLibraryManager: ObservableObject {
                 guard let self, self.currentLibraryID == libraryID else { return }
                 self.availableSources = sources
                 self.availableTags = tags
-                if !self.selectedSource.isEmpty, !sources.contains(self.selectedSource) {
+
+                if let preferred = preferredSource, !preferred.isEmpty, sources.contains(preferred) {
+                    if let old = oldSource, !old.isEmpty {
+                        if self.selectedSource == old || !sources.contains(self.selectedSource) {
+                            self.selectedSource = preferred
+                            self.reloadEntries()
+                        }
+                    } else if !sources.contains(self.selectedSource) {
+                        self.selectedSource = preferred
+                        self.reloadEntries()
+                    }
+                } else if !self.selectedSource.isEmpty, !sources.contains(self.selectedSource) {
                     self.selectedSource = ""
                     self.reloadEntries()
                 }

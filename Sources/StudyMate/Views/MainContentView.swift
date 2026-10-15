@@ -1102,10 +1102,22 @@ private struct PlaybackAdjustmentCapsule: View {
     ]
 
     private var repeatLabel: String {
-        toolbarState.repeatCountLimit == 0 ? "∞" : "\(toolbarState.repeatCountLimit)×"
+        switch toolbarState.loopMode {
+        case .normal:
+            return toolbarState.repeatCountLimit == 0 ? "∞" : "\(toolbarState.repeatCountLimit)×"
+        case .singleSegment:
+            return lang.text("单句", "Single")
+        case .all:
+            return lang.text("全篇", "All")
+        default:
+            return toolbarState.repeatCountLimit == 0 ? "∞" : "\(toolbarState.repeatCountLimit)×"
+        }
     }
 
     private var pauseLabel: String {
+        if toolbarState.loopMode == .all {
+            return lang.text("关", "Off")
+        }
         if toolbarState.shadowingPauseSeconds > 0 {
             return "\(Int(toolbarState.shadowingPauseSeconds))s"
         }
@@ -1117,11 +1129,19 @@ private struct PlaybackAdjustmentCapsule: View {
     }
 
     private var isRepeatActive: Bool {
-        toolbarState.repeatCountLimit != 1 || toolbarState.loopMode == .singleSegment || toolbarState.loopMode == .all
+        switch toolbarState.loopMode {
+        case .normal:
+            return toolbarState.repeatCountLimit != 1
+        case .singleSegment, .all:
+            return true
+        default:
+            return false
+        }
     }
 
     private var isShadowingActive: Bool {
-        toolbarState.shadowingPauseSeconds > 0 || toolbarState.shadowingPauseRatio > 0
+        guard toolbarState.loopMode != .all else { return false }
+        return toolbarState.shadowingPauseSeconds > 0 || toolbarState.shadowingPauseRatio > 0
     }
 
     var body: some View {
@@ -1196,21 +1216,30 @@ private struct PlaybackAdjustmentCapsule: View {
 
                 Divider()
 
-                Section(lang.text("单句复读次数", "Repeat Limit")) {
-                    ForEach(repeatOptions, id: \.count) { option in
-                        Button {
-                            engine.repeatCountLimit = option.count
-                            engine.currentRepeatCount = 1
-                            if option.count != 1 && toolbarState.loopMode == .normal {
-                                engine.loopMode = .singleSegment
-                            }
-                        } label: {
-                            if toolbarState.repeatCountLimit == option.count {
-                                Label(option.label, systemImage: "checkmark")
-                            } else {
-                                Text(option.label)
+                if toolbarState.loopMode == .normal {
+                    Section(lang.text("单句复读次数", "Repeat Limit")) {
+                        ForEach(repeatOptions, id: \.count) { option in
+                            Button {
+                                engine.repeatCountLimit = option.count
+                                engine.currentRepeatCount = 1
+                            } label: {
+                                if toolbarState.repeatCountLimit == option.count {
+                                    Label(option.label, systemImage: "checkmark")
+                                } else {
+                                    Text(option.label)
+                                }
                             }
                         }
+                    }
+                } else if toolbarState.loopMode == .singleSegment {
+                    Section(lang.text("单句复读次数", "Repeat Limit")) {
+                        Button(lang.text("单句重复模式下无限制循环当前句", "Indefinite loop in single repeat mode")) {}
+                            .disabled(true)
+                    }
+                } else {
+                    Section(lang.text("单句复读次数", "Repeat Limit")) {
+                        Button(lang.text("全篇循环模式下不应用单句复读", "Repeat limit disabled in loop all mode")) {}
+                            .disabled(true)
                     }
                 }
             } label: {
@@ -1236,52 +1265,59 @@ private struct PlaybackAdjustmentCapsule: View {
 
             // 跟读
             Menu {
-                Button {
-                    engine.setShadowingPauseRatio(0)
-                    if toolbarState.loopMode == .pauseAfterSegment {
-                        engine.loopMode = .normal
+                if toolbarState.loopMode == .all {
+                    Section {
+                        Button(lang.text("全篇循环模式下停顿已禁用", "Shadowing pause disabled in loop all mode")) {}
+                            .disabled(true)
                     }
-                } label: {
-                    if !isShadowingActive {
-                        Label(lang.text("关闭停顿", "Off"), systemImage: "checkmark")
-                    } else {
-                        Text(lang.text("关闭停顿", "Off"))
+                } else {
+                    Button {
+                        engine.setShadowingPauseRatio(0)
+                        if toolbarState.loopMode == .pauseAfterSegment {
+                            engine.loopMode = .normal
+                        }
+                    } label: {
+                        if !isShadowingActive {
+                            Label(lang.text("关闭停顿", "Off"), systemImage: "checkmark")
+                        } else {
+                            Text(lang.text("关闭停顿", "Off"))
+                        }
                     }
-                }
 
-                Divider()
+                    Divider()
 
-                Section(lang.text("固定停顿秒数", "Fixed Seconds")) {
-                    ForEach(shadowingPauseSecondsOptions, id: \.self) { sec in
-                        Button {
-                            engine.setShadowingPauseSeconds(Double(sec))
-                            if toolbarState.loopMode == .pauseAfterSegment {
-                                engine.loopMode = .normal
-                            }
-                        } label: {
-                            if isShadowingActive && abs(toolbarState.shadowingPauseSeconds - Double(sec)) < 0.001 {
-                                Label("\(sec)s", systemImage: "checkmark")
-                            } else {
-                                Text("\(sec)s")
+                    Section(lang.text("固定停顿秒数", "Fixed Seconds")) {
+                        ForEach(shadowingPauseSecondsOptions, id: \.self) { sec in
+                            Button {
+                                engine.setShadowingPauseSeconds(Double(sec))
+                                if toolbarState.loopMode == .pauseAfterSegment {
+                                    engine.loopMode = .normal
+                                }
+                            } label: {
+                                if isShadowingActive && abs(toolbarState.shadowingPauseSeconds - Double(sec)) < 0.001 {
+                                    Label("\(sec)s", systemImage: "checkmark")
+                                } else {
+                                    Text("\(sec)s")
+                                }
                             }
                         }
                     }
-                }
 
-                Divider()
+                    Divider()
 
-                Section(lang.text("依句长停顿比例", "Ratio by Length")) {
-                    ForEach(shadowingPauseRatioOptions, id: \.ratio) { option in
-                        Button {
-                            engine.setShadowingPauseRatio(option.ratio)
-                            if toolbarState.loopMode == .pauseAfterSegment {
-                                engine.loopMode = .normal
-                            }
-                        } label: {
-                            if isShadowingActive && toolbarState.shadowingPauseSeconds == 0 && abs(toolbarState.shadowingPauseRatio - option.ratio) < 0.001 {
-                                Label(option.label, systemImage: "checkmark")
-                            } else {
-                                Text(option.label)
+                    Section(lang.text("依句长停顿比例", "Ratio by Length")) {
+                        ForEach(shadowingPauseRatioOptions, id: \.ratio) { option in
+                            Button {
+                                engine.setShadowingPauseRatio(option.ratio)
+                                if toolbarState.loopMode == .pauseAfterSegment {
+                                    engine.loopMode = .normal
+                                }
+                            } label: {
+                                if isShadowingActive && toolbarState.shadowingPauseSeconds == 0 && abs(toolbarState.shadowingPauseRatio - option.ratio) < 0.001 {
+                                    Label(option.label, systemImage: "checkmark")
+                                } else {
+                                    Text(option.label)
+                                }
                             }
                         }
                     }
@@ -1293,12 +1329,13 @@ private struct PlaybackAdjustmentCapsule: View {
                     Text(pauseLabel)
                         .studymateToolbarValueLabel()
                 }
-                .foregroundStyle(isShadowingActive ? StudyMateMediaStyle.success : Color.primary)
+                .foregroundStyle(isShadowingActive ? StudyMateMediaStyle.success : (toolbarState.loopMode == .all ? Color.secondary.opacity(0.6) : Color.primary))
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help(StudyMateShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
+            .disabled(toolbarState.loopMode == .all)
+            .help(toolbarState.loopMode == .all ? lang.text("全篇循环模式下停顿已禁用", "Shadowing pause disabled in loop all mode") : StudyMateShortcutCatalog.help(lang.text("设置句末跟读停顿", "Set shadowing pause"), shortcut: .shadowingPauseMenu))
             .accessibilityLabel(lang.text("句末跟读停顿", "Shadowing pause"))
             .accessibilityValue(pauseLabel)
             .keyboardShortcut(StudyMateShortcutManager.shared.keyboardShortcut(for: .shadowingPauseMenu))
@@ -1499,13 +1536,13 @@ private struct PlaybackStatusBar: View {
                     .foregroundColor(StudyMateMediaStyle.accent)
             }
 
-            if engine.repeatCountLimit != 1 {
+            if engine.loopMode == .normal && engine.repeatCountLimit != 1 {
                 Divider()
                     .frame(height: 12)
                 Label(repeatCountText, systemImage: "repeat.circle")
             }
 
-            if engine.shadowingPauseRatio > 0 || engine.shadowingPauseSeconds > 0 {
+            if engine.loopMode != .all && (engine.shadowingPauseRatio > 0 || engine.shadowingPauseSeconds > 0) {
                 Divider()
                     .frame(height: 12)
                 Label(shadowingText, systemImage: engine.isShadowingPaused ? "mic.fill" : "pause.circle")

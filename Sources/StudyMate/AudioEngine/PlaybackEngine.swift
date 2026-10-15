@@ -465,7 +465,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
     @Published public var loopMode: PlaybackLoopMode = .normal {
-        didSet { updateDecoderSentenceEnd() }
+        didSet {
+            if loopMode == .all && isShadowingPaused {
+                cancelShadowingPause()
+                if wantsPlayback {
+                    play()
+                }
+            }
+            updateDecoderSentenceEnd()
+        }
     }
     /// 当开启此开关时（如填空模式），句后停顿模式在当前句播放结束时暂停并停留在当前句起点，
     /// 不会自动切到下一句，方便用户重听或在该句完成填词输入。
@@ -3785,7 +3793,11 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
         } else {
             currentRepeatCount += 1
-            seekToTargetSegment(segment, protectRepeatCycle: true)
+            seekToTargetSegment(segment, protectRepeatCycle: true) {
+                Task { @MainActor [weak self] in
+                    self?.play()
+                }
+            }
         }
     }
 

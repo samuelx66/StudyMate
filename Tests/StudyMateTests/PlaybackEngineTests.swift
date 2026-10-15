@@ -2945,5 +2945,180 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: srtURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path))
     }
+
+    func testContinuousModeRepeatsSpecifiedTimesWithShadowingPauseThenAdvances() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("test-repeat-pause.mp3")
+        try Data("audio".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 2
+        engine.setShadowingPauseSeconds(0.1)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 0.2),
+            SentenceSegment(index: 2, startTime: 0.2, endTime: 0.5)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // 1st play finishes
+        native.emitTime(0.2)
+        await Task.yield()
+
+        // Should enter shadowing pause before 2nd repeat
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // Wait for pause to finish and repeat 2 to start
+        for _ in 0..<50 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // 2nd play progress
+        native.emitTime(0.05)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        native.emitTime(0.19)
+        native.emitTime(0.2)
+        await Task.yield()
+
+        // Should enter shadowing pause after the last repeat
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        // Wait for pause to finish and advance to next sentence
+        for _ in 0..<50 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 1)
+    }
+
+    func testSingleSegmentModeLoopsIndefinitelyWithPauseIgnoringRepeatLimit() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("test-single-loop.mp3")
+        try Data("audio".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .singleSegment
+        engine.repeatCountLimit = 1
+        engine.setShadowingPauseSeconds(0.1)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 0.2),
+            SentenceSegment(index: 2, startTime: 0.2, endTime: 0.5)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // 1st play finishes
+        native.emitTime(0.2)
+        await Task.yield()
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        for _ in 0..<50 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+
+        // 2nd play progress
+        native.emitTime(0.05)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        native.emitTime(0.19)
+        native.emitTime(0.2)
+        await Task.yield()
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        for _ in 0..<50 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Still on segment 0
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+        XCTAssertEqual(engine.currentRepeatCount, 3)
+    }
+
+    func testLoopAllModeIgnoresRepeatCountAndShadowingPause() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("test-all-loop.mp3")
+        try Data("audio".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .all
+        engine.repeatCountLimit = 5
+        engine.setShadowingPauseSeconds(2.0)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        // Crosses boundary of sentence 1
+        native.emitTime(1.0)
+        await Task.yield()
+
+        // Should NOT pause or repeat sentence 1, should immediately update to sentence 2
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+    }
+
+    func testSwitchingToLoopAllCancelsActiveShadowingPause() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("test-cancel-shadowing.mp3")
+        try Data("audio".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.setShadowingPauseSeconds(10.0)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 1),
+            SentenceSegment(index: 2, startTime: 1, endTime: 2)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+
+        native.emitTime(1.0)
+        await Task.yield()
+        XCTAssertTrue(engine.isShadowingPaused)
+
+        // Switch to .all
+        engine.loopMode = .all
+        await Task.yield()
+
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertTrue(engine.isPlaying)
+    }
 }
 
