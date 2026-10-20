@@ -630,10 +630,30 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     @Published public var segments: [SentenceSegment] = [] {
         didSet {
+            segmentStructureRevision &+= 1
+            // Any structural edit other than the delete itself invalidates the
+            // one-step undo so it can never reinsert a sentence at a position
+            // that no longer matches the user's edits.
+            if let undo = segmentDeletionUndo, undo.structureRevision != segmentStructureRevision {
+                segmentDeletionUndo = nil
+                canUndoDeleteSegment = false
+            }
             updatePresentationUpperBoundForActiveSegment()
             updateDecoderSentenceEnd()
         }
     }
+    /// Monotonic revision for structural sentence edits, used to keep the
+    /// single-step delete undo honest.
+    private var segmentStructureRevision: UInt64 = 0
+    private struct SegmentDeletionUndo {
+        let segment: SentenceSegment
+        let index: Int
+        let structureRevision: UInt64
+    }
+    private var segmentDeletionUndo: SegmentDeletionUndo?
+    /// True while the most recent sentence deletion can still be undone. The
+    /// Sentence menu exposes an explicit undo command for this state.
+    @Published public private(set) var canUndoDeleteSegment = false
     /// Increments for every explicit user sentence selection (keyboard, list,
     /// waveform or playback controls).  SubtitleEditView uses this separate
     /// signal to distinguish an intentional jump from natural playback, so a
@@ -837,6 +857,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         case fallback
     }
     private var segmentOrigin: SegmentOrigin = .none
+
+    /// Snapshot of the authoritative timeline taken before an AI segmentation
+    /// run starts. The pipeline publishes VAD preview segments into `segments`
+    /// before Whisper has even been validated; if the run fails or is cancelled
+    /// this snapshot restores the user's edited timeline instead of leaving the
+    /// untexted preview in place (and then persisting it over the project).
+    private struct SegmentationRollback {
+        let segments: [SentenceSegment]
+        let segmentOrigin: SegmentOrigin
+        let hasCompletedSegmentation: Bool
+        let acousticBoundaryTimes: [Double]
+        let activeSegmentIndex: Int?
+    }
+    private var segmentationRollback: SegmentationRollback?
+    /// While true, `persistCurrentProject` is suppressed so a transient VAD
+    /// preview can never be written to disk during a long AI run.
+    private var isSegmentationPreviewActive = false
 
     private static let videoExtensions: Set<String> = [
         "mkv", "mp4", "mov", "m4v", "avi", "webm", "flv", "wmv", "ts", "vob", "ogv", "rmvb", "3gp"
@@ -1084,6 +1121,15 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         pendingResumeTime = max(0, resumeTime)
         pendingResumePlayback = shouldPlay
+        // A decoder switch invalidates any seek that was issued against the
+        // previous backend. Without this reset both the seek completion and the
+        // timeout guard fail (`activeBackend !== backend`) and leave `isSeeking`
+        // stuck forever, which freezes the clock and boundary handling.
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
+        seekGeneration &+= 1
+        isSeeking = false
+        isPreviewSeeking = false
         isBackendReady = false
         isMediaLoading = true
 
@@ -1659,6 +1705,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         // 先让所有旧媒体任务失效并取消，避免它们在保存或窗口销毁之后
         // 又把旧媒体的异步结果写回当前工程。
         mediaSessionID = UUID()
+        let closingSessionID = mediaSessionID
         segmentationRequestID = UUID()
         seekGeneration &+= 1
         seekTimeoutTask?.cancel()
@@ -1677,12 +1724,23 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         cancelAutomaticTranslation()
 
         // 关闭前强制完成工程与播放历史写入，确保后续资源拆除不会丢失
-        // 当前断句、书签、播放位置或工程状态。
+        // 当前断句、书签、播放位置或工程状态。若 AI 预览仍在进行，先恢复
+        // 原始时间轴，绝不能把尚未校验的 VAD 预览写回工程。
+        if segmentationRollback != nil {
+            restoreSegmentationRollback()
+        }
         persistCurrentProject()
+        segmentationRollback = nil
+        isSegmentationPreviewActive = false
         await projectFileManager.flushAsync()
         if let playbackHistoryStore {
             await playbackHistoryStore.flushAsync()
         }
+
+        // A new media may have been opened while the asynchronous flush was in
+        // flight. In that case the new load owns the presentation state; do not
+        // tear it down as if it were the media we started closing.
+        guard closingSessionID == mediaSessionID else { return }
 
         isBackendReady = false
         isMediaLoading = false
@@ -1785,6 +1843,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
         mediaSessionID = UUID()
         let sessionID = mediaSessionID
+        segmentationRollback = nil
+        isSegmentationPreviewActive = false
         seekGeneration &+= 1
         seekTimeoutTask?.cancel()
         seekTimeoutTask = nil
@@ -2182,6 +2242,20 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let mediaURL = media.url.standardizedFileURL
         let sessionID = mediaSessionID
         let requestID = UUID()
+        // If a previous AI run is still holding a preview, restore the real
+        // timeline before snapshotting for this run; otherwise a failure of the
+        // new run would "restore" the previous run's VAD preview.
+        if segmentationRollback != nil {
+            restoreSegmentationRollback()
+        }
+        segmentationRollback = SegmentationRollback(
+            segments: segments,
+            segmentOrigin: segmentOrigin,
+            hasCompletedSegmentation: hasCompletedSegmentation,
+            acousticBoundaryTimes: acousticBoundaryTimes,
+            activeSegmentIndex: activeSegmentIndex
+        )
+        isSegmentationPreviewActive = false
         segmentationRequestID = requestID
         segmentationTask?.cancel()
         cancelAutomaticTranslation()
@@ -2195,6 +2269,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let modelURL = mode.requiresTranscription
             ? modelManager.modelFileURL(for: modelManager.selectedModelLevel)
             : nil
+        if let modelURL, !FileManager.default.fileExists(atPath: modelURL.path) {
+            restoreSegmentationRollback()
+            let isChinese = LanguageManager.shared.currentLanguage == .zh
+            lastErrorMessage = isChinese
+                ? "Whisper 模型“\(modelManager.selectedModelLevel.title)”尚未下载，请先在设置中下载后再重新断句。"
+                : "The Whisper model “\(modelManager.selectedModelLevel.title)” is not downloaded. Download it in Settings and try again."
+            if showProgress {
+                isAITranscribing = false
+                aiTranscriptionStatusText = ""
+            }
+            return
+        }
         let request = SpeechSegmentationRequest(
             mediaURL: mediaURL,
             mode: mode,
@@ -2241,6 +2327,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                             let effectiveDuration = self.duration > 0
                                 ? self.duration
                                 : (previewSegments.last?.endTime ?? 0)
+                            self.isSegmentationPreviewActive = true
                             self.segments = self.normalizedSegments(previewSegments, duration: effectiveDuration)
                             self.segmentOrigin = .vad
                             self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
@@ -2261,6 +2348,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.acousticBoundaryTimes = output.acousticBoundaryTimes
                 self.activeSegmentIndex = self.segments.isEmpty ? nil : 0
                 self.segmentationWarningMessage = output.warnings.first
+                self.segmentationRollback = nil
+                self.isSegmentationPreviewActive = false
                 self.persistCurrentProject()
                 completion?(self.segments)
                 if showProgress {
@@ -2286,6 +2375,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 self.scheduleIdleModelRelease()
             } catch is CancellationError {
                 guard requestID == self.segmentationRequestID else { return }
+                self.restoreSegmentationRollback()
                 if showProgress {
                     self.isAITranscribing = false
                     self.aiTranscriptionStatusText = ""
@@ -2295,6 +2385,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 guard sessionID == self.mediaSessionID,
                       requestID == self.segmentationRequestID,
                       self.currentMedia?.url.standardizedFileURL == mediaURL else { return }
+                self.restoreSegmentationRollback()
                 self.lastErrorMessage = error.localizedDescription
                 self.isAITranscribing = false
                 self.aiTranscriptionStatusText = ""
@@ -2303,10 +2394,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Restores the timeline that was active before the AI run replaced it with
+    /// a VAD preview. Safe to call when no run is in flight.
+    private func restoreSegmentationRollback() {
+        isSegmentationPreviewActive = false
+        guard let rollback = segmentationRollback else { return }
+        segmentationRollback = nil
+        segments = rollback.segments
+        segmentOrigin = rollback.segmentOrigin
+        hasCompletedSegmentation = rollback.hasCompletedSegmentation
+        acousticBoundaryTimes = rollback.acousticBoundaryTimes
+        activeSegmentIndex = rollback.activeSegmentIndex
+    }
+
     public func cancelSegmentation() {
         segmentationTask?.cancel()
         segmentationTask = nil
         segmentationRequestID = UUID()
+        restoreSegmentationRollback()
         isAITranscribing = false
         aiTranscriptionStatusText = ""
         segmentationWarningMessage = nil
@@ -3059,7 +3164,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     public func persistCurrentProject(includeWaveform: Bool = false) {
         guard let media = currentMedia,
               !suppressCurrentProjectPersistence,
-              !projectRecoveryRequired else { return }
+              !projectRecoveryRequired,
+              !isSegmentationPreviewActive else { return }
 
         projectFileManager.saveProject(
             for: media.url,
@@ -3081,6 +3187,16 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         persistCurrentProject()
         projectFileManager.flush()
         playbackHistoryStore?.flush()
+    }
+
+    /// Cancels an in-flight waveform extraction from the status bar. Without
+    /// this the progress indicator could only be cleared by loading another
+    /// media or removing the item from history.
+    public func cancelWaveformExtraction() {
+        waveformTask?.cancel()
+        waveformTask = nil
+        isExtractingWaveform = false
+        waveformExtractionProgress = 0
     }
 
     /// 判断给定媒体文件是否属于句库“进入学习”生成的临时会话材料（.mablib）。
@@ -3923,12 +4039,21 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 // 已完成，但实际 timeControlStatus 仍停在暂停，导致界面显示
                 // 正在播放而时间永远停在下一句起点。
                 let nextSegment = segments[nextIdx]
+                // Decide adjacency from the sentence timeline, not from how late
+                // the decoder sample arrived. A busy main thread can deliver the
+                // first post-boundary sample tens of milliseconds late; treating
+                // that as a gap used to seek backwards to the sentence start and
+                // replay the tail of the previous sentence. If the sample is
+                // already past the next start, never seek backwards.
+                let currentSegment = segments[currentIndex]
+                let boundaryGap = nextSegment.startTime - currentSegment.endTime
+                let alreadyPastNextStart = transitionTime >= nextSegment.startTime - 0.001
                 let isAdjacentNaturalContinuation =
                     shadowingPauseRatio == 0 &&
                     shadowingPauseSeconds == 0 &&
                     !onlyPlayBookmarked &&
                     nextIdx == currentIndex + 1 &&
-                    abs(nextSegment.startTime - transitionTime) <= 0.04
+                    (boundaryGap <= 0.04 || alreadyPastNextStart)
 
                 if isAdjacentNaturalContinuation {
                     activeSegmentIndex = nextIdx
@@ -4450,8 +4575,18 @@ public final class PlaybackEngine: NSObject, ObservableObject {
 
     public func deleteSegment(at index: Int) {
         guard index >= 0 && index < segments.count else { return }
+        let removed = segments[index]
         segments.remove(at: index)
         reindexSegments()
+        // Capture the undo only after `reindexSegments()` has finished mutating
+        // `segments`; otherwise that internal mutation bumps the structure
+        // revision and invalidates the snapshot we just recorded.
+        segmentDeletionUndo = SegmentDeletionUndo(
+            segment: removed,
+            index: index,
+            structureRevision: segmentStructureRevision
+        )
+        canUndoDeleteSegment = true
         if segments.isEmpty {
             activeSegmentIndex = nil
             hasCompletedSegmentation = true
@@ -4460,6 +4595,26 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
         refreshSecondaryViewportAfterSegmentMutation()
         persistCurrentProject()
+    }
+
+    /// Re-inserts the sentence removed by the most recent delete. Undo is only
+    /// offered while no other structural edit has happened since the delete.
+    @discardableResult
+    public func undoDeleteSegment() -> Bool {
+        guard let undo = segmentDeletionUndo,
+              undo.structureRevision == segmentStructureRevision else { return false }
+        segmentDeletionUndo = nil
+        canUndoDeleteSegment = false
+        let insertion = min(max(0, undo.index), segments.count)
+        segments.insert(undo.segment, at: insertion)
+        reindexSegments()
+        activeSegmentIndex = min(insertion, max(0, segments.count - 1))
+        if !segments.isEmpty {
+            hasCompletedSegmentation = true
+        }
+        refreshSecondaryViewportAfterSegmentMutation()
+        persistCurrentProject()
+        return true
     }
 
     public func deleteSegment(id: UUID) {
@@ -5079,9 +5234,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let sanitizedSlug = safeFileSlug
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let sessionDir = appSupport
-            .appendingPathComponent("StudyMate", isDirectory: true)
+        // Derive the session cache from the injected project directory so tests
+        // never write into the real Application Support session store. In
+        // production this resolves to
+        // `Application Support/StudyMate/SentenceLibrarySessions`, next to
+        // `Projects`.
+        let sessionDir = projectFileManager.directory
+            .deletingLastPathComponent()
             .appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
             .appendingPathComponent(libraryID.uuidString, isDirectory: true)
         let outputAudioURL = sessionDir.appendingPathComponent("\(sanitizedSlug).m4a")
@@ -5127,7 +5286,17 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                     return true
                 }
             }
-            if project.segments.count == requestedIDs.count {
+            // Legacy sessions may not carry the entry map. Do not fall back to
+            // "same number of sentences": reordering or replacing the selection
+            // with a different set of the same size would silently bind the new
+            // history to the old merged audio. Compare the ordered texts.
+            let projectTexts = project.segments.map {
+                $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let requestedTexts = entries.map {
+                $0.originalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if !projectTexts.isEmpty, projectTexts == requestedTexts {
                 return true
             }
         }

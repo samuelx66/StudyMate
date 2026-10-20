@@ -36,11 +36,14 @@ public struct MainContentView: View {
     private let engine = PlaybackEngine.shared
     @ObservedObject private var windowPresentationState = PlaybackEngine.shared.windowPresentationState
     @ObservedObject private var lang = LanguageManager.shared
-    @ObservedObject private var playbackHistory = PlaybackHistoryStore.shared
-    @ObservedObject private var libraryStatus = SentenceLibraryStatusCenter.shared
-    @ObservedObject private var statusCenter = MainStatusCenter.shared
-    @ObservedObject private var videoSubtitleSettings = VideoSubtitleSettings.shared
-    @ObservedObject private var dictionaryCoordinator = DictionaryInteractionCoordinator.shared
+    // These objects are only passed to child views (the status bar, toolbar and
+    // workspaces already observe them). Observing them here made every progress
+    // tick during transcription/export rebuild the entire main body and toolbar.
+    private let playbackHistory = PlaybackHistoryStore.shared
+    private let libraryStatus = SentenceLibraryStatusCenter.shared
+    private let statusCenter = MainStatusCenter.shared
+    private let videoSubtitleSettings = VideoSubtitleSettings.shared
+    private let dictionaryCoordinator = DictionaryInteractionCoordinator.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.dismiss) private var dismiss
@@ -1380,6 +1383,7 @@ private struct PlaybackStatusBarContainer: View {
             || statusCenter.progress != nil
             || statusCenter.errorMessage != nil
             || statusCenter.successMessage != nil
+            || statusCenter.warningMessage != nil
             || !statusCenter.issues.isEmpty
     }
 
@@ -1486,7 +1490,7 @@ private struct PlaybackStatusBar: View {
     }
 
     private var canCancelCurrentProgress: Bool {
-        engine.isAITranscribing || engine.isAutoTranslating
+        engine.isAITranscribing || engine.isAutoTranslating || engine.isExtractingWaveform
     }
 
     private var allActiveIssues: [StatusIssueItem] {
@@ -1554,7 +1558,9 @@ private struct PlaybackStatusBar: View {
             // 右侧通知与反馈区：第一层（短暂通知/进度）在左，第三层（错误与任务中心）在最右侧，绝不互相覆盖
             HStack(spacing: 8) {
                 // 第一层：短暂操作反馈 / 任务进度条
-                if let successMessage = statusCenter.successMessage {
+                if let warningMessage = statusCenter.warningMessage {
+                    StatusBarWarningView(message: warningMessage)
+                } else if let successMessage = statusCenter.successMessage {
                     StatusBarSuccessView(message: successMessage)
                 } else if let progress = currentProgress {
                     StatusBarProgressView(
@@ -1565,7 +1571,7 @@ private struct PlaybackStatusBar: View {
                 }
 
                 // 第一层与第三层同时存在时，以细分割线并排区分
-                if (statusCenter.successMessage != nil || currentProgress != nil) && !allActiveIssues.isEmpty {
+                if (statusCenter.warningMessage != nil || statusCenter.successMessage != nil || currentProgress != nil) && !allActiveIssues.isEmpty {
                     Divider()
                         .frame(height: 12)
                 }
@@ -1613,7 +1619,29 @@ private struct PlaybackStatusBar: View {
             engine.cancelSegmentation()
         } else if engine.isAutoTranslating {
             engine.cancelAutomaticTranslation()
+        } else if engine.isExtractingWaveform {
+            engine.cancelWaveformExtraction()
         }
+    }
+}
+
+private struct StatusBarWarningView: View {
+    @ObservedObject private var lang = LanguageManager.shared
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.orange)
+            Text(message)
+                .font(.system(size: 10.5))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 360, alignment: .trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(lang.text("警告：", "Warning: ") + message)
     }
 }
 

@@ -328,6 +328,7 @@ final class PlaybackSentenceModeTests: XCTestCase {
         XCTAssertEqual(targetTokens?[2].text, "York?")
     }
 
+    @MainActor
     func testPlaybackSentenceCardActiveTokenIndexAndEquatability() {
         let tokens = [
             StudyMatePackageWordToken(text: "Good", startTime: 0.1, endTime: 0.5),
@@ -354,7 +355,8 @@ final class PlaybackSentenceModeTests: XCTestCase {
         // 6. 超过最后词的平滑延展期 (time = 12.5s): 恢复无高亮
         XCTAssertNil(PlaybackSentenceCardView.activeTokenIndex(for: tokens, baseTime: baseTime, time: 12.5))
 
-        // 7. 测试 PlaybackSentenceCardView.== 防抖与高亮触发:
+        // 7. 卡片本身不再随时间重绘：60 Hz 时钟只由卡拉 OK 子视图观察，
+        // 卡片在自己的输入（句子/字体/显隐）不变时保持相等。
         let seg = SentenceSegment(
             index: 1,
             startTime: baseTime,
@@ -364,10 +366,10 @@ final class PlaybackSentenceModeTests: XCTestCase {
         )
         let font = NSFont.systemFont(ofSize: 14)
         let color = NSColor.textColor
-
+        let clock = PlaybackClock()
         let card1 = PlaybackSentenceCardView(
             seg: seg,
-            currentTime: 10.2, // word 0
+            clock: clock,
             showOriginal: true,
             showTranslation: false,
             showPhonetics: false,
@@ -385,7 +387,7 @@ final class PlaybackSentenceModeTests: XCTestCase {
         )
         let card2 = PlaybackSentenceCardView(
             seg: seg,
-            currentTime: 10.4, // still word 0
+            clock: clock,
             showOriginal: true,
             showTranslation: false,
             showPhonetics: false,
@@ -401,29 +403,7 @@ final class PlaybackSentenceModeTests: XCTestCase {
             onSelect: {},
             onDoubleClick: {}
         )
-        let card3 = PlaybackSentenceCardView(
-            seg: seg,
-            currentTime: 10.8, // word 1!
-            showOriginal: true,
-            showTranslation: false,
-            showPhonetics: false,
-            originalFont: font,
-            originalColor: color,
-            translationFont: font,
-            translationColor: color,
-            language: .en,
-            onToggleBookmark: {},
-            onSeekToToken: { _ in },
-            onRegenerateTokens: {},
-            onRenameSpeaker: nil,
-            onSelect: {},
-            onDoubleClick: {}
-        )
-
-        // 在同一词内播放时保持相等（防抖，不重绘）
         XCTAssertTrue(card1 == card2)
-        // 跨越至新单词时打破相等（立即重绘点亮新单词）
-        XCTAssertFalse(card1 == card3)
     }
 
     func testReconciledWordTokensTypoFix() {

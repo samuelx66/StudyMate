@@ -30,6 +30,7 @@
 		6111B230B724B3364D0DBE91 /* PlaybackInterfaceMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EE85503E2E0EE312317F987 /* PlaybackInterfaceMode.swift */; };
 		7050CC6B5FB343C5F39CA502 /* SentenceLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */; };
 		2C926741A0D889B2D246C149 /* SentenceSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */; };
+		E0C447BE0872F9C436DB1723 /* SpeakerCountIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D02A8EA00547546E63FEA15 /* SpeakerCountIndex.swift */; };
 		08288E07D2F4790F0652E3E3 /* VocabularyNotebookModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3A22CFE41125ADC8181D72 /* VocabularyNotebookModels.swift */; };
 		8F77D91A237D13B9D22D90D1 /* WaveformData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */; };
 		FB4E9F8D1F198E2F85486995 /* PackageVocabularyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0730F7B1BB0CE844FC26586 /* PackageVocabularyService.swift */; };
@@ -127,6 +128,7 @@
 		7EE85503E2E0EE312317F987 /* PlaybackInterfaceMode.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/PlaybackInterfaceMode.swift"; sourceTree = "<group>"; };
 		48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/SentenceLibraryModels.swift"; sourceTree = "<group>"; };
 		245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/SentenceSegment.swift"; sourceTree = "<group>"; };
+		3D02A8EA00547546E63FEA15 /* SpeakerCountIndex.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/SpeakerCountIndex.swift"; sourceTree = "<group>"; };
 		5A3A22CFE41125ADC8181D72 /* VocabularyNotebookModels.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/VocabularyNotebookModels.swift"; sourceTree = "<group>"; };
 		7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Models/WaveformData.swift"; sourceTree = "<group>"; };
 		D0730F7B1BB0CE844FC26586 /* PackageVocabularyService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Sources/StudyMate/Persistence/PackageVocabularyService.swift"; sourceTree = "<group>"; };
@@ -257,6 +259,7 @@
 				7EE85503E2E0EE312317F987 /* PlaybackInterfaceMode.swift */,
 				48C16E924E95F946C7A0BF55 /* SentenceLibraryModels.swift */,
 				245275BE2274F49BE6DF8CFD /* SentenceSegment.swift */,
+				3D02A8EA00547546E63FEA15 /* SpeakerCountIndex.swift */,
 				5A3A22CFE41125ADC8181D72 /* VocabularyNotebookModels.swift */,
 				7F80F9DF2BE9AC97D9344ED9 /* WaveformData.swift */,
 				D0730F7B1BB0CE844FC26586 /* PackageVocabularyService.swift */,
@@ -444,6 +447,7 @@
 				6111B230B724B3364D0DBE91 /* PlaybackInterfaceMode.swift in Sources */,
 				7050CC6B5FB343C5F39CA502 /* SentenceLibraryModels.swift in Sources */,
 				2C926741A0D889B2D246C149 /* SentenceSegment.swift in Sources */,
+				E0C447BE0872F9C436DB1723 /* SpeakerCountIndex.swift in Sources */,
 				08288E07D2F4790F0652E3E3 /* VocabularyNotebookModels.swift in Sources */,
 				8F77D91A237D13B9D22D90D1 /* WaveformData.swift in Sources */,
 				FB4E9F8D1F198E2F85486995 /* PackageVocabularyService.swift in Sources */,
@@ -600,7 +604,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 484;
+				CURRENT_PROJECT_VERSION = 486;
 				ENABLE_DEBUG_DYLIB = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -610,7 +614,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.7.5 release";
+				MARKETING_VERSION = "1.7.7 dev";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -625,7 +629,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 484;
+				CURRENT_PROJECT_VERSION = 486;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/StudyMateApp/Info.plist;
@@ -634,7 +638,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "1.7.5 release";
+				MARKETING_VERSION = "1.7.7 dev";
 				PRODUCT_BUNDLE_IDENTIFIER = com.samuel.StudyMate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/CSpeechRuntime/StudyMate-Bridging-Header.h;

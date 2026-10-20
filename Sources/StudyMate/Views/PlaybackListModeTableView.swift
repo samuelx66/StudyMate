@@ -10,8 +10,8 @@ public struct PlaybackListModeTableView: View {
     @ObservedObject var lang: LanguageManager
 
     @State private var followState = SegmentListFollowState()
+    @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
     @State private var isUserScrolling: Bool = false
-    @State private var scrollSuppressionToken: UUID?
     @State private var hasSpeakers: Bool = false
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
@@ -51,9 +51,19 @@ public struct PlaybackListModeTableView: View {
         .background(StudyMateMediaStyle.windowBackground)
         .onAppear {
             updateHasSpeakers()
+            if !segmentFollowsPlayback && followState.followsPlayback {
+                followState.markUserScroll()
+            }
         }
         .onChange(of: engine.segments) { _, _ in
             updateHasSpeakers()
+        }
+        .onChange(of: segmentFollowsPlayback) { _, followed in
+            if followed {
+                followState.resumeFollowing()
+            } else if followState.followsPlayback {
+                followState.markUserScroll()
+            }
         }
     }
 
@@ -64,12 +74,10 @@ public struct PlaybackListModeTableView: View {
     private func markUserScroll() {
         guard followState.followsPlayback else { return }
         followState.markUserScroll()
-        let token = UUID()
-        scrollSuppressionToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            guard token == scrollSuppressionToken, followState.followsPlayback else { return }
-            followState.resumeFollowing()
-        }
+        // The menu, shortcut and workspace share one persisted state. Do not
+        // snap back after 3 seconds; the user resumes from the follow button,
+        // the Sentence menu, or the floating return capsule.
+        segmentFollowsPlayback = false
     }
 
     // MARK: - 表头区域
@@ -128,6 +136,7 @@ public struct PlaybackListModeTableView: View {
             // 播放时自动跟随当前句开关（与视频模式断句列表右边按钮样式完全一致）
             Button(action: {
                 followState.toggle()
+                segmentFollowsPlayback = followState.followsPlayback
             }) {
                 Image(systemName: "target")
                     .frame(width: 24, height: 24)
@@ -140,6 +149,8 @@ public struct PlaybackListModeTableView: View {
                     ))
             }
             .studymateChromeButton(shape: .circle)
+            .accessibilityLabel(lang.text("跟随当前句", "Follow current sentence"))
+            .accessibilityValue(followState.shouldFollow ? lang.text("已开启", "On") : lang.text("已暂停", "Paused"))
             .focusable(false)
             .help(StudyMateShortcutCatalog.help(
                 followState.shouldFollow
@@ -296,16 +307,10 @@ private struct PlaybackListModeRowsView: View, Equatable {
     }
 
     var body: some View {
+        let speakerCounts = SpeakerCountIndex(segments: segments)
         LazyVStack(spacing: 0) {
             ForEach(segments) { seg in
-                let count = segments.filter {
-                    if seg.speakerRoleLabel.isEmpty {
-                        return $0.speakerRoleLabel.isEmpty
-                    }
-                    let l = $0.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
-                    let target = seg.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
-                    return l == target || $0.speakerRole == seg.speakerRoleLabel
-                }.count
+                let count = speakerCounts.count(for: seg)
 
                 PlaybackListModeRowView(
                     seg: seg,

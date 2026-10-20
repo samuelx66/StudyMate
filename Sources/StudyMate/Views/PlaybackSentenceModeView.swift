@@ -19,7 +19,6 @@ public struct PlaybackSentenceModeView: View {
     @ObservedObject private var videoSubtitleSettings: VideoSubtitleSettings
     @ObservedObject private var lang: LanguageManager
     @ObservedObject private var phoneticManager: PhoneticEngineManager = .shared
-    @ObservedObject private var clock: PlaybackClock
 
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
@@ -33,7 +32,6 @@ public struct PlaybackSentenceModeView: View {
         self._activeSegmentState = ObservedObject(wrappedValue: engine.activeSegmentState)
         self.videoSubtitleSettings = videoSubtitleSettings
         self.lang = lang
-        self._clock = ObservedObject(wrappedValue: engine.clock)
     }
 
     /// 当前激活的断句段落；若尚未定位，默认显示第一句
@@ -83,7 +81,7 @@ public struct PlaybackSentenceModeView: View {
 
                     PlaybackSentenceCardView(
                         seg: seg,
-                        currentTime: clock.currentTime,
+                        clock: engine.clock,
                         showOriginal: videoSubtitleSettings.isOriginalVisible(for: .sentence),
                         showTranslation: videoSubtitleSettings.isTranslationVisible(for: .sentence),
                         showPhonetics: phoneticManager.showPhonetics,
@@ -124,7 +122,6 @@ public struct PlaybackSentenceModeView: View {
                 }
                 .frame(minWidth: geo.size.width, minHeight: geo.size.height)
             }
-            .id(seg.id)
         }
     }
 
@@ -159,9 +156,68 @@ public struct PlaybackSentenceModeView: View {
 
 // MARK: - 单句展示卡片（Equatable 隔离高频刷新，极简无多余修饰）
 
+/// Only this subview subscribes to the 60 Hz playback clock. The surrounding
+/// sentence card is `.equatable()` and stays stable for the whole sentence.
+private struct SentenceKaraokeFlowView: View {
+    @ObservedObject var clock: PlaybackClock
+    let tokens: [StudyMatePackageWordToken]
+    let baseTime: Double
+    let showPhonetics: Bool
+    let originalFont: NSFont
+    let originalColor: NSColor
+    let language: AppLanguage
+    let onSeekToToken: (Double) -> Void
+
+    var body: some View {
+        let activeIdx = PlaybackSentenceCardView.activeTokenIndex(
+            for: tokens,
+            baseTime: baseTime,
+            time: clock.currentTime
+        )
+        RubyFlowLayout(horizontalSpacing: 4, verticalSpacing: 4) {
+            ForEach(Array(tokens.enumerated()), id: \.offset) { idx, token in
+                let isTokenActive = (activeIdx == idx)
+                let tokenColor: Color = isTokenActive ? StudyMateMediaStyle.accent : Color(originalColor)
+
+                Button {
+                    onSeekToToken(token.startTime)
+                } label: {
+                    if showPhonetics {
+                        let phonetic = PhoneticEngine.phoneticText(for: token.text)
+                        VStack(alignment: .center, spacing: 1) {
+                            if let p = phonetic, !p.isEmpty {
+                                Text(p)
+                                    .font(.system(size: max(10, originalFont.pointSize * 0.52), weight: .medium, design: .rounded))
+                                    .foregroundColor(isTokenActive ? StudyMateMediaStyle.accent : StudyMateMediaStyle.accent.opacity(0.75))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            } else {
+                                Text(" ")
+                                    .font(.system(size: max(10, originalFont.pointSize * 0.52)))
+                                    .opacity(0)
+                            }
+                            Text(token.text)
+                                .font(Font(originalFont))
+                                .foregroundColor(tokenColor)
+                        }
+                    } else {
+                        Text(token.text)
+                            .font(Font(originalFont))
+                            .foregroundColor(tokenColor)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(language == .en ? "Click to play: \(token.text) (\(String(format: "%.2fs", token.startTime)))" : "点击发音播放此词：\(token.text)（\(String(format: "%.2f秒", token.startTime))）")
+            }
+        }
+    }
+}
+
 struct PlaybackSentenceCardView: View, Equatable {
     let seg: SentenceSegment
-    let currentTime: Double
+    /// Passed through, not observed: only the karaoke child subscribes to the
+    /// 60 Hz clock. Observing it here re-evaluated the whole card on every tick.
+    let clock: PlaybackClock
     let showOriginal: Bool
     let showTranslation: Bool
     let showPhonetics: Bool
@@ -181,6 +237,7 @@ struct PlaybackSentenceCardView: View, Equatable {
     let onDoubleClick: () -> Void
 
     @State private var isShowingRenamePopover: Bool = false
+    @State private var showWordSyncConfirmation: Bool = false
     @State private var renameText: String = ""
     @State private var isShowingContextPopover: Bool = false
     @State private var selectedVocabCard: StudyMatePackageVocabularyCard? = nil
@@ -217,8 +274,6 @@ struct PlaybackSentenceCardView: View, Equatable {
 
     static func == (lhs: PlaybackSentenceCardView, rhs: PlaybackSentenceCardView) -> Bool {
         lhs.seg == rhs.seg
-            && Self.activeTokenIndex(for: lhs.activeTokens, baseTime: lhs.seg.startTime, time: lhs.currentTime)
-                == Self.activeTokenIndex(for: rhs.activeTokens, baseTime: rhs.seg.startTime, time: rhs.currentTime)
             && lhs.showOriginal == rhs.showOriginal
             && lhs.showTranslation == rhs.showTranslation
             && lhs.showPhonetics == rhs.showPhonetics
@@ -394,7 +449,9 @@ struct PlaybackSentenceCardView: View, Equatable {
                     .clipShape(Capsule())
                     .help(language == .en ? "Whisper word timestamps active: real-time highlight during playback, click word to play." : "Whisper 词级时间戳已启用：播放时实时卡拉OK高亮，点击下方任意单词即刻发音。")
                 } else {
-                    Button(action: onRegenerateTokens) {
+                    Button {
+                    showWordSyncConfirmation = true
+                } label: {
                         HStack(spacing: 3) {
                             Image(systemName: "waveform.badge.plus")
                                 .font(.system(size: 10))
@@ -496,7 +553,9 @@ struct PlaybackSentenceCardView: View, Equatable {
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .contextMenu {
-            Button(action: onRegenerateTokens) {
+            Button {
+                    showWordSyncConfirmation = true
+                } label: {
                 Label(
                     language == .en ? "Recognize Word Timestamps (Whisper)" : "使用 Whisper 识别词级时间戳",
                     systemImage: "waveform.badge.magnifyingglass"
@@ -549,6 +608,20 @@ struct PlaybackSentenceCardView: View, Equatable {
                 }
             }
         }
+        .confirmationDialog(
+            language == .en ? "Re-recognize word timestamps?" : "重新识别词级时间戳？",
+            isPresented: $showWordSyncConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language == .en ? "Re-recognize and Overwrite" : "重新识别并覆盖原文", role: .destructive) {
+                onRegenerateTokens()
+            }
+            Button(language == .en ? "Cancel" : "取消", role: .cancel) {}
+        } message: {
+            Text(language == .en
+                ? "Whisper will re-recognize this sentence and overwrite its original text."
+                : "Whisper 会重新识别当前句并覆盖其原文。")
+        }
         .popover(isPresented: $isShowingRenamePopover, arrowEdge: .bottom) {
             SpeakerRenamePopoverContent(
                 roleLabel: seg.speakerRoleLabel,
@@ -587,44 +660,16 @@ struct PlaybackSentenceCardView: View, Equatable {
     }
 
     private func wordTokensKaraokeView(tokens: [StudyMatePackageWordToken]) -> some View {
-        let activeIdx = Self.activeTokenIndex(for: tokens, baseTime: seg.startTime, time: currentTime)
-
-        return RubyFlowLayout(horizontalSpacing: 4, verticalSpacing: 4) {
-            ForEach(Array(tokens.enumerated()), id: \.offset) { idx, token in
-                let isTokenActive = (activeIdx == idx)
-                let tokenColor: Color = isTokenActive ? StudyMateMediaStyle.accent : Color(originalColor)
-
-                Button {
-                    onSeekToToken(token.startTime)
-                } label: {
-                    if showPhonetics {
-                        let phonetic = PhoneticEngine.phoneticText(for: token.text)
-                        VStack(alignment: .center, spacing: 1) {
-                            if let p = phonetic, !p.isEmpty {
-                                Text(p)
-                                    .font(.system(size: max(10, originalFont.pointSize * 0.52), weight: .medium, design: .rounded))
-                                    .foregroundColor(isTokenActive ? StudyMateMediaStyle.accent : StudyMateMediaStyle.accent.opacity(0.75))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            } else {
-                                Text(" ")
-                                    .font(.system(size: max(10, originalFont.pointSize * 0.52)))
-                                    .opacity(0)
-                            }
-                            Text(token.text)
-                                .font(Font(originalFont))
-                                .foregroundColor(tokenColor)
-                        }
-                    } else {
-                        Text(token.text)
-                            .font(Font(originalFont))
-                            .foregroundColor(tokenColor)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help(language == .en ? "Click to play: \(token.text) (\(String(format: "%.2fs", token.startTime)))" : "点击发音播放此词：\(token.text)（\(String(format: "%.2f秒", token.startTime))）")
-            }
-        }
+        SentenceKaraokeFlowView(
+            clock: clock,
+            tokens: tokens,
+            baseTime: seg.startTime,
+            showPhonetics: showPhonetics,
+            originalFont: originalFont,
+            originalColor: originalColor,
+            language: language,
+            onSeekToToken: onSeekToToken
+        )
     }
 
     // MARK: - 原文文本

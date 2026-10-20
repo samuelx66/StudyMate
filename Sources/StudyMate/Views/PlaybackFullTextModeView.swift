@@ -236,6 +236,7 @@ public struct PlaybackFullTextModeView: View {
 
     @State private var cachedParagraphs: [FullTextParagraph] = []
     @State private var followPlayback: Bool = true
+    @AppStorage("StudyMate.SegmentFollowsPlayback") private var segmentFollowsPlayback = true
     @State private var isScrubbing: Bool = false
     @State private var isVolumeScrubbing: Bool = false
 
@@ -278,6 +279,10 @@ public struct PlaybackFullTextModeView: View {
             bottomPlaybackControlBar
         }
         .background(StudyMateMediaStyle.windowBackground)
+        .onAppear { followPlayback = segmentFollowsPlayback }
+        .onChange(of: segmentFollowsPlayback) { _, followed in
+            followPlayback = followed
+        }
         .onChange(of: engine.segments, initial: true) { _, segments in
             cachedParagraphs = FullTextParagraphBuilder.buildParagraphs(from: segments)
         }
@@ -319,6 +324,7 @@ public struct PlaybackFullTextModeView: View {
 
             Button {
                 followPlayback.toggle()
+                segmentFollowsPlayback = followPlayback
             } label: {
                 Image(systemName: "target")
                     .font(.system(size: 11, weight: .medium))
@@ -372,7 +378,10 @@ public struct PlaybackFullTextModeView: View {
                 }
             }
             .onScrollPhaseChange { _, phase in
-                if phase == .interacting { followPlayback = false }
+                if phase == .interacting {
+                    followPlayback = false
+                    segmentFollowsPlayback = false
+                }
             }
         }
     }

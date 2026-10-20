@@ -116,26 +116,58 @@ public final class SubtitleParser: @unchecked Sendable {
             return String(data: data, encoding: .utf16BigEndian)
         }
 
-        let encodingsToTry: [String.Encoding] = [
-            .utf8,
-            .utf16,
-            .utf16LittleEndian,
-            .utf16BigEndian,
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632))), // GB18030
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0631))), // GBK
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0630))), // GB2312
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0930))), // EUC_CN
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A03))), // Big5
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A06))), // Big5_HKSCS
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A01))), // ShiftJIS
-            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0920))), // EUC_JP
-            .windowsCP1252,
-            .isoLatin1
+        // Legacy CJK encodings must be tried before BOM-less UTF-16:
+        // `String(data:encoding:.utf16)` accepts almost any even-length byte
+        // sequence and returns mojibake, so a GBK/GB18030 subtitle would be
+        // consumed as "UTF-16" and never reach its real encoding.
+        let legacyEncodings: [(String.Encoding, String)] = [
+            (.utf8, "UTF-8"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632))), "GB18030"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0631))), "GBK"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0630))), "GB2312"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0930))), "EUC-CN"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A03))), "Big5"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A06))), "Big5-HKSCS"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0A01))), "ShiftJIS"),
+            (String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0920))), "EUC-JP")
         ]
-        for encoding in encodingsToTry {
-            if let value = String(data: data, encoding: encoding), !value.isEmpty { return value }
+        // UTF-16 without a BOM is tried only after the legacy single/double-byte
+        // encodings, and only when the decoded text really looks like subtitles.
+        let utf16Encodings: [String.Encoding] = [.utf16, .utf16LittleEndian, .utf16BigEndian]
+        let singleByteEncodings: [String.Encoding] = [.windowsCP1252, .isoLatin1]
+
+        for (encoding, _) in legacyEncodings {
+            guard let value = String(data: data, encoding: encoding), !value.isEmpty else { continue }
+            if encoding == .utf8 || Self.looksLikeSubtitleText(value) {
+                return value
+            }
+        }
+        for encoding in utf16Encodings {
+            guard let value = String(data: data, encoding: encoding), !value.isEmpty else { continue }
+            if Self.looksLikeSubtitleText(value) {
+                return value
+            }
+        }
+        for encoding in singleByteEncodings {
+            guard let value = String(data: data, encoding: encoding), !value.isEmpty else { continue }
+            if Self.looksLikeSubtitleText(value) {
+                return value
+            }
         }
         return nil
+    }
+
+    /// Rejects mojibake and unrelated binary data before accepting a decoded
+    /// string. Every format this parser supports has a recognizable timecode or
+    /// section marker, so a candidate without one is almost certainly the
+    /// wrong encoding.
+    private static func looksLikeSubtitleText(_ text: String) -> Bool {
+        if text.contains("-->") || text.contains("WEBVTT") { return true }
+        if text.contains("[Script Info]") || text.contains("Dialogue:") { return true }
+        if text.range(of: #"(?m)^\s*\[\d{1,3}:\d{1,2}"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
     }
 
     // MARK: - SRT / WebVTT / ASS

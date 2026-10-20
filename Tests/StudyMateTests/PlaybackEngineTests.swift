@@ -1375,6 +1375,78 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
+    func testContinuousPlaybackDoesNotSeekBackwardsWhenBoundarySampleIsLate() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("late-boundary.mp4")
+        try Data("test".utf8).write(to: mediaURL)
+        let native = TestMediaPlayerBackend(duration: 20)
+        let engine = PlaybackEngine(
+            nativeBackend: native,
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.loopMode = .normal
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 3),
+            SentenceSegment(index: 2, startTime: 3, endTime: 6)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.play()
+        let seekCountBeforeBoundary = native.seekCount
+
+        // 主线程繁忙时第一个越过句尾的样本可能晚到 80 ms。相邻句不应因此
+        // 被判成“有间隙”，更不应该向后 Seek 重播上一句的尾部。
+        native.emitTime(3.08)
+        await Task.yield()
+
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(native.seekCount, seekCountBeforeBoundary)
+        XCTAssertEqual(native.currentTime, 3.08, accuracy: 0.001)
+        XCTAssertTrue(engine.isPlaying)
+    }
+
+    func testDeletedSentenceCanBeUndoneOnce() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mediaURL = directory.appendingPathComponent("undo-delete.mp3")
+        try Data("test".utf8).write(to: mediaURL)
+        let engine = PlaybackEngine(
+            nativeBackend: TestMediaPlayerBackend(duration: 20),
+            mpvBackend: TestMediaPlayerBackend(duration: 20),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: mediaURL)
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 2, text: "One"),
+            SentenceSegment(index: 2, startTime: 2, endTime: 4, text: "Two"),
+            SentenceSegment(index: 3, startTime: 4, endTime: 6, text: "Three")
+        ]
+        engine.activeSegmentIndex = 1
+        let removedID = engine.segments[1].id
+
+        engine.deleteSegment(at: 1)
+        XCTAssertEqual(engine.segments.map(\.text), ["One", "Three"])
+        XCTAssertTrue(engine.canUndoDeleteSegment)
+
+        XCTAssertTrue(engine.undoDeleteSegment())
+        XCTAssertEqual(engine.segments.map(\.text), ["One", "Two", "Three"])
+        XCTAssertEqual(engine.segments[1].id, removedID)
+        XCTAssertEqual(engine.segments.map(\.index), [1, 2, 3])
+        XCTAssertFalse(engine.canUndoDeleteSegment)
+        XCTAssertFalse(engine.undoDeleteSegment())
+
+        // 任何后续结构编辑都会让撤销失效，避免插入到错误的位置。
+        engine.deleteSegment(at: 0)
+        XCTAssertTrue(engine.canUndoDeleteSegment)
+        engine.splitSegment(id: engine.segments[0].id, at: 3)
+        XCTAssertFalse(engine.canUndoDeleteSegment)
+        XCTAssertFalse(engine.undoDeleteSegment())
+    }
+
     func testContinuousPlaybackPausesAtEndOfLastSegment() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

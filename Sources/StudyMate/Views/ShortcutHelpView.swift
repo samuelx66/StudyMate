@@ -360,11 +360,23 @@ public struct ShortcutHelpView: View {
         recordingShortcutID = nil
     }
 
+    /// App/System menu shortcuts that must not be reassigned from this window.
+    private static let reservedCommandKeys: Set<String> = ["q", "w", "m", "h", "tab", "space"]
+
     private func applyRecordedBinding(_ binding: ShortcutKeyBinding, for id: StudyMateShortcutID) {
         stopRecording()
 
         let currentDesc = StudyMateShortcutCatalog.descriptor(id)
         let currentName = currentDesc.name(for: lang.currentLanguage)
+
+        if binding.isCommand, !binding.isOption, !binding.isControl,
+           Self.reservedCommandKeys.contains(binding.key.lowercased()) {
+            MainStatusCenter.shared.showWarning(lang.text(
+                "快捷键【\(binding.keyDisplay)】保留给系统或应用菜单，不能重新分配。",
+                "Shortcut 【\(binding.keyDisplay)】 is reserved for the system or the app menu."
+            ))
+            return
+        }
 
         // 检测是否存在按键冲突
         if let conflictID = shortcutManager.conflictingShortcut(for: binding, excluding: id) {
@@ -377,7 +389,10 @@ public struct ShortcutHelpView: View {
                     "Shortcut 【\(binding.keyDisplay)】 is already in use by 【\(conflictName)】.\nReassign it to 【\(currentName)】?"
                 ),
                 onConfirm: {
-                    self.shortcutManager.resetToDefault(for: conflictID)
+                    // `resetToDefault` is a no-op when the conflicting function
+                    // still uses its built-in default; assign an unassigned
+                    // binding so the requested key is genuinely freed.
+                    self.shortcutManager.setCustomBinding(ShortcutKeyBinding(key: ""), for: conflictID)
                     self.shortcutManager.setCustomBinding(binding, for: id)
                     MainStatusCenter.shared.showSuccess(
                         self.lang.text(

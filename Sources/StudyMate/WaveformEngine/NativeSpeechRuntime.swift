@@ -40,6 +40,36 @@ private struct NativeContextHandle: @unchecked Sendable {
     let pointer: OpaquePointer
 }
 
+/// Process-wide guard for the C whisper context list. `mab_whisper_shutdown`
+/// frees contexts without taking the transcription path's lock, so calling it
+/// while `whisper_full` is running is a use-after-free. Process exit reclaims
+/// the memory anyway, so skipping the free while inference is in flight is the
+/// safe trade-off.
+private final class WhisperInferenceActivity: @unchecked Sendable {
+    static let shared = WhisperInferenceActivity()
+    private let lock = NSLock()
+    private var activeCount = 0
+
+    func begin() {
+        lock.lock()
+        activeCount += 1
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        activeCount = max(0, activeCount - 1)
+        lock.unlock()
+    }
+
+    var isBusy: Bool {
+        lock.lock()
+        let busy = activeCount > 0
+        lock.unlock()
+        return busy
+    }
+}
+
 /// 对 whisper.cpp C API 的串行、可取消封装。模型上下文按路径复用，避免每次断句重新加载。
 public actor NativeSpeechRuntime {
     public static let shared = NativeSpeechRuntime()
@@ -59,6 +89,9 @@ public actor NativeSpeechRuntime {
 
     /// Synchronously cleans up all active Whisper and Metal contexts before process exit.
     public nonisolated func shutdownSynchronously() {
+        // Never free a context that a background window may still be using;
+        // the OS reclaims it when the process exits.
+        guard !WhisperInferenceActivity.shared.isBusy else { return }
         mab_whisper_shutdown()
     }
 
@@ -321,6 +354,10 @@ public actor NativeSpeechRuntime {
                 // freshly decoded recording it refers into the owned array.
                 // In both cases it stays valid for the synchronous C call and
                 // no per-window audio copy is required.
+                // Keep the context alive against a concurrent process-exit
+                // shutdown while the synchronous C inference is running.
+                WhisperInferenceActivity.shared.begin()
+                defer { WhisperInferenceActivity.shared.end() }
                 let status = pcm.withUnsafeSamples(in: range.start..<range.end) { sampleBuffer in
                     guard let baseAddress = sampleBuffer.baseAddress,
                           !sampleBuffer.isEmpty else {

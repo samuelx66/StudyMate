@@ -199,7 +199,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                     bind(source, at: position, to: statement)
                 }
                 var result: [VocabularyWordEntry] = []
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     if let entry = entry(from: statement) { result.append(entry) }
                 }
                 return result
@@ -219,7 +219,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 )
                 defer { sqlite3_finalize(statement) }
                 var result: [String] = []
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     let value = text(statement, 0).trimmingCharacters(in: .whitespacesAndNewlines)
                     if !value.isEmpty { result.append(value) }
                 }
@@ -239,7 +239,7 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
                 try prepare("SELECT word_key FROM entries;", db: db, statement: &statement)
                 defer { sqlite3_finalize(statement) }
                 var result = Set<String>()
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     let key = text(statement, 0)
                     if !key.isEmpty { result.insert(key) }
                 }
@@ -761,6 +761,17 @@ public final class VocabularyNotebookStore: @unchecked Sendable {
             PRAGMA user_version=1;
             """, in: db)
         }
+    }
+
+    /// Steps a prepared statement and converts a SQLite error into a thrown
+    /// error. Previously every read loop treated `SQLITE_BUSY`/`SQLITE_IOERR`
+    /// exactly like "no more rows", so a locked or damaged database looked like
+    /// an empty library with no feedback.
+    @discardableResult
+    private func step(_ statement: OpaquePointer?, db: OpaquePointer) throws -> Int32 {
+        let status = sqlite3_step(statement)
+        guard status == SQLITE_ROW || status == SQLITE_DONE else { throw databaseError(db) }
+        return status
     }
 
     private func prepare(_ sql: String, db: OpaquePointer, statement: inout OpaquePointer?) throws {

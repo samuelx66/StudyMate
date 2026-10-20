@@ -401,6 +401,18 @@ private struct RecentMediaFileRow: View {
                 )
         )
         .contentShape(Rectangle())
+        .focusable()
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: Text(lang.text("打开", "Open"))) { onOpen() }
+        .onKeyPress(.return) {
+            onOpen()
+            return .handled
+        }
+        .onKeyPress(.space) {
+            onOpen()
+            return .handled
+        }
         .onTapGesture(count: 2) {
             onSelect()
             onOpen()

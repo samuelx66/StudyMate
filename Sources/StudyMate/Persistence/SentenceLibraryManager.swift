@@ -142,12 +142,15 @@ public final class SentenceLibraryManager: ObservableObject {
                 }
             }
 
-            // 清理 SentenceLibrarySessions 下变空或无播放历史关联的孤立会话文件与目录
+            // 清理 SentenceLibrarySessions 下变空或无播放历史关联的孤立会话文件与目录。
+            // 历史文件损坏/被隔离时会暂时为空，因此只清理超过保留期的会话，
+            // 避免一次历史读取失败连带删除刚刚生成的句库音频。
             let sessionsRoot = support
                 .appendingPathComponent("StudyMate", isDirectory: true)
                 .appendingPathComponent("SentenceLibrarySessions", isDirectory: true)
+            let orphanRetention: TimeInterval = 7 * 24 * 3600
             if fileManager.fileExists(atPath: sessionsRoot.path) {
-                if let sessionDirs = try? fileManager.contentsOfDirectory(at: sessionsRoot, includingPropertiesForKeys: nil) {
+                if let sessionDirs = try? fileManager.contentsOfDirectory(at: sessionsRoot, includingPropertiesForKeys: [.contentModificationDateKey]) {
                     let entries = await MainActor.run { PlaybackHistoryStore.shared.entries }
                     let knownPaths = Set(entries.map {
                         URL(fileURLWithPath: $0.mediaPath).resolvingSymlinksInPath().standardizedFileURL.path
@@ -172,7 +175,9 @@ public final class SentenceLibraryManager: ObservableObject {
                                     break
                                 }
                             }
-                            if allOrphaned && !audioFiles.isEmpty {
+                            let modified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                            let isExpired = modified.map { now.timeIntervalSince($0) > orphanRetention } ?? false
+                            if allOrphaned && !audioFiles.isEmpty && isExpired {
                                 for f in files { try? fileManager.removeItem(at: f) }
                                 try? fileManager.removeItem(at: dir)
                             }
@@ -315,7 +320,7 @@ public final class SentenceLibraryManager: ObservableObject {
             let queryTypeFilter = currentTypeFilter == .withVocabularyOnly ? SentenceLibraryTypeFilter.all : currentTypeFilter
             let result = await Task.detached(priority: .utility) {
                 Result {
-                    try store.entries(
+                    let found = try store.entries(
                         libraryID: libraryID,
                         searchText: query,
                         createdAfter: lowerBound,
@@ -325,6 +330,26 @@ public final class SentenceLibraryManager: ObservableObject {
                         selectedTag: tag,
                         sortOrder: order
                     )
+                    // Load the vocabulary map once and match off the main actor.
+                    // The previous loop reloaded every notebook per sentence on
+                    // the UI thread (O(sentences × vocabulary rows)).
+                    let knownWords = PackageVocabularyService.shared.allKnownVocabularyWords()
+                    var synchronized = found
+                    var updates: [UUID: [StudyMatePackageVocabularyCard]] = [:]
+                    if !knownWords.isEmpty {
+                        for index in synchronized.indices {
+                            let matched = PackageVocabularyService.shared.matchVocabulary(
+                                in: synchronized[index].originalText,
+                                knownWords: knownWords
+                            )
+                            let current = synchronized[index].associatedWords ?? []
+                            if matched != current {
+                                synchronized[index].associatedWords = matched.isEmpty ? nil : matched
+                                updates[synchronized[index].id] = matched
+                            }
+                        }
+                    }
+                    return (entries: synchronized, updates: updates)
                 }
             }.value
             guard !Task.isCancelled,
@@ -339,21 +364,9 @@ public final class SentenceLibraryManager: ObservableObject {
                   self.selectedTag == tag,
                   self.sortOrder == order else { return }
             switch result {
-            case let .success(foundEntries):
-                var synchronizedEntries = foundEntries
-                var needsStoreUpdate: [UUID: [StudyMatePackageVocabularyCard]] = [:]
-                let knownWords = PackageVocabularyService.shared.allKnownVocabularyWords()
-                if !knownWords.isEmpty {
-                    for i in 0..<synchronizedEntries.count {
-                        let text = synchronizedEntries[i].originalText
-                        let matched = PackageVocabularyService.shared.findMatchingVocabulary(for: text)
-                        let currentWords = synchronizedEntries[i].associatedWords ?? []
-                        if matched != currentWords {
-                            synchronizedEntries[i].associatedWords = matched.isEmpty ? nil : matched
-                            needsStoreUpdate[synchronizedEntries[i].id] = matched
-                        }
-                    }
-                }
+            case let .success(found):
+                let synchronizedEntries = found.entries
+                let needsStoreUpdate = found.updates
                 if currentTypeFilter == .withVocabularyOnly {
                     self.entries = synchronizedEntries.filter { ($0.associatedWords?.isEmpty == false) }
                 } else {
@@ -550,15 +563,25 @@ public final class SentenceLibraryManager: ObservableObject {
                 }
             )
 
-            // 更新画幅与语言元数据
-            try? store.updateMetadata(
-                sourceLanguage: detectedSourceLanguage,
-                targetLanguage: nil,
-                videoAspectRatio: detectedAspectRatio,
-                in: libraryID
-            )
+            // 更新画幅与语言元数据。元数据只是辅助信息，失败不应让整次
+            // 导入失败，但必须让用户知道这次写入没有完整落盘。
+            var metadataWriteWarning: String?
+            do {
+                try store.updateMetadata(
+                    sourceLanguage: detectedSourceLanguage,
+                    targetLanguage: nil,
+                    videoAspectRatio: detectedAspectRatio,
+                    in: libraryID
+                )
+            } catch {
+                metadataWriteWarning = error.localizedDescription
+            }
 
-            return (count: entries.count, missingTargets: missingAlignmentTargets)
+            return (
+                count: entries.count,
+                missingTargets: missingAlignmentTargets,
+                metadataWarning: metadataWriteWarning
+            )
         }.value
 
         librarySentenceCounts[libraryID] = (librarySentenceCounts[libraryID] ?? 0) + prepared.count
@@ -569,6 +592,12 @@ public final class SentenceLibraryManager: ObservableObject {
         MainStatusCenter.shared.showSuccess(
             LanguageManager.shared.text("已成功保存 \(prepared.count) 个句子到句库", "Successfully saved \(prepared.count) sentences to library")
         )
+        if let warning = prepared.metadataWarning {
+            MainStatusCenter.shared.showWarning(LanguageManager.shared.text(
+                "句子已保存，但画幅/语言信息写入失败：\(warning)",
+                "Sentences saved, but video/language metadata could not be written: \(warning)"
+            ))
+        }
 
         // 若存在缺少词级时间戳的句子，在后台静默发起 Whisper 自动对齐
         if !prepared.missingTargets.isEmpty {

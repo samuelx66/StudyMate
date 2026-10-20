@@ -147,6 +147,20 @@ final class SubtitleParserTests: XCTestCase {
         XCTAssertEqual(items.first?.text, "你好")
     }
 
+    func testGB18030SubtitleFileIsNotMistakenForUTF16() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudyMate-GBK-\(UUID().uuidString).srt")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let content = "1\n00:00:01,000 --> 00:00:02,000\n你好，世界\n"
+        let gb18030 = String.Encoding(
+            rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0632))
+        )
+        try XCTUnwrap(content.data(using: gb18030)).write(to: url)
+        let items = try SubtitleParser.shared.parse(from: url)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.text, "你好，世界")
+    }
+
     func testASSParsing() {
         let assContent = """
         [Script Info]

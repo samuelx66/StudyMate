@@ -86,14 +86,19 @@ public struct MediaProjectFile: Codable, Sendable {
             )
         }
         schemaVersion = decodedSchemaVersion
-        mediaPath = (try? container.decode(String.self, forKey: .mediaPath)) ?? ""
+        // Content-critical fields are decoded strictly for the current schema.
+        // Silently degrading `segments` to an empty array used to make a
+        // damaged project look valid, after which the next save wrote `[]`
+        // over the user's subtitles. A decode failure now takes the backup /
+        // unavailable recovery path instead.
+        mediaPath = try container.decode(String.self, forKey: .mediaPath)
         mediaTitle = (try? container.decode(String.self, forKey: .mediaTitle))
             ?? URL(fileURLWithPath: mediaPath).deletingPathExtension().lastPathComponent
         let decodedDuration = (try? container.decode(Double.self, forKey: .duration)) ?? 0
         duration = decodedDuration.isFinite ? max(0, decodedDuration) : 0
         let decodedPosition = (try? container.decode(Double.self, forKey: .lastPosition)) ?? 0
         lastPosition = decodedPosition.isFinite ? max(0, decodedPosition) : 0
-        segments = (try? container.decode([SentenceSegment].self, forKey: .segments)) ?? []
+        segments = try container.decode([SentenceSegment].self, forKey: .segments)
         waveformData = try? container.decodeIfPresent(WaveformData.self, forKey: .waveformData)
         waveformCacheFile = try? container.decodeIfPresent(String.self, forKey: .waveformCacheFile)
         mediaFileSize = try? container.decodeIfPresent(Int64.self, forKey: .mediaFileSize)
@@ -103,8 +108,8 @@ public struct MediaProjectFile: Codable, Sendable {
             (try? container.decodeIfPresent([Double].self, forKey: .acousticBoundaryTimes)) ?? []
         )
         updatedAt = (try? container.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
-        sentenceLibraryID = try? container.decodeIfPresent(UUID.self, forKey: .sentenceLibraryID)
-        sentenceLibraryEntryMap = try? container.decodeIfPresent([UUID: UUID].self, forKey: .sentenceLibraryEntryMap)
+        sentenceLibraryID = try container.decodeIfPresent(UUID.self, forKey: .sentenceLibraryID)
+        sentenceLibraryEntryMap = try container.decodeIfPresent([UUID: UUID].self, forKey: .sentenceLibraryEntryMap)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -281,6 +286,11 @@ public final class ProjectFileManager: @unchecked Sendable {
     public func projectFileURL(for mediaURL: URL) -> URL {
         projectsDirectory.appendingPathComponent(projectBaseName(for: mediaURL) + ".json")
     }
+
+    /// Root directory for project files. Exposed so sibling caches (for example
+    /// sentence-library session audio) follow the same injected base directory
+    /// and stay isolated in tests.
+    public var directory: URL { projectsDirectory }
 
     public func waveformFileURL(for mediaURL: URL) -> URL {
         projectsDirectory.appendingPathComponent(projectBaseName(for: mediaURL) + ".waveform")
@@ -497,6 +507,13 @@ public final class ProjectFileManager: @unchecked Sendable {
 
         let backupMetadataURL = backupDirectory.appendingPathComponent("project.json")
         let hasWaveformCache = FileManager.default.fileExists(atPath: waveformURL.path)
+        // Preserve the exact on-disk bytes as a last-resort manual recovery
+        // source. Re-encoding below is convenient for the app, but it must
+        // never be the only copy of a project that was already damaged.
+        try FileManager.default.copyItem(
+            at: metadataURL,
+            to: backupDirectory.appendingPathComponent("project.original.json")
+        )
         if let existingProject {
             // 让备份在脱离当前工程文件后仍然可以独立恢复。
             let backupProject = MediaProjectFile(
@@ -511,7 +528,9 @@ public final class ProjectFileManager: @unchecked Sendable {
                 mediaModificationDate: existingProject.mediaModificationDate,
                 hasCompletedSegmentation: existingProject.hasCompletedSegmentation,
                 acousticBoundaryTimes: existingProject.acousticBoundaryTimes,
-                updatedAt: existingProject.updatedAt
+                updatedAt: existingProject.updatedAt,
+                sentenceLibraryID: existingProject.sentenceLibraryID,
+                sentenceLibraryEntryMap: existingProject.sentenceLibraryEntryMap
             )
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601

@@ -867,8 +867,13 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         window: Double
     ) -> Double {
         guard !probabilities.isEmpty, window > 0 else { return 0 }
-        let nearby = probabilities.filter { abs($0.time - time) <= window }
-        guard !nearby.isEmpty else { return 0 }
+        // The posterior curve is time-sorted and can contain ~112k frames per
+        // hour. A full-array filter for every token was O(tokens × frames);
+        // slice the ±window once with binary search instead.
+        let lower = lowerBoundProbabilityIndex(probabilities, time: time - window)
+        let upper = lowerBoundProbabilityIndex(probabilities, time: time + window + 1e-9)
+        guard lower < upper else { return 0 }
+        let nearby = Array(probabilities[lower..<upper])
         let centerRadius = min(0.055, window * 0.35)
         let center = nearby.filter { abs($0.time - time) <= centerRadius }
         let left = nearby.filter { $0.time < time - centerRadius }
@@ -885,6 +890,23 @@ public final class SpeechBoundaryOptimizer: @unchecked Sendable {
         // the flank comparison prevents isolated low frames inside speech
         // from becoming overly attractive split points.
         return min(1, quietStrength * 0.62 + valleyStrength * 0.72)
+    }
+
+    private func lowerBoundProbabilityIndex(
+        _ frames: [VADProbabilityFrame],
+        time: Double
+    ) -> Int {
+        var low = 0
+        var high = frames.count
+        while low < high {
+            let mid = (low + high) / 2
+            if frames[mid].time < time {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
     }
 
     private func averageProbability(_ frames: [VADProbabilityFrame]) -> Double {

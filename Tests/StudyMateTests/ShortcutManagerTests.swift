@@ -38,7 +38,7 @@ final class ShortcutManagerTests: XCTestCase {
     }
 
     func testCatalogAllCountAndCategories() {
-        XCTAssertEqual(StudyMateShortcutCatalog.all.count, 65)
+        XCTAssertEqual(StudyMateShortcutCatalog.all.count, 66)
         for shortcut in StudyMateShortcutCatalog.all {
             XCTAssertFalse(shortcut.chineseName.isEmpty)
             XCTAssertFalse(shortcut.englishName.isEmpty)

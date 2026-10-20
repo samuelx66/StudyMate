@@ -147,12 +147,20 @@ public struct WaveformCanvas: View, Equatable {
     let isWindowResizing: Bool
 
     public static func == (lhs: WaveformCanvas, rhs: WaveformCanvas) -> Bool {
+        // Do not use `WaveformData ==` here: the synthesized comparison walks
+        // two large Float arrays (hundreds of thousands of elements for a long
+        // file) on every parent body update. The signature and dimensions are
+        // exactly the inputs used by the render/cache key, so an O(1) check is
+        // sufficient for view diffing.
         lhs.startTime == rhs.startTime
             && lhs.endTime == rhs.endTime
             && lhs.width == rhs.width
             && lhs.height == rhs.height
             && lhs.isWindowResizing == rhs.isWindowResizing
-            && lhs.waveformData == rhs.waveformData
+            && lhs.waveformData.peakCount == rhs.waveformData.peakCount
+            && lhs.waveformData.duration == rhs.waveformData.duration
+            && lhs.waveformData.sampleRate == rhs.waveformData.sampleRate
+            && lhs.waveformData.signature == rhs.waveformData.signature
     }
     
     public init(

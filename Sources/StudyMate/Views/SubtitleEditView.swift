@@ -18,6 +18,7 @@ public struct SubtitleEditView: View {
     @State private var translationText: String = ""
     @State private var currentSegmentId: UUID? = nil
     @State private var editingSegmentSnapshot: SentenceSegment?
+    @State private var autosaveTask: Task<Void, Never>?
     
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -148,7 +149,18 @@ public struct SubtitleEditView: View {
         .onChange(of: activeSegment) { _, _ in
             if focusedField == nil { loadActiveSegment() }
         }
-        .onDisappear { saveCurrentSegment() }
+        .onDisappear {
+            autosaveTask?.cancel()
+            saveCurrentSegment()
+        }
+        .onChange(of: originalText) { _, _ in scheduleAutosave() }
+        .onChange(of: translationText) { _, _ in scheduleAutosave() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            // Commit the draft even when the user quits while a field is still
+            // focused; onDisappear is not guaranteed during app termination.
+            autosaveTask?.cancel()
+            saveCurrentSegment()
+        }
         .onChange(of: focusedField) { oldField, newField in
             if oldField != nil && newField == nil {
                 // 焦点离开输入框时，自动保存并重新对齐当前最新活跃句
@@ -182,6 +194,17 @@ public struct SubtitleEditView: View {
         }
     }
     
+    /// Debounced draft persistence so a quit or crash within the editing
+    /// session cannot lose the last typed characters.
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            saveCurrentSegment()
+        }
+    }
+
     private func saveCurrentSegment() {
         guard let id = currentSegmentId else { return }
         engine.updateSegmentText(id: id, text: originalText, translation: translationText)

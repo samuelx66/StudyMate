@@ -444,10 +444,15 @@ private struct SegmentListToolTipModifier: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        // Icon-only controls have no text label; VoiceOver otherwise announces
+        // just "button". Use the same localized description as the tooltip so
+        // every list action is discoverable without a pointer.
         if isEnabled {
-            content.help(text)
-        } else {
             content
+                .help(text)
+                .accessibilityLabel(text)
+        } else {
+            content.accessibilityLabel(text)
         }
     }
 }
@@ -538,11 +543,12 @@ public struct SegmentListView: View {
                 }
                 .studymateChromeButton(shape: .circle)
                 .focusable(false)
-                .segmentListHelp(
+                .segmentListHelp(StudyMateShortcutCatalog.help(
                     editingLayout
                         ? lang.text("功能状态：显示操作按钮、时间与批量操作，点击切换到阅读", "Function mode: action buttons, timing and batch actions. Click to switch to reading.")
-                        : lang.text("阅读状态：纯粹阅读双语内容，点击切换到功能", "Reading mode: pure subtitle reading. Click to switch to function mode.")
-                )
+                        : lang.text("阅读状态：纯粹阅读双语内容，点击切换到功能", "Reading mode: pure subtitle reading. Click to switch to function mode."),
+                    shortcut: .toggleSegmentEditingLayout
+                ))
 
                 Text(lang.localized(.segmentList))
                     .font(.subheadline.bold())
@@ -824,6 +830,10 @@ public struct SegmentListView: View {
                                 },
                                 onDelete: { id in
                                     engine.deleteSegment(id: id)
+                                    MainStatusCenter.shared.showSuccess(lang.text(
+                                        "已删除当前句（可在“断句”菜单撤销）",
+                                        "Sentence deleted (Undo in the Sentence menu)"
+                                    ))
                                 },
                                 onSaveText: { id, originalText, translationText in
                                     engine.updateSegmentText(
@@ -2019,13 +2029,10 @@ private struct SegmentListRowsView: View, Equatable {
     let lang: LanguageManager
 
     var body: some View {
+        let speakerCounts = SpeakerCountIndex(segments: segments)
         LazyVStack(spacing: 2) {
             ForEach(segments) { seg in
-                let count = segments.filter {
-                    let l = $0.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
-                    let target = seg.speakerRoleLabel.replacingOccurrences(of: "→", with: "->")
-                    return l == target || $0.speakerRole == seg.speakerRoleLabel
-                }.count
+                let count = speakerCounts.count(for: seg)
 
                 SegmentRowView(
                     seg: seg,

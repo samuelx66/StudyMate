@@ -139,7 +139,14 @@ public struct PrimaryWaveformView: View {
                             engine.endBoundaryDrag()
                         },
                         onSelectSegmentForBoundaryDrag: { id in
-                            engine.playSegmentAfterBoundaryEditing(id: id)
+                            // Adjusting a boundary while paused must not start
+                            // playback; otherwise precise paused editing seeks
+                            // and plays unexpectedly.
+                            if engine.isPlaying {
+                                engine.playSegmentAfterBoundaryEditing(id: id)
+                            } else {
+                                engine.selectSegmentForBoundaryEditing(id: id)
+                            }
                         },
                         onPanViewport: { deltaTime in
                             engine.panPrimaryViewport(by: deltaTime)

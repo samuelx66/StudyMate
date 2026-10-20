@@ -252,7 +252,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
 
                 var result: [SentenceLibraryEntry] = []
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     if let entry = parseEntry(from: statement) {
                         result.append(entry)
                     }
@@ -275,7 +275,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 )
                 defer { sqlite3_finalize(statement) }
                 var result: [String] = []
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     let value = text(statement, 0).trimmingCharacters(in: .whitespacesAndNewlines)
                     if !value.isEmpty { result.append(value) }
                 }
@@ -293,7 +293,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 try prepare("SELECT tags FROM entries WHERE tags != '[]' AND tags IS NOT NULL;", db: db, statement: &statement)
                 defer { sqlite3_finalize(statement) }
                 var tagSet = Set<String>()
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     let json = text(statement, 0)
                     if let tags = Self.deserializeJSON([String].self, from: json) {
                         for tag in tags {
@@ -337,7 +337,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
             return isBookmarked
         }
     }
@@ -362,7 +362,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
         }
     }
 
@@ -420,7 +420,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
         }
     }
 
@@ -452,7 +452,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
         }
     }
 
@@ -481,7 +481,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
         }
     }
 
@@ -549,7 +549,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 descriptor.updatedAt = Date()
                 try writeManifest(descriptor, to: packageURL(for: libraryID))
             } else {
-                try touchManifest(libraryID: libraryID)
+                touchManifest(libraryID: libraryID, coalesceContentJSON: true)
             }
         }
     }
@@ -597,7 +597,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID)
             return count
         }
     }
@@ -634,7 +634,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID)
             return count
         }
     }
@@ -781,7 +781,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 throw error
             }
             progress(1)
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID)
         }
     }
 
@@ -819,7 +819,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     )
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID)
             syncContentJSONUnlocked(libraryID: libraryID)
         }
     }
@@ -860,7 +860,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     throw error
                 }
             }
-            try touchManifest(libraryID: libraryID)
+            touchManifest(libraryID: libraryID, coalesceContentJSON: true)
             syncContentJSONUnlocked(libraryID: libraryID)
         }
     }
@@ -968,7 +968,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                 }
             }
             do {
-                try touchManifest(libraryID: libraryID)
+                touchManifest(libraryID: libraryID)
             } catch {
                 cleanupFailures.append("句库清单：\(error.localizedDescription)")
             }
@@ -1111,12 +1111,12 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     }
                 }
                 do {
-                    try touchManifest(libraryID: sourceLibraryID)
+                    touchManifest(libraryID: sourceLibraryID)
                 } catch {
                     cleanupFailures.append("源句库清单：\(error.localizedDescription)")
                 }
                 do {
-                    try touchManifest(libraryID: destinationLibraryID)
+                    touchManifest(libraryID: destinationLibraryID)
                 } catch {
                     cleanupFailures.append("目标句库清单：\(error.localizedDescription)")
                 }
@@ -1430,7 +1430,7 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     descriptor.updatedAt = Date()
                     try writeManifest(descriptor, to: self.packageURL(for: libraryID))
                 } else {
-                    try touchManifest(libraryID: libraryID)
+                    touchManifest(libraryID: libraryID)
                 }
             }
 
@@ -1561,13 +1561,64 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         }
     }
 
-    private func touchManifest(libraryID: UUID) throws {
-        guard var descriptor = readManifest(at: packageURL(for: libraryID)) else {
-            throw SentenceLibraryError.invalidLibrary
-        }
+    /// Refreshes the manifest after a committed database mutation.
+    ///
+    /// This used to throw, which made a committed write look like a failure when
+    /// only the manifest touch failed (and a retry could duplicate rows). It is
+    /// now best-effort and reports a warning instead. The content.json mirror
+    /// is coalesced so a burst of bookmark/tag edits rewrites it once.
+    private func touchManifest(libraryID: UUID, coalesceContentJSON: Bool = false) {
+        guard var descriptor = readManifest(at: packageURL(for: libraryID)) else { return }
         descriptor.updatedAt = Date()
-        try writeManifest(descriptor, to: packageURL(for: libraryID))
-        syncContentJSONUnlocked(libraryID: libraryID)
+        do {
+            try writeManifest(descriptor, to: packageURL(for: libraryID))
+        } catch {
+            let message = error.localizedDescription
+            Task { @MainActor in
+                MainStatusCenter.shared.showWarning(
+                    LanguageManager.shared.text(
+                        "句库索引已保存，但清单文件更新失败：\(message)",
+                        "Library index saved, but the manifest could not be updated: \(message)"
+                    )
+                )
+            }
+            return
+        }
+        if coalesceContentJSON {
+            scheduleContentJSONSync(libraryID: libraryID)
+        } else {
+            // Structural writes (add/update/delete/move/import) must be visible
+            // to readers immediately; only rapid metadata edits are coalesced.
+            syncContentJSONUnlocked(libraryID: libraryID)
+        }
+    }
+
+    private var pendingContentJSONLibraries: Set<UUID> = []
+    private var contentJSONFlushScheduled = false
+
+    /// Marks a library's content.json mirror dirty and flushes it once after a
+    /// short window. Must be called while the serial `queue` is held.
+    private func scheduleContentJSONSync(libraryID: UUID) {
+        pendingContentJSONLibraries.insert(libraryID)
+        guard !contentJSONFlushScheduled else { return }
+        contentJSONFlushScheduled = true
+        queue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            self.contentJSONFlushScheduled = false
+            let libraries = self.pendingContentJSONLibraries
+            self.pendingContentJSONLibraries.removeAll()
+            for id in libraries { self.syncContentJSONUnlocked(libraryID: id) }
+        }
+    }
+
+    /// Flushes coalesced content.json mirrors before process exit.
+    public func flushPendingContentJSONSyncs() {
+        queue.sync {
+            contentJSONFlushScheduled = false
+            let libraries = pendingContentJSONLibraries
+            pendingContentJSONLibraries.removeAll()
+            for id in libraries { syncContentJSONUnlocked(libraryID: id) }
+        }
     }
 
     /// 在 .mablib 包根目录下同步写入 content.json 镜像，实现 macOS 目录 Bundle 与移动端跨平台标准数据层无缝对齐
@@ -1675,12 +1726,12 @@ public final class SentenceLibraryStore: @unchecked Sendable {
                     sqlite3_reset(statement)
                     sqlite3_clear_bindings(statement)
                     bind(id.uuidString, at: 1, to: statement)
-                    if sqlite3_step(statement) == SQLITE_ROW, let entry = parseEntry(from: statement) {
+                    if try step(statement, db: db) == SQLITE_ROW, let entry = parseEntry(from: statement) {
                         result.append(entry)
                     }
                 }
             } else {
-                while sqlite3_step(statement) == SQLITE_ROW {
+                while try step(statement, db: db) == SQLITE_ROW {
                     if let entry = parseEntry(from: statement) { result.append(entry) }
                 }
             }
@@ -2025,10 +2076,21 @@ public final class SentenceLibraryStore: @unchecked Sendable {
         try prepare("PRAGMA table_info(entries);", db: db, statement: &statement)
         defer { sqlite3_finalize(statement) }
         var columns: Set<String> = []
-        while sqlite3_step(statement) == SQLITE_ROW {
+        while try step(statement, db: db) == SQLITE_ROW {
             columns.insert(text(statement, 1))
         }
         return columns
+    }
+
+    /// Steps a prepared statement and converts a SQLite error into a thrown
+    /// error. Previously every read loop treated `SQLITE_BUSY`/`SQLITE_IOERR`
+    /// exactly like "no more rows", so a locked or damaged database looked like
+    /// an empty library with no feedback.
+    @discardableResult
+    private func step(_ statement: OpaquePointer?, db: OpaquePointer) throws -> Int32 {
+        let status = sqlite3_step(statement)
+        guard status == SQLITE_ROW || status == SQLITE_DONE else { throw databaseError(db) }
+        return status
     }
 
     private func prepare(_ sql: String, db: OpaquePointer, statement: inout OpaquePointer?) throws {

@@ -35,6 +35,7 @@ public enum StudyMateShortcutID: String, CaseIterable, Identifiable, Sendable {
     case toggleSecondaryWaveform
     case toggleSubtitleEditor
     case toggleSegmentList
+    case toggleSegmentEditingLayout
     case playPause
     case repeatCurrentSegment
     case previousSegment
@@ -177,6 +178,7 @@ public struct ShortcutKeyBinding: Codable, Equatable, Hashable, Sendable {
     }
 
     public var keyDisplay: String {
+        guard !key.isEmpty else { return "—" }
         var s = ""
         if isControl { s += "⌃" }
         if isOption { s += "⌥" }
@@ -348,6 +350,7 @@ public enum StudyMateShortcutCatalog {
         .init(id: .toggleSecondaryWaveform, category: .subtitleDisplay, chineseName: "显示或隐藏次波形图", englishName: "Show or Hide Secondary Waveform", defaultBinding: .init(key: "w", isShift: true, isOption: true)),
         .init(id: .toggleSubtitleEditor, category: .subtitleDisplay, chineseName: "显示或隐藏字幕编辑区", englishName: "Show or Hide Subtitle Editor", defaultBinding: .init(key: "s", isOption: true)),
         .init(id: .toggleSegmentList, category: .subtitleDisplay, chineseName: "显示或隐藏断句列表", englishName: "Show or Hide Sentence List", defaultBinding: .init(key: "l", isOption: true)),
+        .init(id: .toggleSegmentEditingLayout, category: .subtitleDisplay, chineseName: "切换断句列表的阅读/功能状态", englishName: "Toggle Sentence List Reading/Function Mode", defaultBinding: .init(key: "k", isCommand: true, isShift: true)),
 
         // MARK: - 句子与编辑
         .init(id: .selectSentence, category: .sentenceOperations, chineseName: "选中当前句并定位播放", englishName: "Select and Seek to Sentence", defaultBinding: .init(key: "return", isCommand: true)),

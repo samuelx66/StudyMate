@@ -163,18 +163,25 @@ public final class SentenceLibraryAlignmentService: ObservableObject {
 
                 // 4. 持久化到 SQLite 数据库与 content.json
                 var count = 0
+                var failures: [Error] = []
                 for target in targets {
                     if let tokens = recognizedTokens[target.segmentID], !tokens.isEmpty {
-                        try? SentenceLibraryStore.shared.updateWordTokensAndText(
-                            id: target.entryID,
-                            originalText: target.originalText,
-                            wordTokens: tokens,
-                            in: libraryID
-                        )
-                        count += 1
+                        do {
+                            try SentenceLibraryStore.shared.updateWordTokensAndText(
+                                id: target.entryID,
+                                originalText: target.originalText,
+                                wordTokens: tokens,
+                                in: libraryID
+                            )
+                            count += 1
+                        } catch {
+                            failures.append(error)
+                        }
                     }
                 }
                 let finalUpdatedCount = count
+                let finalFailureCount = failures.count
+                let firstFailureMessage = failures.first?.localizedDescription
 
                 // 5. 若当前会话正在学习此句库，同步更新内存中的 segments
                 await MainActor.run {
@@ -199,6 +206,13 @@ public final class SentenceLibraryAlignmentService: ObservableObject {
                             isChinese
                                 ? "已自动对齐 \(finalUpdatedCount) 句的词级时间戳并存入句库"
                                 : "Automatically aligned word timestamps for \(finalUpdatedCount) sentence(s)"
+                        )
+                    }
+                    if finalFailureCount > 0 {
+                        statusCenter.showError(
+                            isChinese
+                                ? "有 \(finalFailureCount) 句词级时间戳写入句库失败：\(firstFailureMessage ?? "未知错误")"
+                                : "Failed to save word timestamps for \(finalFailureCount) sentence(s): \(firstFailureMessage ?? "Unknown error")"
                         )
                     }
                 }

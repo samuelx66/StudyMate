@@ -520,7 +520,12 @@ public final class MPVPlayerBackend: NSObject, MediaPlayerBackend {
         }
         if let h = mpvHandle {
             let handleBits = UInt(bitPattern: h)
-            commandQueue.sync {
+            // Never `sync` from deinit: a load poll can occupy the command
+            // queue for seconds, and deinit usually runs on the main thread
+            // (window close / decoder switch). Destroy after the pending
+            // commands have drained instead.
+            let queue = commandQueue
+            queue.async {
                 guard let handle = OpaquePointer(bitPattern: handleBits) else { return }
                 MPVClient.shared.destroy(handle)
             }

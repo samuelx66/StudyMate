@@ -42,10 +42,17 @@ public final class PackageVocabularyService: @unchecked Sendable {
     }
 
     public func matchVocabulary(in sentenceText: String) -> [StudyMatePackageVocabularyCard] {
+        matchVocabulary(in: sentenceText, knownWords: allKnownVocabularyWords())
+    }
+
+    /// Batch-friendly overload: callers that match many sentences must load the
+    /// known-word map once instead of re-scanning every notebook per sentence.
+    public func matchVocabulary(
+        in sentenceText: String,
+        knownWords: [String: VocabularyWordEntry]
+    ) -> [StudyMatePackageVocabularyCard] {
         let trimmed = sentenceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-
-        let knownWords = allKnownVocabularyWords()
         guard !knownWords.isEmpty else { return [] }
 
         let tagger = NLTagger(tagSchemes: [.tokenType])

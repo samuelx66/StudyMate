@@ -30,7 +30,10 @@ public final class SubtitleExporter: Sendable {
     ) -> String {
         var cursor = 0.0
         let startTimes = segments.map { segment -> Double in
-            defer { cursor += segment.duration }
+            // Keep the LRC and SRT timebases identical; the merged audio uses
+            // the exact segment ranges, so a 50 ms clamp on only one format
+            // made the two subtitle files drift apart.
+            defer { cursor += max(0.001, segment.duration) }
             return cursor
         }
         return exportToLRC(
@@ -113,7 +116,7 @@ public final class SubtitleExporter: Sendable {
         var endTimes: [Double] = []
         for segment in segments {
             startTimes.append(cursor)
-            cursor += max(0.05, segment.duration)
+            cursor += max(0.001, segment.duration)
             endTimes.append(cursor)
         }
         return exportToSRT(
@@ -348,12 +351,26 @@ public final class SegmentMediaExporter: @unchecked Sendable {
 
         let lrcURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("lrc")
         let srtURL = normalizedOutputURL.deletingPathExtension().appendingPathExtension("srt")
+        // Build every artifact in a private temporary directory and only move
+        // them into place after the whole export succeeds. A failed export must
+        // never delete pre-existing sidecars that this run did not write.
+        let temporaryDirectory = normalizedOutputURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".studymate-export-\(UUID().uuidString)", isDirectory: true)
+        let temporaryAudioURL = temporaryDirectory
+            .appendingPathComponent(normalizedOutputURL.lastPathComponent)
+        let temporaryLRCURL = temporaryDirectory
+            .appendingPathComponent(lrcURL.lastPathComponent)
+        let temporarySRTURL = temporaryDirectory
+            .appendingPathComponent(srtURL.lastPathComponent)
         do {
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
             if ordered.count == 1, let segment = ordered.first {
                 try exportAudioRange(
                     mediaURL: mediaURL,
                     segment: segment,
-                    outputURL: normalizedOutputURL,
+                    outputURL: temporaryAudioURL,
                     progress: { fraction in
                         progress(SegmentMediaExportProgress(
                             fraction: fraction * 0.9,
@@ -368,7 +385,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
                 try exportConcatenatedAudio(
                     mediaURL: mediaURL,
                     segments: ordered,
-                    outputURL: normalizedOutputURL,
+                    outputURL: temporaryAudioURL,
                     progress: { fraction in
                         progress(SegmentMediaExportProgress(
                             fraction: fraction * 0.9,
@@ -382,7 +399,7 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             }
 
             _ = try verifyEncodedAudio(
-                at: normalizedOutputURL,
+                at: temporaryAudioURL,
                 expectedDuration: max(0.05, ordered.reduce(0) { $0 + max(0.05, $1.duration) }),
                 context: "合并导出音频"
             )
@@ -393,12 +410,16 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             let subtitleSRT = SubtitleExporter.shared.exportToConcatenatedSRT(
                 segments: ordered
             )
-            try subtitleLRC.write(to: lrcURL, atomically: true, encoding: .utf8)
-            try subtitleSRT.write(to: srtURL, atomically: true, encoding: .utf8)
+            try subtitleLRC.write(to: temporaryLRCURL, atomically: true, encoding: .utf8)
+            try subtitleSRT.write(to: temporarySRTURL, atomically: true, encoding: .utf8)
+
+            // Install subtitles first, audio last: the audio file is the
+            // primary artifact, and replacing it only after everything else is
+            // ready keeps the previous complete export intact on failure.
+            try installExportedFile(temporaryLRCURL, at: lrcURL)
+            try installExportedFile(temporarySRTURL, at: srtURL)
+            try installExportedFile(temporaryAudioURL, at: normalizedOutputURL)
         } catch {
-            try? FileManager.default.removeItem(at: normalizedOutputURL)
-            try? FileManager.default.removeItem(at: lrcURL)
-            try? FileManager.default.removeItem(at: srtURL)
             throw error
         }
 
@@ -415,6 +436,18 @@ public final class SegmentMediaExporter: @unchecked Sendable {
             audioFileCount: 1,
             subtitleFileCount: 2
         )
+    }
+
+    /// Installs a fully written temporary artifact at its final location.
+    /// Existing files are replaced only after the replacement itself is
+    /// verified, so a failed export leaves the previous artifacts untouched.
+    private func installExportedFile(_ temporaryURL: URL, at destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
     }
 
     /// 导出一个句库独立 AAC M4A 片段。输出时间轴从 0 开始，之后播放不再依赖原媒体。

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
@@ -7,6 +8,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case segmentation
     case translation
     case decoder
+    case storage
 
     var id: String { rawValue }
 }
@@ -32,6 +34,7 @@ public struct IntensiveSettingsPopover: View {
     @State private var showAddTranslationService = false
     @State private var serviceToDelete: TranslationServiceProfile?
     @State private var showDeleteConfirmation = false
+    @State private var apiKeySaveTask: Task<Void, Never>?
 
     public init(engine: PlaybackEngine) {
         self.engine = engine
@@ -101,7 +104,19 @@ public struct IntensiveSettingsPopover: View {
             translationAPIKey = translationSettings.apiKey()
         }
         .onChange(of: translationAPIKey) { _, value in
-            translationSettings.setAPIKey(value)
+            // Keychain writes (and the model-list invalidation they trigger)
+            // should not run once per keystroke.
+            apiKeySaveTask?.cancel()
+            apiKeySaveTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                guard !Task.isCancelled else { return }
+                translationSettings.setAPIKey(value)
+            }
+        }
+        .onDisappear {
+            apiKeySaveTask?.cancel()
+            apiKeySaveTask = nil
+            translationSettings.setAPIKey(translationAPIKey)
         }
         .onChange(of: translationSettings.isAutomaticTranslationEnabled) { _, enabled in
             if !enabled {
@@ -125,7 +140,13 @@ public struct IntensiveSettingsPopover: View {
             translationSettingsView
         case .decoder:
             decoderSettings
+        case .storage:
+            storageSettings
         }
+    }
+
+    private var storageSettings: some View {
+        StorageSettingsSection(lang: lang)
     }
 
     private var generalSettings: some View {
@@ -1004,6 +1025,8 @@ public struct IntensiveSettingsPopover: View {
             return lang.text("翻译服务", "Translation Services")
         case .decoder:
             return lang.text("音视频解码", "Audio & Video Decoding")
+        case .storage:
+            return lang.text("存储空间", "Storage")
         }
     }
 
@@ -1021,6 +1044,8 @@ public struct IntensiveSettingsPopover: View {
             return lang.text("模型与 API Key", "Models and API keys")
         case .decoder:
             return lang.text("播放引擎", "Playback engine")
+        case .storage:
+            return lang.text("缓存与磁盘占用", "Cache and disk usage")
         }
     }
 
@@ -1038,6 +1063,8 @@ public struct IntensiveSettingsPopover: View {
             return lang.text("管理可复用的翻译服务配置，并在句子列表中手动确认后执行翻译。", "Manage reusable translation profiles and start translation manually after confirmation in the sentence list.")
         case .decoder:
             return lang.text("选择系统、扩展或智能混合音视频解码引擎，并控制扩展解码时的字幕自动加载。", "Choose the native, extended, or hybrid audio/video decoder and control automatic subtitle loading for extended decoding.")
+        case .storage:
+            return lang.text("查看字幕缓存、临时文件、离线模型与句库会话材料的磁盘占用，并可安全清理可重建的缓存。", "Review disk usage for waveform caches, temporary files, offline models, and session audio, and safely clear rebuildable caches.")
         }
     }
 
@@ -1055,6 +1082,8 @@ public struct IntensiveSettingsPopover: View {
             return "translate"
         case .decoder:
             return "cpu"
+        case .storage:
+            return "internaldrive"
         }
     }
 
@@ -1173,4 +1202,200 @@ private struct TranslationServiceAddSheet: View {
 #Preview("精听复读参数设置") {
     IntensiveSettingsPopover(engine: PlaybackEngine.shared)
         .padding()
+}
+
+
+// MARK: - 存储空间
+
+private struct StorageCategory: Identifiable {
+    let id: String
+    let title: String
+    let url: URL
+    let isClearable: Bool
+    var bytes: Int64 = 0
+}
+
+private struct StorageSettingsSection: View {
+    @ObservedObject var lang: LanguageManager
+    @State private var categories: [StorageCategory] = []
+    @State private var totalBytes: Int64 = 0
+    @State private var isCalculating = true
+    @State private var isClearing = false
+    @State private var showClearConfirmation = false
+    @State private var lastRefresh = Date()
+
+    private var root: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("StudyMate", isDirectory: true)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(lang.text(
+                "以下统计只包含学伴自己的数据目录，不会扫描或删除其它文件。波形缓存、临时文件和导出临时文件可以安全重建。",
+                "These figures cover only StudyMate's own data folder. Waveform caches, temporary files, and export scratch files can be safely rebuilt."
+            ))
+            .font(.callout)
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if isCalculating {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(lang.text("正在统计磁盘占用…", "Calculating disk usage…"))
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(categories) { category in
+                        HStack(spacing: 10) {
+                            Image(systemName: category.isClearable ? "arrow.triangle.2.circlepath" : "folder")
+                                .frame(width: 18)
+                                .foregroundColor(category.isClearable ? StudyMateMediaStyle.accent : .secondary)
+                            Text(category.title)
+                                .font(.callout)
+                            if category.isClearable {
+                                Text(lang.text("可重建", "Rebuildable"))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text(Self.format(category.bytes))
+                                .font(.callout.monospacedDigit())
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 7)
+                        Divider()
+                    }
+                    HStack {
+                        Text(lang.text("总计", "Total")).font(.callout.bold())
+                        Spacer()
+                        Text(Self.format(totalBytes))
+                            .font(.callout.bold().monospacedDigit())
+                    }
+                    .padding(.top, 8)
+                }
+            }
+
+            if !isCalculating && categories.contains(where: { $0.isClearable }) {
+                Text(lang.text(
+                    "清理可重建缓存不会删除媒体、工程、句库、生词本或词典。正在播放的波形会在需要时自动重新生成。",
+                    "Clearing rebuildable caches does not remove media, projects, sentence libraries, vocabulary, or dictionaries. The active waveform regenerates on demand."
+                ))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    showClearConfirmation = true
+                } label: {
+                    Label(lang.text("清理可重建缓存", "Clear Rebuildable Caches"), systemImage: "trash")
+                }
+                .disabled(isCalculating || isClearing || !categories.contains(where: { $0.isClearable }))
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([root])
+                } label: {
+                    Label(lang.text("在访达中显示", "Reveal in Finder"), systemImage: "folder")
+                }
+
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    Label(lang.text("刷新", "Refresh"), systemImage: "arrow.clockwise")
+                }
+                .disabled(isCalculating || isClearing)
+            }
+
+            Text(lang.text("上次统计：\(lastRefresh.formatted(date: .omitted, time: .shortened))", "Last measured: \(lastRefresh.formatted(date: .omitted, time: .shortened))"))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: 620, alignment: .leading)
+        .task { await refresh() }
+        .confirmationDialog(
+            lang.text("清理可重建缓存？", "Clear rebuildable caches?"),
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(lang.text("清理", "Clear"), role: .destructive) {
+                Task { await clearCaches() }
+            }
+            Button(lang.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(lang.text(
+                "将删除波形缓存、断句临时文件和导出临时文件。媒体、工程、句库、生词本和词典不受影响。",
+                "Waveform caches, segmentation temporary files, and export scratch files will be deleted. Media, projects, sentence libraries, vocabulary, and dictionaries are not affected."
+            ))
+        }
+    }
+
+    private func refresh() async {
+        isCalculating = true
+        let folderURLs: [(String, URL, Bool)] = [
+            (lang.text("波形缓存", "Waveform cache"), root.appendingPathComponent("PCMCache", isDirectory: true), true),
+            (lang.text("断句临时文件", "Segmentation temporary files"), root.appendingPathComponent("SentenceLibraryTemp", isDirectory: true), true),
+            (lang.text("导出临时文件", "Export scratch files"), root.appendingPathComponent("ExportTemp", isDirectory: true), true),
+            (lang.text("句库会话音频", "Session audio"), root.appendingPathComponent("SentenceLibrarySessions", isDirectory: true), false),
+            (lang.text("离线模型", "Offline models"), root.appendingPathComponent("Models", isDirectory: true), false),
+            (lang.text("词典", "Dictionaries"), root.appendingPathComponent("Dictionaries", isDirectory: true), false)
+        ]
+        let measured = await Task.detached(priority: .utility) {
+            folderURLs.map { title, url, clearable in
+                StorageCategory(
+                    id: url.path,
+                    title: title,
+                    url: url,
+                    isClearable: clearable,
+                    bytes: Self.directorySize(url)
+                )
+            }
+        }.value
+        categories = measured
+        totalBytes = measured.reduce(Int64(0)) { $0 + $1.bytes }
+        lastRefresh = Date()
+        isCalculating = false
+    }
+
+    private func clearCaches() async {
+        isClearing = true
+        let urls = categories.filter { $0.isClearable }.map(\.url)
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            for url in urls {
+                try? fileManager.removeItem(at: url)
+                try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            }
+        }.value
+        await refresh()
+        isClearing = false
+        MainStatusCenter.shared.showSuccess(lang.text(
+            "已清理可重建缓存",
+            "Rebuildable caches cleared"
+        ))
+    }
+
+    private nonisolated static func directorySize(_ url: URL) -> Int64 {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else { return 0 }
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let item as URL in enumerator {
+            guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    private static func format(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+    }
 }

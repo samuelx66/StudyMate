@@ -903,6 +903,7 @@ final class VideoGestureOverlayView: NSView {
             case .changed:
                 let dx = event.scrollingDeltaX
                 let dy = event.scrollingDeltaY
+                var axisLockedThisEvent = false
 
                 if activeAxis == .none {
                     accumulatedDeltaX += dx
@@ -914,15 +915,22 @@ final class VideoGestureOverlayView: NSView {
                     // 阈值判定：一旦锁定主轴，手势期间互不干扰
                     if absX >= 3.0 && absX > absY {
                         activeAxis = .seek
+                        axisLockedThisEvent = true
                         engine.beginPreviewSeek()
                         onSeekBegan?()
                     } else if absY >= 3.0 && absY > absX {
                         activeAxis = .volume
+                        axisLockedThisEvent = true
                     }
                 }
 
                 if activeAxis == .seek {
-                    accumulatedDeltaX += dx
+                    // The delta that crossed the threshold is already in the
+                    // accumulator; adding it again made the first seek/volume
+                    // step jump by two deltas.
+                    if !axisLockedThisEvent {
+                        accumulatedDeltaX += dx
+                    }
                     // 触控板横滑微调敏感度：时长比例自适应，保证短视频精确到秒/帧，长视频适中
                     let duration = max(engine.duration, 1.0)
                     let sensitivity = min(0.25, max(0.05, duration / 1200.0))
@@ -933,7 +941,9 @@ final class VideoGestureOverlayView: NSView {
                     onSeekChanged?(targetTime, deltaSeconds)
 
                 } else if activeAxis == .volume {
-                    accumulatedDeltaY += dy
+                    if !axisLockedThisEvent {
+                        accumulatedDeltaY += dy
+                    }
                     // 纵向滑动：向上增加音量，向下降低音量
                     let volumeDelta = Float(accumulatedDeltaY) * 0.0035
                     let newVolume = min(1.0, max(0.0, initialVolume + volumeDelta))

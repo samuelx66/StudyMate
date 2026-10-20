@@ -61,11 +61,13 @@ public final class MainStatusCenter: ObservableObject {
     @Published public private(set) var progress: MainStatusProgress?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var successMessage: String?
+    @Published public private(set) var warningMessage: String?
     @Published public private(set) var issues: [StatusIssueItem] = []
     @Published public private(set) var lastIssueToken = UUID()
 
     private var progressGeneration = UUID()
     private var successGeneration = UUID()
+    private var warningGeneration = UUID()
     private var errorGeneration = UUID()
 
     private init() {}
@@ -93,6 +95,8 @@ public final class MainStatusCenter: ObservableObject {
         guard !normalized.isEmpty else { return }
         let generation = UUID()
         successGeneration = generation
+        warningGeneration = UUID()
+        warningMessage = nil
         successMessage = normalized
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -105,11 +109,20 @@ public final class MainStatusCenter: ObservableObject {
         showSuccess(message, autoDismissAfter: seconds)
     }
 
-    public func showWarning(_ message: String, autoDismissAfter seconds: Double = 3.0) {
+    public func showWarning(_ message: String, autoDismissAfter seconds: Double = 5.0) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
         recordIssue(message: normalized, level: .warning)
-        showInfo(normalized, autoDismissAfter: seconds)
+        let generation = UUID()
+        warningGeneration = generation
+        successGeneration = UUID()
+        successMessage = nil
+        warningMessage = normalized
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, self.warningGeneration == generation else { return }
+            self.warningMessage = nil
+        }
     }
 
     public func clearSuccess() {
@@ -117,11 +130,18 @@ public final class MainStatusCenter: ObservableObject {
         successMessage = nil
     }
 
+    public func clearWarning() {
+        warningGeneration = UUID()
+        warningMessage = nil
+    }
+
     public func showError(_ message: String, autoDismissAfter seconds: Double = 4.0) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         progressGeneration = UUID()
         progress = nil
         errorMessage = normalized.isEmpty ? nil : normalized
+        warningGeneration = UUID()
+        warningMessage = nil
         if !normalized.isEmpty {
             recordIssue(message: normalized, level: .error)
             let generation = UUID()
@@ -168,6 +188,11 @@ public final class MainStatusCenter: ObservableObject {
             actionKind: actionKind
         )
         issues.insert(newIssue, at: 0)
+        // Unbounded growth made the task-center popover increasingly slow in a
+        // long session; keep the newest entries, which are the actionable ones.
+        if issues.count > 50 {
+            issues.removeLast(issues.count - 50)
+        }
         lastIssueToken = UUID()
         return newIssue.id
     }

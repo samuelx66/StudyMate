@@ -199,7 +199,11 @@ public struct SecondaryWaveformView: View {
                                 engine.endBoundaryDrag()
                             },
                             onSelectSegmentForBoundaryDrag: { id in
-                                engine.playSegmentAfterBoundaryEditing(id: id)
+                                if engine.isPlaying {
+                                    engine.playSegmentAfterBoundaryEditing(id: id)
+                                } else {
+                                    engine.selectSegmentForBoundaryEditing(id: id)
+                                }
                             }
                         )
                     }

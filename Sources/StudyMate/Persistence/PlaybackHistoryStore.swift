@@ -112,7 +112,11 @@ public final class PlaybackHistoryStore: ObservableObject {
             directory = applicationSupport.appendingPathComponent("StudyMate", isDirectory: true)
         }
         storageURL = directory.appendingPathComponent("PlaybackHistory.json")
-        entries = Self.loadEntries(from: storageURL)
+        var loadWarning: String?
+        entries = Self.loadEntries(from: storageURL, warning: &loadWarning)
+        if let loadWarning {
+            MainStatusCenter.shared.showWarning(loadWarning)
+        }
         refreshReachableEntries()
     }
 
@@ -276,11 +280,31 @@ public final class PlaybackHistoryStore: ObservableObject {
         }
     }
 
-    private static func loadEntries(from url: URL) -> [PlaybackHistoryEntry] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+    private static func loadEntries(from url: URL, warning: inout String?) -> [PlaybackHistoryEntry] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        guard let data = try? Data(contentsOf: url) else {
+            warning = "无法读取播放历史文件，本次未加载最近打开记录。"
+            return []
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let decoded = try? decoder.decode([PlaybackHistoryEntry].self, from: data) else { return [] }
+        let decoded: [PlaybackHistoryEntry]
+        do {
+            decoded = try decoder.decode([PlaybackHistoryEntry].self, from: data)
+        } catch {
+            // Quarantine the corrupt file before the next atomic save can
+            // overwrite it. Losing the recent list is preferable to silently
+            // destroying the only copy of the data.
+            let stamp = Int(Date().timeIntervalSince1970)
+            let quarantineURL = url
+                .deletingLastPathComponent()
+                .appendingPathComponent("PlaybackHistory.corrupt-\(stamp).json")
+            let quarantined = (try? FileManager.default.moveItem(at: url, to: quarantineURL)) != nil
+            warning = quarantined
+                ? "播放历史文件已损坏，已保留副本“\(quarantineURL.lastPathComponent)”并重新开始记录。"
+                : "播放历史文件已损坏，且无法创建备份副本；最近打开记录本次为空。"
+            return []
+        }
 
         var seenPaths = Set<String>()
         return decoded.filter { seenPaths.insert($0.mediaPath).inserted }

@@ -22,9 +22,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard StudyMateShortcutManager.shared.matches(event: event, for: .playPause) else { return event }
-            // 输入字幕、搜索框或在任何输入法/编辑框中时，空格必须留给文本编辑器，不能误触播放。
-            if let responder = NSApp.keyWindow?.firstResponder {
-                if responder is NSTextView || responder is NSTextField || responder is NSTextInputClient {
+            // Only the media window owns the global Space shortcut. Pressing
+            // Space in Settings, the sentence library, or the vocabulary
+            // notebook must never toggle playback of a hidden media window.
+            guard !MenuTrackingState.shared.isTracking,
+                  let keyWindow = NSApp.keyWindow,
+                  keyWindow.identifier?.rawValue == "studymate-main-window" else { return event }
+            // 输入字幕、搜索框或在任何输入法/编辑框/可聚焦控件中时，
+            // 空格必须留给文本编辑器或控件，不能误触播放。
+            if let responder = keyWindow.firstResponder {
+                if responder is NSTextView || responder is NSTextField
+                    || responder is NSTextInputClient || responder is NSControl {
                     return event
                 }
             }
@@ -53,7 +61,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         memoryPressureSource?.cancel()
         PlaybackEngine.shared.flushPendingPersistence()
+        SentenceLibraryStore.shared.flushPendingContentJSONSyncs()
         NativeSpeechRuntime.shared.shutdownSynchronously()
+    }
+
+    /// Quitting in the middle of segmentation, translation or waveform
+    /// extraction used to discard the in-flight work silently. Ask first and
+    /// offer to cancel the task cleanly before exiting.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let engine = PlaybackEngine.shared
+        guard engine.isAITranscribing || engine.isAutoTranslating || engine.isExtractingWaveform else {
+            return .terminateNow
+        }
+        let language = LanguageManager.shared
+        let alert = NSAlert()
+        alert.messageText = language.text("仍有任务正在处理", "A task is still running")
+        alert.informativeText = language.text(
+            "退出会中断当前任务，未完成的断句、翻译或波形可能丢失。",
+            "Quitting will interrupt the current task; unfinished segmentation, translation, or waveform data may be lost."
+        )
+        alert.addButton(withTitle: language.text("取消任务并退出", "Cancel Task and Quit"))
+        alert.addButton(withTitle: language.text("继续处理", "Keep Working"))
+        alert.addButton(withTitle: language.text("直接退出", "Quit Anyway"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            engine.cancelSegmentation()
+            engine.cancelAutomaticTranslation()
+            engine.cancelWaveformExtraction()
+            return .terminateNow
+        case .alertSecondButtonReturn:
+            return .terminateCancel
+        default:
+            return .terminateNow
+        }
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -176,6 +216,14 @@ final class PlaybackCommandState: ObservableObject {
                 .map { _ in () }
                 .eraseToAnyPublisher(),
             engine.$segments
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            // Natural playback advances the active sentence without mutating
+            // `segments`, so the command layer must hear about the active index
+            // or merge/bookmark enabled states and labels freeze at whatever
+            // sentence was active during the last low-frequency refresh.
+            engine.activeSegmentState.$index
+                .removeDuplicates()
                 .map { _ in () }
                 .eraseToAnyPublisher(),
             engine.$isAITranscribing
@@ -624,8 +672,20 @@ struct StudyMateApp: App {
                 }
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateRegenerateOriginal, object: nil)
+                    let key = "StudyMate.SegmentListEditingLayout"
+                    let current = UserDefaults.standard.object(forKey: key) as? Bool ?? false
+                    UserDefaults.standard.set(!current, forKey: key)
+                } label: {
+                    Label(
+                        languageManager.text("切换阅读/功能状态", "Toggle Reading/Function Mode"),
+                        systemImage: "slider.horizontal.3"
+                    )
+                }
+                .keyboardShortcut(shortcutManager.keyboardShortcut(for: .toggleSegmentEditingLayout))
+                .disabled(engine.currentMedia == nil)
+
+                Button {
+                    postSentenceWorkspaceCommand(.studyMateRegenerateOriginal)
                 } label: {
                     Label(languageManager.text("重新生成原文…", "Regenerate Original Text…"), systemImage: "waveform.and.mic")
                 }
@@ -633,8 +693,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty || engine.isAITranscribing || engine.isAutoTranslating)
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateTranslateSentences, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateTranslateSentences)
                 } label: {
                     Label(languageManager.text("翻译句子…", "Translate Sentences…"), systemImage: "translate")
                 }
@@ -642,8 +701,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateImportSubtitles, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateImportSubtitles)
                 } label: {
                     Label(languageManager.text("导入字幕…", "Import Subtitles…"), systemImage: "arrow.down.doc")
                 }
@@ -652,8 +710,7 @@ struct StudyMateApp: App {
 
                 Menu {
                     Button {
-                        ensureSentenceListVisible()
-                        NotificationCenter.default.post(name: .studyMateExportSeparate, object: nil)
+                        postSentenceWorkspaceCommand(.studyMateExportSeparate)
                     } label: {
                         Label(languageManager.text("逐句导出 M4A 与 LRC/SRT…", "Export Separate M4A and LRC/SRT…"), systemImage: "doc.on.doc")
                     }
@@ -661,8 +718,7 @@ struct StudyMateApp: App {
                     .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                     Button {
-                        ensureSentenceListVisible()
-                        NotificationCenter.default.post(name: .studyMateExportMerged, object: nil)
+                        postSentenceWorkspaceCommand(.studyMateExportMerged)
                     } label: {
                         Label(languageManager.text("合并导出 M4A 与 LRC/SRT…", "Export Merged M4A and LRC/SRT…"), systemImage: "rectangle.stack")
                     }
@@ -674,8 +730,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateAddToLibrary, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateAddToLibrary)
                 } label: {
                     Label(languageManager.text("加入句库", "Add to Sentence Library"), systemImage: "text.badge.plus")
                 }
@@ -699,8 +754,7 @@ struct StudyMateApp: App {
                 .keyboardShortcut(shortcutManager.keyboardShortcut(for: .followActiveSentence))
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateToggleSentenceFilter, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateToggleSentenceFilter)
                 } label: {
                     Label(languageManager.text("筛选与搜索句子…", "Filter and Search Sentences…"), systemImage: "line.3.horizontal.decrease.circle")
                 }
@@ -708,8 +762,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateSelectAllVisibleSentences, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateSelectAllVisibleSentences)
                 } label: {
                     Label(languageManager.text("全选当前显示句子", "Select All Visible Sentences"), systemImage: "checkmark.circle")
                 }
@@ -717,8 +770,7 @@ struct StudyMateApp: App {
                 .disabled(engine.currentMedia == nil || engine.segments.isEmpty)
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateInvertVisibleSentenceSelection, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateInvertVisibleSentenceSelection)
                 } label: {
                     Label(languageManager.text("反选当前显示句子", "Invert Visible Sentence Selection"), systemImage: "arrow.2.squarepath")
                 }
@@ -728,8 +780,7 @@ struct StudyMateApp: App {
                 Divider()
 
                 Button {
-                    ensureSentenceListVisible()
-                    NotificationCenter.default.post(name: .studyMateEditActiveSentence, object: nil)
+                    postSentenceWorkspaceCommand(.studyMateEditActiveSentence)
                 } label: {
                     Label(languageManager.text("编辑当前句原文和译文…", "Edit Current Sentence…"), systemImage: "pencil")
                 }
@@ -816,13 +867,28 @@ struct StudyMateApp: App {
                 Button {
                     if let seg = activeSegment {
                         engine.deleteSegment(id: seg.id)
-                        MainStatusCenter.shared.showSuccess(languageManager.text("已删除当前句", "Current sentence deleted"))
+                        MainStatusCenter.shared.showSuccess(languageManager.text(
+                            "已删除当前句（可在“断句”菜单撤销）",
+                            "Current sentence deleted (Undo in the Sentence menu)"
+                        ))
                     }
                 } label: {
                     Label(languageManager.text("删除当前句", "Delete Current Sentence"), systemImage: "trash")
                 }
                 .keyboardShortcut(shortcutManager.keyboardShortcut(for: .deleteSentence))
                 .disabled(activeSegment == nil)
+
+                Button {
+                    if engine.undoDeleteSegment() {
+                        MainStatusCenter.shared.showSuccess(languageManager.text(
+                            "已撤销删除句子",
+                            "Sentence deletion undone"
+                        ))
+                    }
+                } label: {
+                    Label(languageManager.text("撤销删除句子", "Undo Delete Sentence"), systemImage: "arrow.uturn.backward")
+                }
+                .disabled(!engine.canUndoDeleteSegment)
             }
             
             // 播放与复读控制菜单
@@ -1067,14 +1133,29 @@ struct StudyMateApp: App {
         engine.activeSegment
     }
 
-    private func ensureSentenceListVisible() {
+    /// Brings the sentence workspace forward and then delivers a sentence
+    /// command on the next run-loop turn.
+    ///
+    /// The command handlers live in `SegmentListView`, which is mounted only in
+    /// video mode and only while the sidebar is visible. Switching to the video
+    /// workspace first keeps the Sentence menu functional from every interface
+    /// mode, and deferring the post lets the freshly mounted sidebar subscribe
+    /// before the notification is delivered (otherwise the first command after
+    /// revealing a hidden sidebar is lost).
+    private func postSentenceWorkspaceCommand(_ name: Notification.Name) {
+        if playbackInterfaceMode != .video {
+            playbackInterfaceMode = .video
+        }
         if !showSentenceList {
             withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                 showSentenceList = true
             }
         }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: name, object: nil)
+        }
     }
-    
+
     private func openFileAction() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -1272,10 +1353,12 @@ final class MainWindowAccessorView: NSView {
                 forName: NSWindow.willCloseNotification,
                 object: window,
                 queue: .main
-            ) { [weak self, weak window] _ in
+            ) { _ in
+                // Do not post `.studyMateCloseCurrentMedia` here: that is the
+                // *request* handled by `windowShouldClose`, and re-posting it
+                // on actual close re-enters the whole close workflow.
                 PlaybackEngine.shared.pause()
                 PlaybackEngine.shared.flushPendingPersistence()
-                NotificationCenter.default.post(name: .studyMateCloseCurrentMedia, object: nil)
             },
             center.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,
