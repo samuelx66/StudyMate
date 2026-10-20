@@ -442,7 +442,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     @Published public var currentMedia: MediaItem?
     @Published public var isPlaying: Bool = false {
         didSet {
-            clock.setPlaying(isPlaying && !isShadowingPaused)
+            updateClockPlayingState()
         }
     }
     public private(set) var currentTime: Double {
@@ -554,7 +554,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             // presentation clock frozen until the countdown completes so
             // queued decoder frames cannot move the playhead into the next
             // sentence.
-            clock.setPlaying(isPlaying && !isShadowingPaused)
+            updateClockPlayingState()
         }
     }
     /// 跟读倒计时剩余秒数
@@ -686,7 +686,19 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     // 交互辅助状态
-    @Published public var isSeeking: Bool = false
+    @Published public var isSeeking: Bool = false {
+        didSet {
+            updateClockPlayingState()
+        }
+    }
+
+    public var isPlayheadAdvancing: Bool {
+        isPlaying && !isShadowingPaused && !isSeeking
+    }
+
+    private func updateClockPlayingState() {
+        clock.setPlaying(isPlayheadAdvancing)
+    }
     @Published public var isPreviewingAnchor: Bool = false
     @Published public private(set) var isBoundaryDragging: Bool = false
     @Published public private(set) var boundaryDragSource: BoundaryDragSource? = nil
@@ -791,7 +803,7 @@ public final class PlaybackEngine: NSObject, ObservableObject {
     /// 在用户明确执行新的播放/Seek/选句操作前，冻结波形相关的播放状态，
     /// 避免主波形跟随到尾部或次波形被切换到错误的断句。
     private var isWaveformFrozenAtNaturalEnd = false
-    private var hasEndedAfterLastSegment = false
+    @Published public private(set) var hasEndedAfterLastSegment = false
     private var pendingResumeTime: Double = 0
     private var pendingResumePlayback = false
     private var previewEndTime: Double?
@@ -1915,13 +1927,24 @@ public final class PlaybackEngine: NSObject, ObservableObject {
             }
 
             // 同名字幕接管断句时间轴，但句库生成的材料工程作为单一真实源，拥有角色、生词、难句等完整元数据，
-            // 只有当本地尚未保存兼容工程时，才由同名伴随字幕接管初始断句；
-            // 若工程已存在并成功恢复（已包含用户编辑的角色、生词等元数据），绝不被简化字幕覆盖。
-            if let sidecarItems, !sidecarItems.isEmpty, compatibleProject == nil {
+            // 绝不被同目录伴随生成的简化版 .lrc/.srt 覆盖。
+            let isSentenceSession = self.isSentenceLibrarySessionMedia(mediaURL)
+                || compatibleProject?.sentenceLibraryID != nil
+                || self.activeSentenceLibraryID != nil
+
+            if let sidecarItems, !sidecarItems.isEmpty, !(isSentenceSession && compatibleProject != nil) {
                 self.projectRecoveryRequired = false
                 self.pendingProjectForExplicitRecovery = nil
                 self.canUseExistingProject = false
                 self.applySubtitleItems(sidecarItems, origin: .sidecar, persist: true)
+                if let compatibleProject,
+                   let savedWaveform = compatibleProject.waveformData,
+                   !savedWaveform.isEmpty {
+                    self.waveformData = savedWaveform
+                    self.waveformExtractionProgress = 1
+                    if self.duration <= 0 { self.updateMediaDurationIfNeeded(savedWaveform.duration) }
+                    return
+                }
                 self.extractWaveform(from: mediaURL, sessionID: sessionID)
                 return
             }
@@ -3495,6 +3518,8 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         let clampedTime = max(0, min(seconds, maximum))
 
         self.currentTime = clampedTime
+        clock.updateTime(clampedTime)
+        clock.snapPresentationTime(clampedTime)
         updateActiveSegment(for: clampedTime)
         updateSubtitleTimeRangeState(at: clampedTime)
 
@@ -3702,15 +3727,6 @@ public final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         let currentSeg = segments[activeIdx]
-
-        // The decoder may report paused before delivering the end timestamp.
-        // Only an explicit pause clears wantsPlayback; isPlaying is an
-        // observation and must not disable the repeat decision here.
-        // 1. 优先判定当前活跃句是否播完到达末尾（防止时间戳刚过界就被 updateActiveSegment 提前切句导致复读失效）
-        // 全篇循环模式（Aboboo 单首循环风格）：
-        // 媒体流按绝对时间平滑自然播放，贯穿整个音频，不被断句截断、拦截或重复；
-        // 只有当整个媒体物理文件播放到真正结束时，才由 onFinished 触发回到 0.0s 循环。
-        // 此处不做任何句尾跳转或复读，放行进入下方的包含判断与活跃句自然更新。
         if loopMode != .all && time >= currentSeg.endTime - 0.005 && wantsPlayback && !isShadowingPaused {
             if shouldAdvanceAfterCurrentSegmentPlayback {
                 shouldAdvanceAfterCurrentSegmentPlayback = false
@@ -4209,12 +4225,13 @@ public final class PlaybackEngine: NSObject, ObservableObject {
                 pendingResumePlayback = true
             }
         }
+        currentRepeatCount = 1
         activeSegmentIndex = index
         markExplicitSegmentSelection()
-        currentRepeatCount = 1
         ensureSegmentVisibleInPrimaryViewport(at: index)
         updateSecondaryViewportForActiveSegment(force: true)
-        seekToTargetSegment(seg)
+        let needsRepeatProtection = (repeatCountLimit != 1) || (loopMode == .singleSegment)
+        seekToTargetSegment(seg, protectRepeatCycle: needsRepeatProtection)
     }
 
     public func jumpToSegment(id: UUID) {

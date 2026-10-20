@@ -103,13 +103,20 @@ public struct FloatingVideoOSDView: View {
                 shortcut: .nextSegment
             ))
             
+            let effectiveDuration = max(engine.duration, engine.segments.last?.endTime ?? 0)
+
             // 5. 播放时间 (独立监听高频时钟，避免 OSD 其余组件频繁重绘)
-            OSDTimecodeText(clock: engine.clock)
+            OSDTimecodeText(
+                clock: engine.clock,
+                hasEnded: engine.hasEndedAfterLastSegment,
+                duration: effectiveDuration
+            )
             
             // 6. 播放进度条（横向自适应扩展）
             OSDTimelineSlider(
                 clock: engine.clock,
-                duration: engine.duration,
+                duration: effectiveDuration,
+                hasEnded: engine.hasEndedAfterLastSegment,
                 previewEnabled: engine.currentMedia?.isVideo == true,
                 isScrubbing: $isScrubbing,
                 onPreviewBegan: { engine.beginPreviewSeek() },
@@ -121,7 +128,7 @@ public struct FloatingVideoOSDView: View {
             .focusable(false)
             
             // 7. 总时间
-            Text(Self.playbackTime(engine.duration))
+            Text(Self.playbackTime(effectiveDuration))
                 .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                 .foregroundColor(.secondary)
                 .frame(minWidth: 40, alignment: .leading)
@@ -177,6 +184,7 @@ public struct FloatingVideoOSDView: View {
 private struct OSDTimelineSlider: View {
     @ObservedObject var clock: PlaybackClock
     let duration: Double
+    let hasEnded: Bool
     let previewEnabled: Bool
     @Binding var isScrubbing: Bool
     let onPreviewBegan: () -> Void
@@ -186,10 +194,20 @@ private struct OSDTimelineSlider: View {
 
     @State private var scrubTime = 0.0
 
+    private var currentEffectiveTime: Double {
+        if isScrubbing {
+            return scrubTime
+        }
+        if hasEnded {
+            return max(0.1, duration)
+        }
+        return min(clock.currentTime, max(0.1, duration))
+    }
+
     var body: some View {
         Slider(
             value: Binding(
-                get: { isScrubbing ? scrubTime : min(clock.currentTime, max(0.1, duration)) },
+                get: { currentEffectiveTime },
                 set: { newTime in
                     scrubTime = newTime
                     if isScrubbing {
@@ -203,7 +221,7 @@ private struct OSDTimelineSlider: View {
             onEditingChanged: { editing in
                 isScrubbing = editing
                 if editing {
-                    scrubTime = min(clock.currentTime, max(0.1, duration))
+                    scrubTime = currentEffectiveTime
                     if previewEnabled { onPreviewBegan() }
                 } else {
                     if previewEnabled { onPreviewEnded() }
@@ -212,7 +230,7 @@ private struct OSDTimelineSlider: View {
             }
         )
         .accessibilityLabel("播放进度 / Playback position")
-        .accessibilityValue(SentenceSegment.formatTimecode(isScrubbing ? scrubTime : clock.currentTime))
+        .accessibilityValue(SentenceSegment.formatTimecode(currentEffectiveTime))
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -222,9 +240,12 @@ private struct OSDTimelineSlider: View {
 /// 独立隔离的高频时间码文本视图
 private struct OSDTimecodeText: View {
     @ObservedObject var clock: PlaybackClock
+    let hasEnded: Bool
+    let duration: Double
 
     var body: some View {
-        Text(FloatingVideoOSDView.playbackTime(clock.currentTime))
+        let displayTime = hasEnded ? max(0, duration) : clock.currentTime
+        Text(FloatingVideoOSDView.playbackTime(displayTime))
             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
             .foregroundColor(.primary)
             .frame(minWidth: 40, alignment: .trailing)

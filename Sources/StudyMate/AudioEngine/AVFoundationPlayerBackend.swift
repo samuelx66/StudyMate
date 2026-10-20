@@ -474,6 +474,12 @@ public final class AVFoundationPlayerBackend: NSObject, MediaPlayerBackend {
                 if self.isPlaying != playing {
                     self.isPlaying = playing
                     self.onStateChanged?(playing)
+                    if !playing, let end = self.playbackEndTime {
+                        let actual = CMTimeGetSeconds(player.currentTime())
+                        if actual.isFinite, actual >= end - 0.06 {
+                            self.onBoundaryTimeUpdate?(end, self.duration)
+                        }
+                    }
                 }
             }
         }

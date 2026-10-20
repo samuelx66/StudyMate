@@ -48,6 +48,105 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertTrue(engine.isPlaying)
     }
 
+    func testNativeContinuousModeRepeatsWithShadowingPauseThenPlaysSecondSentence() async throws {
+        let directory = temporaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let media = directory.appendingPathComponent("native-repeat-pause.wav")
+        try makeTestAudio(at: media, duration: 4)
+        let backend = AVFoundationPlayerBackend()
+        let engine = PlaybackEngine(
+            nativeBackend: backend,
+            mpvBackend: TestMediaPlayerBackend(),
+            projectFileManager: ProjectFileManager(baseDirectory: directory.appendingPathComponent("projects"))
+        )
+        defer { engine.pause(); backend.teardown() }
+        engine.setDecoderMode(.system)
+        engine.loadMedia(from: media)
+        for _ in 0..<200 where engine.isMediaLoading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isMediaLoading)
+        engine.volume = 0
+        engine.segments = [
+            SentenceSegment(index: 1, startTime: 0, endTime: 0.5),
+            SentenceSegment(index: 2, startTime: 0.5, endTime: 1.5)
+        ]
+        engine.activeSegmentIndex = 0
+        engine.loopMode = .normal
+        engine.repeatCountLimit = 2
+        engine.setShadowingPauseSeconds(0.1)
+        engine.play()
+
+        let player = try XCTUnwrap((backend.playerView as? AVPlayerView)?.player)
+
+        // Repeat 1 plays
+        for _ in 0..<100 where player.currentTime().seconds < 0.02 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Wait for repeat 1 to finish and enter shadowing pause
+        for _ in 0..<100 where !engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // Wait for shadowing pause to end and repeat 2 to start
+        for _ in 0..<100 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // Wait for repeat 2 to finish and enter second shadowing pause
+        for _ in 0..<100 where !engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 0)
+
+        // Wait for shadowing pause to end and advance to sentence 2
+        for _ in 0..<100 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+
+        // Now sentence 2 should be active!
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 1)
+
+        // Wait for sentence 2 play 1 to finish and enter shadowing pause
+        for _ in 0..<200 where engine.currentRepeatCount == 1 && !engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // Wait for sentence 2 pause to finish and repeat 2 to start:
+        for _ in 0..<100 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+        XCTAssertEqual(engine.currentRepeatCount, 2)
+
+        // Wait for sentence 2 repeat 2 to finish and enter final shadowing pause
+        for _ in 0..<200 where !engine.isShadowingPaused && engine.isPlaying {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(engine.isShadowingPaused)
+        XCTAssertEqual(engine.activeSegmentIndex, 1)
+
+        // Wait for final shadowing pause to end: continuous playback finishes naturally
+        for _ in 0..<100 where engine.isShadowingPaused {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(engine.isShadowingPaused)
+        XCTAssertFalse(engine.isPlaying)
+        XCTAssertTrue(engine.hasEndedAfterLastSegment)
+    }
+
+
     func testNativeDecoderStopsAtSentenceEndWhileMainThreadIsBlocked() async throws {
         let directory = temporaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
