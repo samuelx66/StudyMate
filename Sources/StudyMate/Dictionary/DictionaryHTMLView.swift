@@ -736,10 +736,22 @@ public enum DictionaryHTMLFormatter {
         }
         var deferredScripts: [String] = []
         var stylesheetTags: [String] = []
+        let isMultiDict = Set(entries.map(\.dictionaryID)).count > 1
+        let isMultiEntrySameDict = !isMultiDict && entries.count > 1
         let bodyEntries = entries.map { entry -> String in
-            let badgeHTML = entries.count > 1
-                ? "<div class=\"dict-badge\">\(escapeHTML(entry.displayName))</div>"
-                : ""
+            let badgeHTML: String
+            if isMultiDict {
+                let sameDictCount = entries.filter { $0.dictionaryID == entry.dictionaryID }.count
+                if sameDictCount > 1 {
+                    badgeHTML = "<div class=\"dict-badge\">\(escapeHTML(entry.displayName)) · \(escapeHTML(entry.key))</div>"
+                } else {
+                    badgeHTML = "<div class=\"dict-badge\">\(escapeHTML(entry.displayName))</div>"
+                }
+            } else if isMultiEntrySameDict {
+                badgeHTML = "<div class=\"dict-badge\">\(escapeHTML(entry.key))</div>"
+            } else {
+                badgeHTML = ""
+            }
             let formattedContent = formatEntryContent(
                 entry.text,
                 format: entry.format,

@@ -1224,6 +1224,10 @@ public final class DictionaryEngine: ObservableObject {
         loadDefinition(for: key, dictionaryID: dictionaryID, expectedSearchGeneration: nil, immediate: false)
     }
 
+    /// Upper bound on the number of merged case/hyphen variant definitions
+    /// to retrieve for a single word in a dictionary.
+    private static let definitionLookupLimit = 6
+
     private func loadDefinition(
         for key: String,
         dictionaryID: String?,
@@ -1262,7 +1266,7 @@ public final class DictionaryEngine: ObservableObject {
                 try Task.checkCancellation()
                 let entries = try await self.lookupDefinitions(
                     query: lookupKey,
-                    limit: 1,
+                    limit: Self.definitionLookupLimit,
                     dictionaryID: dictionaryID
                 )
                 guard !Task.isCancelled,
@@ -1313,7 +1317,7 @@ public final class DictionaryEngine: ObservableObject {
                 try Task.checkCancellation()
                 let entries = try await self.lookupDefinitions(
                     query: lookupKey,
-                    limit: 1,
+                    limit: Self.definitionLookupLimit,
                     dictionaryID: dictionaryID
                 )
                 guard !Task.isCancelled,
@@ -1696,10 +1700,20 @@ public final class DictionaryEngine: ObservableObject {
             ]
         }
         let value = try await request(operation: operation, fields: fields)
-        return try await Self.decodeInBackground(
+        let results = try await Self.decodeInBackground(
             [StudyMateDictionaryLookup].self,
             from: value
         )
+        // Deduplicate records that have identical dictionaryID and identical definition text
+        var seen = Set<String>()
+        var deduplicated: [StudyMateDictionaryLookup] = []
+        for entry in results {
+            let signature = "\(entry.dictionaryID)|\(entry.text.trimmingCharacters(in: .whitespacesAndNewlines))"
+            if seen.insert(signature).inserted {
+                deduplicated.append(entry)
+            }
+        }
+        return deduplicated
     }
 
     private func adaptiveSearchLimit(for query: String) -> Int {
